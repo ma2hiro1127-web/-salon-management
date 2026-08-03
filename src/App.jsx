@@ -1,103 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
-
-const initialStores = ["横浜店", "吉祥寺店", "原宿店"];
-
-const emptyMonth = {
-  technicalSales: 0,
-  retailSales: 0,
-  customers: 0,
-  newCustomers: 0,
-  repeatCustomers: 0,
-  laborCost: 0,
-  materialCost: 0,
-  retailCost: 0,
-  rent: 0,
-  advertising: 0,
-  utilities: 0,
-  systemFees: 0,
-  miscellaneous: 0,
-};
-
-const emptyStaffForm = {
-  name: "",
-  role: "スタイリスト",
-  monthlySales: 0,
-  customers: 0,
-};
-
-const emptyCustomerForm = {
-  name: "",
-  phone: "",
-  lastVisit: "",
-  memo: "",
-};
-
-const emptyReservationForm = {
-  date: "",
-  time: "",
-  customerName: "",
-  menu: "",
-  staffName: "",
-  price: 0,
-};
-
-const emptyInventoryForm = {
-  name: "",
-  category: "材料",
-  stock: 0,
-  minimumStock: 0,
-  unitCost: 0,
-};
-
-const money = (value) =>
-  new Intl.NumberFormat("ja-JP", {
-    style: "currency",
-    currency: "JPY",
-    maximumFractionDigits: 0,
-  }).format(Number(value || 0));
-
-const number = (value) =>
-  new Intl.NumberFormat("ja-JP").format(Number(value || 0));
-
-const percent = (value) =>
-  `${Number.isFinite(value) ? value.toFixed(1) : "0.0"}%`;
-
-const toNumber = (value) => {
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-};
+import { MetricCard } from "./components/MetricCard";
+import { NumberField, TextField } from "./components/FormFields";
+import { DataTable } from "./components/DataTable";
+import { SalesTrendChart } from "./components/SalesTrendChart";
+import { emptyCustomerForm, emptyInventoryForm, emptyMonth, emptyReservationForm, emptyStaffForm, initialStores } from "./data/defaults";
+import { STORAGE_KEYS, calcSalesSummary, getPreviousYearMonth, money, number, percent, readAppState, readStorage, toNumber, writeAppState } from "./utils/storage";
 
 function App() {
+  const [theme, setTheme] = useState(() => {
+    const savedTheme = readStorage("salon-theme", "light");
+    return savedTheme === "dark" ? "dark" : "light";
+  });
   const [activeTab, setActiveTab] = useState("dashboard");
-  const [stores, setStores] = useState(() => {
-    const saved = localStorage.getItem("salon-stores");
-    return saved ? JSON.parse(saved) : initialStores;
-  });
-  const [selectedStore, setSelectedStore] = useState(() => stores[0] || "本店");
-  const [selectedMonth, setSelectedMonth] = useState(
-    () => new Date().toISOString().slice(0, 7)
-  );
-  const [monthlyData, setMonthlyData] = useState(() => {
-    const saved = localStorage.getItem("salon-monthly-data");
-    return saved ? JSON.parse(saved) : {};
-  });
-  const [staff, setStaff] = useState(() => {
-    const saved = localStorage.getItem("salon-staff");
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [customers, setCustomers] = useState(() => {
-    const saved = localStorage.getItem("salon-customers");
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [reservations, setReservations] = useState(() => {
-    const saved = localStorage.getItem("salon-reservations");
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [inventory, setInventory] = useState(() => {
-    const saved = localStorage.getItem("salon-inventory");
-    return saved ? JSON.parse(saved) : [];
-  });
+  const [appState, setAppState] = useState(() => readAppState());
+  const [installPrompt, setInstallPrompt] = useState(null);
+
+  const { stores, selectedStore, selectedMonth, monthlyData, staff, customers, reservations, inventory } = appState;
 
   const [staffForm, setStaffForm] = useState(emptyStaffForm);
   const [customerForm, setCustomerForm] = useState(emptyCustomerForm);
@@ -109,150 +28,148 @@ function App() {
   const current = monthlyData[monthKey] || emptyMonth;
 
   useEffect(() => {
-    localStorage.setItem("salon-stores", JSON.stringify(stores));
-  }, [stores]);
-
-  useEffect(() => {
-    localStorage.setItem("salon-monthly-data", JSON.stringify(monthlyData));
-  }, [monthlyData]);
-
-  useEffect(() => {
-    localStorage.setItem("salon-staff", JSON.stringify(staff));
-  }, [staff]);
-
-  useEffect(() => {
-    localStorage.setItem("salon-customers", JSON.stringify(customers));
-  }, [customers]);
-
-  useEffect(() => {
-    localStorage.setItem("salon-reservations", JSON.stringify(reservations));
-  }, [reservations]);
-
-  useEffect(() => {
-    localStorage.setItem("salon-inventory", JSON.stringify(inventory));
-  }, [inventory]);
-
-  const metrics = useMemo(() => {
-    const sales = current.technicalSales + current.retailSales;
-    const variableCost = current.materialCost + current.retailCost;
-    const grossProfit = sales - variableCost;
-    const operatingExpenses =
-      current.laborCost +
-      current.rent +
-      current.advertising +
-      current.utilities +
-      current.systemFees +
-      current.miscellaneous;
-    const operatingProfit = grossProfit - operatingExpenses;
-    const averageSpend = current.customers ? sales / current.customers : 0;
-    const repeatRate = current.customers
-      ? (current.repeatCustomers / current.customers) * 100
-      : 0;
-    const laborRate = sales ? (current.laborCost / sales) * 100 : 0;
-    const materialRate = current.technicalSales
-      ? (current.materialCost / current.technicalSales) * 100
-      : 0;
-    const operatingMargin = sales ? (operatingProfit / sales) * 100 : 0;
-    const retailRate = sales ? (current.retailSales / sales) * 100 : 0;
-
-    return {
-      sales,
-      variableCost,
-      grossProfit,
-      operatingExpenses,
-      operatingProfit,
-      averageSpend,
-      repeatRate,
-      laborRate,
-      materialRate,
-      operatingMargin,
-      retailRate,
+    const onBeforeInstallPrompt = (event) => {
+      event.preventDefault();
+      setInstallPrompt(event);
     };
-  }, [current]);
 
-  const updateMonth = (field, value) => {
-    setMonthlyData((prev) => ({
-      ...prev,
-      [monthKey]: {
-        ...emptyMonth,
-        ...(prev[monthKey] || {}),
-        [field]: toNumber(value),
-      },
-    }));
-  };
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
+    };
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
+  }, [theme]);
+
+  useEffect(() => {
+    writeAppState(appState);
+  }, [appState]);
+
+  const metrics = useMemo(() => calcSalesSummary(current), [current]);
+
+  const previousMonthValue = getPreviousYearMonth(selectedMonth);
+  const previousMonthData = monthlyData[`${selectedStore}__${previousMonthValue}`] || emptyMonth;
+  const previousSales = Number(previousMonthData.technicalSales || 0) + Number(previousMonthData.retailSales || 0);
+  const yoyDelta = metrics.sales - previousSales;
+  const yoyRate = previousSales ? (yoyDelta / previousSales) * 100 : 0;
 
   const addStore = () => {
     const trimmed = newStoreName.trim();
     if (!trimmed || stores.includes(trimmed)) return;
-    setStores((prev) => [...prev, trimmed]);
-    setSelectedStore(trimmed);
+    setAppState((prev) => ({
+      ...prev,
+      stores: [...prev.stores, trimmed],
+      selectedStore: trimmed,
+    }));
     setNewStoreName("");
   };
 
   const addStaff = (event) => {
     event.preventDefault();
     if (!staffForm.name.trim()) return;
-    setStaff((prev) => [
+    setAppState((prev) => ({
       ...prev,
-      {
-        ...staffForm,
-        id: crypto.randomUUID(),
-        store: selectedStore,
-        monthlySales: toNumber(staffForm.monthlySales),
-        customers: toNumber(staffForm.customers),
-      },
-    ]);
+      staff: [
+        ...prev.staff,
+        {
+          ...staffForm,
+          id: crypto.randomUUID(),
+          store: prev.selectedStore,
+          monthlySales: toNumber(staffForm.monthlySales),
+          customers: toNumber(staffForm.customers),
+        },
+      ],
+    }));
     setStaffForm(emptyStaffForm);
   };
 
   const addCustomer = (event) => {
     event.preventDefault();
     if (!customerForm.name.trim()) return;
-    setCustomers((prev) => [
+    setAppState((prev) => ({
       ...prev,
-      {
-        ...customerForm,
-        id: crypto.randomUUID(),
-        store: selectedStore,
-      },
-    ]);
+      customers: [
+        ...prev.customers,
+        {
+          ...customerForm,
+          id: crypto.randomUUID(),
+          store: prev.selectedStore,
+        },
+      ],
+    }));
     setCustomerForm(emptyCustomerForm);
   };
 
   const addReservation = (event) => {
     event.preventDefault();
     if (!reservationForm.date || !reservationForm.customerName.trim()) return;
-    setReservations((prev) => [
+    setAppState((prev) => ({
       ...prev,
-      {
-        ...reservationForm,
-        id: crypto.randomUUID(),
-        store: selectedStore,
-        price: toNumber(reservationForm.price),
-      },
-    ]);
+      reservations: [
+        ...prev.reservations,
+        {
+          ...reservationForm,
+          id: crypto.randomUUID(),
+          store: prev.selectedStore,
+          price: toNumber(reservationForm.price),
+        },
+      ],
+    }));
     setReservationForm(emptyReservationForm);
   };
 
   const addInventory = (event) => {
     event.preventDefault();
     if (!inventoryForm.name.trim()) return;
-    setInventory((prev) => [
+    setAppState((prev) => ({
       ...prev,
-      {
-        ...inventoryForm,
-        id: crypto.randomUUID(),
-        store: selectedStore,
-        stock: toNumber(inventoryForm.stock),
-        minimumStock: toNumber(inventoryForm.minimumStock),
-        unitCost: toNumber(inventoryForm.unitCost),
-      },
-    ]);
+      inventory: [
+        ...prev.inventory,
+        {
+          ...inventoryForm,
+          id: crypto.randomUUID(),
+          store: prev.selectedStore,
+          stock: toNumber(inventoryForm.stock),
+          minimumStock: toNumber(inventoryForm.minimumStock),
+          unitCost: toNumber(inventoryForm.unitCost),
+        },
+      ],
+    }));
     setInventoryForm(emptyInventoryForm);
   };
 
-  const removeItem = (setter, id) => {
-    setter((prev) => prev.filter((item) => item.id !== id));
+  const removeItem = (key, id) => {
+    setAppState((prev) => ({
+      ...prev,
+      [key]: prev[key].filter((item) => item.id !== id),
+    }));
+  };
+
+  const handleInstall = async () => {
+    if (!installPrompt) return;
+
+    installPrompt.prompt();
+    const result = await installPrompt.userChoice;
+    if (result.outcome === "accepted") {
+      setInstallPrompt(null);
+    }
+  };
+
+  const updateMonth = (field, value) => {
+    setAppState((prev) => ({
+      ...prev,
+      monthlyData: {
+        ...prev.monthlyData,
+        [`${prev.selectedStore}__${prev.selectedMonth}`]: {
+          ...emptyMonth,
+          ...(prev.monthlyData[`${prev.selectedStore}__${prev.selectedMonth}`] || {}),
+          [field]: toNumber(value),
+        },
+      },
+    }));
   };
 
   const exportCsv = () => {
@@ -291,24 +208,18 @@ function App() {
     URL.revokeObjectURL(url);
   };
 
-  const storeComparison = stores.map((storeName) => {
-    const data = monthlyData[`${storeName}__${selectedMonth}`] || emptyMonth;
-    const sales = data.technicalSales + data.retailSales;
-    const grossProfit = sales - data.materialCost - data.retailCost;
-    const expenses =
-      data.laborCost +
-      data.rent +
-      data.advertising +
-      data.utilities +
-      data.systemFees +
-      data.miscellaneous;
-    return {
-      storeName,
-      sales,
-      operatingProfit: grossProfit - expenses,
-      customers: data.customers,
-    };
-  });
+  const storeComparison = stores
+    .map((storeName) => {
+      const data = monthlyData[`${storeName}__${selectedMonth}`] || emptyMonth;
+      const { sales, operatingProfit } = calcSalesSummary(data);
+      return {
+        storeName,
+        sales,
+        operatingProfit,
+        customers: Number(data.customers || 0),
+      };
+    })
+    .sort((a, b) => b.sales - a.sales);
 
   const tabs = [
     ["dashboard", "ダッシュボード"],
@@ -322,7 +233,7 @@ function App() {
   ];
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${theme === "dark" ? "theme-dark" : ""}`}>
       <aside className="sidebar">
         <div>
           <div className="brand">
@@ -363,7 +274,12 @@ function App() {
               店舗
               <select
                 value={selectedStore}
-                onChange={(event) => setSelectedStore(event.target.value)}
+                onChange={(event) =>
+                  setAppState((prev) => ({
+                    ...prev,
+                    selectedStore: event.target.value,
+                  }))
+                }
               >
                 {stores.map((storeName) => (
                   <option key={storeName}>{storeName}</option>
@@ -376,7 +292,12 @@ function App() {
               <input
                 type="month"
                 value={selectedMonth}
-                onChange={(event) => setSelectedMonth(event.target.value)}
+                onChange={(event) =>
+                  setAppState((prev) => ({
+                    ...prev,
+                    selectedMonth: event.target.value,
+                  }))
+                }
               />
             </label>
           </div>
@@ -386,18 +307,11 @@ function App() {
           <>
             <section className="metric-grid">
               <MetricCard label="総売上" value={money(metrics.sales)} />
-              <MetricCard
-                label="営業利益"
-                value={money(metrics.operatingProfit)}
-                tone={metrics.operatingProfit >= 0 ? "positive" : "negative"}
-              />
-              <MetricCard
-                label="営業利益率"
-                value={percent(metrics.operatingMargin)}
-              />
+              <MetricCard label="営業利益" value={money(metrics.operatingProfit)} tone={metrics.operatingProfit >= 0 ? "positive" : "negative"} />
+              <MetricCard label="営業利益率" value={percent(metrics.operatingMargin)} />
               <MetricCard label="客単価" value={money(metrics.averageSpend)} />
               <MetricCard label="客数" value={`${number(current.customers)}名`} />
-              <MetricCard label="再来率" value={percent(metrics.repeatRate)} />
+              <MetricCard label="前年比" value={yoyRate >= 0 ? `+${percent(yoyRate)}` : `${percent(yoyRate)}`} />
             </section>
 
             <section className="two-column">
@@ -407,27 +321,15 @@ function App() {
                     <p className="eyebrow">PROFIT</p>
                     <h2>利益構造</h2>
                   </div>
-                  <button className="secondary-button" onClick={exportCsv}>
-                    CSV出力
-                  </button>
+                  <button type="button" className="secondary-button" onClick={exportCsv}>CSV出力</button>
                 </div>
 
                 <div className="profit-list">
                   <SummaryRow label="売上" value={money(metrics.sales)} />
-                  <SummaryRow
-                    label="変動費（材料・店販仕入）"
-                    value={money(metrics.variableCost)}
-                  />
+                  <SummaryRow label="変動費（材料・店販仕入）" value={money(metrics.variableCost)} />
                   <SummaryRow label="粗利益" value={money(metrics.grossProfit)} />
-                  <SummaryRow
-                    label="販管費"
-                    value={money(metrics.operatingExpenses)}
-                  />
-                  <SummaryRow
-                    label="営業利益"
-                    value={money(metrics.operatingProfit)}
-                    strong
-                  />
+                  <SummaryRow label="販管費" value={money(metrics.operatingExpenses)} />
+                  <SummaryRow label="営業利益" value={money(metrics.operatingProfit)} strong />
                 </div>
               </article>
 
@@ -440,26 +342,10 @@ function App() {
                 </div>
 
                 <div className="kpi-list">
-                  <KpiBar
-                    label="人件費率"
-                    value={metrics.laborRate}
-                    target={45}
-                  />
-                  <KpiBar
-                    label="材料費率"
-                    value={metrics.materialRate}
-                    target={10}
-                  />
-                  <KpiBar
-                    label="店販比率"
-                    value={metrics.retailRate}
-                    target={10}
-                  />
-                  <KpiBar
-                    label="再来率"
-                    value={metrics.repeatRate}
-                    target={70}
-                  />
+                  <KpiBar label="人件費率" value={metrics.laborRate} target={45} />
+                  <KpiBar label="材料費率" value={metrics.materialRate} target={10} />
+                  <KpiBar label="広告費率" value={metrics.advertisingRate} target={10} />
+                  <KpiBar label="利益率" value={metrics.operatingMargin} target={15} />
                 </div>
               </article>
             </section>
@@ -467,16 +353,11 @@ function App() {
             <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <p className="eyebrow">TODAY</p>
-                  <h2>今後追加する分析</h2>
+                  <p className="eyebrow">TREND</p>
+                  <h2>月別売上推移</h2>
                 </div>
               </div>
-              <div className="placeholder-grid">
-                <div>前年同月比較</div>
-                <div>月別推移グラフ</div>
-                <div>スタッフ生産性</div>
-                <div>損益分岐点</div>
-              </div>
+              <SalesTrendChart storeName={selectedStore} monthlyData={monthlyData} />
             </section>
           </>
         )}
@@ -671,7 +552,7 @@ function App() {
                   money(item.price),
                   <button
                     className="text-button danger"
-                    onClick={() => removeItem(setReservations, item.id)}
+                    onClick={() => removeItem("reservations", item.id)}
                   >
                     削除
                   </button>,
@@ -735,7 +616,7 @@ function App() {
                   item.memo || "-",
                   <button
                     className="text-button danger"
-                    onClick={() => removeItem(setCustomers, item.id)}
+                    onClick={() => removeItem("customers", item.id)}
                   >
                     削除
                   </button>,
@@ -815,7 +696,7 @@ function App() {
                   ),
                   <button
                     className="text-button danger"
-                    onClick={() => removeItem(setStaff, item.id)}
+                    onClick={() => removeItem("staff", item.id)}
                   >
                     削除
                   </button>,
@@ -906,7 +787,7 @@ function App() {
                   ),
                   <button
                     className="text-button danger"
-                    onClick={() => removeItem(setInventory, item.id)}
+                    onClick={() => removeItem("inventory", item.id)}
                   >
                     削除
                   </button>,
@@ -953,9 +834,7 @@ function App() {
                   onChange={(event) => setNewStoreName(event.target.value)}
                   placeholder="新しい店舗名"
                 />
-                <button className="primary-button" onClick={addStore}>
-                  店舗を追加
-                </button>
+                <button type="button" className="primary-button" onClick={addStore}>店舗を追加</button>
               </div>
 
               <div className="tag-list">
@@ -968,33 +847,33 @@ function App() {
             <article className="panel">
               <div className="panel-heading">
                 <div>
-                  <p className="eyebrow">DATA</p>
-                  <h2>データ管理</h2>
+                  <p className="eyebrow">PREFS</p>
+                  <h2>表示設定</h2>
                 </div>
               </div>
 
-              <p className="muted">
-                現在はこのMacのブラウザ内に自動保存しています。Vercel公開後に
-                Supabaseを接続すると、iPhone・Android・PC間で同じデータを共有できます。
-              </p>
+              <div className="toggle-panel">
+                <div>
+                  <strong>ダークモード</strong>
+                  <small>{theme === "dark" ? "オン" : "オフ"}</small>
+                </div>
+                <button type="button" className="secondary-button" onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}>
+                  {theme === "dark" ? "ライトに切替" : "ダークに切替"}
+                </button>
+              </div>
 
-              <button className="secondary-button" onClick={exportCsv}>
-                選択中の月をCSV出力
-              </button>
+              {installPrompt && (
+                <button type="button" className="primary-button" onClick={handleInstall}>
+                  ホーム画面に追加
+                </button>
+              )}
+
+              <button type="button" className="secondary-button" onClick={exportCsv}>選択中の月をCSV出力</button>
             </article>
           </section>
         )}
       </main>
     </div>
-  );
-}
-
-function MetricCard({ label, value, tone = "" }) {
-  return (
-    <article className={`metric-card ${tone}`}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </article>
   );
 }
 
@@ -1019,69 +898,6 @@ function KpiBar({ label, value, target }) {
         <span style={{ width: `${width}%` }} />
       </div>
       <small>目安 {target}%</small>
-    </div>
-  );
-}
-
-function NumberField({ label, value, onChange, suffix = "円" }) {
-  return (
-    <label className="field">
-      {label}
-      <div className="input-with-suffix">
-        <input
-          type="number"
-          min="0"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-        />
-        <span>{suffix}</span>
-      </div>
-    </label>
-  );
-}
-
-function TextField({ label, value, onChange, type = "text" }) {
-  return (
-    <label className="field">
-      {label}
-      <input
-        type={type}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-      />
-    </label>
-  );
-}
-
-function DataTable({ headers, rows }) {
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {headers.map((header) => (
-              <th key={header}>{header}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length ? (
-            rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                {row.map((cell, cellIndex) => (
-                  <td key={cellIndex}>{cell}</td>
-                ))}
-              </tr>
-            ))
-          ) : (
-            <tr>
-              <td colSpan={headers.length} className="empty-state">
-                まだデータがありません
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
     </div>
   );
 }
