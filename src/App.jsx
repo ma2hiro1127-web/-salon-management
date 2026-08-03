@@ -1,13 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
 import "./App.css";
-import { defaultActual, defaultAppState, defaultDailyEntry, defaultTarget } from "./data/defaults";
+import {
+  defaultClosingItem,
+  defaultDailyEntry,
+  defaultFixedCostItem,
+  defaultVariableCostItem,
+  expenseCategories,
+} from "./data/defaults.js";
 import {
   STORAGE_KEYS,
   buildMonthKey,
   calculateMonthSummary,
-  getBusinessDayDates,
-  getMonthInfo,
+  getClosingItemsForStoreMonth,
+  getDailyResultsForStoreMonth,
+  getFixedCostsForStoreMonth,
   getTargetForStoreMonth,
+  getVariableCostsForStoreMonth,
   money,
   moneyDiff,
   parseNumber,
@@ -15,156 +23,91 @@ import {
   readAppState,
   readStorage,
   writeAppState,
-} from "./utils/storage";
+} from "./utils/storage.js";
 
-const tabs = [
-  ["dashboard", "ダッシュボード"],
-  ["sales", "売上・費用"],
-  ["comparison", "店舗比較"],
-  ["settings", "設定"],
+const navItems = [
+  { id: "dashboard", label: "ダッシュボード" },
+  { id: "daily", label: "日次入力" },
+  { id: "monthly", label: "月締め" },
+  { id: "stores", label: "店舗管理" },
+  { id: "settings", label: "設定" },
 ];
 
-const rankingOptions = [
-  ["sales", "売上"],
-  ["achievement", "目標達成率"],
-  ["forecast", "月末着地達成率"],
-  ["profit", "営業利益"],
-  ["margin", "営業利益率"],
-  ["avgSpend", "客単価"],
-  ["productivity", "スタッフ生産性"],
+const monthlyTabs = [
+  { id: "target", label: "目標設定" },
+  { id: "fixed", label: "固定費" },
+  { id: "variable", label: "販管費" },
+  { id: "closing", label: "月締め" },
+  { id: "pnl", label: "損益" },
 ];
 
-const formatInputNumber = (value) => {
-  const digits = String(value ?? "").replace(/[^\d]/g, "");
-  if (!digits) return "";
-  const parsed = Number(digits);
-  return Number.isFinite(parsed) ? new Intl.NumberFormat("ja-JP").format(parsed) : "";
+const ensureMonthValue = (value) => value || new Date().toISOString().slice(0, 7);
+
+const getMonthOffset = (monthValue, offset) => {
+  const [year, month] = monthValue.split("-").map(Number);
+  const nextDate = new Date(year, month - 1 + offset, 1);
+  return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
 };
 
-const buildMonthCalendar = (monthValue, entries) => {
-  const { yearNumber, monthNumber, daysInMonth } = getMonthInfo(monthValue);
-  const firstDate = new Date(yearNumber, monthNumber - 1, 1);
-  const startWeekday = firstDate.getDay();
-  const totalCells = Math.ceil((startWeekday + daysInMonth) / 7) * 7;
-  const filledSet = new Set((entries || []).map((entry) => String(entry.date || "")));
-  const cells = [];
-
-  for (let index = 0; index < totalCells; index += 1) {
-    const dayNumber = index - startWeekday + 1;
-    const inMonth = dayNumber >= 1 && dayNumber <= daysInMonth;
-    const iso = inMonth ? `${monthValue}-${String(dayNumber).padStart(2, "0")}` : "";
-    const isFilled = !!iso && filledSet.has(iso);
-    cells.push({
-      key: iso || `blank-${index}`,
-      day: inMonth ? dayNumber : "",
-      iso,
-      inMonth,
-      isFilled,
-    });
-  }
-
-  return cells;
+const getRankTone = (achievement) => {
+  if (achievement >= 100) return "good";
+  if (achievement >= 95) return "warning";
+  return "danger";
 };
 
 function App() {
-  const [theme, setTheme] = useState(() => {
-    const savedTheme = readStorage(STORAGE_KEYS.theme, "light");
-    return savedTheme === "dark" ? "dark" : "light";
-  });
-  const [activeTab, setActiveTab] = useState("dashboard");
-  const [rankingMetric, setRankingMetric] = useState("sales");
+  const [theme, setTheme] = useState(() => (readStorage(STORAGE_KEYS.theme, "light") === "dark" ? "dark" : "light"));
+  const [activePage, setActivePage] = useState("dashboard");
+  const [activeMonthlyTab, setActiveMonthlyTab] = useState("closing");
+  const [rankingSort, setRankingSort] = useState("sales");
   const [appState, setAppState] = useState(() => readAppState());
-  const [installPrompt, setInstallPrompt] = useState(null);
   const [newStoreName, setNewStoreName] = useState("");
+  const [storeFormName, setStoreFormName] = useState("");
+  const [storeEditId, setStoreEditId] = useState("");
   const [dailyForm, setDailyForm] = useState(defaultDailyEntry);
-  const [formErrors, setFormErrors] = useState({});
-  const [saveNotice, setSaveNotice] = useState("");
+  const [fixedForm, setFixedForm] = useState(defaultFixedCostItem);
+  const [variableForm, setVariableForm] = useState(defaultVariableCostItem);
+  const [closingForm, setClosingForm] = useState(defaultClosingItem);
+  const [notice, setNotice] = useState("");
 
   const { stores, selectedStore, selectedMonth } = appState;
-  const storeKey = buildMonthKey(selectedStore, selectedMonth);
   const target = getTargetForStoreMonth(appState, selectedStore, selectedMonth);
-  const actual = appState.actuals?.[storeKey] || { ...defaultActual };
-  const dailyEntries = (appState.dailyResults?.[storeKey] || []).slice().sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
+  const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
+  const variableCosts = useMemo(() => getVariableCostsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
+  const closingItems = useMemo(() => getClosingItemsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
   const summary = useMemo(() => calculateMonthSummary(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
+  const todayEntry = useMemo(() => {
+    const todayIso = new Date().toISOString().slice(0, 10);
+    return dailyEntries.find((entry) => entry.date === todayIso) || null;
+  }, [dailyEntries]);
+  const todayActual = todayEntry ? Number(todayEntry.totalSales || todayEntry.technicalSales || 0) : 0;
+  const todayAchievement = summary.todayTarget ? (todayActual / summary.todayTarget) * 100 : 0;
 
-  const businessDates = useMemo(() => getBusinessDayDates(selectedMonth, target.holidayDates || []), [selectedMonth, target.holidayDates]);
-  const monthCalendarDays = useMemo(() => buildMonthCalendar(selectedMonth, dailyEntries), [selectedMonth, dailyEntries]);
-
-  const chartPoints = useMemo(() => {
-    const targetPerDay = businessDates.length ? Number(target.targetSales || 0) / businessDates.length : 0;
-    const map = {};
-    dailyEntries.forEach((entry) => {
-      map[entry.date] = Number(entry.technicalSales || 0) + Number(entry.retailSales || 0);
-    });
-
-    return businessDates.map((date) => ({
-      date,
-      target: targetPerDay,
-      actual: map[date] || 0,
-    }));
-  }, [businessDates, dailyEntries, target.targetSales]);
-
-  const cumulativeTarget = useMemo(() => {
-    let runningTarget = 0;
-    let runningActual = 0;
-    return businessDates.map((date) => {
-      const dayEntry = dailyEntries.find((item) => item.date === date);
-      const daySales = dayEntry ? Number(dayEntry.technicalSales || 0) + Number(dayEntry.retailSales || 0) : 0;
-      runningTarget += Number(target.targetSales || 0) / Math.max(businessDates.length, 1);
-      runningActual += daySales;
-      return { date, target: runningTarget, actual: runningActual };
-    });
-  }, [businessDates, dailyEntries, target.targetSales]);
-
-  const alertItems = useMemo(() => {
-    const rows = [];
-
-    if (summary.targetAchievement < 100 && summary.targetAchievement >= 95) {
-      rows.push({ label: "月間達成率", value: `${percent(summary.targetAchievement)}`, tone: "warning", reason: "目標に近いが確認が必要" });
-    } else if (summary.targetAchievement < 95) {
-      rows.push({ label: "月間達成率", value: `${percent(summary.targetAchievement)}`, tone: "danger", reason: "目標未達" });
-    }
-
-    if (summary.forecast < Number(target.targetSales || 0)) {
-      rows.push({ label: "月末着地予測", value: `${money(summary.forecast)} / ${money(target.targetSales)}`, tone: "danger", reason: "目標未達の見込み" });
-    }
-
-    if (Number(target.targetLaborRate || 0) > 0 && summary.laborRate > Number(target.targetLaborRate || 0)) {
-      rows.push({ label: "人件費率", value: `${percent(summary.laborRate)} > ${percent(target.targetLaborRate)}`, tone: "danger", reason: "目標超過" });
-    }
-
-    if (Number(target.targetMaterialRate || 0) > 0 && summary.materialRate > Number(target.targetMaterialRate || 0)) {
-      rows.push({ label: "材料費率", value: `${percent(summary.materialRate)} > ${percent(target.targetMaterialRate)}`, tone: "danger", reason: "目標超過" });
-    }
-
-    if (Number(target.targetAdRate || 0) > 0 && summary.adRate > Number(target.targetAdRate || 0)) {
-      rows.push({ label: "広告費率", value: `${percent(summary.adRate)} > ${percent(target.targetAdRate)}`, tone: "danger", reason: "目標超過" });
-    }
-
-    if (Number(target.targetOperatingMargin || 0) > 0 && summary.operatingMargin < Number(target.targetOperatingMargin || 0)) {
-      rows.push({ label: "営業利益率", value: `${percent(summary.operatingMargin)} < ${percent(target.targetOperatingMargin)}`, tone: "danger", reason: "目標未達" });
-    }
-
-    if (Number(target.targetAverageSpend || 0) > 0 && summary.averageSpend < Number(target.targetAverageSpend || 0)) {
-      rows.push({ label: "客単価", value: `${money(summary.averageSpend)} < ${money(target.targetAverageSpend)}`, tone: "danger", reason: "目標未達" });
-    }
-
-    if (Number(target.targetRetailRatio || 0) > 0 && summary.retailRatio < Number(target.targetRetailRatio || 0)) {
-      rows.push({ label: "店販比率", value: `${percent(summary.retailRatio)} < ${percent(target.targetRetailRatio)}`, tone: "danger", reason: "目標未達" });
-    }
-
-    return rows;
-  }, [summary, target]);
-
-  useEffect(() => {
-    const onBeforeInstallPrompt = (event) => {
-      event.preventDefault();
-      setInstallPrompt(event);
-    };
-
-    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt);
-    return () => window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt);
-  }, []);
+  const rankingRows = useMemo(() => {
+    const previousMonth = getMonthOffset(selectedMonth, -1);
+    return stores
+      .map((storeName) => {
+        const storeSummary = calculateMonthSummary(appState, storeName, selectedMonth);
+        const previousSummary = calculateMonthSummary(appState, storeName, previousMonth);
+        return {
+          storeName,
+          sales: storeSummary.sales,
+          achievement: storeSummary.targetAchievement,
+          previousSales: previousSummary.sales,
+          previousDiff: storeSummary.sales - previousSummary.sales,
+          forecast: storeSummary.forecast,
+          tone: getRankTone(storeSummary.targetAchievement),
+          achievementLabel: storeSummary.targetAchievement >= 100 ? "目標ペース以上" : storeSummary.targetAchievement >= 95 ? "要確認" : "要改善",
+        };
+      })
+      .sort((a, b) => {
+        if (rankingSort === "achievement") {
+          return b.achievement - a.achievement;
+        }
+        return b.sales - a.sales;
+      });
+  }, [appState, rankingSort, selectedMonth, stores]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -174,38 +117,20 @@ function App() {
     writeAppState(appState);
   }, [appState]);
 
+  useEffect(() => {
+    if (!selectedStore && stores.length) {
+      setAppState((prev) => ({ ...prev, selectedStore: stores[0] }));
+    }
+  }, [selectedStore, stores]);
+
   const updateTargetField = (field, value) => {
     setAppState((prev) => {
       const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const existing = prev.targets?.[key] || { ...defaultTarget };
-      const nextValue = field === "holidayDates"
-        ? String(value)
-            .split(",")
-            .map((item) => item.trim())
-            .filter(Boolean)
-        : parseNumber(value);
-
+      const existing = prev.targets?.[key] || {};
       return {
         ...prev,
         targets: {
           ...prev.targets,
-          [key]: {
-            ...existing,
-            [field]: nextValue,
-          },
-        },
-      };
-    });
-  };
-
-  const updateActualField = (field, value) => {
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const existing = prev.actuals?.[key] || { ...defaultActual };
-      return {
-        ...prev,
-        actuals: {
-          ...prev.actuals,
           [key]: {
             ...existing,
             [field]: parseNumber(value),
@@ -215,53 +140,15 @@ function App() {
     });
   };
 
-  const copyPreviousDayToToday = () => {
-    const baseDate = dailyForm.date || new Date().toISOString().slice(0, 10);
-    const currentDate = new Date(`${baseDate}T00:00:00`);
-    const previousDate = new Date(currentDate);
-    previousDate.setDate(currentDate.getDate() - 1);
-    const previousIso = previousDate.toISOString().slice(0, 10);
-    const previousEntry = dailyEntries.find((entry) => entry.date === previousIso);
-    if (!previousEntry) {
-      setSaveNotice("前日の実績がありません");
+  const submitDailyEntry = (event) => {
+    event?.preventDefault();
+    if (!selectedStore) {
+      setNotice("店舗を先に追加してください");
       return;
     }
 
-    setDailyForm((prev) => ({
-      ...defaultDailyEntry,
-      date: baseDate,
-      technicalSales: previousEntry.technicalSales || 0,
-      retailSales: previousEntry.retailSales || 0,
-      customers: previousEntry.customers || 0,
-      newCustomers: previousEntry.newCustomers || 0,
-      repeatCustomers: previousEntry.repeatCustomers || 0,
-      staffCount: previousEntry.staffCount || 0,
-      memo: previousEntry.memo || "",
-    }));
-    setSaveNotice("前日のデータを反映しました");
-  };
-
-  const submitDailyForm = (event) => {
-    if (event?.preventDefault) event.preventDefault();
-
-    const requiredFields = {
-      date: dailyForm.date,
-      technicalSales: dailyForm.technicalSales,
-      retailSales: dailyForm.retailSales,
-      customers: dailyForm.customers,
-      staffCount: dailyForm.staffCount,
-    };
-
-    const nextErrors = Object.entries(requiredFields).reduce((acc, [key, value]) => {
-      if (!value && value !== 0) {
-        acc[key] = true;
-      }
-      return acc;
-    }, {});
-
-    setFormErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      setSaveNotice("入力漏れがあります");
+    if (!dailyForm.date || !dailyForm.totalSales) {
+      setNotice("日付と総売上は必須です");
       return;
     }
 
@@ -270,12 +157,12 @@ function App() {
       const list = prev.dailyResults?.[key] || [];
       const nextEntry = {
         ...dailyForm,
+        totalSales: parseNumber(dailyForm.totalSales),
         technicalSales: parseNumber(dailyForm.technicalSales),
         retailSales: parseNumber(dailyForm.retailSales),
         customers: parseNumber(dailyForm.customers),
         newCustomers: parseNumber(dailyForm.newCustomers),
         repeatCustomers: parseNumber(dailyForm.repeatCustomers),
-        staffCount: parseNumber(dailyForm.staffCount),
       };
 
       const filtered = dailyForm.id
@@ -291,12 +178,16 @@ function App() {
       };
     });
 
-    setSaveNotice("保存しました");
-    setFormErrors({});
-    setDailyForm(defaultDailyEntry);
+    setNotice("本日の実績を保存しました");
+    setDailyForm({ ...defaultDailyEntry });
   };
 
-  const removeDailyEntry = (id) => {
+  const editDailyEntry = (entry) => {
+    setDailyForm(entry);
+    setNotice("編集モードです");
+  };
+
+  const removeDailyEntry = (entryId) => {
     setAppState((prev) => {
       const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
       const list = prev.dailyResults?.[key] || [];
@@ -304,127 +195,244 @@ function App() {
         ...prev,
         dailyResults: {
           ...prev.dailyResults,
-          [key]: list.filter((item) => item.id !== id),
+          [key]: list.filter((item) => item.id !== entryId),
         },
       };
     });
+    setNotice("日次実績を削除しました");
   };
 
-  const exportCsv = () => {
-    const rows = [
-      ["店舗", selectedStore],
-      ["対象月", selectedMonth],
-      ["月間目標売上", target.targetSales],
-      ["現在売上", summary.sales],
-      ["月末着地予測", summary.forecast],
-      ["月間達成率", summary.targetAchievement.toFixed(1)],
-      ["粗利益", summary.grossProfit],
-      ["営業利益", summary.operatingProfit],
-      ["営業利益率", summary.operatingMargin.toFixed(1)],
-      ["人件費率", summary.laborRate.toFixed(1)],
-      ["材料費率", summary.materialRate.toFixed(1)],
-      ["広告費率", summary.adRate.toFixed(1)],
-      ["客単価", summary.averageSpend.toFixed(0)],
-      ["店販比率", summary.retailRatio.toFixed(1)],
-    ];
+  const submitFixedCost = (event) => {
+    event.preventDefault();
+    if (!fixedForm.name || !fixedForm.amount) {
+      setNotice("項目名と金額は必須です");
+      return;
+    }
 
-    const csv = "\uFEFF" + rows.map((row) => row.join(",")).join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${selectedStore}_${selectedMonth}_売上管理.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    setAppState((prev) => {
+      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const list = prev.fixedCosts?.[key] || [];
+      const nextItem = { ...fixedForm, amount: parseNumber(fixedForm.amount) };
+      const updated = fixedForm.id
+        ? list.map((item) => (item.id === fixedForm.id ? nextItem : item))
+        : [...list, { ...nextItem, id: crypto.randomUUID() }];
+
+      return {
+        ...prev,
+        fixedCosts: {
+          ...prev.fixedCosts,
+          [key]: updated,
+        },
+      };
+    });
+
+    setNotice("月固定費を保存しました");
+    setFixedForm({ ...defaultFixedCostItem });
   };
 
-  const addStore = () => {
+  const editFixedCost = (item) => {
+    setFixedForm(item);
+    setNotice("固定費を編集します");
+  };
+
+  const removeFixedCost = (itemId) => {
+    setAppState((prev) => {
+      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const list = prev.fixedCosts?.[key] || [];
+      return {
+        ...prev,
+        fixedCosts: {
+          ...prev.fixedCosts,
+          [key]: list.filter((item) => item.id !== itemId),
+        },
+      };
+    });
+    setNotice("固定費を削除しました");
+  };
+
+  const submitVariableCost = (event) => {
+    event.preventDefault();
+    if (!variableForm.name || !variableForm.amount) {
+      setNotice("項目名と金額は必須です");
+      return;
+    }
+
+    setAppState((prev) => {
+      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const list = prev.variableCosts?.[key] || [];
+      const nextItem = { ...variableForm, amount: parseNumber(variableForm.amount) };
+      const updated = variableForm.id
+        ? list.map((item) => (item.id === variableForm.id ? nextItem : item))
+        : [...list, { ...nextItem, id: crypto.randomUUID() }];
+
+      return {
+        ...prev,
+        variableCosts: {
+          ...prev.variableCosts,
+          [key]: updated,
+        },
+      };
+    });
+
+    setNotice("月販管費を保存しました");
+    setVariableForm({ ...defaultVariableCostItem });
+  };
+
+  const editVariableCost = (item) => {
+    setVariableForm(item);
+    setNotice("販管費を編集します");
+  };
+
+  const removeVariableCost = (itemId) => {
+    setAppState((prev) => {
+      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const list = prev.variableCosts?.[key] || [];
+      return {
+        ...prev,
+        variableCosts: {
+          ...prev.variableCosts,
+          [key]: list.filter((item) => item.id !== itemId),
+        },
+      };
+    });
+    setNotice("販管費を削除しました");
+  };
+
+  const submitClosingItem = (event) => {
+    event.preventDefault();
+    if (!closingForm.name || !closingForm.amount) {
+      setNotice("項目名と金額は必須です");
+      return;
+    }
+
+    setAppState((prev) => {
+      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const list = prev.monthClosing?.[key] || [];
+      const nextItem = { ...closingForm, amount: parseNumber(closingForm.amount) };
+      const updated = closingForm.id
+        ? list.map((item) => (item.id === closingForm.id ? nextItem : item))
+        : [...list, { ...nextItem, id: crypto.randomUUID() }];
+
+      return {
+        ...prev,
+        monthClosing: {
+          ...prev.monthClosing,
+          [key]: updated,
+        },
+      };
+    });
+
+    setNotice("月締め項目を保存しました");
+    setClosingForm({ ...defaultClosingItem });
+  };
+
+  const editClosingItem = (item) => {
+    setClosingForm(item);
+    setNotice("月締め項目を編集します");
+  };
+
+  const removeClosingItem = (itemId) => {
+    setAppState((prev) => {
+      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const list = prev.monthClosing?.[key] || [];
+      return {
+        ...prev,
+        monthClosing: {
+          ...prev.monthClosing,
+          [key]: list.filter((item) => item.id !== itemId),
+        },
+      };
+    });
+    setNotice("月締め項目を削除しました");
+  };
+
+  const handleStoreAdd = () => {
     const trimmed = newStoreName.trim();
-    if (!trimmed || stores.includes(trimmed)) return;
+    if (!trimmed) {
+      setNotice("店舗名を入力してください");
+      return;
+    }
+    if (stores.includes(trimmed)) {
+      setNotice("既に登録済みの店舗名です");
+      return;
+    }
     setAppState((prev) => ({
       ...prev,
       stores: [...prev.stores, trimmed],
       selectedStore: trimmed,
     }));
     setNewStoreName("");
+    setNotice("店舗を追加しました");
   };
 
-  const comparisonRows = stores
-    .map((storeName) => {
-      const monthTarget = getTargetForStoreMonth(appState, storeName, selectedMonth);
-      const monthActual = appState.actuals?.[buildMonthKey(storeName, selectedMonth)] || { ...defaultActual };
-      const entries = appState.dailyResults?.[buildMonthKey(storeName, selectedMonth)] || [];
-      const sales = entries.reduce((total, item) => total + Number(item.technicalSales || 0) + Number(item.retailSales || 0), 0);
-      const customers = entries.reduce((total, item) => total + Number(item.customers || 0), 0);
-      const retailSales = entries.reduce((total, item) => total + Number(item.retailSales || 0), 0);
-      const grossProfit = sales - (Number(monthActual.materialCost || 0) + Number(monthActual.retailCost || 0));
-      const operatingExpenses = Number(monthActual.laborCost || 0) + Number(monthActual.advertising || 0) + Number(monthActual.rent || 0) + Number(monthActual.utilities || 0) + Number(monthActual.systemFees || 0) + Number(monthActual.miscellaneous || 0);
-      const operatingProfit = grossProfit - operatingExpenses;
-      const averageSpend = customers ? sales / customers : 0;
-      const retailRatio = sales ? (retailSales / sales) * 100 : 0;
-      const laborRate = sales ? (Number(monthActual.laborCost || 0) / sales) * 100 : 0;
-      const materialRate = sales ? (Number(monthActual.materialCost || 0) / sales) * 100 : 0;
-      const totalStaff = entries.reduce((total, item) => total + Number(item.staffCount || 0), 0);
-      const productivity = totalStaff ? sales / totalStaff : 0;
-      const achievement = Number(monthTarget.targetSales || 0) ? (sales / monthTarget.targetSales) * 100 : 0;
-      const forecast = sales * 1.03;
-      return {
-        storeName,
-        sales,
-        targetSales: Number(monthTarget.targetSales || 0),
-        achievement,
-        forecast,
-        operatingProfit,
-        operatingMargin: sales ? (operatingProfit / sales) * 100 : 0,
-        averageSpend,
-        retailRatio,
-        laborRate,
-        materialRate,
-        productivity,
-      };
-    })
-    .sort((a, b) => {
-      switch (rankingMetric) {
-        case "achievement": return b.achievement - a.achievement;
-        case "forecast": return b.forecast - a.forecast;
-        case "profit": return b.operatingProfit - a.operatingProfit;
-        case "margin": return b.operatingMargin - a.operatingMargin;
-        case "avgSpend": return b.averageSpend - a.averageSpend;
-        case "productivity": return b.productivity - a.productivity;
-        default: return b.sales - a.sales;
+  const handleStoreUpdate = (event) => {
+    event.preventDefault();
+    const trimmed = storeFormName.trim();
+    if (!trimmed || !storeEditId) return;
+    setAppState((prev) => ({
+      ...prev,
+      stores: prev.stores.map((store) => (store === storeEditId ? trimmed : store)),
+      selectedStore: prev.selectedStore === storeEditId ? trimmed : prev.selectedStore,
+    }));
+    setStoreFormName("");
+    setStoreEditId("");
+    setNotice("店舗名を更新しました");
+  };
+
+  const handleStoreDelete = (storeName) => {
+    if (stores.length <= 1) {
+      setAppState((prev) => ({ ...prev, stores: [], selectedStore: "" }));
+      setNotice("最後の店舗を削除しました");
+      return;
+    }
+    const nextStores = stores.filter((item) => item !== storeName);
+    setAppState((prev) => ({
+      ...prev,
+      stores: nextStores,
+      selectedStore: prev.selectedStore === storeName ? nextStores[0] : prev.selectedStore,
+    }));
+    setNotice("店舗を削除しました");
+  };
+
+  const copyPreviousMonthData = (section) => {
+    const previousMonth = getMonthOffset(selectedMonth, -1);
+    const sourceKey = buildMonthKey(selectedStore, previousMonth);
+    const targetKey = buildMonthKey(selectedStore, selectedMonth);
+
+    setAppState((prev) => {
+      if (section === "fixed") {
+        return {
+          ...prev,
+          fixedCosts: {
+            ...prev.fixedCosts,
+            [targetKey]: (prev.fixedCosts?.[sourceKey] || []).map((item) => ({ ...item, id: crypto.randomUUID() })),
+          },
+        };
       }
+      if (section === "variable") {
+        return {
+          ...prev,
+          variableCosts: {
+            ...prev.variableCosts,
+            [targetKey]: (prev.variableCosts?.[sourceKey] || []).map((item) => ({ ...item, id: crypto.randomUUID() })),
+          },
+        };
+      }
+      return {
+        ...prev,
+        monthClosing: {
+          ...prev.monthClosing,
+          [targetKey]: (prev.monthClosing?.[sourceKey] || []).map((item) => ({ ...item, id: crypto.randomUUID() })),
+        },
+      };
     });
+    setNotice(`前月データを${selectedMonth}へコピーしました`);
+  };
 
-  const metricRows = [
-    { label: "月間達成率", current: summary.targetAchievement, target: 100, type: "sales" },
-    { label: "営業利益率", current: summary.operatingMargin, target: Number(target.targetOperatingMargin || 0), type: "rateLower" },
-    { label: "人件費率", current: summary.laborRate, target: Number(target.targetLaborRate || 0), type: "rateLower" },
-    { label: "材料費率", current: summary.materialRate, target: Number(target.targetMaterialRate || 0), type: "rateLower" },
-    { label: "広告費率", current: summary.adRate, target: Number(target.targetAdRate || 0), type: "rateLower" },
-    { label: "客単価", current: summary.averageSpend, target: Number(target.targetAverageSpend || 0), type: "sales" },
-    { label: "店販比率", current: summary.retailRatio, target: Number(target.targetRetailRatio || 0), type: "sales" },
-  ];
-
-  const kpiRows = metricRows.map((row) => {
-    const diff = row.current - row.target;
-    const achievement = row.target ? (row.current / row.target) * 100 : 0;
-    const tone =
-      row.type === "rateLower"
-        ? row.current <= row.target
-          ? "good"
-          : Math.abs(row.current - row.target) <= row.target * 0.05
-            ? "warning"
-            : "danger"
-        : row.current >= row.target
-          ? "good"
-          : Math.abs(row.current - row.target) <= row.target * 0.05
-            ? "warning"
-            : "danger";
-
-    return { ...row, diff, achievement, tone };
-  });
-
-  const businessDayCount = businessDates.length || 1;
+  const startEditStore = (storeName) => {
+    setStoreEditId(storeName);
+    setStoreFormName(storeName);
+  };
 
   return (
     <div className={`app-shell ${theme === "dark" ? "theme-dark" : ""}`}>
@@ -437,17 +445,16 @@ function App() {
               <small>美容室経営管理</small>
             </div>
           </div>
-
           <nav className="nav">
-            {tabs.map(([id, label]) => (
-              <button key={id} className={activeTab === id ? "nav-button active" : "nav-button"} onClick={() => setActiveTab(id)}>
-                {label}
+            {navItems.map((item) => (
+              <button key={item.id} className={activePage === item.id ? "nav-button active" : "nav-button"} onClick={() => setActivePage(item.id)}>
+                {item.label}
               </button>
             ))}
           </nav>
         </div>
         <div className="sidebar-footer">
-          <small>入力データはこの端末に自動保存されます</small>
+          <small>朝は30秒、営業終了後は30秒、月末は30分で確認できます</small>
         </div>
       </aside>
 
@@ -455,400 +462,364 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">SALON MANAGEMENT</p>
-            <h1>{tabs.find(([id]) => id === activeTab)?.[1]}</h1>
+            <h1>{activePage === "dashboard" ? "ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "月締め" : activePage === "stores" ? "店舗管理" : "設定"}</h1>
           </div>
 
           <div className="filters">
             <label>
               店舗
               <select value={selectedStore} onChange={(event) => setAppState((prev) => ({ ...prev, selectedStore: event.target.value }))}>
-                {stores.map((storeName) => (
-                  <option key={storeName}>{storeName}</option>
-                ))}
+                {stores.length ? stores.map((storeName) => <option key={storeName} value={storeName}>{storeName}</option>) : <option value="">未登録</option>}
               </select>
             </label>
-
             <label>
               対象月
-              <input type="month" value={selectedMonth} onChange={(event) => setAppState((prev) => ({ ...prev, selectedMonth: event.target.value }))} />
+              <input type="month" value={ensureMonthValue(selectedMonth)} onChange={(event) => setAppState((prev) => ({ ...prev, selectedMonth: event.target.value }))} />
             </label>
           </div>
         </header>
 
-        {activeTab === "dashboard" && (
-          <>
-            <section className="hero-grid">
-              <HeroCard label="月間目標売上" value={money(target.targetSales)} tone="default" />
-              <HeroCard label="現在売上" value={money(summary.sales)} tone={summary.targetAchievement >= 100 ? "positive" : "neutral"} />
-              <HeroCard label="月末着地予測" value={money(summary.forecast)} tone={summary.forecast >= target.targetSales ? "positive" : "negative"} />
-              <HeroCard label="目標との差額" value={moneyDiff(summary.targetGap)} tone={summary.targetGap >= 0 ? "positive" : "negative"} />
-              <HeroCard label="残り必要売上" value={money(summary.remainingSalesTarget)} tone={summary.remainingSalesTarget > 0 ? "negative" : "positive"} />
-              <HeroCard label="残り1営業日あたり" value={money(summary.neededPerDay)} tone={summary.neededPerDay > 0 ? "negative" : "positive"} />
-              <HeroCard label="今日の目標" value={money(summary.todayTarget)} tone="neutral" />
-              <HeroCard label="今日の実績" value={money(summary.todayActual)} tone={summary.todayActual >= summary.todayTarget ? "positive" : "negative"} />
-              <HeroCard label="今日の差額" value={moneyDiff(summary.todayGap)} tone={summary.todayGap >= 0 ? "positive" : "negative"} />
-            </section>
+        {notice ? <div className="notice-box">{notice}</div> : null}
 
-            <section className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">PROGRESS</p>
-                  <h2>月間達成率</h2>
-                </div>
-                <strong>{percent(summary.targetAchievement)}</strong>
-              </div>
-              <div className="progress-bar">
-                <span style={{ width: `${Math.min(summary.targetAchievement, 100)}%` }} />
-              </div>
-              <div className="status-row">
-                <span>営業日消化率: {percent(summary.dayProgress)}</span>
-                <span>営業日: {summary.completedDays} / {businessDayCount}</span>
-                <span>残り営業日: {summary.remainingBusinessDays}</span>
-              </div>
-            </section>
-
-            <section className="summary-banner">
-              <div className="summary-banner-item">
-                <span>残り必要売上</span>
-                <strong>{money(summary.remainingSalesTarget)}</strong>
-              </div>
-              <div className="summary-banner-item">
-                <span>残り1営業日あたり必要売上</span>
-                <strong>{money(summary.neededPerDay)}</strong>
-              </div>
-              <div className="summary-banner-item">
-                <span>月末着地予測との差額</span>
-                <strong className={summary.forecastGap >= 0 ? "positive-text" : "negative-text"}>{moneyDiff(summary.forecastGap)}</strong>
-              </div>
-            </section>
-
-            <section className="two-column">
-              <article className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">CHART</p>
-                    <h2>日別目標 vs 実績</h2>
-                  </div>
-                </div>
-                <MiniLineChart data={chartPoints} />
-              </article>
-
-              <article className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="eyebrow">CHART</p>
-                    <h2>累計目標 vs 累計実績</h2>
-                  </div>
-                </div>
-                <MiniLineChart data={cumulativeTarget} />
-              </article>
-            </section>
-
+        {activePage === "dashboard" && (
+          <div className="dashboard-layout">
             <section className="panel">
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">KPI</p>
-                  <h2>KPI目標 / 現在値 / 差 / 達成率 / 判定</h2>
+                  <h2>朝の確認</h2>
                 </div>
               </div>
-              <div className="kpi-table-wrap">
-                <table className="kpi-table">
-                  <thead>
-                    <tr>
-                      <th>項目</th>
-                      <th>目標</th>
-                      <th>現在</th>
-                      <th>差</th>
-                      <th>達成率</th>
-                      <th>判定</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {kpiRows.map((row) => (
-                      <tr key={row.label}>
-                        <td>{row.label}</td>
-                        <td>{row.type === "sales" ? money(row.target) : percent(row.target)}</td>
-                        <td>{row.type === "sales" ? money(row.current) : percent(row.current)}</td>
-                        <td className={row.diff >= 0 ? "positive-text" : "negative-text"}>{row.type === "sales" ? moneyDiff(row.diff) : `${row.diff >= 0 ? "+" : ""}${percent(Math.abs(row.diff))}`}</td>
-                        <td>{percent(row.achievement)}</td>
-                        <td><span className={`tag tone-${row.tone}`}>{row.tone === "good" ? "良好" : row.tone === "warning" ? "要確認" : "要改善"}</span></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="kpi-grid">
+                <MetricCard label="月間目標売上" value={money(target.targetSales || 0)} />
+                <MetricCard label="現在売上" value={money(summary.sales)} />
+                <MetricCard label="月間達成率" value={percent(summary.targetAchievement)} />
+                <MetricCard label="残り営業日数" value={`${summary.remainingBusinessDays}日`} />
+                <MetricCard label="目標まで残り売上" value={money(summary.remainingSalesTarget)} />
+                <MetricCard label="残り1営業日あたり必要売上" value={money(summary.dailyNeededSales)} />
+                <MetricCard label="本日の目標売上" value={money(summary.todayTarget)} />
               </div>
+              {todayEntry ? (
+                <div className="today-result-card">
+                  <div className="panel-heading compact">
+                    <div>
+                      <p className="eyebrow">TODAY</p>
+                      <h3>本日の実績</h3>
+                    </div>
+                  </div>
+                  <div className="kpi-grid compact-grid">
+                    <MetricCard label="本日の実績売上" value={money(todayActual)} />
+                    <MetricCard label="本日の目標との差額" value={moneyDiff(todayActual - summary.todayTarget)} />
+                    <MetricCard label="本日の達成率" value={percent(todayAchievement)} />
+                  </div>
+                </div>
+              ) : null}
             </section>
 
             <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <p className="eyebrow">ALERT</p>
-                  <h2>要確認項目</h2>
+                  <p className="eyebrow">RANKING</p>
+                  <h2>店舗売上ランキング</h2>
                 </div>
+                <select value={rankingSort} onChange={(event) => setRankingSort(event.target.value)}>
+                  <option value="sales">現在売上順</option>
+                  <option value="achievement">達成率順</option>
+                </select>
               </div>
-              {alertItems.length ? (
-                <div className="alert-list">
-                  {alertItems.map((item) => (
-                    <div key={item.label} className={`alert-pill tone-${item.tone}`}>
-                      <strong>{item.label}</strong>
-                      <span>{item.value}</span>
-                      <small>{item.reason}</small>
+              {stores.length === 0 ? (
+                <div className="empty-card">店舗を追加してください。</div>
+              ) : (
+                <div className="ranking-list">
+                  {rankingRows.map((row, index) => (
+                    <div key={row.storeName} className={`ranking-card tone-${row.tone}`}>
+                      <div className="rank-badge">{index + 1}</div>
+                      <div className="ranking-main">
+                        <div className="ranking-title-row">
+                          <strong>{row.storeName}</strong>
+                          <span>{row.achievementLabel}</span>
+                        </div>
+                        <div className="ranking-metrics">
+                          <div><span>現在売上</span><strong>{money(row.sales)}</strong></div>
+                          <div><span>目標達成率</span><strong>{percent(row.achievement)}</strong></div>
+                          <div><span>前月売上</span><strong>{money(row.previousSales)}</strong></div>
+                          <div><span>前月との差額</span><strong>{moneyDiff(row.previousDiff)}</strong></div>
+                          <div><span>月末着地予測</span><strong>{money(row.forecast)}</strong></div>
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
-              ) : (
-                <div className="empty-state-box">確認が必要な項目はありません</div>
               )}
             </section>
-          </>
+          </div>
         )}
 
-        {activeTab === "sales" && (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">TARGET</p>
-                <h2>月間目標設定</h2>
-              </div>
-              <button className="primary-button" onClick={exportCsv}>CSV出力</button>
-            </div>
-
-            <div className="input-grid">
-              <NumberField label="月間目標売上" value={target.targetSales} suffix="円" onChange={(value) => updateTargetField("targetSales", value)} />
-              <NumberField label="月間営業日" value={target.operatingDays || businessDayCount} suffix="日" onChange={(value) => updateTargetField("operatingDays", value)} />
-              <TextField label="休業日（例: 2026-08-15, 2026-08-16）" value={(target.holidayDates || []).join(", ")} onChange={(value) => updateTargetField("holidayDates", value)} />
-              <NumberField label="技術売上目標" value={target.targetTechnicalSales} suffix="円" onChange={(value) => updateTargetField("targetTechnicalSales", value)} />
-              <NumberField label="店販売上目標" value={target.targetRetailSales} suffix="円" onChange={(value) => updateTargetField("targetRetailSales", value)} />
-              <NumberField label="客数目標" value={target.targetCustomers} suffix="名" onChange={(value) => updateTargetField("targetCustomers", value)} />
-              <NumberField label="客単価目標" value={target.targetAverageSpend} suffix="円" onChange={(value) => updateTargetField("targetAverageSpend", value)} />
-              <NumberField label="新規客数目標" value={target.targetNewCustomers} suffix="名" onChange={(value) => updateTargetField("targetNewCustomers", value)} />
-              <NumberField label="再来客数目標" value={target.targetRepeatCustomers} suffix="名" onChange={(value) => updateTargetField("targetRepeatCustomers", value)} />
-              <NumberField label="店販比率目標" value={target.targetRetailRatio} suffix="%" onChange={(value) => updateTargetField("targetRetailRatio", value)} />
-              <NumberField label="人件費率目標" value={target.targetLaborRate} suffix="%" onChange={(value) => updateTargetField("targetLaborRate", value)} />
-              <NumberField label="材料費率目標" value={target.targetMaterialRate} suffix="%" onChange={(value) => updateTargetField("targetMaterialRate", value)} />
-              <NumberField label="広告費率目標" value={target.targetAdRate} suffix="%" onChange={(value) => updateTargetField("targetAdRate", value)} />
-              <NumberField label="営業利益率目標" value={target.targetOperatingMargin} suffix="%" onChange={(value) => updateTargetField("targetOperatingMargin", value)} />
-            </div>
-
-            <div className="form-section">
-              <div className="form-header-row">
-                <h3>日次実績入力</h3>
-                <button type="button" className="secondary-button" onClick={copyPreviousDayToToday}>前日のデータをコピー</button>
-              </div>
-              <form className="input-grid compact-form" onSubmit={submitDailyForm}>
-                <TextField label="日付" type="date" value={dailyForm.date} error={!!formErrors.date} onChange={(value) => setDailyForm((prev) => ({ ...prev, date: value }))} />
-                <NumberField label="技術売上" value={dailyForm.technicalSales} error={!!formErrors.technicalSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, technicalSales: value }))} />
-                <NumberField label="店販売上" value={dailyForm.retailSales} error={!!formErrors.retailSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, retailSales: value }))} />
-                <NumberField label="総客数" value={dailyForm.customers} suffix="名" error={!!formErrors.customers} onChange={(value) => setDailyForm((prev) => ({ ...prev, customers: value }))} />
-                <NumberField label="新規客数" value={dailyForm.newCustomers} suffix="名" onChange={(value) => setDailyForm((prev) => ({ ...prev, newCustomers: value }))} />
-                <NumberField label="再来客数" value={dailyForm.repeatCustomers} suffix="名" onChange={(value) => setDailyForm((prev) => ({ ...prev, repeatCustomers: value }))} />
-                <NumberField label="スタッフ出勤人数" value={dailyForm.staffCount} suffix="名" error={!!formErrors.staffCount} onChange={(value) => setDailyForm((prev) => ({ ...prev, staffCount: value }))} />
-                <TextField label="メモ" value={dailyForm.memo} onChange={(value) => setDailyForm((prev) => ({ ...prev, memo: value }))} />
-              </form>
-
-              <div className="calendar-section">
-                <h4>月間入力状況</h4>
-                <MonthCalendar dates={monthCalendarDays} />
-              </div>
-
-              {saveNotice && <div className="save-notice">{saveNotice}</div>}
-            </div>
-
-            <div className="sticky-save-bar">
-              <button type="button" className="primary-button full-width" onClick={() => submitDailyForm()}>{dailyForm.id ? "日次実績を更新" : "日次実績を保存"}</button>
-            </div>
-
-            <div className="form-section">
-              <h3>費用実績</h3>
-              <div className="input-grid">
-                <NumberField label="材料費" value={actual.materialCost} onChange={(value) => updateActualField("materialCost", value)} />
-                <NumberField label="人件費" value={actual.laborCost} onChange={(value) => updateActualField("laborCost", value)} />
-                <NumberField label="広告費" value={actual.advertising} onChange={(value) => updateActualField("advertising", value)} />
-                <NumberField label="家賃" value={actual.rent} onChange={(value) => updateActualField("rent", value)} />
-                <NumberField label="水道光熱費" value={actual.utilities} onChange={(value) => updateActualField("utilities", value)} />
-                <NumberField label="システム利用料" value={actual.systemFees} onChange={(value) => updateActualField("systemFees", value)} />
-                <NumberField label="その他経費" value={actual.miscellaneous} onChange={(value) => updateActualField("miscellaneous", value)} />
-                <NumberField label="店販仕入" value={actual.retailCost} onChange={(value) => updateActualField("retailCost", value)} />
-              </div>
-            </div>
-
-            <div className="summary-strip">
-              <div>
-                <span>総売上</span>
-                <strong>{money(summary.sales)}</strong>
-              </div>
-              <div>
-                <span>粗利益</span>
-                <strong>{money(summary.grossProfit)}</strong>
-              </div>
-              <div>
-                <span>営業利益</span>
-                <strong>{money(summary.operatingProfit)}</strong>
-              </div>
-            </div>
-
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>日付</th>
-                    <th>技術売上</th>
-                    <th>店販売上</th>
-                    <th>総売上</th>
-                    <th>客数</th>
-                    <th>スタッフ</th>
-                    <th>メモ</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {dailyEntries.length ? dailyEntries.map((item) => (
-                    <tr key={item.id}>
-                      <td>{item.date}</td>
-                      <td>{money(item.technicalSales)}</td>
-                      <td>{money(item.retailSales)}</td>
-                      <td>{money(Number(item.technicalSales || 0) + Number(item.retailSales || 0))}</td>
-                      <td>{item.customers}名</td>
-                      <td>{item.staffCount}名</td>
-                      <td>{item.memo || "-"}</td>
-                      <td className="row-actions">
-                        <button type="button" className="text-button" onClick={() => setDailyForm(item)}>編集</button>
-                        <button type="button" className="text-button danger" onClick={() => removeDailyEntry(item.id)}>削除</button>
-                      </td>
-                    </tr>
-                  )) : (
-                    <tr>
-                      <td colSpan={8} className="empty-state">まだ日次実績がありません</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {activeTab === "comparison" && (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">COMPARE</p>
-                <h2>店舗別比較</h2>
-              </div>
-              <select value={rankingMetric} onChange={(event) => setRankingMetric(event.target.value)}>
-                {rankingOptions.map(([value, label]) => (
-                  <option key={value} value={value}>{label}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="ranking-grid">
-              {comparisonRows.map((item, index) => (
-                <div key={item.storeName} className="ranking-card">
-                  <div className="rank-badge">{index + 1}</div>
-                  <div>
-                    <small>{item.storeName}</small>
-                    <strong>{money(item.sales)}</strong>
+        {activePage === "daily" && (
+          <div className="stack">
+            {!selectedStore ? (
+              <div className="empty-card">店舗を追加してから日次入力を始めてください。</div>
+            ) : (
+              <>
+                <section className="panel">
+                  <div className="panel-heading">
+                    <div>
+                      <p className="eyebrow">DAILY</p>
+                      <h2>営業終了後の入力</h2>
+                    </div>
                   </div>
-                  <ul>
-                    <li>達成率: {percent(item.achievement)}</li>
-                    <li>予測: {money(item.forecast)}</li>
-                    <li>営業利益: {money(item.operatingProfit)}</li>
-                    <li>営業利益率: {percent(item.operatingMargin)}</li>
-                    <li>客単価: {money(item.averageSpend)}</li>
-                    <li>店販比率: {percent(item.retailRatio)}</li>
-                  </ul>
-                </div>
+                  <form className="input-grid compact" onSubmit={submitDailyEntry}>
+                    <Field label="日付" type="date" value={dailyForm.date} onChange={(value) => setDailyForm((prev) => ({ ...prev, date: value }))} />
+                    <Field label="総売上" value={dailyForm.totalSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, totalSales: value }))} suffix="円" />
+                    <Field label="技術売上" value={dailyForm.technicalSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, technicalSales: value }))} suffix="円" />
+                    <Field label="店販売上" value={dailyForm.retailSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, retailSales: value }))} suffix="円" />
+                    <Field label="客数" value={dailyForm.customers} onChange={(value) => setDailyForm((prev) => ({ ...prev, customers: value }))} suffix="名" />
+                    <Field label="新規客数" value={dailyForm.newCustomers} onChange={(value) => setDailyForm((prev) => ({ ...prev, newCustomers: value }))} suffix="名" />
+                    <Field label="再来客数" value={dailyForm.repeatCustomers} onChange={(value) => setDailyForm((prev) => ({ ...prev, repeatCustomers: value }))} suffix="名" />
+                    <div className="form-actions">
+                      <button className="primary-button" type="submit">保存</button>
+                    </div>
+                  </form>
+                </section>
+
+                {todayEntry ? (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">RESULT</p>
+                        <h2>本日の確認</h2>
+                      </div>
+                    </div>
+                    <div className="kpi-grid compact-grid">
+                      <MetricCard label="本日の実績売上" value={money(todayActual)} />
+                      <MetricCard label="本日の目標との差額" value={moneyDiff(todayActual - summary.todayTarget)} />
+                      <MetricCard label="本日の達成率" value={percent(todayAchievement)} />
+                    </div>
+                  </section>
+                ) : null}
+              </>
+            )}
+          </div>
+        )}
+
+        {activePage === "monthly" && (
+          <div className="stack">
+            <div className="subnav">
+              {monthlyTabs.map((tab) => (
+                <button key={tab.id} className={activeMonthlyTab === tab.id ? "subnav-button active" : "subnav-button"} onClick={() => setActiveMonthlyTab(tab.id)}>
+                  {tab.label}
+                </button>
               ))}
             </div>
+            {!selectedStore ? (
+              <div className="empty-card">店舗を追加してから月締めを行ってください。</div>
+            ) : (
+              <>
+                {activeMonthlyTab === "target" && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">TARGET</p>
+                        <h2>月間目標設定</h2>
+                      </div>
+                    </div>
+                    <div className="input-grid">
+                      <Field label="売上目標" value={target.targetSales} onChange={(value) => updateTargetField("targetSales", value)} suffix="円" />
+                      <Field label="技術売上目標" value={target.targetTechnicalSales} onChange={(value) => updateTargetField("targetTechnicalSales", value)} suffix="円" />
+                      <Field label="店販売上目標" value={target.targetRetailSales} onChange={(value) => updateTargetField("targetRetailSales", value)} suffix="円" />
+                      <Field label="客数目標" value={target.targetCustomers} onChange={(value) => updateTargetField("targetCustomers", value)} suffix="名" />
+                      <Field label="客単価目標" value={target.targetAverageSpend} onChange={(value) => updateTargetField("targetAverageSpend", value)} suffix="円" />
+                      <Field label="新規客数目標" value={target.targetNewCustomers} onChange={(value) => updateTargetField("targetNewCustomers", value)} suffix="名" />
+                      <Field label="再来客数目標" value={target.targetRepeatCustomers} onChange={(value) => updateTargetField("targetRepeatCustomers", value)} suffix="名" />
+                    </div>
+                  </section>
+                )}
 
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>店舗</th>
-                    <th>月間目標売上</th>
-                    <th>現在売上</th>
-                    <th>達成率</th>
-                    <th>月末着地予測</th>
-                    <th>営業利益</th>
-                    <th>営業利益率</th>
-                    <th>客単価</th>
-                    <th>店販比率</th>
-                    <th>人件費率</th>
-                    <th>材料費率</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {comparisonRows.map((row) => (
-                    <tr key={row.storeName}>
-                      <td>{row.storeName}</td>
-                      <td>{money(row.targetSales)}</td>
-                      <td>{money(row.sales)}</td>
-                      <td>{percent(row.achievement)}</td>
-                      <td>{money(row.forecast)}</td>
-                      <td>{money(row.operatingProfit)}</td>
-                      <td>{percent(row.operatingMargin)}</td>
-                      <td>{money(row.averageSpend)}</td>
-                      <td>{percent(row.retailRatio)}</td>
-                      <td>{percent(row.laborRate)}</td>
-                      <td>{percent(row.materialRate)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+                {activeMonthlyTab === "fixed" && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">FIXED</p>
+                        <h2>月固定費</h2>
+                      </div>
+                      <button className="secondary-button" type="button" onClick={() => copyPreviousMonthData("fixed")}>前月をコピー</button>
+                    </div>
+                    <form className="inline-form" onSubmit={submitFixedCost}>
+                      <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="項目名" />
+                      <input value={fixedForm.amount} onChange={(event) => setFixedForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="金額" type="number" />
+                      <button className="primary-button" type="submit">追加 / 更新</button>
+                    </form>
+                    <div className="list-card">
+                      {fixedCosts.map((item) => (
+                        <div key={item.id} className="list-row">
+                          <div>
+                            <strong>{item.name}</strong>
+                            <small>{money(item.amount)}</small>
+                          </div>
+                          <div className="row-actions">
+                            <button className="text-button" type="button" onClick={() => editFixedCost(item)}>編集</button>
+                            <button className="text-button danger" type="button" onClick={() => removeFixedCost(item.id)}>削除</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {activeMonthlyTab === "variable" && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">VARIABLE</p>
+                        <h2>月販管費入力</h2>
+                      </div>
+                      <button className="secondary-button" type="button" onClick={() => copyPreviousMonthData("variable")}>前月をコピー</button>
+                    </div>
+                    <form className="inline-form" onSubmit={submitVariableCost}>
+                      <input value={variableForm.name} onChange={(event) => setVariableForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="項目名" />
+                      <input value={variableForm.amount} onChange={(event) => setVariableForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="金額" type="number" />
+                      <button className="primary-button" type="submit">追加 / 更新</button>
+                    </form>
+                    <div className="list-card">
+                      {variableCosts.map((item) => (
+                        <div key={item.id} className="list-row">
+                          <div>
+                            <strong>{item.name}</strong>
+                            <small>{money(item.amount)}</small>
+                          </div>
+                          <div className="row-actions">
+                            <button className="text-button" type="button" onClick={() => editVariableCost(item)}>編集</button>
+                            <button className="text-button danger" type="button" onClick={() => removeVariableCost(item.id)}>削除</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {activeMonthlyTab === "closing" && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">CLOSING</p>
+                        <h2>月締め</h2>
+                      </div>
+                      <button className="secondary-button" type="button" onClick={() => copyPreviousMonthData("closing")}>前月をコピー</button>
+                    </div>
+                    <form className="inline-form" onSubmit={submitClosingItem}>
+                      <input value={closingForm.name} onChange={(event) => setClosingForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="項目名" />
+                      <input value={closingForm.amount} onChange={(event) => setClosingForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="金額" type="number" />
+                      <select value={closingForm.category} onChange={(event) => setClosingForm((prev) => ({ ...prev, category: event.target.value }))}>
+                        {expenseCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+                      </select>
+                      <button className="primary-button" type="submit">追加 / 更新</button>
+                    </form>
+                    <div className="summary-grid">
+                      <div className="summary-card"><span>店販比率</span><strong>{percent(summary.retailRatio)}</strong></div>
+                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
+                      <div className="summary-card"><span>材料費率</span><strong>{percent(summary.materialRate)}</strong></div>
+                      <div className="summary-card"><span>固定費率</span><strong>{percent(summary.fixedRate)}</strong></div>
+                      <div className="summary-card"><span>販管費率</span><strong>{percent(summary.variableRate)}</strong></div>
+                      <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
+                    </div>
+                    <div className="list-card">
+                      {closingItems.map((item) => (
+                        <div key={item.id} className="list-row">
+                          <div>
+                            <strong>{item.name}</strong>
+                            <small>{item.category} / {money(item.amount)}</small>
+                          </div>
+                          <div className="row-actions">
+                            <button className="text-button" type="button" onClick={() => editClosingItem(item)}>編集</button>
+                            <button className="text-button danger" type="button" onClick={() => removeClosingItem(item.id)}>削除</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {activeMonthlyTab === "pnl" && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">P&L</p>
+                        <h2>月次損益</h2>
+                      </div>
+                    </div>
+                    <div className="summary-grid">
+                      <div className="summary-card"><span>売上</span><strong>{money(summary.sales)}</strong></div>
+                      <div className="summary-card"><span>技術売上</span><strong>{money(summary.technicalSales)}</strong></div>
+                      <div className="summary-card"><span>店販売上</span><strong>{money(summary.retailSales)}</strong></div>
+                      <div className="summary-card"><span>人件費</span><strong>{money(summary.laborCost)}</strong></div>
+                      <div className="summary-card"><span>材料費</span><strong>{money(summary.materialCost)}</strong></div>
+                      <div className="summary-card"><span>固定費</span><strong>{money(summary.fixedCost)}</strong></div>
+                      <div className="summary-card"><span>販管費</span><strong>{money(summary.variableCost)}</strong></div>
+                      <div className="summary-card"><span>営業利益</span><strong>{money(summary.operatingProfit)}</strong></div>
+                      <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
+                    </div>
+                  </section>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {activePage === "stores" && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">STORE</p>
+                <h2>店舗管理</h2>
+              </div>
             </div>
+            <div className="inline-form">
+              <input value={newStoreName} onChange={(event) => setNewStoreName(event.target.value)} placeholder="新しい店舗名" />
+              <button className="primary-button" type="button" onClick={handleStoreAdd}>追加</button>
+            </div>
+            <div className="list-card">
+              {stores.length ? stores.map((storeName) => (
+                <div key={storeName} className="list-row">
+                  <div>
+                    <strong>{storeName}</strong>
+                    <small>{selectedStore === storeName ? "選択中" : "未選択"}</small>
+                  </div>
+                  <div className="row-actions">
+                    <button className="text-button" type="button" onClick={() => setAppState((prev) => ({ ...prev, selectedStore: storeName }))}>選択</button>
+                    <button className="text-button" type="button" onClick={() => startEditStore(storeName)}>編集</button>
+                    <button className="text-button danger" type="button" onClick={() => handleStoreDelete(storeName)}>削除</button>
+                  </div>
+                </div>
+              )) : <div className="empty-state">まだ店舗はありません</div>}
+            </div>
+            {storeEditId ? (
+              <form className="inline-form" onSubmit={handleStoreUpdate}>
+                <input value={storeFormName} onChange={(event) => setStoreFormName(event.target.value)} placeholder="店舗名を変更" />
+                <button className="primary-button" type="submit">更新</button>
+                <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreFormName(""); }}>キャンセル</button>
+              </form>
+            ) : null}
           </section>
         )}
 
-        {activeTab === "settings" && (
-          <section className="two-column">
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">STORE</p>
-                  <h2>店舗設定</h2>
-                </div>
+        {activePage === "settings" && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">PREFS</p>
+                <h2>表示設定</h2>
               </div>
-
-              <div className="inline-form">
-                <input value={newStoreName} onChange={(event) => setNewStoreName(event.target.value)} placeholder="新しい店舗名" />
-                <button type="button" className="primary-button" onClick={addStore}>店舗を追加</button>
+            </div>
+            <div className="toggle-panel">
+              <div>
+                <strong>ダークモード</strong>
+                <small>{theme === "dark" ? "オン" : "オフ"}</small>
               </div>
-
-              <div className="tag-list">
-                {stores.map((storeName) => (
-                  <span key={storeName}>{storeName}</span>
-                ))}
-              </div>
-            </article>
-
-            <article className="panel">
-              <div className="panel-heading">
-                <div>
-                  <p className="eyebrow">PREFS</p>
-                  <h2>表示設定</h2>
-                </div>
-              </div>
-              <div className="toggle-panel">
-                <div>
-                  <strong>ダークモード</strong>
-                  <small>{theme === "dark" ? "オン" : "オフ"}</small>
-                </div>
-                <button type="button" className="secondary-button" onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}>
-                  {theme === "dark" ? "ライトに切替" : "ダークに切替"}
-                </button>
-              </div>
-              {installPrompt && (
-                <button type="button" className="primary-button full-width" onClick={async () => {
-                  installPrompt.prompt();
-                  await installPrompt.userChoice;
-                  setInstallPrompt(null);
-                }}>
-                  ホーム画面に追加
-                </button>
-              )}
-              <button type="button" className="secondary-button full-width" onClick={exportCsv}>CSV出力</button>
-            </article>
+              <button className="secondary-button" type="button" onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}>
+                {theme === "dark" ? "ライトに切替" : "ダークに切替"}
+              </button>
+            </div>
+            <div className="empty-card">今後はログイン、CSV/Excel出力、PWA対応、KPIダッシュボードなどを追加しやすい構成です。</div>
           </section>
         )}
       </main>
@@ -856,100 +827,25 @@ function App() {
   );
 }
 
-function HeroCard({ label, value, tone = "default" }) {
+function MetricCard({ label, value }) {
   return (
-    <article className={`hero-card tone-${tone}`}>
+    <div className="metric-card">
       <span>{label}</span>
       <strong>{value}</strong>
-    </article>
+    </div>
   );
 }
 
-function NumberField({ label, value, onChange, suffix = "円", error = false }) {
-  const normalizedValue = value === undefined || value === null ? 0 : value;
-
+function Field({ label, value, onChange, suffix = "", type = "text" }) {
+  const normalizedValue = value === undefined || value === null ? "" : value;
   return (
-    <label className={`field ${error ? "field-error" : ""}`}>
-      {label}
+    <label className="field">
+      <span>{label}</span>
       <div className="input-with-suffix">
-        <input
-          type="text"
-          inputMode="numeric"
-          min="0"
-          value={formatInputNumber(normalizedValue)}
-          onChange={(event) => onChange(event.target.value.replace(/[^\d]/g, ""))}
-          className={error ? "input-error" : ""}
-        />
-        <span>{suffix}</span>
+        <input type={type} value={normalizedValue} onChange={(event) => onChange(event.target.value)} />
+        {suffix ? <span>{suffix}</span> : null}
       </div>
     </label>
-  );
-}
-
-function TextField({ label, value, onChange, type = "text", error = false }) {
-  return (
-    <label className={`field ${error ? "field-error" : ""}`}>
-      {label}
-      <input
-        type={type}
-        value={value || ""}
-        onChange={(event) => onChange(event.target.value)}
-        className={error ? "input-error" : ""}
-      />
-    </label>
-  );
-}
-
-function MonthCalendar({ dates }) {
-  const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
-
-  return (
-    <div className="calendar-grid">
-      {weekDays.map((day) => (
-        <div key={day} className="calendar-weekday">{day}</div>
-      ))}
-      {dates.map((date) => (
-        <div
-          key={date.key}
-          className={`calendar-day ${date.inMonth ? "" : "calendar-empty"} ${date.isFilled ? "calendar-filled" : "calendar-missing"}`}
-        >
-          {date.day || ""}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function MiniLineChart({ data }) {
-  const width = 540;
-  const height = 220;
-  const padding = 24;
-  const maxValue = Math.max(...data.map((point) => Math.max(point.target, point.actual, 1)), 1);
-
-  const pointsA = data.map((point, index) => {
-    const x = padding + (index * (width - padding * 2)) / Math.max(data.length - 1, 1);
-    const y = height - padding - (point.target / maxValue) * (height - padding * 2);
-    return `${x},${y}`;
-  }).join(" ");
-
-  const pointsB = data.map((point, index) => {
-    const x = padding + (index * (width - padding * 2)) / Math.max(data.length - 1, 1);
-    const y = height - padding - (point.actual / maxValue) * (height - padding * 2);
-    return `${x},${y}`;
-  }).join(" ");
-
-  return (
-    <div className="chart-wrap">
-      <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" aria-label="売上推移グラフ">
-        <polyline points={pointsA} className="sales-line" />
-        <polyline points={pointsB} className="profit-line" />
-      </svg>
-      <div className="chart-labels">
-        {data.slice(0, 7).map((point) => (
-          <span key={point.date}>{point.date.slice(5)}</span>
-        ))}
-      </div>
-    </div>
   );
 }
 
