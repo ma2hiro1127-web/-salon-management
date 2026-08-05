@@ -14,6 +14,7 @@ import {
   buildMonthKey,
   calculateMonthSummary,
   calculateTaxSummary,
+  deduplicateDailyEntries,
   getAiAnalysis,
   getBusinessDaySettings,
   getBusinessDaySummary,
@@ -22,22 +23,57 @@ import {
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
   formatLocalDate,
+  getMonthInfo,
   getTargetForStoreMonth,
   getVariableCostsForStoreMonth,
   money,
   moneyDiff,
+  number,
   parseNumber,
   percent,
   readAppState,
   readStorage,
+  normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canManageUsers as canManageUsersByRole, canEditMonthlyData, canViewUserManagement, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { createInitialAppState } from "./data/defaults.js";
+import AuthGate from "./components/AuthGate.jsx";
+import LoginScreen from "./components/LoginScreen.jsx";
+import AccessDenied from "./components/AccessDenied.jsx";
+import {
+  supabase,
+  isSupabaseConfigured,
+  getSupabaseConfigurationIssue,
+  getSupabaseErrorMessage,
+  signInWithEmail,
+  signOutFromSupabase,
+  getSupabaseSession,
+  loadTenantStateFromSupabase,
+  ensureProfileForAuthUser,
+  getProfileByEmail,
+  createCompanyRecord,
+  createStoreRecord,
+  createUserProfileRecord,
+  syncLocalDraftToSupabase,
+  signUpWithEmail,
+  getProfilesForDebug,
+  resolveRoleForEmail,
+} from "./utils/supabase.js";
+import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
+import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
+import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
+import { buildInviteLink, createInviteToken, getInvitationStatusMeta, isInviteExpired } from "./utils/invitations.js";
+import { resolveLocalLoginCandidate } from "./utils/authFlow.js";
+import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
 
 const navItems = [
   { id: "dashboard", label: "売上" },
   { id: "daily", label: "日次入力" },
   { id: "monthly", label: "管理画面" },
-  { id: "stores", label: "店舗追加" },
+  { id: "companies", label: "会社管理" },
+  { id: "stores", label: "店舗管理" },
+  { id: "users", label: "ユーザー管理" },
   { id: "settings", label: "設定" },
 ];
 
@@ -50,6 +86,43 @@ const monthlyTabs = [
 ];
 
 const ensureMonthValue = (value) => value || new Date().toISOString().slice(0, 7);
+const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+
+const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = null, hasSession = false, authUser = null, setDebugInfo = null } = {}) => {
+  if (!setDebugInfo) return;
+  try {
+    const { data: sessionData } = await getSupabaseSession();
+    const activeUser = sessionData?.session?.user || sessionUser || authUser || null;
+    const resolvedRole = normalizeRole(role || profile?.role || "staff");
+    const profiles = await getProfilesForDebug();
+    return setDebugInfo({
+      userId: activeUser?.id || profile?.auth_user_id || "",
+      email: activeUser?.email || profile?.email || "",
+      role: resolvedRole,
+      hasSession: Boolean(sessionData?.session || hasSession),
+      profiles,
+    });
+  } catch {
+    return setDebugInfo((prev) => ({ ...prev, hasSession: false, profiles: [] }));
+  }
+};
+
+const coerceId = (...values) => values.find((value) => typeof value === "string" && value.trim()) || "";
+
+const buildAuthenticatedUser = ({ profile = null, authUser = null, fallback = null, role = "staff", companyId = "", storeId = "" } = {}) => {
+  const profileId = coerceId(profile?.id, fallback?.profileId, fallback?.id);
+  const authUserId = coerceId(authUser?.id, profile?.auth_user_id, fallback?.authUserId);
+  return {
+    id: profileId,
+    email: authUser?.email || profile?.email || fallback?.email || "",
+    name: profile?.name || fallback?.name || authUser?.email || fallback?.email || "",
+    role: normalizeRole(profile?.role || role || fallback?.role || "staff"),
+    company_id: profile?.company_id || companyId || fallback?.company_id || fallback?.companyId || "",
+    store_id: storeId || fallback?.store_id || fallback?.storeId || "",
+    profileId,
+    authUserId,
+  };
+};
 
 const getMonthOffset = (monthValue, offset) => {
   const [year, month] = monthValue.split("-").map(Number);
@@ -63,11 +136,130 @@ const getRankTone = (achievement) => {
   return "danger";
 };
 
+const formatChangeRate = (value) => {
+  if (!Number.isFinite(value)) return "—";
+  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
+  return `${sign}${Math.abs(value).toFixed(1)}%`;
+};
+
+const getRankingMetric = (row, rankingSort, mode = "current") => {
+  if (mode === "previous") {
+    switch (rankingSort) {
+      case "achievement":
+        return row.previousAchievement;
+      case "change":
+        return row.previousChangeRate;
+      case "profit":
+        return row.previousOperatingProfit;
+      default:
+        return row.previousSales;
+    }
+  }
+
+  switch (rankingSort) {
+    case "achievement":
+      return row.achievement;
+    case "change":
+      return row.currentChangeRate;
+    case "profit":
+      return row.operatingProfit;
+    default:
+      return row.sales;
+  }
+};
+
 const formatTimestamp = (value) => {
   if (!value) return "";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return "";
   return parsed.toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+};
+
+const createCompanySettingsDefaults = () => ({
+  currency: "JPY",
+  fiscalYearStartMonth: "1",
+  salesDisplayMode: "inclusive",
+  retailSalesLabel: "店販売上",
+  closingDay: "月末",
+  editDeadlineDays: 7,
+  allowStaffPastEdit: false,
+  visibleSalesFields: ["technicalSales", "retailSales", "otherSales"],
+  activeKpis: ["sales", "customers", "retailRatio"],
+  businessType: "salon",
+});
+
+const createStoreSettingsDefaults = () => ({
+  monthlyTargetSales: "",
+  retailTargetSales: "",
+  customerTarget: "",
+  newCustomerTarget: "",
+  businessDays: "",
+  holidayDays: "",
+  openingHour: "09:00",
+  closingHour: "20:00",
+  closedDays: "月",
+  useFields: ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers"],
+  managerName: "",
+  staffIds: [],
+});
+
+const createStoreFormDefaults = () => ({
+  name: "",
+  code: "",
+  postalCode: "",
+  address: "",
+  phone: "",
+  managerName: "",
+  representativeName: "",
+  openingDate: "",
+  openingHour: "09:00",
+  closingHour: "20:00",
+  closedDays: "月",
+  businessHours: "09:00-20:00",
+  description: "",
+  website: "",
+  instagram: "",
+  googleMapUrl: "",
+  serviceTypes: "",
+  urls: [],
+  isActive: true,
+  status: "active",
+});
+
+const getUserInvitationMeta = (user) => {
+  const invitationStatus = String(user?.invitationStatus || "active").toLowerCase();
+  const meta = getInvitationStatusMeta(invitationStatus);
+  const expireAt = user?.inviteExpiresAt ? new Date(user.inviteExpiresAt) : null;
+  const expired = Boolean(expireAt && isInviteExpired(user.inviteExpiresAt));
+
+  if (invitationStatus === "invited") {
+    return { ...meta, expiresAt: expireAt, status: expired ? "expired" : "invited" };
+  }
+  if (invitationStatus === "registered") {
+    return { ...meta, expiresAt: null, status: "registered" };
+  }
+  if (invitationStatus === "expired") {
+    return { ...meta, expiresAt: null, status: "expired" };
+  }
+  if (invitationStatus === "suspended") {
+    return { ...meta, expiresAt: null, status: "suspended" };
+  }
+  return { ...meta, expiresAt: null, status: invitationStatus };
+};
+
+const getCompanySetupProgress = (company) => {
+  const setup = company?.setup || {};
+  const steps = [
+    { id: "company", label: "会社情報", done: Boolean(setup.company || company?.name) },
+    { id: "store", label: "店舗登録", done: Boolean(setup.store || (company?.stores || []).length > 0) },
+    { id: "admin", label: "管理者登録", done: Boolean(setup.admin) },
+    { id: "settings", label: "基本設定", done: Boolean(setup.settings) },
+  ];
+  return {
+    steps,
+    completed: Boolean(setup.complete),
+    currentStep: steps.find((step) => !step.done)?.id || "complete",
+  };
 };
 
 const buildDailyInsight = ({ form, targetSales, businessDayCount }) => {
@@ -103,17 +295,133 @@ const buildDailyInsight = ({ form, targetSales, businessDayCount }) => {
   return insights.slice(0, 3).join("\n");
 };
 
-const initialAppStateValue = readAppState();
+const buildTenantState = (legacyState = {}) => {
+  const seeded = typeof legacyState === "object" && legacyState ? legacyState : readAppState();
+  const defaultCompanyId = "company-fine";
+  const defaultCompany = {
+    id: defaultCompanyId,
+    name: "Fi-Ne",
+    code: "fine",
+    isActive: true,
+    contractStatus: "active",
+    startedAt: new Date().toISOString(),
+    lastUpdatedAt: new Date().toISOString(),
+    setup: { company: true, store: true, admin: true, settings: true, complete: true },
+    settings: createCompanySettingsDefaults(),
+    stores: Array.isArray(seeded.stores) && seeded.stores.length
+      ? seeded.stores.map((storeName, index) => ({ id: `store-${index + 1}`, name: storeName, code: `${defaultCompanyId}-${index + 1}`, isActive: true, settings: createStoreSettingsDefaults() }))
+      : [{ id: "store-main", name: "本店", code: "main", isActive: true, settings: createStoreSettingsDefaults() }],
+  };
+  const companies = Array.isArray(seeded.companies) && seeded.companies.length ? seeded.companies : [defaultCompany];
+  const users = Array.isArray(seeded.users) && seeded.users.length ? seeded.users : [
+    { id: "user-system", name: "システム管理者", email: "system@salon.test", role: "system_admin", companyId: defaultCompanyId, storeIds: [], primaryStoreId: "", isActive: true, invitationStatus: "active", lastLoginAt: "" },
+    { id: "user-company", name: "会社管理者", email: "company@salon.test", role: "company_admin", companyId: defaultCompanyId, storeIds: [], primaryStoreId: "", isActive: true, invitationStatus: "active", lastLoginAt: "" },
+    { id: "user-manager", name: "店舗管理者", email: "manager@salon.test", role: "store_manager", companyId: defaultCompanyId, storeIds: [defaultCompany.stores[0]?.id || "store-main"], primaryStoreId: defaultCompany.stores[0]?.id || "store-main", isActive: true, invitationStatus: "active", lastLoginAt: "" },
+    { id: "user-staff", name: "一般スタッフ", email: "staff@salon.test", role: "staff", companyId: defaultCompanyId, storeIds: [defaultCompany.stores[0]?.id || "store-main"], primaryStoreId: defaultCompany.stores[0]?.id || "store-main", isActive: true, invitationStatus: "active", lastLoginAt: "" },
+  ];
+  const companySnapshots = seeded.companySnapshots && typeof seeded.companySnapshots === "object" ? seeded.companySnapshots : {};
+  if (!companySnapshots[defaultCompanyId]) {
+    companySnapshots[defaultCompanyId] = { ...createInitialAppState(), ...seeded, stores: defaultCompany.stores.map((store) => store.name), selectedStore: defaultCompany.stores[0]?.name || "", selectedMonth: seeded.selectedMonth || createInitialAppState().selectedMonth };
+  }
+  return {
+    ...companySnapshots[defaultCompanyId],
+    companies,
+    users,
+    currentCompanyId: seeded.currentCompanyId || defaultCompanyId,
+    companySnapshots,
+    currentUserId: seeded.currentUserId || "",
+  };
+};
+
+const initialAppStateValue = buildTenantState(readAppState());
+
+const getLocalFallbackAuthUser = () => null;
+
+const canManageCompany = (role) => canManageCompanies(role);
+const canManageStore = (role) => canManageStores(role);
+const canManageUsers = (role) => canManageUsersByRole(role);
+
+const buildStoredUserHydrationState = async ({ storedUser, setCurrentUser, setCurrentRole, setAppState, setAuthMode, setActivePage, setDebugInfo, setSyncStatus, setAuthError, hydrateFromSupabase, refreshAuthDebugInfo }) => {
+  if (!storedUser?.authUserId && !storedUser?.email) return false;
+
+  try {
+    const profile = await ensureProfileForAuthUser({ authUserId: storedUser.authUserId, email: storedUser.email, role: storedUser.role });
+    const tenantState = await loadTenantStateFromSupabase({ authUserId: storedUser.authUserId, email: storedUser.email, currentProfile: profile });
+    const nextUser = buildAuthenticatedUser({
+      profile,
+      authUser: storedUser.authUserId ? { id: storedUser.authUserId, email: storedUser.email } : null,
+      fallback: storedUser,
+      role: storedUser.role,
+      companyId: storedUser.company_id,
+      storeId: storedUser.store_id,
+    });
+    const nextState = {
+      ...tenantState,
+      currentCompanyId: nextUser.company_id || tenantState.currentCompanyId || storedUser.company_id || "",
+      currentUserId: nextUser.profileId,
+      currentAuthUserId: nextUser.authUserId,
+    };
+
+    setCurrentUser(nextUser);
+    setCurrentRole(normalizeRole(profile?.role || storedUser.role || "staff"));
+    setAppState(nextState);
+    setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
+    await hydrateFromSupabase({
+      authUser: { id: nextUser.authUserId, email: nextUser.email },
+      profile: { id: nextUser.profileId, company_id: nextState.currentCompanyId, role: normalizeRole(profile?.role || storedUser.role || "staff") },
+      tenantState: nextState,
+    });
+    await refreshAuthDebugInfo({ sessionUser: { id: nextUser.authUserId, email: nextUser.email }, role: profile?.role, profile, hasSession: false, authUser: { id: nextUser.authUserId, email: nextUser.email }, setDebugInfo });
+    window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+    window.localStorage.setItem("salon-role", normalizeRole(profile?.role || storedUser.role || "staff"));
+    setAuthMode("app");
+    setActivePage(resolveDefaultPage(normalizeRole(profile?.role || storedUser.role || "staff")));
+    return true;
+  } catch (error) {
+    console.warn("Stored-user hydration failed", error);
+    setAuthError(getLocalizedSupabaseErrorMessage(error));
+    return false;
+  }
+};
 
 function App() {
   const [theme, setTheme] = useState(() => (readStorage(STORAGE_KEYS.theme, "light") === "dark" ? "dark" : "light"));
   const [activePage, setActivePage] = useState("dashboard");
+  const [currentUser, setCurrentUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
+  const [authSuccess, setAuthSuccess] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const params = new URLSearchParams(window.location.search);
+    return params.get("invite") ? "招待登録用のリンクです。メールアドレスとパスワードを設定してください。" : "";
+  });
+  const [authMode, setAuthMode] = useState(() => {
+    if (typeof window === "undefined") return "login";
+    const params = new URLSearchParams(window.location.search);
+    return params.get("invite") ? "signup" : "login";
+  });
+  const [currentRole, setCurrentRole] = useState("staff");
+  const [debugInfo, setDebugInfo] = useState({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
+  const [inviteToken, setInviteToken] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const params = new URLSearchParams(window.location.search);
+    return params.get("invite") || "";
+  });
   const [activeMonthlyTab, setActiveMonthlyTab] = useState("closing");
   const [rankingSort, setRankingSort] = useState("sales");
+  const [expandedRankingStore, setExpandedRankingStore] = useState("");
+  const [companyForm, setCompanyForm] = useState({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
+  const [storeForm, setStoreForm] = useState(createStoreFormDefaults());
+  const [storeSearch, setStoreSearch] = useState("");
+  const [storeSort, setStoreSort] = useState("achievement");
+  const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   const [appState, setAppState] = useState(initialAppStateValue);
-  const [newStoreName, setNewStoreName] = useState("");
-  const [storeFormName, setStoreFormName] = useState("");
+  const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
+  const [userEditId, setUserEditId] = useState("");
+  const [companySettingsForm, setCompanySettingsForm] = useState(createCompanySettingsDefaults());
+  const [storeSettingsForm, setStoreSettingsForm] = useState(createStoreSettingsDefaults());
+  const [setupStep, setSetupStep] = useState("company");
   const [dailyForm, setDailyForm] = useState({ ...defaultDailyEntry });
   const updateDailyField = (field, value) => {
     setDailyForm((prev) => {
@@ -132,11 +440,120 @@ function App() {
   const [closingForm, setClosingForm] = useState(defaultClosingItem);
   const [notice, setNotice] = useState("");
   const [businessDayInput, setBusinessDayInput] = useState("");
+  const [manualBusinessDayInput, setManualBusinessDayInput] = useState("");
+  const [isBusinessDayEditing, setIsBusinessDayEditing] = useState(false);
   const [saveStatus, setSaveStatus] = useState({ status: "saved", message: "自動保存済み", timestamp: "", error: false });
+  const [syncStatus, setSyncStatus] = useState({ status: "idle", message: "同期待機中", timestamp: "", error: false });
+  const [syncInitialized, setSyncInitialized] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   const lastPersistedRef = useRef("");
-
+  const autoSaveTimerRef = useRef(null);
+  const lastAutoSaveSignatureRef = useRef("");
+  const remoteSyncChannelRef = useRef(null);
   const { stores, selectedStore, selectedMonth } = appState;
+  const currentCompany = useMemo(() => appState.companies?.find((company) => company.id === appState.currentCompanyId) || appState.companies?.[0] || null, [appState.companies, appState.currentCompanyId]);
+  const currentCompanyStores = useMemo(() => currentCompany?.stores || [], [currentCompany]);
+  const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
+  const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
+  const visibleStores = useMemo(() => {
+    if (!currentCompanyStores.length) return [];
+    return currentCompanyStores.filter((store) => allowedStoreIds.includes(store.id));
+  }, [allowedStoreIds, currentCompanyStores]);
+  const filteredStores = useMemo(() => {
+    const searchValue = storeSearch.trim().toLowerCase();
+    const source = (currentCompany?.stores || []).filter((store) => {
+      if (!searchValue) return true;
+      const haystack = [store.name, store.code, store.address, store.phone, store.managerName, (store.serviceTypes || []).join(" ")].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(searchValue);
+    });
+    return sortStoresForManagement(source, storeSort);
+  }, [currentCompany?.stores, storeSearch, storeSort]);
+  const activeBusinessType = companyForm.businessType || currentCompany?.businessType || "salon";
+  const storeNamePlaceholder = getBusinessTypeDefaultStoreName(activeBusinessType);
+
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        if (!isSupabaseConfigured) {
+          setCurrentUser(null);
+          setCurrentRole("staff");
+          setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
+          setAuthMode("login");
+          setActivePage("dashboard");
+          setAppState(initialAppStateValue);
+          return;
+        }
+
+        const { data: { session }, error } = await getSupabaseSession();
+        if (error) throw error;
+        if (session?.user) {
+          const profile = await ensureProfileForAuthUser({ authUserId: session.user.id, email: session.user.email, role: resolveRoleForEmail(session.user.email) });
+          if (!profile) {
+            throw new Error("プロフィール情報を取得できませんでした");
+          }
+          const tenantState = await loadTenantStateFromSupabase({ authUserId: session.user.id, email: session.user.email, currentProfile: profile });
+          const localRecoveredState = normalizeAppState(readAppState());
+          const nextUser = buildAuthenticatedUser({ profile, authUser: session.user });
+          setCurrentUser(nextUser);
+          setCurrentRole(normalizeRole(profile?.role || "staff"));
+          const reconciledState = {
+            ...tenantState,
+            ...localRecoveredState,
+            currentCompanyId: profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "",
+            currentUserId: nextUser.profileId,
+            currentAuthUserId: nextUser.authUserId,
+            companies: tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [],
+            users: tenantState.users?.length ? tenantState.users : localRecoveredState.users || [],
+            companySnapshots: tenantState.companySnapshots || localRecoveredState.companySnapshots || {},
+            stores: tenantState.stores?.length ? tenantState.stores : localRecoveredState.stores || [],
+            selectedStore: tenantState.selectedStore || localRecoveredState.selectedStore || "",
+            selectedMonth: tenantState.selectedMonth || localRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
+          };
+          writeAppState(reconciledState);
+          setAppState(reconciledState);
+          setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
+          void hydrateFromSupabase({ authUser: session.user, profile, tenantState });
+          await refreshAuthDebugInfo({ sessionUser: session.user, role: profile?.role, profile, hasSession: true, authUser: session.user, setDebugInfo });
+          setAuthMode("app");
+          setActivePage(resolveDefaultPage(profile?.role || "staff"));
+          return;
+        }
+
+        setCurrentUser(null);
+        setCurrentRole("staff");
+        setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
+        setAuthMode("login");
+        setActivePage("dashboard");
+        setAppState(initialAppStateValue);
+      } catch (error) {
+        setCurrentUser(null);
+        setCurrentRole("staff");
+        setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
+        setAuthMode("login");
+        setActivePage("dashboard");
+        setAuthError(getLocalizedSupabaseErrorMessage(error));
+      } finally {
+        setAuthLoading(false);
+      }
+    };
+
+    void initializeAuth();
+  }, []);
+
+  useEffect(() => {
+    if (currentCompany) {
+      setCompanySettingsForm(currentCompany.settings || createCompanySettingsDefaults());
+    }
+  }, [currentCompany?.id, currentCompany?.settings]);
+
+  useEffect(() => {
+    const matchingStore = currentCompanyStores.find((store) => store.name === selectedStore);
+    if (matchingStore) {
+      setStoreSettingsForm(matchingStore.settings || createStoreSettingsDefaults());
+    }
+  }, [currentCompanyStores, selectedStore]);
+  const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
+  const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
   const target = getTargetForStoreMonth(appState, selectedStore, selectedMonth);
   const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
@@ -159,29 +576,74 @@ function App() {
   const todayActual = todayEntry ? Number(todayEntry.totalSales || todayEntry.technicalSales || 0) : 0;
   const todayAchievement = summary.todayTarget ? (todayActual / summary.todayTarget) * 100 : 0;
 
+  const visibleNavItems = useMemo(() => getVisibleNavItems(currentRole), [currentRole]);
+  const applyCompanySnapshot = (state, companyId) => {
+    const targetCompany = (state.companies || []).find((company) => company.id === companyId) || null;
+    const snapshot = (state.companySnapshots || {})[companyId] || {
+      ...createInitialAppState(),
+      stores: targetCompany?.stores?.map((store) => store.name) || [],
+      selectedStore: targetCompany?.stores?.[0]?.name || "",
+    };
+    return {
+      ...state,
+      ...snapshot,
+      currentCompanyId: companyId,
+      currentUserId: state.currentUserId || "",
+      currentAuthUserId: state.currentAuthUserId || "",
+      companies: state.companies || [],
+      users: state.users || [],
+      companySnapshots: { ...(state.companySnapshots || {}), [companyId]: snapshot },
+    };
+  };
   const rankingRows = useMemo(() => {
     const previousMonth = getMonthOffset(selectedMonth, -1);
-    return stores
-      .map((storeName) => {
-        const storeSummary = calculateMonthSummary(appState, storeName, selectedMonth);
-        const previousSummary = calculateMonthSummary(appState, storeName, previousMonth);
-        return {
-          storeName,
-          sales: storeSummary.sales,
-          achievement: storeSummary.targetAchievement,
-          previousSales: previousSummary.sales,
-          previousDiff: storeSummary.sales - previousSummary.sales,
-          forecast: storeSummary.forecast,
-          tone: getRankTone(storeSummary.targetAchievement),
-          achievementLabel: storeSummary.targetAchievement >= 100 ? "目標ペース以上" : storeSummary.targetAchievement >= 95 ? "要確認" : "要改善",
-        };
-      })
-      .sort((a, b) => {
-        if (rankingSort === "achievement") {
-          return b.achievement - a.achievement;
-        }
-        return b.sales - a.sales;
-      });
+    const previousPreviousMonth = getMonthOffset(selectedMonth, -2);
+
+    const rows = stores.map((storeName) => {
+      const storeSummary = calculateMonthSummary(appState, storeName, selectedMonth);
+      const previousSummary = calculateMonthSummary(appState, storeName, previousMonth);
+      const previousPreviousSummary = calculateMonthSummary(appState, storeName, previousPreviousMonth);
+      const currentChangeRate = previousSummary.sales > 0 ? ((storeSummary.sales - previousSummary.sales) / previousSummary.sales) * 100 : 0;
+      const previousChangeRate = previousPreviousSummary.sales > 0 ? ((previousSummary.sales - previousPreviousSummary.sales) / previousPreviousSummary.sales) * 100 : 0;
+
+      return {
+        storeName,
+        sales: storeSummary.sales,
+        targetSales: storeSummary.target.targetSales,
+        achievement: storeSummary.targetAchievement,
+        operatingProfit: storeSummary.operatingProfit,
+        previousSales: previousSummary.sales,
+        previousAchievement: previousSummary.targetAchievement,
+        previousOperatingProfit: previousSummary.operatingProfit,
+        previousChangeRate,
+        currentChangeRate,
+        forecast: storeSummary.forecast,
+        tone: getRankTone(storeSummary.targetAchievement),
+        achievementLabel: storeSummary.targetAchievement >= 100 ? "順調" : storeSummary.targetAchievement >= 95 ? "要確認" : "要改善",
+      };
+    });
+
+    const compareRows = (left, right) => {
+      const leftValue = getRankingMetric(left, rankingSort, "current");
+      const rightValue = getRankingMetric(right, rankingSort, "current");
+      return rightValue - leftValue;
+    };
+
+    const previousCompareRows = (left, right) => {
+      const leftValue = getRankingMetric(left, rankingSort, "previous");
+      const rightValue = getRankingMetric(right, rankingSort, "previous");
+      return rightValue - leftValue;
+    };
+
+    const rankedRows = [...rows].sort(compareRows).map((row, index) => ({ ...row, currentRank: index + 1 }));
+    const previousRankedRows = [...rows].sort(previousCompareRows).map((row, index) => ({ ...row, previousRank: index + 1 }));
+    const previousRankMap = new Map(previousRankedRows.map((row) => [row.storeName, row.previousRank]));
+
+    return rankedRows.map((row) => ({
+      ...row,
+      previousRank: previousRankMap.get(row.storeName) || 0,
+      trend: row.previousRank ? (row.currentRank < row.previousRank ? "↑" : row.currentRank > row.previousRank ? "↓" : "→") : "→",
+    }));
   }, [appState, rankingSort, selectedMonth, stores]);
 
   useEffect(() => {
@@ -189,22 +651,899 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
-    const snapshot = JSON.stringify(appState);
+    if (typeof window !== "undefined") {
+      window.__salonAppDebug = {
+        appState,
+        currentUser,
+        currentRole,
+        syncStatus,
+        activePage,
+        authMode,
+      };
+    }
+  }, [appState, currentUser, currentRole, syncStatus, activePage, authMode]);
+
+  const handleModeChange = (nextMode) => {
+    setAuthMode(nextMode);
+    setAuthError("");
+    setAuthSuccess("");
+  };
+
+  const handleLogin = async ({ email, password }) => {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    const normalizedEmail = normalizeEmail(email);
+
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await signInWithEmail(normalizedEmail, password);
+        console.info("[supabase-login] signInWithPassword result", { email: normalizedEmail, data, error });
+        if (normalizedEmail === "hirotomatsumoto+salonadmin@gmail.com") {
+          console.info("[supabase-login] admin email login attempt", { email: normalizedEmail, passwordLength: String(password || "").length });
+        }
+        if (error) {
+          throw error;
+        }
+        const authUser = data?.user;
+        if (!authUser) {
+          throw new Error("認証ユーザーを取得できませんでした");
+        }
+        const session = data?.session;
+        const { data: sessionData, error: sessionError } = await getSupabaseSession();
+        console.info("[supabase-login] getSession result", { sessionData, sessionError });
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        console.info("[supabase-login] getUser result", { userData, userError });
+        const profile = await ensureProfileForAuthUser({ authUserId: authUser.id, email: authUser.email, role: resolveRoleForEmail(authUser.email) });
+        if (!profile) {
+          throw new Error("プロフィール情報を取得できませんでした");
+        }
+        const tenantState = await loadTenantStateFromSupabase({ authUserId: authUser.id, email: authUser.email, currentProfile: profile });
+        const nextUser = buildAuthenticatedUser({ profile, authUser, role: resolveRoleForEmail(authUser.email) });
+        setCurrentUser(nextUser);
+        setCurrentRole(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
+        setAppState({
+          ...tenantState,
+          currentCompanyId: profile?.company_id || tenantState.currentCompanyId || "",
+          currentUserId: nextUser.profileId,
+          currentAuthUserId: nextUser.authUserId,
+        });
+        await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: Boolean(session || sessionData?.session), authUser, setDebugInfo });
+        window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+        window.localStorage.setItem("salon-role", normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
+        setAuthLoading(false);
+        setAuthMode("app");
+        setActivePage(resolveDefaultPage(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email))));
+        return;
+      } catch (error) {
+        console.error("[supabase-login] auth failed", error);
+        setAuthError(getLocalizedSupabaseErrorMessage(error));
+        setAuthLoading(false);
+        return;
+      }
+    }
+
+    const configurationIssue = getSupabaseConfigurationIssue();
+    if (configurationIssue) {
+      setAuthError(`Supabase Authが利用できません。設定状態: ${configurationIssue}`);
+    } else {
+      setAuthError("Supabase Authに接続できませんでした。Supabaseの接続状態を確認してください。");
+    }
+    setAuthLoading(false);
+  };
+
+  const handleSignUp = async ({ email, password }) => {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+
+    const normalizedEmail = normalizeEmail(email);
+    const invitedUser = inviteToken
+      ? (appState.users || []).find((user) => String(user.inviteToken || "").trim() === inviteToken) || null
+      : null;
+
+    if (invitedUser) {
+      if (!invitedUser.isActive || invitedUser.invitationStatus === "suspended") {
+        setAuthError("この招待は無効です。管理者にお問い合わせください。");
+        setAuthLoading(false);
+        return;
+      }
+      if (isInviteExpired(invitedUser.inviteExpiresAt)) {
+        setAuthError("この招待リンクは期限切れです。管理者にお問い合わせください。");
+        setAuthLoading(false);
+        return;
+      }
+      if (String(invitedUser.email || "").trim().toLowerCase() && normalizedEmail !== String(invitedUser.email || "").trim().toLowerCase()) {
+        setAuthError("招待メールアドレスと一致するメールアドレスで登録してください。");
+        setAuthLoading(false);
+        return;
+      }
+    }
+
+    try {
+      let authUser = null;
+      try {
+        const { data, error } = await signUpWithEmail(normalizedEmail, password);
+        if (error) throw error;
+        authUser = data?.user || null;
+      } catch (error) {
+        console.warn("Supabase sign-up skipped for invite flow", error);
+      }
+
+      if (invitedUser) {
+        const nextCompanyId = invitedUser.companyId || appState.currentCompanyId || currentCompany?.id || "";
+        const nextRole = normalizeRole(invitedUser.role || "store_manager");
+        const profile = authUser
+          ? await ensureProfileForAuthUser({ authUserId: authUser.id, email: normalizedEmail, role: nextRole, companyId: nextCompanyId })
+          : null;
+        const nextUser = buildAuthenticatedUser({
+          profile,
+          authUser,
+          fallback: {
+            ...invitedUser,
+            company_id: nextCompanyId,
+            store_id: invitedUser.primaryStoreId || invitedUser.storeIds?.[0] || "",
+          },
+          role: nextRole,
+          companyId: nextCompanyId,
+          storeId: invitedUser.primaryStoreId || invitedUser.storeIds?.[0] || "",
+        });
+        const nextUserId = nextUser.profileId;
+        const nextState = {
+          ...appState,
+          currentUserId: nextUserId,
+          currentAuthUserId: nextUser.authUserId,
+          currentCompanyId: nextCompanyId,
+          users: (appState.users || []).map((user) => user.id === nextUserId ? {
+            ...user,
+            name: user.name || invitedUser.name || normalizedEmail.split("@")[0],
+            email: normalizedEmail,
+            role: nextRole,
+            companyId: nextCompanyId,
+            storeIds: invitedUser.storeIds?.length ? invitedUser.storeIds : user.storeIds || [],
+            primaryStoreId: invitedUser.primaryStoreId || user.primaryStoreId || "",
+            isActive: user.isActive !== false,
+            invitationStatus: "registered",
+            inviteRegisteredAt: new Date().toISOString(),
+            lastLoginAt: new Date().toISOString(),
+            loginCount: (user.loginCount || 0) + 1,
+            authUserId: authUser?.id || user.authUserId || "",
+          } : user),
+        };
+        persistTenantState(nextState);
+        setCurrentUser(nextUser);
+        setCurrentRole(nextRole);
+        window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+        window.localStorage.setItem("salon-role", nextRole);
+        setAuthMode("app");
+        setActivePage(resolveDefaultPage(nextRole));
+        setInviteToken("");
+        setAuthSuccess("招待登録が完了しました。管理画面へ移動します。" );
+        return;
+      }
+
+      const signInResult = await signInWithEmail(normalizedEmail, password);
+      if (!signInResult.error && signInResult.data?.user) {
+        const authUser = signInResult.data.user;
+        const profile = await ensureProfileForAuthUser({ authUserId: authUser.id, email: authUser.email, role: resolveRoleForEmail(authUser.email) });
+        const tenantState = await loadTenantStateFromSupabase({ authUserId: authUser.id, email: authUser.email, currentProfile: profile });
+        const nextUser = buildAuthenticatedUser({ profile, authUser, role: resolveRoleForEmail(authUser.email) });
+        setCurrentUser(nextUser);
+        setCurrentRole(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
+        setAppState({
+          ...tenantState,
+          currentCompanyId: profile?.company_id || tenantState.currentCompanyId || "",
+          currentUserId: nextUser.profileId,
+          currentAuthUserId: nextUser.authUserId,
+        });
+        await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
+        window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+        window.localStorage.setItem("salon-role", normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
+        setAuthMode("app");
+        setActivePage(resolveDefaultPage(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email))));
+        setAuthSuccess("アカウントを作成しました。管理画面へ移動します。" );
+        return;
+      }
+
+      if (authUser) {
+        setAuthSuccess("アカウントを作成しました。ログインしてください。" );
+      } else {
+        setAuthSuccess("登録リクエストを受け付けました。" );
+      }
+    } catch (error) {
+      setAuthError(getLocalizedSupabaseErrorMessage(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResetPassword = async ({ email }) => {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmail(email));
+      if (error) throw error;
+      setAuthSuccess("パスワード再設定用のメールを送信しました。" );
+    } catch (error) {
+      setAuthError(getLocalizedSupabaseErrorMessage(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      if (isSupabaseConfigured) {
+        await signOutFromSupabase();
+      }
+    } catch (error) {
+      setAuthError(getLocalizedSupabaseErrorMessage(error));
+    } finally {
+      window.localStorage.removeItem("salon-user");
+      window.localStorage.removeItem("salon-role");
+      setCurrentUser(null);
+      setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
+      setCurrentRole("staff");
+      setAuthMode("login");
+      setActivePage("dashboard");
+      setAppState(initialAppStateValue);
+      setSyncStatus({ status: "idle", message: "同期待機中", timestamp: "", error: false });
+      setAuthError("");
+      setAuthSuccess("");
+    }
+  };
+
+  const canAccessCurrentPage = canAccessPage(currentRole, activePage);
+  const isAdminUser = isAdminRole(currentRole);
+
+  const hydrateFromSupabase = async ({ authUser, profile, tenantState }) => {
+    if (!isSupabaseConfigured || !profile?.company_id || !authUser?.id) return;
+    try {
+      console.info("[sync-hydrate] start", {
+        authUserId: authUser?.id,
+        profileId: profile?.id,
+        companyId: profile?.company_id,
+        selectedStore: tenantState?.selectedStore,
+        selectedMonth: tenantState?.selectedMonth,
+      });
+      setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
+      const companyId = profile.company_id || tenantState?.currentCompanyId || "";
+      const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
+      const selectedStoreName = tenantState?.selectedStore || company?.stores?.[0]?.name || "";
+      const store = company?.stores?.find((item) => item.name === selectedStoreName) || company?.stores?.[0] || null;
+      const storeId = store?.id || null;
+      const targetMonth = tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
+      const snapshot = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
+      console.info("[sync-hydrate] snapshot", {
+        authUserId: authUser?.id,
+        companyId,
+        storeId,
+        targetMonth,
+        found: Boolean(snapshot),
+        snapshotId: snapshot?.id || null,
+        snapshotCreatedBy: snapshot?.created_by || null,
+        snapshotUpdatedAt: snapshot?.updated_at || null,
+      });
+      if (!snapshot?.payload) {
+        const fallbackState = normalizeAppState(readAppState());
+        if (fallbackState && Object.keys(fallbackState.dailyResults || {}).length) {
+          setAppState((prev) => ({
+            ...prev,
+            ...fallbackState,
+            currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
+            currentUserId: profile?.id || prev.currentUserId || "",
+            currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
+          }));
+          writeAppState({
+            ...fallbackState,
+            currentCompanyId: profile?.company_id || companyId,
+            currentUserId: profile?.id || "",
+            currentAuthUserId: profile?.auth_user_id || authUser.id || "",
+          });
+        }
+        setSyncStatus({ status: "idle", message: "同期データはまだありません", timestamp: new Date().toISOString(), error: false });
+        setSyncInitialized(true);
+        return;
+      }
+      const remoteState = normalizeAppState(snapshot.payload);
+      const resolvedSelectedStore = remoteState.selectedStore || selectedStoreName || tenantState?.selectedStore || "";
+      const resolvedSelectedMonth = remoteState.selectedMonth || targetMonth || tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
+      const nextRemoteState = {
+        ...remoteState,
+        companies: remoteState.companies?.length ? remoteState.companies : (tenantState?.companies || []),
+        users: remoteState.users?.length ? remoteState.users : (tenantState?.users || []),
+        companySnapshots: remoteState.companySnapshots || (tenantState?.companySnapshots || {}),
+        currentCompanyId: remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
+        currentUserId: remoteState.currentUserId || tenantState?.currentUserId || profile.id || "",
+        currentAuthUserId: remoteState.currentAuthUserId || tenantState?.currentAuthUserId || profile.auth_user_id || authUser.id || "",
+        selectedStore: resolvedSelectedStore,
+        selectedMonth: resolvedSelectedMonth,
+      };
+      const remoteSnapshotSignature = JSON.stringify({
+        ...nextRemoteState,
+        companySnapshots: Object.fromEntries(Object.entries(nextRemoteState.companySnapshots || {}).map(([key, value]) => [key, {
+          ...(value || {}),
+          companySnapshots: undefined,
+        }])),
+      });
+      setAppState((prev) => ({ ...prev, ...nextRemoteState }));
+      lastPersistedRef.current = remoteSnapshotSignature;
+      setSyncStatus({ status: "loaded", message: "同期データを読み込みました", timestamp: new Date().toISOString(), error: false });
+      setSyncInitialized(true);
+    } catch (error) {
+      const reason = error?.message || "同期読み込みに失敗しました";
+      console.warn("Supabase hydrate failed", error);
+      setSyncStatus({ status: "error", message: `同期エラー: ${reason}`, timestamp: new Date().toISOString(), error: true });
+      setSyncInitialized(true);
+    }
+  };
+
+  const persistTenantState = (nextState) => {
+    const normalizedCompanies = (nextState.companies || []).map((company) => ({
+      ...company,
+      settings: company.settings || createCompanySettingsDefaults(),
+      setup: company.setup || { company: false, store: false, admin: false, settings: false, complete: false },
+      stores: (company.stores || []).map((store) => ({ ...store, settings: store.settings || createStoreSettingsDefaults() })),
+    }));
+    const persisted = {
+      ...nextState,
+      currentCompanyId: nextState.currentCompanyId || currentUser?.company_id || "",
+      currentUserId: nextState.currentUserId || currentUser?.profileId || "",
+      currentAuthUserId: nextState.currentAuthUserId || currentUser?.authUserId || "",
+      companies: normalizedCompanies,
+      users: (nextState.users || []).map((user) => ({
+        ...user,
+        invitationStatus: user.invitationStatus || "active",
+        primaryStoreId: user.primaryStoreId || user.storeIds?.[0] || "",
+        loginCount: Number(user.loginCount || 0),
+        inviteExpiresAt: user.inviteExpiresAt || "",
+      })),
+      companySnapshots: { ...(nextState.companySnapshots || {}), [nextState.currentCompanyId || "company-fine"]: nextState },
+    };
+    writeAppState(persisted);
+    setAppState(persisted);
+  };
+
+  const persistToSupabase = async (nextState) => {
+    if (!isSupabaseConfigured) {
+      setSyncStatus({ status: "idle", message: "同期未対応", timestamp: new Date().toISOString(), error: false });
+      return { ok: false, skipped: true };
+    }
+    if (!nextState?.currentCompanyId || !nextState?.currentUserId) {
+      setSyncStatus({ status: "idle", message: "ログイン後に同期を開始します", timestamp: new Date().toISOString(), error: false });
+      return { ok: true, skipped: true };
+    }
+    const company = (nextState.companies || []).find((item) => item.id === nextState.currentCompanyId);
+    const store = company?.stores?.find((item) => item.name === nextState.selectedStore) || company?.stores?.[0] || null;
+    const user = (nextState.users || []).find((item) => item.id === nextState.currentUserId);
+    if (!company || !store || !user) {
+      setSyncStatus({ status: "idle", message: "同期対象データが未準備です", timestamp: new Date().toISOString(), error: false });
+      return { ok: true, skipped: true };
+    }
+    setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
+    const result = await upsertTenantSnapshot({ company, store, user, appState: nextState, targetMonth: nextState.selectedMonth || new Date().toISOString().slice(0, 7) });
+    if (!result.ok || result.skipped) {
+      const reason = result?.error?.message || "不明な理由";
+      console.warn("Supabase sync skipped", { reason, result });
+      setSyncStatus({ status: "error", message: `同期に失敗しました: ${reason}`, timestamp: new Date().toISOString(), error: true });
+      return result;
+    }
+    setSyncStatus({ status: "synced", message: "同期済み", timestamp: new Date().toISOString(), error: false });
+    return result;
+  };
+
+  const handleSaveCompany = async () => {
+    if (!canManageCompany(currentRole)) {
+      setNotice("会社作成はシステム管理者または会社管理者が実行できます");
+      return;
+    }
+
+    const normalizedName = companyForm.name.trim();
+    if (!normalizedName) return;
+    const existingCompany = (appState.companies || []).find((company) => company.id === companyEditId) || null;
+    const normalizedCode = (companyForm.code || normalizedName).trim().toLowerCase();
+
+    try {
+      let createdCompany = null;
+      if (!existingCompany) {
+        createdCompany = await createCompanyRecord({
+          name: normalizedName,
+          code: normalizedCode,
+          createdByProfileId: appState.currentUserId || currentUser?.profileId || "",
+        });
+      }
+
+      const companyId = existingCompany?.id || createdCompany?.id || `company-${normalizedCode.replace(/\s+/g, "-")}`;
+      const nextCompany = {
+        id: companyId,
+        name: normalizedName,
+        code: normalizedCode,
+        isActive: existingCompany?.isActive ?? true,
+        contractStatus: companyForm.contractStatus || existingCompany?.contractStatus || "trial",
+        businessType: companyForm.businessType || existingCompany?.businessType || "salon",
+        startedAt: existingCompany?.startedAt || new Date().toISOString(),
+        lastUpdatedAt: new Date().toISOString(),
+        setup: existingCompany?.setup || { company: true, store: false, admin: false, settings: false, complete: false },
+        settings: { ...createCompanySettingsDefaults(), ...(existingCompany?.settings || {}), ...(companySettingsForm || {}), businessType: companyForm.businessType || existingCompany?.businessType || "salon" },
+        stores: existingCompany?.stores || [],
+      };
+      const nextState = {
+        ...appState,
+        companies: existingCompany ? (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)) : [...(appState.companies || []), nextCompany],
+        currentCompanyId: companyId,
+        companySnapshots: {
+          ...(appState.companySnapshots || {}),
+          [companyId]: {
+            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            stores: nextCompany.stores.map((store) => store.name),
+            selectedStore: nextCompany.stores[0]?.name || "",
+            selectedMonth: new Date().toISOString().slice(0, 7),
+          },
+        },
+      };
+      persistTenantState(nextState);
+      setCompanyForm({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
+      setCompanyEditId("");
+      setNotice(existingCompany ? `${nextCompany.name} を更新しました` : `${nextCompany.name} を追加しました`);
+    } catch (error) {
+      setNotice(getSupabaseErrorMessage(error));
+    }
+  };
+
+  const handleSaveStore = async () => {
+    if (!canManageStore(currentRole)) {
+      setNotice("店舗作成はシステム管理者または会社管理者が実行できます");
+      return;
+    }
+    if (!storeForm.name.trim()) return;
+    const companyId = appState.currentCompanyId;
+    const existingStore = currentCompany?.stores?.find((store) => store.id === storeEditId) || null;
+
+    try {
+      let createdStore = null;
+      if (!existingStore) {
+        createdStore = await createStoreRecord({ companyId, name: storeForm.name.trim(), code: (storeForm.code || storeForm.name).trim().toLowerCase() });
+      }
+      const storeId = existingStore?.id || createdStore?.id || `${companyId}-${String(storeForm.code || storeForm.name).toLowerCase().replace(/\s+/g, "-")}`;
+      const normalizedUrls = normalizeStoreUrls(storeForm.urls || []);
+      const serviceTypes = (storeForm.serviceTypes || "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      const nextStore = {
+        id: storeId,
+        name: storeForm.name.trim(),
+        code: (storeForm.code || storeForm.name).trim().toLowerCase(),
+        companyId,
+        postalCode: storeForm.postalCode,
+        address: storeForm.address,
+        phone: storeForm.phone,
+        managerName: storeForm.managerName,
+        representativeName: storeForm.representativeName,
+        openingDate: storeForm.openingDate,
+        openingHour: storeForm.openingHour,
+        closingHour: storeForm.closingHour,
+        closedDays: storeForm.closedDays,
+        businessHours: storeForm.businessHours,
+        description: storeForm.description,
+        website: storeForm.website,
+        instagram: storeForm.instagram,
+        googleMapUrl: storeForm.googleMapUrl,
+        serviceTypes,
+        urls: normalizedUrls,
+        status: existingStore?.status || storeForm.status || "active",
+        isActive: storeForm.isActive !== false,
+        settings: { ...createStoreSettingsDefaults(), ...(existingStore?.settings || {}), ...(storeSettingsForm || {}) },
+      };
+      const nextCompany = {
+        ...currentCompany,
+        stores: existingStore
+          ? (currentCompany?.stores || []).map((store) => (store.id === existingStore.id ? nextStore : store))
+          : [...(currentCompany?.stores || []), nextStore],
+        setup: { ...(currentCompany?.setup || {}), store: true },
+      };
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+        companySnapshots: {
+          ...(appState.companySnapshots || {}),
+          [companyId]: {
+            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            stores: nextCompany.stores.map((store) => store.name),
+            selectedStore: nextStore.name,
+          },
+        },
+      };
+      persistTenantState(nextState);
+      setStoreForm(createStoreFormDefaults());
+      setStoreEditId("");
+      setNotice(existingStore ? `${nextStore.name} を更新しました` : `${nextStore.name} を追加しました`);
+    } catch (error) {
+      setNotice(getSupabaseErrorMessage(error));
+    }
+  };
+
+  const handleSaveUser = async () => {
+    if (!canManageUsers(currentRole)) {
+      setNotice("ユーザー作成はシステム管理者または会社管理者が実行できます");
+      return;
+    }
+    if (!userForm.name.trim() || !userForm.email.trim()) return;
+    const normalizedEmail = userForm.email.trim().toLowerCase();
+    const duplicateUser = (appState.users || []).find((user) => user.email === normalizedEmail && user.id !== userEditId);
+    if (duplicateUser) {
+      setNotice("同じメールアドレスのユーザーが既に登録されています");
+      return;
+    }
+    const normalizedCurrentRole = normalizeRole(currentRole);
+    const companyId = normalizedCurrentRole === "company_admin" ? appState.currentCompanyId : (userForm.companyId || appState.currentCompanyId);
+    const role = normalizedCurrentRole === "company_admin" ? (userForm.role === "system_admin" ? "store_manager" : userForm.role) : userForm.role;
+    const existingUser = (appState.users || []).find((user) => user.id === userEditId) || null;
+    const inviteTokenValue = existingUser?.inviteToken || createInviteToken();
+    const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
+    const inviteExpiresAt = existingUser?.inviteExpiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    try {
+      let createdProfile = null;
+      let authUserId = existingUser?.authUserId || "";
+      if (!existingUser) {
+        const signupResult = await signUpWithEmail(normalizedEmail, "password123");
+        authUserId = signupResult?.data?.user?.id || "";
+        createdProfile = await createUserProfileRecord({
+          name: userForm.name.trim(),
+          email: normalizedEmail,
+          role,
+          companyId,
+          storeIds: userForm.storeIds.length ? userForm.storeIds : (currentCompanyStores[0]?.id ? [currentCompanyStores[0].id] : []),
+          primaryStoreId: userForm.primaryStoreId || userForm.storeIds[0] || currentCompanyStores[0]?.id || "",
+          authUserId,
+        });
+      }
+
+      const selectedStores = userForm.storeIds.length ? userForm.storeIds : (currentCompanyStores[0]?.id ? [currentCompanyStores[0].id] : []);
+      const nextUser = {
+        id: existingUser?.id || createdProfile?.id || `user-${Date.now()}`,
+        name: userForm.name.trim(),
+        email: normalizedEmail,
+        role,
+        companyId,
+        storeIds: selectedStores,
+        primaryStoreId: userForm.primaryStoreId || userForm.storeIds[0] || currentCompanyStores[0]?.id || "",
+        isActive: userForm.isActive !== false,
+        invitationStatus: existingUser?.invitationStatus || userForm.invitationStatus || "invited",
+        lastLoginAt: existingUser?.lastLoginAt || userForm.lastLoginAt || "",
+        loginCount: existingUser?.loginCount || userForm.loginCount || 0,
+        inviteExpiresAt: userForm.invitationStatus === "invited" ? inviteExpiresAt : "",
+        inviteToken: existingUser?.inviteToken || inviteTokenValue,
+        inviteLink: existingUser?.inviteLink || inviteLink,
+        authUserId: existingUser?.authUserId || createdProfile?.auth_user_id || authUserId || "",
+      };
+      const nextState = {
+        ...appState,
+        users: existingUser ? (appState.users || []).map((user) => (user.id === nextUser.id ? nextUser : user)) : [...(appState.users || []), nextUser],
+      };
+      persistTenantState(nextState);
+      setUserForm({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
+      setUserEditId("");
+      setNotice(existingUser ? `${nextUser.name} を更新しました` : `${nextUser.name} を招待しました。招待リンクを共有してください。`);
+    } catch (error) {
+      setNotice(getSupabaseErrorMessage(error));
+    }
+  };
+
+  const handleCompanySwitch = (companyId) => {
+    const targetCompany = (appState.companies || []).find((company) => company.id === companyId);
+    if (!targetCompany) return;
+    const nextState = applyCompanySnapshot({ ...appState, currentCompanyId: companyId }, companyId);
+    persistTenantState(nextState);
+  };
+
+  const handleStoreSwitch = (storeName) => {
+    const nextState = {
+      ...appState,
+      selectedStore: storeName,
+      companySnapshots: { ...(appState.companySnapshots || {}), [appState.currentCompanyId]: { ...(appState.companySnapshots?.[appState.currentCompanyId] || createInitialAppState()), selectedStore: storeName } },
+    };
+    persistTenantState(nextState);
+  };
+
+  const handleEditCompany = (company) => {
+    setCompanyEditId(company.id);
+    setCompanyForm({ name: company.name, code: company.code, contractStatus: company.contractStatus || "trial", businessType: company.businessType || "salon" });
+    setCompanySettingsForm({ ...createCompanySettingsDefaults(), ...(company.settings || {}), businessType: company.businessType || "salon" });
+    setNotice(`${company.name} を編集します`);
+  };
+
+  const handleEditStore = (store) => {
+    setStoreEditId(store.id);
+    setStoreForm({
+      name: store.name || "",
+      code: store.code || "",
+      postalCode: store.postalCode || "",
+      address: store.address || "",
+      phone: store.phone || "",
+      managerName: store.managerName || "",
+      representativeName: store.representativeName || "",
+      openingDate: store.openingDate || "",
+      openingHour: store.openingHour || "09:00",
+      closingHour: store.closingHour || "20:00",
+      closedDays: store.closedDays || "月",
+      businessHours: store.businessHours || "09:00-20:00",
+      description: store.description || "",
+      website: store.website || "",
+      instagram: store.instagram || "",
+      googleMapUrl: store.googleMapUrl || "",
+      serviceTypes: (store.serviceTypes || []).join(", "),
+      urls: Array.isArray(store.urls) ? store.urls : normalizeStoreUrls(store.urls || []),
+      isActive: store.isActive !== false,
+      status: store.status || "active",
+    });
+    setStoreSettingsForm({ ...createStoreSettingsDefaults(), ...(store.settings || {}) });
+  };
+
+  const handleEditUser = (user) => {
+    setUserEditId(user.id);
+    setUserForm({ name: user.name, email: user.email, role: user.role, companyId: user.companyId || "", storeIds: user.storeIds || [], primaryStoreId: user.primaryStoreId || "", invitationStatus: user.invitationStatus || "invited", loginCount: user.loginCount || 0, lastLoginAt: user.lastLoginAt || "", isActive: user.isActive !== false });
+  };
+
+  const handleToggleCompanyStatus = (company) => {
+    if (!window.confirm(`${company.name} を${company.isActive ? "利用停止" : "再開"}しますか？`)) return;
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((item) => item.id === company.id ? { ...item, isActive: !item.isActive, lastUpdatedAt: new Date().toISOString() } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(company.isActive ? `${company.name} を停止しました` : `${company.name} を再開しました`);
+  };
+
+  const handleToggleStoreStatus = (store) => {
+    if (!window.confirm(`${store.name} を${store.isActive ? "利用停止" : "再開"}しますか？`)) return;
+    const nextCompany = {
+      ...currentCompany,
+      stores: (currentCompany?.stores || []).map((item) => item.id === store.id ? { ...item, isActive: !item.isActive, status: item.isActive ? "paused" : "active" } : item),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+    setNotice(store.isActive ? `${store.name} を停止しました` : `${store.name} を再開しました`);
+  };
+
+  const handleDuplicateStore = (store) => {
+    const duplicateName = `${store.name} コピー`;
+    const nextCompany = {
+      ...currentCompany,
+      stores: [...(currentCompany?.stores || []), {
+        ...store,
+        id: `${store.id}-copy-${Date.now()}`,
+        name: duplicateName,
+        code: `${(store.code || duplicateName).replace(/\s+/g, "-").toLowerCase()}-copy`,
+        isActive: true,
+        status: "active",
+      }],
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+    setNotice(`${duplicateName} を複製しました`);
+  };
+
+  const handleArchiveStore = (store) => {
+    if (!window.confirm(`${store.name} をアーカイブしますか？`)) return;
+    const nextCompany = {
+      ...currentCompany,
+      stores: (currentCompany?.stores || []).map((item) => item.id === store.id ? { ...item, isActive: false, status: "archived" } : item),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+    setNotice(`${store.name} をアーカイブしました`);
+  };
+
+  const handleRestoreStore = (store) => {
+    const nextCompany = {
+      ...currentCompany,
+      stores: (currentCompany?.stores || []).map((item) => item.id === store.id ? { ...item, isActive: true, status: "active" } : item),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+    setNotice(`${store.name} を復元しました`);
+  };
+
+  const handleDeleteStore = (store) => {
+    if (!window.confirm(`${store.name} を削除しますか？`)) return;
+    const nextCompany = {
+      ...currentCompany,
+      stores: (currentCompany?.stores || []).filter((item) => item.id !== store.id),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+    setNotice(`${store.name} を削除しました`);
+  };
+
+  const handleToggleUserStatus = (user) => {
+    if (!window.confirm(`${user.name} を${user.isActive ? "利用停止" : "再開"}しますか？`)) return;
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: !item.isActive } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(user.isActive ? `${user.name} を停止しました` : `${user.name} を再開しました`);
+  };
+
+  const handleUpdateUserRole = (user, nextRole) => {
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, role: nextRole } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} の権限を ${nextRole} に変更しました`);
+  };
+
+  const handleUpdateUserStores = (user, nextStoreIds) => {
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, storeIds: nextStoreIds, primaryStoreId: nextStoreIds[0] || "" } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} の所属店舗を更新しました`);
+  };
+
+  const handleMarkInvitationSent = (user) => {
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), lastLoginAt: item.lastLoginAt || "", loginCount: item.loginCount || 0 } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} に招待メールを送信しました（7日間有効）`);
+  };
+
+  const handleMarkRegistered = (user) => {
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "registered", loginCount: item.loginCount || 0 } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} を登録済みに更新しました`);
+  };
+
+  const handleSimulateLogin = (user) => {
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "registered", lastLoginAt: new Date().toISOString(), loginCount: (item.loginCount || 0) + 1 } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} のログイン回数を更新しました`);
+  };
+
+  const toggleUserStoreSelection = (storeId) => {
+    setUserForm((prev) => {
+      const nextStoreIds = prev.storeIds.includes(storeId) ? prev.storeIds.filter((currentId) => currentId !== storeId) : [...prev.storeIds, storeId];
+      return {
+        ...prev,
+        storeIds: nextStoreIds,
+        primaryStoreId: prev.primaryStoreId === storeId ? "" : nextStoreIds[0] || "",
+      };
+    });
+  };
+
+  const handleToggleCompanySetup = () => {
+    const nextCompany = {
+      ...currentCompany,
+      setup: { ...(currentCompany?.setup || {}), complete: true, company: true, store: true, admin: true, settings: true },
+      lastUpdatedAt: new Date().toISOString(),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+    setNotice("初期設定を完了しました");
+  };
+
+  const handleSaveCompanySettings = () => {
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => company.id === currentCompany?.id ? {
+        ...company,
+        businessType: companySettingsForm.businessType || company.businessType || "salon",
+        settings: { ...createCompanySettingsDefaults(), ...(company.settings || {}), ...(companySettingsForm || {}), businessType: companySettingsForm.businessType || company.businessType || "salon" },
+        setup: { ...(company.setup || {}), settings: true, complete: Boolean(company.setup?.company && company.setup?.store && company.setup?.admin && company.setup?.settings) },
+        lastUpdatedAt: new Date().toISOString(),
+      } : company),
+    };
+    persistTenantState(nextState);
+    setNotice("会社基本設定を保存しました");
+  };
+
+  const handleSaveStoreSettings = () => {
+    const nextCompany = {
+      ...currentCompany,
+      stores: (currentCompany?.stores || []).map((store) => store.name === selectedStore ? { ...store, settings: storeSettingsForm } : store),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => company.id === currentCompany?.id ? nextCompany : company),
+    };
+    persistTenantState(nextState);
+    setNotice("店舗初期設定を保存しました");
+  };
+
+  const handleInviteEmail = (user) => {
+    const inviteTokenValue = user.inviteToken || createInviteToken();
+    const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} に招待リンクを更新しました`);
+  };
+
+  const handleCopyInviteLink = async (user) => {
+    const inviteLink = user.inviteLink || buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", user.inviteToken || createInviteToken());
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(inviteLink);
+        setNotice(`${user.name} の招待リンクをコピーしました`);
+        return;
+      }
+    } catch (error) {
+      console.warn("Clipboard write failed", error);
+    }
+    window.prompt("招待リンク", inviteLink);
+  };
+
+  const handlePasswordReset = (user) => {
+    const nextState = {
+      ...appState,
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited" } : item),
+    };
+    persistTenantState(nextState);
+    setNotice(`${user.name} にパスワード設定メールを送信しました（デモ）`);
+  };
+
+  useEffect(() => {
+    if (authMode !== "app" || !currentUser?.authUserId || !syncInitialized) return;
+
+    const safeState = {
+      ...appState,
+      companySnapshots: Object.fromEntries(Object.entries(appState.companySnapshots || {}).map(([key, value]) => [key, {
+        ...(value || {}),
+        companySnapshots: undefined,
+      }]))
+    };
+    const snapshot = JSON.stringify(safeState);
     if (lastPersistedRef.current === snapshot) {
       return;
     }
 
     lastPersistedRef.current = snapshot;
     const timestamp = new Date().toISOString();
-    setSaveStatus({ status: "saving", message: "保存中...", timestamp, error: false });
+    setSaveStatus({ status: "saving", message: "保存中…", timestamp, error: false });
 
-    try {
-      writeAppState(appState);
-      setSaveStatus({ status: "saved", message: "自動保存済み", timestamp, error: false });
-    } catch (error) {
+    void persistToSupabase(appState).then((result) => {
+      if (result?.ok && !result?.skipped) {
+        setSaveStatus({ status: "saved", message: "保存済み ✓", timestamp, error: false });
+        return;
+      }
+      setSaveStatus({ status: "saved", message: "同期待機中", timestamp, error: false });
+    }).catch((error) => {
       setSaveStatus({ status: "error", message: error instanceof Error ? error.message : "保存に失敗しました", timestamp, error: true });
-    }
-  }, [appState]);
+    });
+  }, [appState, authMode, currentUser?.authUserId]);
 
   useEffect(() => {
     const updateOnlineState = () => setIsOnline(typeof navigator !== "undefined" ? navigator.onLine : true);
@@ -218,14 +1557,128 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!selectedStore && stores.length) {
-      setAppState((prev) => ({ ...prev, selectedStore: stores[0] }));
-    }
-  }, [selectedStore, stores]);
+    if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !currentUser?.profileId) return;
+    void hydrateFromSupabase({
+      authUser: { id: currentUser.authUserId, email: currentUser.email },
+      profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
+      tenantState: appState,
+    });
+  }, [authMode, currentUser?.authUserId, currentUser?.profileId, appState.currentCompanyId, appState.selectedStore, appState.selectedMonth, currentRole]);
 
   useEffect(() => {
-    setBusinessDayInput(businessDaySettings.businessDayCount ? String(businessDaySettings.businessDayCount) : "");
-  }, [businessDaySettings.businessDayCount]);
+    if (dailyMode === "view") {
+      if (autoSaveTimerRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+      autoSaveTimerRef.current = null;
+      return;
+    }
+
+    const hasAnyValue = [dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0);
+    const signature = getDailyAutoSaveSignature(dailyForm);
+    if (!dailyForm.date || (!hasAnyValue && !dailyForm.id)) {
+      return;
+    }
+    if (signature === lastAutoSaveSignatureRef.current) {
+      return;
+    }
+
+    if (autoSaveTimerRef.current) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      void saveDailyEntry({ silent: true, force: false, autoSave: true });
+    }, 400);
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        window.clearTimeout(autoSaveTimerRef.current);
+      }
+    };
+  }, [dailyForm.date, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyMode, selectedStore, selectedMonth, dailyForm.id, dailyEntries]);
+
+  useEffect(() => {
+    const handleFocus = () => {
+      if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !currentUser?.profileId) return;
+      void hydrateFromSupabase({
+        authUser: { id: currentUser.authUserId, email: currentUser.email },
+        profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
+        tenantState: appState,
+      });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        handleFocus();
+      }
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [authMode, currentUser?.authUserId, currentUser?.profileId, appState.currentCompanyId, appState.selectedStore, appState.selectedMonth, currentRole]);
+
+  useEffect(() => {
+    if (!selectedStore) {
+      const fallbackStore = visibleStores[0]?.name || "";
+      if (fallbackStore) {
+        setAppState((prev) => ({ ...prev, selectedStore: fallbackStore }));
+      }
+      return;
+    }
+    const selectedStoreExists = visibleStores.some((store) => store.name === selectedStore);
+    if (!selectedStoreExists) {
+      const fallbackStore = visibleStores[0]?.name || "";
+      if (fallbackStore) {
+        setAppState((prev) => ({ ...prev, selectedStore: fallbackStore }));
+      }
+    }
+  }, [selectedStore, visibleStores]);
+
+  useEffect(() => {
+    if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !appState.currentCompanyId) {
+      if (remoteSyncChannelRef.current) {
+        supabase.removeChannel(remoteSyncChannelRef.current);
+        remoteSyncChannelRef.current = null;
+      }
+      return;
+    }
+
+    const companyId = appState.currentCompanyId;
+    const targetMonth = appState.selectedMonth || new Date().toISOString().slice(0, 7);
+    const channelName = `tenant-snapshots-${companyId}-${targetMonth}`;
+    if (remoteSyncChannelRef.current) {
+      supabase.removeChannel(remoteSyncChannelRef.current);
+    }
+
+    const channel = supabase.channel(channelName);
+    channel.on("postgres_changes", { event: "*", schema: "public", table: "tenant_snapshots", filter: `company_id=eq.${companyId}` }, () => {
+      void hydrateFromSupabase({
+        authUser: { id: currentUser.authUserId, email: currentUser.email },
+        profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
+        tenantState: appState,
+      });
+    });
+    channel.subscribe();
+    remoteSyncChannelRef.current = channel;
+
+    return () => {
+      if (remoteSyncChannelRef.current) {
+        supabase.removeChannel(remoteSyncChannelRef.current);
+        remoteSyncChannelRef.current = null;
+      }
+    };
+  }, [authMode, currentUser?.authUserId, currentUser?.profileId, appState.currentCompanyId, appState.selectedMonth, currentRole]);
+
+  useEffect(() => {
+    setBusinessDayInput(businessDaySettings.holidayCount ? String(businessDaySettings.holidayCount) : "");
+  }, [businessDaySettings.holidayCount, selectedStore, selectedMonth]);
+
+  useEffect(() => {
+    setManualBusinessDayInput(businessDaySettings.mode === "manual" && businessDaySettings.businessDayCount ? String(businessDaySettings.businessDayCount) : "");
+  }, [businessDaySettings.mode, businessDaySettings.businessDayCount, selectedStore, selectedMonth]);
 
   useEffect(() => {
     if (!selectedStore) {
@@ -243,6 +1696,133 @@ function App() {
 
   const persistSaveStatus = (status, message, error = false) => {
     setSaveStatus({ status, message, timestamp: new Date().toISOString(), error });
+  };
+
+  const getDailyEntryPayload = (form, existingEntryId = null) => {
+    const entryId = form.id || existingEntryId || crypto.randomUUID();
+    return {
+      ...form,
+      id: entryId,
+      updatedAt: new Date().toISOString(),
+      totalSales: parseNumber(form.technicalSales || 0) + parseNumber(form.retailSales || 0),
+      technicalSales: parseNumber(form.technicalSales),
+      retailSales: parseNumber(form.retailSales),
+      otherSales: parseNumber(form.otherSales || 0),
+      customers: parseNumber(form.customers),
+      newCustomers: parseNumber(form.newCustomers),
+      repeatCustomers: parseNumber(form.repeatCustomers),
+    };
+  };
+
+  const getDailyAutoSaveSignature = (form) => JSON.stringify({
+    date: form.date || "",
+    technicalSales: form.technicalSales ?? "",
+    retailSales: form.retailSales ?? "",
+    otherSales: form.otherSales ?? "",
+    customers: form.customers ?? "",
+    newCustomers: form.newCustomers ?? "",
+    repeatCustomers: form.repeatCustomers ?? "",
+  });
+
+  const saveDailyEntry = async ({ silent = false, force = false, autoSave = false, switchToView = false } = {}) => {
+    if (!selectedStore) {
+      if (!silent) {
+        setNotice("店舗を先に追加してください");
+        persistSaveStatus("error", "店舗を先に追加してください", true);
+      }
+      return { ok: false, skipped: true };
+    }
+
+    if (!dailyForm.date) {
+      if (!silent) {
+        setNotice("日付は必須です");
+        persistSaveStatus("error", "日付は必須です", true);
+      }
+      return { ok: false, skipped: true };
+    }
+
+    if (dailyMode === "view") {
+      return { ok: true, skipped: true };
+    }
+
+    const hasAnyValue = [dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0);
+    if (!force && !hasAnyValue) {
+      return { ok: true, skipped: true };
+    }
+
+    const existingEntry = dailyEntries.find((entry) => entry.date === dailyForm.date) || null;
+    if (existingEntry && existingEntry.id !== dailyForm.id && !force) {
+      if (!silent) {
+        setNotice("この日付は既に登録済みです。編集ボタンで更新してください。");
+        persistSaveStatus("error", "この日付は既に登録済みです。編集ボタンで更新してください。", true);
+      }
+      return { ok: false, skipped: true };
+    }
+
+    try {
+      persistSaveStatus("saving", "保存中…", false);
+      const entry = getDailyEntryPayload(dailyForm, existingEntry?.id);
+      const key = buildMonthKey(selectedStore, selectedMonth);
+      const list = appState.dailyResults?.[key] || [];
+      const mergedEntries = [...list.filter((item) => item.id !== entry.id && String(item.date) !== String(entry.date)), entry];
+      const deduped = deduplicateDailyEntries(mergedEntries);
+      const nextState = {
+        ...appState,
+        dailyResults: {
+          ...appState.dailyResults,
+          [key]: deduped.entries,
+        },
+        dailyResultBackups: {
+          ...appState.dailyResultBackups,
+          [key]: [...(appState.dailyResultBackups?.[key] || []), ...deduped.backups],
+        },
+      };
+
+      const remotePersistResult = await persistToSupabase(nextState);
+      if (!remotePersistResult?.ok && !remotePersistResult?.skipped) {
+        throw new Error(remotePersistResult?.error?.message || "Supabase への保存に失敗しました");
+      }
+
+      setAppState((prev) => {
+        const currentKey = buildMonthKey(selectedStore, selectedMonth);
+        const currentList = prev.dailyResults?.[currentKey] || [];
+        const currentMergedEntries = [...currentList.filter((item) => item.id !== entry.id && String(item.date) !== String(entry.date)), entry];
+        const currentDeduped = deduplicateDailyEntries(currentMergedEntries);
+        return {
+          ...prev,
+          dailyResults: {
+            ...prev.dailyResults,
+            [currentKey]: currentDeduped.entries,
+          },
+          dailyResultBackups: {
+            ...prev.dailyResultBackups,
+            [currentKey]: [...(prev.dailyResultBackups?.[currentKey] || []), ...currentDeduped.backups],
+          },
+        };
+      });
+
+      setDailyForm(entry);
+      if (dailyForm.id || dailyMode === "edit") {
+        setDailyOriginalEntry({ ...entry });
+      }
+      if (switchToView) {
+        setDailyMode("view");
+        setDailyOriginalEntry({ ...entry });
+      }
+      setDailyInsight(buildDailyInsight({ form: entry, targetSales: parseNumber(target.targetSales), businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      lastAutoSaveSignatureRef.current = getDailyAutoSaveSignature(entry);
+      persistSaveStatus("saved", "保存済み ✓", false);
+      if (!silent) {
+        setNotice("日次実績を保存しました");
+      }
+      return { ok: true, data: entry, autoSave };
+    } catch (error) {
+      persistSaveStatus("error", error instanceof Error ? error.message : "保存に失敗しました", true);
+      if (!silent) {
+        setNotice("保存に失敗しました");
+      }
+      return { ok: false, error };
+    }
   };
 
   const updateTargetField = (field, value) => {
@@ -284,88 +1864,7 @@ function App() {
 
   const submitDailyEntry = (event) => {
     event?.preventDefault();
-    if (!selectedStore) {
-      setNotice("店舗を先に追加してください");
-      persistSaveStatus("error", "店舗を先に追加してください", true);
-      return;
-    }
-
-    if (!dailyForm.date) {
-      setNotice("日付は必須です");
-      persistSaveStatus("error", "日付は必須です", true);
-      return;
-    }
-
-    const missingFields = [];
-    if (!dailyForm.totalSales) missingFields.push("総売上");
-    if (!dailyForm.technicalSales) missingFields.push("技術売上");
-    if (!dailyForm.retailSales) missingFields.push("店販売上");
-    if (!dailyForm.customers) missingFields.push("客数");
-    if (!dailyForm.newCustomers) missingFields.push("新規客数");
-    if (!dailyForm.repeatCustomers) missingFields.push("再来客数");
-
-    if (missingFields.length) {
-      setNotice(`未入力項目があります: ${missingFields.join(" / ")}`);
-      persistSaveStatus("error", `未入力項目があります: ${missingFields.join(" / ")}`, true);
-      return;
-    }
-
-    const existingEntry = dailyEntries.find((entry) => entry.date === dailyForm.date) || null;
-    if (existingEntry && existingEntry.id !== dailyForm.id) {
-      setNotice("この日付は既に登録済みです。編集ボタンで更新してください。");
-      persistSaveStatus("error", "この日付は既に登録済みです。編集ボタンで更新してください。", true);
-      return;
-    }
-
-    try {
-      setAppState((prev) => {
-        const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-        const list = prev.dailyResults?.[key] || [];
-        const nextEntry = {
-          ...dailyForm,
-          totalSales: parseNumber(dailyForm.totalSales),
-          technicalSales: parseNumber(dailyForm.technicalSales),
-          retailSales: parseNumber(dailyForm.retailSales),
-          customers: parseNumber(dailyForm.customers),
-          newCustomers: parseNumber(dailyForm.newCustomers),
-          repeatCustomers: parseNumber(dailyForm.repeatCustomers),
-        };
-
-        const filtered = dailyForm.id || existingEntry?.id
-          ? list.map((item) => (item.id === (dailyForm.id || existingEntry?.id) ? { ...item, ...nextEntry } : item))
-          : [...list, { ...nextEntry, id: crypto.randomUUID() }];
-
-        return {
-          ...prev,
-          dailyResults: {
-            ...prev.dailyResults,
-            [key]: filtered,
-          },
-        };
-      });
-
-      const entryId = dailyForm.id || existingEntry?.id || crypto.randomUUID();
-      const savedEntry = {
-        ...dailyForm,
-        id: entryId,
-        totalSales: parseNumber(dailyForm.technicalSales || 0) + parseNumber(dailyForm.retailSales || 0),
-        technicalSales: parseNumber(dailyForm.technicalSales),
-        retailSales: parseNumber(dailyForm.retailSales),
-        otherSales: parseNumber(dailyForm.otherSales || 0),
-        customers: parseNumber(dailyForm.customers),
-        newCustomers: parseNumber(dailyForm.newCustomers),
-        repeatCustomers: parseNumber(dailyForm.repeatCustomers),
-      };
-      setDailyForm(savedEntry);
-      setDailyMode("view");
-      setDailyOriginalEntry({ ...savedEntry });
-      setDailyInsight(buildDailyInsight({ form: savedEntry, targetSales: parseNumber(target.targetSales), businessDayCount: businessDaySummary.businessDayCount || 0 }));
-      persistSaveStatus("saved", "日次実績を保存しました");
-      setNotice("日次実績を保存しました");
-    } catch (error) {
-      persistSaveStatus("error", error instanceof Error ? error.message : "保存に失敗しました", true);
-      setNotice("保存に失敗しました");
-    }
+    void saveDailyEntry({ silent: false, force: true, switchToView: true });
   };
 
   const startNewDailyEntry = () => {
@@ -598,15 +2097,18 @@ function App() {
     setNotice("月締め項目を削除しました");
   };
 
-  const saveBusinessDaySetting = (event) => {
-    event.preventDefault();
+  const saveHolidayCount = (event) => {
+    event?.preventDefault();
     const parsed = parseNumber(businessDayInput);
     if (!selectedStore) {
       setNotice("店舗を選択してください");
       return;
     }
-    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 31) {
-      setNotice("営業日数は1〜31の整数で入力してください");
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 31) {
+      setNotice("店休日数は0〜31の整数で入力してください");
+      return;
+    }
+    if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数設定を変更しますか？")) {
       return;
     }
     const key = buildMonthKey(selectedStore, selectedMonth);
@@ -616,12 +2118,77 @@ function App() {
         ...prev.businessDaySettings,
         [key]: {
           ...prev.businessDaySettings?.[key],
+          holidayCount: parsed,
+          mode: prev.businessDaySettings?.[key]?.mode === "manual" ? "manual" : "auto",
+        },
+      },
+    }));
+    persistSaveStatus("saved", "店休日数を保存しました");
+    setNotice("店休日数を保存しました");
+  };
+
+  const startManualBusinessDayEdit = () => {
+    if (!selectedStore) {
+      setNotice("店舗を選択してください");
+      return;
+    }
+    setManualBusinessDayInput(String(businessDaySummary.businessDayCount || ""));
+    setIsBusinessDayEditing((prev) => !prev);
+  };
+
+  const saveManualBusinessDayCount = () => {
+    if (!selectedStore) {
+      setNotice("店舗を選択してください");
+      return;
+    }
+    const parsed = parseNumber(manualBusinessDayInput);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 31) {
+      setNotice("営業日数は1〜31の整数で入力してください");
+      return;
+    }
+    if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数を変更しますか？")) {
+      return;
+    }
+    const key = buildMonthKey(selectedStore, selectedMonth);
+    setAppState((prev) => ({
+      ...prev,
+      businessDaySettings: {
+        ...prev.businessDaySettings,
+        [key]: {
+          ...prev.businessDaySettings?.[key],
+          mode: "manual",
           businessDayCount: parsed,
         },
       },
     }));
-    persistSaveStatus("saved", "営業日数を保存しました");
-    setNotice("営業日数を保存しました");
+    setIsBusinessDayEditing(false);
+    persistSaveStatus("saved", "営業日数を手動設定しました");
+    setNotice("営業日数を手動設定しました");
+  };
+
+  const resetBusinessDaySetting = () => {
+    if (!selectedStore) {
+      setNotice("店舗を選択してください");
+      return;
+    }
+    if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数を自動計算に戻しますか？")) {
+      return;
+    }
+    const key = buildMonthKey(selectedStore, selectedMonth);
+    setAppState((prev) => ({
+      ...prev,
+      businessDaySettings: {
+        ...prev.businessDaySettings,
+        [key]: {
+          ...prev.businessDaySettings?.[key],
+          mode: "auto",
+          businessDayCount: undefined,
+        },
+      },
+    }));
+    setIsBusinessDayEditing(false);
+    persistSaveStatus("saved", "営業日数を自動計算に戻しました");
+    setNotice("営業日数を自動計算に戻しました");
   };
 
   const toggleMonthClosing = () => {
@@ -647,7 +2214,7 @@ function App() {
     setNotice(nextClosed ? "月締めを確定しました" : "月締めを解除しました");
   };
 
-  const toggleDayClosing = () => {
+  const toggleDayClosing = async () => {
     if (!selectedStore || !dailyForm.date) {
       setNotice("締め対象の日付を入力してください");
       return;
@@ -660,22 +2227,27 @@ function App() {
     if (!window.confirm(`この日の締めを${dailyForm.date}で切り替えますか？`)) {
       return;
     }
+    const saveResult = await saveDailyEntry({ silent: true, force: true });
+    if (!saveResult?.ok) {
+      return;
+    }
     const key = buildMonthKey(selectedStore, selectedMonth);
     setAppState((prev) => {
       const current = prev.dayClosingStates?.[key] || {};
+      const nextClosed = !Boolean(current[dailyForm.date]);
       return {
         ...prev,
         dayClosingStates: {
           ...prev.dayClosingStates,
           [key]: {
             ...current,
-            [dailyForm.date]: !Boolean(current[dailyForm.date]),
+            [dailyForm.date]: nextClosed,
           },
         },
       };
     });
-    persistSaveStatus("saved", "日締め状態を更新しました");
-    setNotice("日締め状態を更新しました");
+    persistSaveStatus("saved", "保存済み ✓");
+    setNotice("日締めが完了しました");
   };
 
   const handleStoreAdd = () => {
@@ -769,6 +2341,140 @@ function App() {
     setStoreFormName(storeName);
   };
 
+  if (authLoading) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-title-block">
+            <p className="eyebrow">AUTH</p>
+            <h2>権限を確認しています</h2>
+            <p>ログイン情報とプロフィールを読み込んでいます。しばらくお待ちください。</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser && !authLoading) {
+    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onResetPassword={handleResetPassword} loading={authLoading} error={authError} success={authSuccess} />;
+  }
+
+  if (!canAccessCurrentPage) {
+    return <AccessDenied />;
+  }
+
+  if (showInitialSetup) {
+    return (
+      <div className="app-shell">
+        <main className="main-content">
+          <section className="panel setup-panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">SETUP</p>
+                <h2>初期設定</h2>
+              </div>
+            </div>
+            <div className="setup-steps">
+              {setupProgress.steps.map((step) => (
+                <div key={step.id} className={`setup-step ${step.done ? "done" : ""}`}>
+                  <span>{step.label}</span>
+                </div>
+              ))}
+            </div>
+            <div className="setup-body">
+              <div className="setup-card">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">STEP 1</p>
+                    <h3>会社情報</h3>
+                  </div>
+                </div>
+                <div className="inline-form">
+                  <input value={companyForm.name} onChange={(event) => setCompanyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="会社名" />
+                  <input value={companyForm.code} onChange={(event) => setCompanyForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="会社コード" />
+                  <select value={companyForm.businessType || "salon"} onChange={(event) => setCompanyForm((prev) => ({ ...prev, businessType: event.target.value }))}>
+                    <option value="salon">サロン</option>
+                    <option value="nail">ネイルサロン</option>
+                    <option value="eyelash">まつげサロン</option>
+                    <option value="esthetic">エステサロン</option>
+                  </select>
+                  <button className="primary-button" type="button" onClick={handleSaveCompany}>会社情報を保存</button>
+                </div>
+                <p className="helper-text">業種: {getBusinessTypeLabel(companyForm.businessType || "salon")}</p>
+              </div>
+              <div className="setup-card">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">STEP 2</p>
+                    <h3>店舗登録</h3>
+                  </div>
+                </div>
+                <div className="inline-form">
+                  <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder={storeNamePlaceholder} />
+                  <input value={storeForm.code} onChange={(event) => setStoreForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="店舗コード" />
+                  <button className="primary-button" type="button" onClick={handleSaveStore}>店舗を追加</button>
+                </div>
+              </div>
+              <div className="setup-card">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">STEP 3</p>
+                    <h3>管理者登録</h3>
+                  </div>
+                </div>
+                <div className="inline-form">
+                  <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="氏名" />
+                  <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="メールアドレス" />
+                  <select value={userForm.role} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
+                    <option value="company_admin">company_admin</option>
+                    <option value="store_manager">store_manager</option>
+                    <option value="staff">staff</option>
+                  </select>
+                  <button className="primary-button" type="button" onClick={handleSaveUser}>管理者を登録</button>
+                </div>
+              </div>
+              <div className="setup-card">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">STEP 4</p>
+                    <h3>基本設定</h3>
+                  </div>
+                </div>
+                <div className="input-grid">
+                  <label className="field">
+                    <span>通貨</span>
+                    <input value={companySettingsForm.currency || "JPY"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, currency: event.target.value }))} />
+                  </label>
+                  <label className="field">
+                    <span>会計年度開始月</span>
+                    <input value={companySettingsForm.fiscalYearStartMonth || "1"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, fiscalYearStartMonth: event.target.value }))} />
+                  </label>
+                  <label className="field">
+                    <span>売上表示</span>
+                    <select value={companySettingsForm.salesDisplayMode || "inclusive"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, salesDisplayMode: event.target.value }))}>
+                      <option value="inclusive">税込</option>
+                      <option value="exclusive">税抜</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>店販売上の名称</span>
+                    <input value={companySettingsForm.retailSalesLabel || "店販売上"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, retailSalesLabel: event.target.value }))} />
+                  </label>
+                </div>
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={handleSaveCompanySettings}>基本設定を保存</button>
+                </div>
+              </div>
+            </div>
+            <div className="button-row">
+              <button className="primary-button" type="button" onClick={handleToggleCompanySetup}>初期設定を完了する</button>
+            </div>
+          </section>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <div className={`app-shell ${theme === "dark" ? "theme-dark" : ""}`}>
       <aside className="sidebar">
@@ -777,11 +2483,11 @@ function App() {
             <span className="brand-mark">S</span>
             <div>
               <strong>Salon Manager</strong>
-              <small>美容室経営管理</small>
+              <small>サロン経営管理</small>
             </div>
           </div>
           <nav className="nav">
-            {navItems.map((item) => (
+            {visibleNavItems.map((item) => (
               <button key={item.id} className={activePage === item.id ? "nav-button active" : "nav-button"} onClick={() => setActivePage(item.id)}>
                 {item.label}
               </button>
@@ -795,16 +2501,22 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">SALON MANAGEMENT</p>
-            <h1>{activePage === "dashboard" ? "売上" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "stores" ? "店舗追加" : "設定"}</h1>
+            <h1>{activePage === "dashboard" ? "売上" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : "設定"}</h1>
+            {currentUser ? (
+              <div className="user-role-badge" style={{ marginTop: 6 }}>
+                {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
+              </div>
+            ) : null}
           </div>
 
           <div className="filters">
             <label>
               店舗
               <select value={selectedStore} onChange={(event) => setAppState((prev) => ({ ...prev, selectedStore: event.target.value }))}>
-                {stores.length ? stores.map((storeName) => <option key={storeName} value={storeName}>{storeName}</option>) : <option value="">未登録</option>}
+                {visibleStores.length ? visibleStores.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
               </select>
             </label>
+            <button className="secondary-button" type="button" onClick={handleLogout}>ログアウト</button>
             <label>
               対象月
               <input type="month" value={ensureMonthValue(selectedMonth)} onChange={(event) => setAppState((prev) => ({ ...prev, selectedMonth: event.target.value }))} />
@@ -814,7 +2526,6 @@ function App() {
 
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
         {notice ? <div className="notice-box">{notice}</div> : null}
-
         {activePage === "dashboard" && (
           <div className="dashboard-layout">
             <section className="panel">
@@ -827,6 +2538,10 @@ function App() {
                   <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
                     {saveStatus.message || "自動保存済み"}
                   </div>
+                  <div className={`status-pill ${syncStatus.error ? "error" : syncStatus.status === "syncing" ? "saving" : syncStatus.status === "synced" ? "saved" : "neutral"}`}>
+                    {syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}
+                  </div>
+                  <div className="timestamp-pill">同期: {isSupabaseConfigured ? "Supabase対応" : "同期未対応"}</div>
                   {saveStatus.timestamp ? <div className="timestamp-pill">最終保存 {formatTimestamp(saveStatus.timestamp)}</div> : null}
                 </div>
               </div>
@@ -854,15 +2569,14 @@ function App() {
               </div>
               <div className="kpi-grid">
                 <MetricCard label="月間目標売上" value={money(target.targetSales || 0)} />
-                <MetricCard label="現在売上" value={money(summary.sales)} />
+                <MetricCard label="店舗売上" value={money(summary.sales)} />
                 <MetricCard label="月間達成率" value={percent(summary.targetAchievement)} />
-                <MetricCard label="月間設定営業日数" value={businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"} />
-                <MetricCard label="営業完了日数" value={`${businessDaySummary.completedDays}日`} />
-                <MetricCard label="残り営業日数" value={businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`} />
-                <MetricCard label="営業進捗率" value={businessDaySummary.progressRate === null ? "未設定" : percent(businessDaySummary.progressRate)} />
+                <MetricCard label="顧客数" value={number(summary.customers)} />
+                <MetricCard label="新規顧客数" value={number(summary.newCustomers)} />
+                <MetricCard label="リピート顧客数" value={number(summary.repeatCustomers)} />
+                <MetricCard label="平均客単価" value={money(summary.averageSpend)} />
                 <MetricCard label="1日平均売上" value={money(summary.averageSales)} />
                 <MetricCard label="目標まで残り売上" value={money(summary.remainingSalesTarget)} />
-                <MetricCard label="残り1営業日あたり必要売上" value={money(summary.dailyNeededSales)} />
                 <MetricCard label="本日の目標売上" value={money(summary.todayTarget)} />
               </div>
               {todayEntry ? (
@@ -890,31 +2604,59 @@ function App() {
                 </div>
                 <select value={rankingSort} onChange={(event) => setRankingSort(event.target.value)}>
                   <option value="sales">現在売上順</option>
-                  <option value="achievement">達成率順</option>
+                  <option value="achievement">目標達成率順</option>
+                  <option value="change">前月比順</option>
+                  <option value="profit">営業利益順</option>
                 </select>
               </div>
               {stores.length === 0 ? (
                 <div className="empty-card">店舗を追加してください。</div>
               ) : (
-                <div className="ranking-list">
-                  {rankingRows.map((row, index) => (
-                    <div key={row.storeName} className={`ranking-card tone-${row.tone}`}>
-                      <div className="rank-badge">{index + 1}</div>
-                      <div className="ranking-main">
-                        <div className="ranking-title-row">
-                          <strong>{row.storeName}</strong>
-                          <span>{row.achievementLabel}</span>
+                <div className="ranking-accordion">
+                  {rankingRows.map((row) => {
+                    const isExpanded = expandedRankingStore === row.storeName;
+                    return (
+                      <button key={row.storeName} type="button" className={`ranking-card-accordion ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedRankingStore((current) => (current === row.storeName ? "" : row.storeName))}>
+                        <div className="ranking-card-summary">
+                          <div className="ranking-card-main">
+                            <div className="ranking-card-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
+                            <div className="ranking-card-title">
+                              <strong>{row.storeName}</strong>
+                            </div>
+                          </div>
+                          <div className="ranking-card-value-block">
+                            <span>現在売上</span>
+                            <strong>{money(row.sales)}</strong>
+                          </div>
+                          <div className="ranking-card-toggle">{isExpanded ? "▲" : "▼"}</div>
                         </div>
-                        <div className="ranking-metrics">
-                          <div><span>現在売上</span><strong>{money(row.sales)}</strong></div>
-                          <div><span>目標達成率</span><strong>{percent(row.achievement)}</strong></div>
-                          <div><span>前月売上</span><strong>{money(row.previousSales)}</strong></div>
-                          <div><span>前月との差額</span><strong>{moneyDiff(row.previousDiff)}</strong></div>
-                          <div><span>月末着地予測</span><strong>{money(row.forecast)}</strong></div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
+                        {isExpanded ? (
+                          <div className="ranking-card-details">
+                            <div className="ranking-detail-item">
+                              <span>目標売上</span>
+                              <strong>{money(row.targetSales)}</strong>
+                            </div>
+                            <div className="ranking-detail-item">
+                              <span>前月売上</span>
+                              <strong>{money(row.previousSales)}</strong>
+                            </div>
+                            <div className={`ranking-detail-item ${row.currentChangeRate >= 0 ? "positive" : "negative"}`}>
+                              <span>前月比</span>
+                              <strong>{formatChangeRate(row.currentChangeRate)}</strong>
+                            </div>
+                            <div className="ranking-detail-item">
+                              <span>月末着地予測</span>
+                              <strong>{money(row.forecast)}</strong>
+                            </div>
+                            <div className="ranking-detail-item">
+                              <span>目標達成率</span>
+                              <strong>{percent(row.achievement)}</strong>
+                            </div>
+                          </div>
+                        ) : null}
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -931,7 +2673,7 @@ function App() {
                   <div className="panel-heading">
                     <div>
                       <p className="eyebrow">DAILY</p>
-                      <h2>毎日30秒入力</h2>
+                      <h2>売上入力</h2>
                     </div>
                     <div className="status-stack">
                       <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
@@ -941,32 +2683,48 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="daily-hero">
-                    <div className="daily-hero-card">
-                      <span>営業日数</span>
-                      <strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"}</strong>
+                  <div className="daily-progress-card">
+                    <div className="business-progress-header compact">
+                      <div>
+                        <p className="eyebrow">PROGRESS</p>
+                        <h3>営業進捗</h3>
+                      </div>
+                      <span className={`status-chip ${businessDaySummary.progressRate === null ? "neutral" : businessDaySummary.progressRate >= 100 ? "good" : businessDaySummary.progressRate >= 50 ? "warning" : "danger"}`}>
+                        {businessDaySummary.progressRate === null ? "未設定" : `${Math.round(businessDaySummary.progressRate)}%`}
+                      </span>
                     </div>
-                    <div className="daily-hero-card">
-                      <span>営業完了</span>
-                      <strong>{businessDaySummary.completedDays}日</strong>
-                    </div>
-                    <div className="daily-hero-card">
-                      <span>残り営業日</span>
-                      <strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong>
+                    <div className="daily-progress-main">
+                      <div className="daily-progress-value">{businessDaySummary.completedDays ?? 0} / {businessDaySummary.businessDayCount ?? 0}日</div>
+                      <div className="daily-progress-meta">残り{businessDaySummary.remainingBusinessDays === null ? "-" : businessDaySummary.remainingBusinessDays}営業日</div>
                     </div>
                   </div>
 
-                  <form className="inline-form" onSubmit={saveBusinessDaySetting}>
-                    <input value={businessDayInput} onChange={(event) => setBusinessDayInput(event.target.value)} placeholder="営業日数を入力" type="number" min="1" max="31" />
-                    <button className="primary-button" type="submit">営業日数を保存</button>
-                  </form>
+                  <div className="button-row">
+                    <button className="secondary-button" type="button" onClick={startManualBusinessDayEdit}>営業日設定</button>
+                  </div>
+                  {isBusinessDayEditing ? (
+                    <div className="daily-settings-card">
+                      <div className="inline-form">
+                        <label className="field">
+                          <span>店休日</span>
+                          <input value={businessDayInput} onChange={(event) => setBusinessDayInput(event.target.value)} placeholder="店休日数を入力" type="number" min="0" max="31" />
+                        </label>
+                        <label className="field">
+                          <span>営業日数（手動）</span>
+                          <input value={manualBusinessDayInput} onChange={(event) => setManualBusinessDayInput(event.target.value)} placeholder="営業日数を入力" type="number" min="1" max="31" />
+                        </label>
+                        <button className="primary-button" type="button" onClick={saveHolidayCount}>保存</button>
+                        <button className="secondary-button" type="button" onClick={saveManualBusinessDayCount}>手動保存</button>
+                        <button className="secondary-button" type="button" onClick={resetBusinessDaySetting}>自動計算</button>
+                        <button className="secondary-button" type="button" onClick={() => setIsBusinessDayEditing(false)}>閉じる</button>
+                      </div>
+                    </div>
+                  ) : null}
 
                   <div className="button-row">
                     <button className="secondary-button" type="button" onClick={startNewDailyEntry}>新規入力</button>
                     <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit"}>編集</button>
-                    <button className="primary-button" type="submit" form="daily-form">保存</button>
                     <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={copyPreviousDayData}>前日コピー</button>
                     <button className="secondary-button" type="button" onClick={toggleDayClosing}>日締め</button>
                   </div>
 
@@ -980,10 +2738,6 @@ function App() {
                         </select>
                       </label>
                       <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} disabled={dailyMode === "view"} />
-                      <div className="field">
-                        <span>営業日数</span>
-                        <div className="value-pill">{businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"}</div>
-                      </div>
                       <div className="field">
                         <span>日締め状態</span>
                         <div className={`value-pill ${appState.dayClosingStates?.[buildMonthKey(selectedStore, selectedMonth)]?.[dailyForm.date] ? "active" : "inactive"}`}>
@@ -1308,40 +3062,378 @@ function App() {
           </div>
         )}
 
+        {activePage === "companies" && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">COMPANY</p>
+                <h2>会社管理</h2>
+              </div>
+            </div>
+            {normalizeRole(currentRole) === "system_admin" ? (
+              <div className="inline-form">
+                <label className="field">
+                  <span>会社選択</span>
+                  <select value={appState.currentCompanyId || ""} onChange={(event) => handleCompanySwitch(event.target.value)}>
+                    {(appState.companies || []).map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
+                  </select>
+                </label>
+              </div>
+            ) : null}
+            <p className="management-help">会社を追加して、店舗・ユーザー・設定をまとめて管理できます。業種を先に選ぶと、後続の店舗登録も自然になります。</p>
+            <div className="inline-form">
+              <input value={companyForm.name} onChange={(event) => setCompanyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="会社名" />
+              <input value={companyForm.code} onChange={(event) => setCompanyForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="会社コード" />
+              <select value={companyForm.businessType || "salon"} onChange={(event) => setCompanyForm((prev) => ({ ...prev, businessType: event.target.value }))}>
+                <option value="salon">サロン</option>
+                <option value="nail">ネイルサロン</option>
+                <option value="eyelash">まつげサロン</option>
+                <option value="esthetic">エステサロン</option>
+              </select>
+              <select value={companyForm.contractStatus} onChange={(event) => setCompanyForm((prev) => ({ ...prev, contractStatus: event.target.value }))}>
+                <option value="trial">トライアル</option>
+                <option value="active">契約中</option>
+                <option value="suspended">停止中</option>
+              </select>
+              <button className="primary-button" type="button" onClick={handleSaveCompany}>{companyEditId ? "会社情報を更新" : "会社追加"}</button>
+            </div>
+            {(appState.companies || []).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).length ? (
+              <div className="card-grid">
+                {(appState.companies || []).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).map((company) => {
+                  const companyUsers = (appState.users || []).filter((user) => user.companyId === company.id);
+                  return (
+                    <div key={company.id} className="info-card">
+                      <div className="info-card-head">
+                        <div>
+                          <strong>{company.name}</strong>
+                          <small>{company.code}</small>
+                        </div>
+                        <span className={`status-pill ${company.isActive ? "saved" : "error"}`}>{company.isActive ? "有効" : "停止"}</span>
+                      </div>
+                      <div className="info-card-meta">
+                        <span>業種 {getBusinessTypeLabel(company.businessType || "salon")}</span>
+                        <span>店舗数 {company.stores?.length || 0}</span>
+                        <span>ユーザー数 {companyUsers.length}</span>
+                        <span>契約 {company.contractStatus || "trial"}</span>
+                      </div>
+                      <div className="row-actions">
+                        <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
+                        <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
+                        <button className="text-button" type="button" onClick={() => handleToggleCompanyStatus(company)}>{company.isActive ? "停止" : "再開"}</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="management-empty">まだ会社が登録されていません。上のフォームから最初の会社を追加してください。</div>
+            )}
+          </section>
+        )}
+
         {activePage === "stores" && (
           <section className="panel">
             <div className="panel-heading">
               <div>
                 <p className="eyebrow">STORE</p>
-                <h2>店舗追加</h2>
+                <h2>店舗管理</h2>
+              </div>
+              <button className="primary-button" type="button" onClick={() => {
+                setStoreEditId("");
+                setStoreForm(createStoreFormDefaults());
+              }}>店舗を追加</button>
+            </div>
+            <p className="management-help">店舗ごとに基本情報・売上目標・問い合わせ先・URLをまとめて管理できるように整理しました。検索・並替え・複製・アーカイブもすぐに利用できます。</p>
+            <div className="inline-form">
+              <label className="field">
+                <span>検索</span>
+                <input value={storeSearch} onChange={(event) => setStoreSearch(event.target.value)} placeholder="店舗名・住所・担当名" />
+              </label>
+              <label className="field">
+                <span>並び替え</span>
+                <select value={storeSort} onChange={(event) => setStoreSort(event.target.value)}>
+                  <option value="achievement">達成率順</option>
+                  <option value="sales">売上順</option>
+                  <option value="profit">粗利順</option>
+                  <option value="staff">スタッフ順</option>
+                  <option value="name">店舗名順</option>
+                </select>
+              </label>
+            </div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">STORE PROFILE</p>
+                  <h3>店舗プロフィール</h3>
+                </div>
+              </div>
+              <div className="store-form-grid">
+                <label className="field">
+                  <span>店舗名</span>
+                  <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
+                </label>
+                <label className="field">
+                  <span>店舗コード</span>
+                  <input value={storeForm.code} onChange={(event) => setStoreForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="店舗コード" />
+                </label>
+                <label className="field">
+                  <span>郵便番号</span>
+                  <input value={storeForm.postalCode} onChange={(event) => setStoreForm((prev) => ({ ...prev, postalCode: event.target.value }))} placeholder="郵便番号" />
+                </label>
+                <label className="field">
+                  <span>住所</span>
+                  <input value={storeForm.address} onChange={(event) => setStoreForm((prev) => ({ ...prev, address: event.target.value }))} placeholder="住所" />
+                </label>
+                <label className="field">
+                  <span>電話番号</span>
+                  <input value={storeForm.phone} onChange={(event) => setStoreForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="電話番号" />
+                </label>
+                <label className="field">
+                  <span>店長名</span>
+                  <input value={storeForm.managerName} onChange={(event) => setStoreForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="店長名" />
+                </label>
+                <label className="field">
+                  <span>担当者名</span>
+                  <input value={storeForm.representativeName} onChange={(event) => setStoreForm((prev) => ({ ...prev, representativeName: event.target.value }))} placeholder="担当者名" />
+                </label>
+                <label className="field">
+                  <span>開店日</span>
+                  <input type="date" value={storeForm.openingDate} onChange={(event) => setStoreForm((prev) => ({ ...prev, openingDate: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>営業時間</span>
+                  <input value={storeForm.businessHours} onChange={(event) => setStoreForm((prev) => ({ ...prev, businessHours: event.target.value }))} placeholder="09:00-20:00" />
+                </label>
+                <label className="field">
+                  <span>開店時間</span>
+                  <input type="time" value={storeForm.openingHour} onChange={(event) => setStoreForm((prev) => ({ ...prev, openingHour: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>閉店時間</span>
+                  <input type="time" value={storeForm.closingHour} onChange={(event) => setStoreForm((prev) => ({ ...prev, closingHour: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>定休日</span>
+                  <input value={storeForm.closedDays} onChange={(event) => setStoreForm((prev) => ({ ...prev, closedDays: event.target.value }))} placeholder="定休日" />
+                </label>
+                <label className="field">
+                  <span>サービス内容</span>
+                  <input value={storeForm.serviceTypes} onChange={(event) => setStoreForm((prev) => ({ ...prev, serviceTypes: event.target.value }))} placeholder="カット,カラー" />
+                </label>
+                <label className="field">
+                  <span>公式サイト</span>
+                  <input value={storeForm.website} onChange={(event) => setStoreForm((prev) => ({ ...prev, website: event.target.value }))} placeholder="https://" />
+                </label>
+                <label className="field">
+                  <span>Instagram</span>
+                  <input value={storeForm.instagram} onChange={(event) => setStoreForm((prev) => ({ ...prev, instagram: event.target.value }))} placeholder="https://" />
+                </label>
+                <label className="field">
+                  <span>Google Map</span>
+                  <input value={storeForm.googleMapUrl} onChange={(event) => setStoreForm((prev) => ({ ...prev, googleMapUrl: event.target.value }))} placeholder="https://" />
+                </label>
+              </div>
+              <label className="field">
+                <span>店舗メモ</span>
+                <textarea value={storeForm.description} onChange={(event) => setStoreForm((prev) => ({ ...prev, description: event.target.value }))} placeholder="営業時間・スタッフ体制・備考" rows={4} />
+              </label>
+              <div className="store-url-list">
+                {(storeForm.urls || []).map((entry, index) => (
+                  <div key={`${entry.label || "url"}-${index}`} className="store-url-row">
+                    <input value={entry.label || "URL"} onChange={(event) => setStoreForm((prev) => ({ ...prev, urls: prev.urls.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))} placeholder="ラベル" />
+                    <input value={entry.value || ""} onChange={(event) => setStoreForm((prev) => ({ ...prev, urls: prev.urls.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) }))} placeholder="https://" />
+                    <button className="text-button danger" type="button" onClick={() => setStoreForm((prev) => ({ ...prev, urls: prev.urls.filter((_, itemIndex) => itemIndex !== index) }))}>削除</button>
+                  </div>
+                ))}
+                <button className="secondary-button" type="button" onClick={() => setStoreForm((prev) => ({ ...prev, urls: [...(prev.urls || []), { label: "URL", value: "" }] }))}>URLを追加</button>
+              </div>
+              <div className="button-row">
+                <button className="primary-button" type="button" onClick={handleSaveStore}>{storeEditId ? "店舗情報を更新" : "店舗追加"}</button>
+                <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreForm(createStoreFormDefaults()); }}>クリア</button>
               </div>
             </div>
-            <div className="inline-form">
-              <input value={newStoreName} onChange={(event) => setNewStoreName(event.target.value)} placeholder="新しい店舗名" />
-              <button className="primary-button" type="button" onClick={handleStoreAdd}>追加</button>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">STORE SETTINGS</p>
+                  <h3>店舗初期設定</h3>
+                </div>
+              </div>
+              <div className="input-grid">
+                <label className="field">
+                  <span>月間売上目標</span>
+                  <input value={storeSettingsForm.monthlyTargetSales || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, monthlyTargetSales: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>店販売上目標</span>
+                  <input value={storeSettingsForm.retailTargetSales || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, retailTargetSales: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>客数目標</span>
+                  <input value={storeSettingsForm.customerTarget || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, customerTarget: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>営業日</span>
+                  <input value={storeSettingsForm.businessDays || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, businessDays: event.target.value }))} />
+                </label>
+              </div>
+              <div className="button-row">
+                <button className="secondary-button" type="button" onClick={handleSaveStoreSettings}>店舗設定を保存</button>
+              </div>
             </div>
-            <div className="list-card">
-              {stores.length ? stores.map((storeName) => (
-                <div key={storeName} className="list-row">
-                  <div>
-                    <strong>{storeName}</strong>
-                    <small>{selectedStore === storeName ? "選択中" : "未選択"}</small>
+            {filteredStores.length ? (
+              <div className="card-grid store-card-grid">
+                {filteredStores.map((store) => {
+                  const summary = computeStoreSummary(store, { staffCount: store.staffIds?.length || store.staffCount || 0 });
+                  const statusLabel = store.status === "archived" ? "アーカイブ" : store.isActive === false ? "停止" : "運営中";
+                  return (
+                    <div key={store.id} className="info-card store-info-card">
+                      <div className="info-card-head">
+                        <div>
+                          <strong>{store.name}</strong>
+                          <small>{store.code}</small>
+                        </div>
+                        <span className={`status-pill ${store.isActive === false || store.status === "archived" ? "error" : "saved"}`}>{statusLabel}</span>
+                      </div>
+                      <div className="info-card-meta">
+                        <span>{store.address || "住所未設定"}</span>
+                        <span>{store.phone || "電話未設定"}</span>
+                        <span>{store.managerName || "店長未設定"}</span>
+                      </div>
+                      <div className="store-metrics">
+                        <div>
+                          <span>達成率</span>
+                          <strong>{summary.achievementRate}%</strong>
+                        </div>
+                        <div>
+                          <span>前月比</span>
+                          <strong>{summary.changeRate}%</strong>
+                        </div>
+                        <div>
+                          <span>スタッフ</span>
+                          <strong>{summary.staffCount}人</strong>
+                        </div>
+                      </div>
+                      <div className="store-chip-row">
+                        {(store.serviceTypes || []).slice(0, 3).map((serviceType) => <span key={serviceType} className="status-chip neutral">{serviceType}</span>)}
+                      </div>
+                      <div className="row-actions">
+                        <button className="text-button" type="button" onClick={() => handleStoreSwitch(store.name)}>選択</button>
+                        <button className="text-button" type="button" onClick={() => handleEditStore(store)}>編集</button>
+                        {store.status === "archived" ? (
+                          <button className="text-button" type="button" onClick={() => handleRestoreStore(store)}>復元</button>
+                        ) : (
+                          <button className="text-button" type="button" onClick={() => handleToggleStoreStatus(store)}>{store.isActive ? "停止" : "再開"}</button>
+                        )}
+                      </div>
+                      <div className="row-actions compact-actions">
+                        <button className="text-button" type="button" onClick={() => handleDuplicateStore(store)}>複製</button>
+                        {store.status === "archived" ? null : <button className="text-button" type="button" onClick={() => handleArchiveStore(store)}>アーカイブ</button>}
+                        <button className="text-button danger" type="button" onClick={() => handleDeleteStore(store)}>削除</button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="management-empty">まだ店舗が登録されていません。上のフォームから店舗を追加してください。</div>
+            )}
+          </section>
+        )}
+
+        {activePage === "users" && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">USER</p>
+                <h2>ユーザー管理</h2>
+              </div>
+            </div>
+            <p className="management-help">ユーザーは役割・所属店舗・招待状態を管理画面から一括で設定できます。招待後は7日間有効で、期限切れ時は再送できます。</p>
+            {!canViewUserManagement(currentRole) ? (
+              <div className="empty-card">この権限ではユーザー管理を操作できません。</div>
+            ) : (
+              <>
+                <div className="inline-form">
+                  <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="氏名" />
+                  <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="メールアドレス" />
+                  <select value={userForm.role} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
+                    <option value="system_admin">system_admin</option>
+                    <option value="company_admin">company_admin</option>
+                    <option value="store_manager">store_manager</option>
+                    <option value="staff">staff</option>
+                  </select>
+                  <button className="primary-button" type="button" onClick={handleSaveUser}>{userEditId ? "ユーザー情報を更新" : "招待する"}</button>
+                </div>
+                <div className="inline-form">
+                  <label className="field">
+                    <span>主要所属店舗</span>
+                    <select value={userForm.primaryStoreId || ""} onChange={(event) => setUserForm((prev) => ({ ...prev, primaryStoreId: event.target.value, storeIds: event.target.value ? [event.target.value] : prev.storeIds }))}>
+                      <option value="">未設定</option>
+                      {(currentCompanyStores || []).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="setup-card">
+                  <div className="panel-heading compact">
+                    <div>
+                      <p className="eyebrow">STORE ACCESS</p>
+                      <h3>所属店舗</h3>
+                    </div>
                   </div>
-                  <div className="row-actions">
-                    <button className="text-button" type="button" onClick={() => setAppState((prev) => ({ ...prev, selectedStore: storeName }))}>選択</button>
-                    <button className="text-button" type="button" onClick={() => startEditStore(storeName)}>編集</button>
-                    <button className="text-button danger" type="button" onClick={() => handleStoreDelete(storeName)}>削除</button>
+                  <div className="input-grid">
+                    {(currentCompanyStores || []).map((store) => (
+                      <label key={store.id} className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                        <input type="checkbox" checked={userForm.storeIds.includes(store.id)} onChange={() => toggleUserStoreSelection(store.id)} />
+                        <span>{store.name}</span>
+                      </label>
+                    ))}
                   </div>
                 </div>
-              )) : <div className="empty-state">まだ店舗はありません</div>}
-            </div>
-            {storeEditId ? (
-              <form className="inline-form" onSubmit={handleStoreUpdate}>
-                <input value={storeFormName} onChange={(event) => setStoreFormName(event.target.value)} placeholder="店舗名を変更" />
-                <button className="primary-button" type="submit">更新</button>
-                <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreFormName(""); }}>キャンセル</button>
-              </form>
-            ) : null}
+                {(appState.users || []).filter((user) => normalizeRole(currentRole) === "system_admin" || user.companyId === currentCompany?.id).length ? (
+                  <div className="card-grid">
+                    {(appState.users || []).filter((user) => normalizeRole(currentRole) === "system_admin" || user.companyId === currentCompany?.id).map((user) => {
+                      const storeNames = (user.storeIds || []).map((storeId) => currentCompanyStores.find((store) => store.id === storeId)?.name || storeId).join(", ");
+                      const invitationMeta = getUserInvitationMeta(user);
+                      return (
+                        <div key={user.id} className="info-card">
+                          <div className="info-card-head">
+                            <div>
+                              <strong>{user.name}</strong>
+                              <small>{user.email}</small>
+                            </div>
+                            <span className={`status-pill ${invitationMeta.tone === "warning" ? "warning" : invitationMeta.tone === "error" ? "error" : "saved"}`}>{invitationMeta.label}</span>
+                          </div>
+                          <div className="info-card-meta">
+                            <span>{user.role}</span>
+                            <span>{storeNames || "所属店舗なし"}</span>
+                            <span>{user.lastLoginAt ? `最終ログイン ${new Date(user.lastLoginAt).toLocaleString("ja-JP")}` : "未ログイン"}</span>
+                            <span>ログイン回数 {user.loginCount || 0}</span>
+                            <span>{invitationMeta.expiresAt ? `有効期限 ${new Date(invitationMeta.expiresAt).toLocaleDateString("ja-JP")}` : "有効期限なし"}</span>
+                          </div>
+                          <div className="row-actions">
+                            <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
+                            <button className="text-button" type="button" onClick={() => handleMarkInvitationSent(user)}>招待</button>
+                            <button className="text-button" type="button" onClick={() => handleMarkRegistered(user)}>登録済み</button>
+                            <button className="text-button" type="button" onClick={() => handleSimulateLogin(user)}>ログ記録</button>
+                            <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
+                          </div>
+                          <div className="row-actions">
+                            <button className="text-button" type="button" onClick={() => handleUpdateUserRole(user, user.role === "system_admin" ? "company_admin" : user.role === "company_admin" ? "store_manager" : user.role === "store_manager" ? "staff" : "system_admin")}>権限変更</button>
+                            <button className="text-button" type="button" onClick={() => handleUpdateUserStores(user, (user.storeIds || []).length ? user.storeIds : (currentCompanyStores[0]?.id ? [currentCompanyStores[0].id] : []))}>所属店舗変更</button>
+                            <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>リンク</button>
+                            <button className="text-button" type="button" onClick={() => handlePasswordReset(user)}>再設定</button>
+                            <button className="text-button" type="button" onClick={() => handleInviteEmail(user)}>再送</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="management-empty">まだユーザーが登録されていません。上のフォームから招待してください。</div>
+                )}
+              </>
+            )}
           </section>
         )}
 
@@ -1374,7 +3466,63 @@ function App() {
                 {appState.preferences?.showOtherSales ? "オフにする" : "オンにする"}
               </button>
             </div>
-            <div className="empty-card">今後はログイン、CSV/Excel出力、PWA対応、KPIダッシュボードなどを追加しやすい構成です。</div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">COMPANY SETTINGS</p>
+                  <h3>会社基本設定</h3>
+                </div>
+              </div>
+              <div className="input-grid">
+                <label className="field">
+                  <span>業種</span>
+                  <select value={companySettingsForm.businessType || "salon"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, businessType: event.target.value }))}>
+                    <option value="salon">サロン</option>
+                    <option value="nail">ネイルサロン</option>
+                    <option value="eyelash">まつげサロン</option>
+                    <option value="esthetic">エステサロン</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>通貨</span>
+                  <input value={companySettingsForm.currency || "JPY"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, currency: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>会計年度開始月</span>
+                  <input value={companySettingsForm.fiscalYearStartMonth || "1"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, fiscalYearStartMonth: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>売上表示</span>
+                  <select value={companySettingsForm.salesDisplayMode || "inclusive"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, salesDisplayMode: event.target.value }))}>
+                    <option value="inclusive">税込</option>
+                    <option value="exclusive">税抜</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>店販売上の名称</span>
+                  <input value={companySettingsForm.retailSalesLabel || "店販売上"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, retailSalesLabel: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>月締め日</span>
+                  <input value={companySettingsForm.closingDay || "月末"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, closingDay: event.target.value }))} />
+                </label>
+                <label className="field">
+                  <span>編集期限（日）</span>
+                  <input type="number" value={companySettingsForm.editDeadlineDays || 7} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, editDeadlineDays: Number(event.target.value) }))} />
+                </label>
+                <label className="field">
+                  <span>一般スタッフの過去編集</span>
+                  <select value={companySettingsForm.allowStaffPastEdit ? "on" : "off"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, allowStaffPastEdit: event.target.value === "on" }))}>
+                    <option value="off">不可</option>
+                    <option value="on">可</option>
+                  </select>
+                </label>
+              </div>
+              <div className="button-row">
+                <button className="secondary-button" type="button" onClick={handleSaveCompanySettings}>会社基本設定を保存</button>
+              </div>
+            </div>
+            <div className="empty-card">初期設定が完了すると、各権限ごとの画面がそのまま使えます。</div>
           </section>
         )}
       </main>

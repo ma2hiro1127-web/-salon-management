@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { calculateMonthSummary, calculateTaxSummary, createInitialAppState, getCustomerTargetSummary, getAiAnalysis } from "./storage.js";
+import { calculateMonthSummary, calculateTaxSummary, createInitialAppState, getBusinessDaySummary, getCustomerTargetSummary, getAiAnalysis, normalizeAppState, readAppState, writeAppState } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -118,6 +118,82 @@ test("customer target summary returns a safe zero value when no business days re
   assert.equal(summary.remainingCustomers, 20);
   assert.equal(summary.remainingCustomersPerDay, 0);
   assert.equal(summary.statusLabel, "営業日終了");
+});
+
+test("business day summary auto-calculates from month length and holiday count", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.businessDaySettings[key] = { holidayCount: 2, mode: "auto" };
+  state.dayClosingStates[key] = { "2026-08-01": true };
+
+  const summary = getBusinessDaySummary(state, store, month);
+
+  assert.equal(summary.businessDayCount, 29);
+  assert.equal(summary.completedDays, 1);
+  assert.equal(summary.remainingBusinessDays, 28);
+});
+
+test("retail ratio stays at zero when there is no sales data", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.retailRatio, 0);
+});
+
+test("app state round-trips through local storage for recovery after logout", () => {
+  const state = createInitialAppState();
+  state.currentCompanyId = "company-1";
+  state.selectedStore = "本店";
+  state.selectedMonth = "2026-08";
+  state.dailyResults["本店__2026-08"] = [{ date: "2026-08-01", technicalSales: 100000, retailSales: 20000 }];
+
+  writeAppState(state);
+  const restored = readAppState();
+
+  assert.equal(restored.currentCompanyId, "company-1");
+  assert.equal(restored.selectedStore, "本店");
+  assert.equal(restored.dailyResults["本店__2026-08"][0].technicalSales, 100000);
+});
+
+test("normalizeAppState converts auth-based currentUserId back to the matching profile id", () => {
+  const normalized = normalizeAppState({
+    currentUserId: "auth-user-1",
+    users: [
+      { id: "profile-1", email: "owner@example.com", authUserId: "auth-user-1" },
+    ],
+  });
+
+  assert.equal(normalized.currentUserId, "profile-1");
+  assert.equal(normalized.currentAuthUserId, "auth-user-1");
+});
+
+test("monthly summary deduplicates entries by store and date using the latest value", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [
+    { id: "dup-1", date: "2026-08-01", totalSales: 680454, technicalSales: 500000, retailSales: 180454, customers: 10, newCustomers: 3, repeatCustomers: 7, updatedAt: "2026-08-01T00:00:00.000Z" },
+    { id: "dup-2", date: "2026-08-01", totalSales: 700000, technicalSales: 520000, retailSales: 180000, customers: 11, newCustomers: 4, repeatCustomers: 7, updatedAt: "2026-08-01T01:00:00.000Z" },
+    { id: "dup-3", date: "2026-08-02", totalSales: 100000, technicalSales: 60000, retailSales: 40000, customers: 5, newCustomers: 2, repeatCustomers: 3, updatedAt: "2026-08-02T00:00:00.000Z" },
+  ];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.sales, 800000);
+  assert.equal(summary.customers, 16);
+  assert.equal(summary.retailRatio, 27.5);
+  assert.equal(summary.averageSales, 800000 / 2);
 });
 
 test("ai analysis explains underperformance without overclaiming", () => {

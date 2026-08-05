@@ -70,6 +70,7 @@ export const createInitialAppState = () => {
     monthClosing: {},
     monthClosingStatus: {},
     dailyDrafts: {},
+    dailyResultBackups: {},
     preferences: {
       showOtherSales: false,
     },

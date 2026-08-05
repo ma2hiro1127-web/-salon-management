@@ -56,11 +56,52 @@ export const getBusinessDaySettings = (state, storeName, monthValue) => {
   return state.businessDaySettings?.[key] || {};
 };
 
+export const deduplicateDailyEntries = (entries = [], backupTarget = {}) => {
+  const deduped = [];
+  const backups = [];
+  const byDate = new Map();
+
+  (Array.isArray(entries) ? entries : []).forEach((entry, index) => {
+    const date = String(entry?.date || "").trim();
+    if (!date) {
+      deduped.push(entry);
+      return;
+    }
+
+    const current = entry;
+    const previous = byDate.get(date);
+    if (!previous) {
+      byDate.set(date, current);
+      return;
+    }
+
+    const previousUpdatedAt = String(previous.updatedAt || previous.updated_at || "");
+    const currentUpdatedAt = String(current.updatedAt || current.updated_at || "");
+    const pickCurrent = currentUpdatedAt && previousUpdatedAt ? currentUpdatedAt >= previousUpdatedAt : index > (entries || []).findIndex((item) => String(item?.date || "") === date);
+    const retained = pickCurrent ? current : previous;
+    const removed = pickCurrent ? previous : current;
+
+    if (removed && removed !== retained) {
+      backups.push(removed);
+    }
+    byDate.set(date, retained);
+  });
+
+  byDate.forEach((entry) => deduped.push(entry));
+  deduped.sort((a, b) => String(a?.date || "").localeCompare(String(b?.date || "")));
+
+  return { entries: deduped, backups };
+};
+
 export const getBusinessDaySummary = (state, storeName, monthValue) => {
   const key = buildMonthKey(storeName, monthValue);
   const settings = getBusinessDaySettings(state, storeName, monthValue);
-  const configuredDays = parseNumber(settings.businessDayCount);
-  const businessDayCount = Number.isInteger(configuredDays) && configuredDays > 0 ? configuredDays : null;
+  const monthInfo = getMonthInfo(monthValue);
+  const holidayCount = Math.max(parseNumber(settings.holidayCount), 0);
+  const manualBusinessDayCount = parseNumber(settings.businessDayCount);
+  const businessDayCount = settings.mode === "manual" && Number.isInteger(manualBusinessDayCount) && manualBusinessDayCount > 0
+    ? manualBusinessDayCount
+    : Math.max(monthInfo.daysInMonth - holidayCount, 0);
   const closingMap = state.dayClosingStates?.[key] || {};
   const closedDates = Object.entries(closingMap)
     .filter(([, isClosed]) => Boolean(isClosed))
@@ -97,21 +138,57 @@ export const normalizeObjectMap = (value) => {
   return value;
 };
 
+const normalizeUserList = (value) => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item) => item && typeof item === "object")
+    .map((item) => ({
+      ...item,
+      authUserId: typeof item.authUserId === "string" ? item.authUserId : "",
+    }));
+};
+
+const resolveCurrentProfileId = ({ users, currentUserId, currentAuthUserId }) => {
+  const normalizedCurrentUserId = typeof currentUserId === "string" ? currentUserId : "";
+  if (!normalizedCurrentUserId) return "";
+  if (users.some((user) => user.id === normalizedCurrentUserId)) return normalizedCurrentUserId;
+
+  const authUserId = typeof currentAuthUserId === "string" && currentAuthUserId.trim()
+    ? currentAuthUserId.trim()
+    : normalizedCurrentUserId;
+  const matchedUser = users.find((user) => user.authUserId && user.authUserId === authUserId);
+  return matchedUser?.id || normalizedCurrentUserId;
+};
+
 export const normalizeAppState = (value) => {
   const source = value && typeof value === "object" ? value : {};
   const seeded = createInitialAppState();
   const stores = Array.isArray(source.stores)
     ? source.stores.filter(Boolean).map(String)
     : [];
-  const selectedStore = stores.includes(source.selectedStore) ? source.selectedStore : stores[0] || "";
+  const fallbackSelectedStore = typeof source.selectedStore === "string" && source.selectedStore.trim() ? source.selectedStore : "";
+  const selectedStore = stores.includes(fallbackSelectedStore) ? fallbackSelectedStore : (stores[0] || fallbackSelectedStore);
   const selectedMonth = source.selectedMonth || seeded.selectedMonth;
+  const users = normalizeUserList(source.users);
+  const currentUserId = resolveCurrentProfileId({
+    users,
+    currentUserId: source.currentUserId,
+    currentAuthUserId: source.currentAuthUserId,
+  });
+  const matchedCurrentUser = users.find((user) => user.id === currentUserId) || null;
+  const currentAuthUserId = typeof source.currentAuthUserId === "string" && source.currentAuthUserId.trim()
+    ? source.currentAuthUserId.trim()
+    : matchedCurrentUser?.authUserId || "";
 
   return {
     ...seeded,
     ...source,
+    users,
     stores,
     selectedStore,
     selectedMonth,
+    currentUserId,
+    currentAuthUserId,
     targets: normalizeObjectMap(source.targets),
     dailyResults: normalizeObjectMap(source.dailyResults),
     fixedCosts: normalizeObjectMap(source.fixedCosts),
@@ -119,6 +196,7 @@ export const normalizeAppState = (value) => {
     monthClosing: normalizeObjectMap(source.monthClosing),
     monthClosingStatus: normalizeObjectMap(source.monthClosingStatus),
     dailyDrafts: normalizeObjectMap(source.dailyDrafts),
+    dailyResultBackups: normalizeObjectMap(source.dailyResultBackups),
     preferences: {
       ...(source.preferences || {}),
       showOtherSales: Boolean(source.preferences?.showOtherSales),
@@ -135,16 +213,25 @@ export const normalizeAppState = (value) => {
 };
 
 export const readAppState = () => {
-  const saved = readStorage(STORAGE_KEYS.appState, null);
-  if (saved) {
-    return normalizeAppState(saved);
+  try {
+    const saved = readStorage(STORAGE_KEYS.appState, null);
+    if (saved) {
+      return normalizeAppState(saved);
+    }
+  } catch {
+    // fall through to initial state
   }
   return createInitialAppState();
 };
 
 export const writeAppState = (state) => {
-  const nextState = normalizeAppState(state);
-  localStorage.setItem(STORAGE_KEYS.appState, JSON.stringify(nextState));
+  try {
+    const nextState = normalizeAppState(state);
+    localStorage.setItem(STORAGE_KEYS.appState, JSON.stringify(nextState));
+    return nextState;
+  } catch {
+    return state;
+  }
 };
 
 export const money = (value) =>
@@ -205,7 +292,8 @@ export const getTargetForStoreMonth = (state, storeName, monthValue) => ({
 
 export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
   const items = state.dailyResults?.[buildMonthKey(storeName, monthValue)] || [];
-  return [...items].sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  const { entries } = deduplicateDailyEntries(items, state.dailyResultBackups || {});
+  return entries;
 };
 
 export const getFixedCostsForStoreMonth = (state, storeName, monthValue) => {
@@ -257,7 +345,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const now = new Date();
   const todayIso = formatLocalDate(now);
   const selectedCurrentMonth = monthValue === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const effectiveEntries = entries.filter((entry) => !selectedCurrentMonth || entry.date <= todayIso);
+  const effectiveEntries = entries;
 
   const sales = effectiveEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0);
   const technicalSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.technicalSales || 0), 0);
@@ -292,7 +380,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const dailyNeededSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const pace = completedDays ? sales / completedDays : 0;
   const forecast = businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : sales;
-  const averageSales = businessDaySummary.businessDayCount ? sales / businessDaySummary.businessDayCount : 0;
+  const averageSales = effectiveEntries.length > 0 ? sales / effectiveEntries.length : 0;
   const remainingAverageSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const todayActual = effectiveEntries.filter((entry) => entry.date === todayIso).reduce((sum, item) => sum + parseNumber(item.totalSales || item.technicalSales || 0), 0);
   const todayTarget = targetPerDay;
@@ -309,7 +397,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const averageTicket = customers ? sales / customers : 0;
   const technicalUnitPrice = customers ? technicalSales / customers : 0;
   const retailCustomerCount = effectiveEntries.reduce((sum, item) => sum + parseNumber(item.retailCustomers || 0), 0);
-  const retailRatio = sales ? (retailSales / sales) * 100 : 0;
+  const retailRatioValue = sales > 0 ? Number(((retailSales / sales) * 100).toFixed(1)) : 0;
   const customerTarget = parseNumber(target.targetCustomers);
   const customerAchievement = customerTarget ? (customers / customerTarget) * 100 : 0;
   const remainingCustomersTarget = Math.max(customerTarget - customers, 0);
@@ -333,7 +421,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
     repeatTargetAchievement,
     technicalUnitPrice,
     retailCustomerCount,
-    retailRatio,
+    retailRatio: retailRatioValue,
     laborCost,
     materialCost,
     orderCost,
