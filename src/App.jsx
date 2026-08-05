@@ -109,6 +109,13 @@ const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = n
 
 const coerceId = (...values) => values.find((value) => typeof value === "string" && value.trim()) || "";
 
+const getStatusTone = ({ error = false, status = "idle" } = {}) => {
+  if (error) return "error";
+  if (status === "saving" || status === "syncing" || status === "loaded") return "saving";
+  if (status === "saved" || status === "synced") return "saved";
+  return "neutral";
+};
+
 const buildAuthenticatedUser = ({ profile = null, authUser = null, fallback = null, role = "staff", companyId = "", storeId = "" } = {}) => {
   const profileId = coerceId(profile?.id, fallback?.profileId, fallback?.id);
   const authUserId = coerceId(authUser?.id, profile?.auth_user_id, fallback?.authUserId);
@@ -122,6 +129,37 @@ const buildAuthenticatedUser = ({ profile = null, authUser = null, fallback = nu
     profileId,
     authUserId,
   };
+};
+
+const buildStatusCards = ({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }) => ([
+  {
+    key: "save",
+    label: "入力保存",
+    message: saveStatus.message || "自動保存待機中",
+    tone: getStatusTone(saveStatus),
+    timestamp: saveStatus.timestamp,
+  },
+  {
+    key: "sync",
+    label: "Supabase同期",
+    message: syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応"),
+    tone: getStatusTone(syncStatus),
+    timestamp: syncStatus.timestamp,
+  },
+  {
+    key: "network",
+    label: "通信状態",
+    message: isOnline ? "オンライン" : "オフラインでも端末保存中",
+    tone: isOnline ? "saved" : "error",
+    timestamp: "",
+  },
+]);
+
+const getMetricTone = (value, warningThreshold = 80, successThreshold = 100) => {
+  if (!Number.isFinite(value)) return "neutral";
+  if (value >= successThreshold) return "good";
+  if (value >= warningThreshold) return "warning";
+  return "danger";
 };
 
 const getMonthOffset = (monthValue, offset) => {
@@ -645,6 +683,59 @@ function App() {
       trend: row.previousRank ? (row.currentRank < row.previousRank ? "↑" : row.currentRank > row.previousRank ? "↓" : "→") : "→",
     }));
   }, [appState, rankingSort, selectedMonth, stores]);
+  const statusCards = useMemo(() => buildStatusCards({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }), [saveStatus, syncStatus, isSupabaseConfigured, isOnline]);
+  const dashboardHeroMetrics = useMemo(() => ([
+    {
+      label: "月間達成率",
+      value: percent(summary.targetAchievement),
+      hint: `目標 ${money(target.targetSales || 0)} に対して ${money(summary.sales)}`,
+      tone: getMetricTone(summary.targetAchievement, 85, 100),
+    },
+    {
+      label: "月末着地予測",
+      value: money(summary.forecast),
+      hint: `残り営業日 ${summary.remainingBusinessDays ?? 0}日`,
+      tone: summary.forecast >= (target.targetSales || 0) ? "good" : "warning",
+    },
+    {
+      label: "営業利益",
+      value: money(summary.operatingProfit),
+      hint: `利益率 ${percent(summary.operatingMargin)}`,
+      tone: summary.operatingProfit >= 0 ? "good" : "danger",
+    },
+    {
+      label: "客数達成率",
+      value: percent(customerTargetSummary.achievementRate),
+      hint: `残り ${customerTargetSummary.remainingCustomers}名`,
+      tone: getMetricTone(customerTargetSummary.achievementRate, 85, 100),
+    },
+  ]), [summary.targetAchievement, target.targetSales, summary.sales, summary.forecast, summary.remainingBusinessDays, summary.operatingProfit, summary.operatingMargin, customerTargetSummary.achievementRate, customerTargetSummary.remainingCustomers]);
+  const dashboardSupportMetrics = useMemo(() => ([
+    { label: "平均客単価", value: money(summary.averageSpend), hint: `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` },
+    { label: "1日平均売上", value: money(summary.averageSales), hint: `必要売上 ${money(summary.dailyNeededSales)}` },
+    { label: "顧客数", value: number(summary.customers), hint: `新規 ${number(summary.newCustomers)} / 再来 ${number(summary.repeatCustomers)}` },
+    { label: "本日の目標売上", value: money(summary.todayTarget), hint: `現在 ${money(todayActual)}` },
+  ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers, summary.todayTarget, todayActual]);
+  const aiFocusCards = useMemo(() => {
+    const leadSummary = aiAnalysis.summary[0] || "売上・客数・利益の3点を継続確認してください";
+    return [
+      {
+        label: "AIサマリー",
+        value: leadSummary,
+        tone: summary.targetAchievement >= 100 ? "good" : "warning",
+      },
+      {
+        label: "最優先",
+        value: aiAnalysis.priorities[0] || "販促と来店導線の点検",
+        tone: aiAnalysis.priorities.length ? "warning" : "neutral",
+      },
+      {
+        label: "次の一手",
+        value: aiAnalysis.notes[0] || "まずは本日の入力を積み上げてください",
+        tone: summary.remainingBusinessDays > 0 ? "saving" : "neutral",
+      },
+    ];
+  }, [aiAnalysis.notes, aiAnalysis.priorities, aiAnalysis.summary, summary.remainingBusinessDays, summary.targetAchievement]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -2524,6 +2615,25 @@ function App() {
           </div>
         </header>
 
+        <section className="status-overview-panel">
+          <div className="status-overview-header">
+            <div>
+              <p className="eyebrow">SYNC STATUS</p>
+              <h2>保存と同期</h2>
+            </div>
+            <small>{isSupabaseConfigured ? "Supabase へ自動保存" : "ローカル保存のみ"}</small>
+          </div>
+          <div className="status-overview-grid">
+            {statusCards.map((item) => (
+              <div key={item.key} className={`status-overview-card ${item.tone}`}>
+                <span>{item.label}</span>
+                <strong>{item.message}</strong>
+                <small>{item.timestamp ? formatTimestamp(item.timestamp) : ""}</small>
+              </div>
+            ))}
+          </div>
+        </section>
+
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
         {notice ? <div className="notice-box">{notice}</div> : null}
         {activePage === "dashboard" && (
@@ -2534,16 +2644,13 @@ function App() {
                   <p className="eyebrow">KPI</p>
                   <h2>売上</h2>
                 </div>
-                <div className="status-stack">
-                  <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
-                    {saveStatus.message || "自動保存済み"}
-                  </div>
-                  <div className={`status-pill ${syncStatus.error ? "error" : syncStatus.status === "syncing" ? "saving" : syncStatus.status === "synced" ? "saved" : "neutral"}`}>
-                    {syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}
-                  </div>
-                  <div className="timestamp-pill">同期: {isSupabaseConfigured ? "Supabase対応" : "同期未対応"}</div>
-                  {saveStatus.timestamp ? <div className="timestamp-pill">最終保存 {formatTimestamp(saveStatus.timestamp)}</div> : null}
+                <div className="status-stack compact-status-stack">
+                  <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
+                  <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
                 </div>
+              </div>
+              <div className="kpi-hero-grid">
+                {dashboardHeroMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} tone={item.tone} emphasize />)}
               </div>
               <div className="business-progress-card">
                 <div className="business-progress-header">
@@ -2568,16 +2675,15 @@ function App() {
                 </div>
               </div>
               <div className="kpi-grid">
-                <MetricCard label="月間目標売上" value={money(target.targetSales || 0)} />
-                <MetricCard label="店舗売上" value={money(summary.sales)} />
-                <MetricCard label="月間達成率" value={percent(summary.targetAchievement)} />
-                <MetricCard label="顧客数" value={number(summary.customers)} />
-                <MetricCard label="新規顧客数" value={number(summary.newCustomers)} />
-                <MetricCard label="リピート顧客数" value={number(summary.repeatCustomers)} />
-                <MetricCard label="平均客単価" value={money(summary.averageSpend)} />
-                <MetricCard label="1日平均売上" value={money(summary.averageSales)} />
-                <MetricCard label="目標まで残り売上" value={money(summary.remainingSalesTarget)} />
-                <MetricCard label="本日の目標売上" value={money(summary.todayTarget)} />
+                {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
+              </div>
+              <div className="ai-focus-grid">
+                {aiFocusCards.map((item) => (
+                  <article key={item.label} className={`ai-focus-card ${item.tone}`}>
+                    <span>{item.label}</span>
+                    <strong>{item.value}</strong>
+                  </article>
+                ))}
               </div>
               {todayEntry ? (
                 <div className="today-result-card">
@@ -2622,7 +2728,12 @@ function App() {
                             <div className="ranking-card-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
                             <div className="ranking-card-title">
                               <strong>{row.storeName}</strong>
+                              <span>{row.trend} 前回 {row.previousRank || "-"}位</span>
                             </div>
+                          </div>
+                          <div className="ranking-card-kpis">
+                            <span className={`status-chip ${row.achievement >= 100 ? "good" : row.achievement >= 85 ? "warning" : "danger"}`}>{percent(row.achievement)}</span>
+                            <span className={`status-chip ${row.currentChangeRate >= 0 ? "good" : "danger"}`}>{formatChangeRate(row.currentChangeRate)}</span>
                           </div>
                           <div className="ranking-card-value-block">
                             <span>現在売上</span>
@@ -2675,12 +2786,16 @@ function App() {
                       <p className="eyebrow">DAILY</p>
                       <h2>売上入力</h2>
                     </div>
-                    <div className="status-stack">
-                      <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
-                        {saveStatus.message || "自動保存済み"}
-                      </div>
+                    <div className="status-stack compact-status-stack">
+                      <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
+                      <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
                       {saveStatus.timestamp ? <div className="timestamp-pill">最終保存 {formatTimestamp(saveStatus.timestamp)}</div> : null}
                     </div>
+                  </div>
+
+                  <div className="daily-save-banner">
+                    <strong>日次入力は自動保存されます</strong>
+                    <small>入力から約0.4秒後に保存し、オンライン時はSupabaseへ同期します。</small>
                   </div>
 
                   <div className="daily-progress-card">
@@ -3050,10 +3165,23 @@ function App() {
                         <h3>AI経営分析</h3>
                       </div>
                     </div>
-                    <div className="list-card">
-                      {aiAnalysis.summary.map((item) => <div key={item} className="list-row"><strong>{item}</strong></div>)}
-                      <div className="list-row"><strong>優先項目</strong><small>{aiAnalysis.priorities.join(" / ")}</small></div>
-                      <div className="list-row"><strong>アクション</strong><small>{aiAnalysis.notes.slice(0, 3).join(" / ")}</small></div>
+                    <div className="ai-analysis-grid">
+                      {aiAnalysis.summary.slice(0, 2).map((item) => (
+                        <article key={item} className="ai-analysis-card summary-card-tone">
+                          <span>サマリー</span>
+                          <strong>{item}</strong>
+                        </article>
+                      ))}
+                      <article className="ai-analysis-card priority-card-tone">
+                        <span>優先項目</span>
+                        <strong>{aiAnalysis.priorities[0] || "固定費と販管費の推移を確認してください"}</strong>
+                        <small>{aiAnalysis.priorities.slice(1).join(" / ")}</small>
+                      </article>
+                      <article className="ai-analysis-card action-card-tone">
+                        <span>次のアクション</span>
+                        <strong>{aiAnalysis.notes[0] || "入力データを継続して蓄積してください"}</strong>
+                        <small>{aiAnalysis.notes.slice(1, 3).join(" / ")}</small>
+                      </article>
                     </div>
                   </section>
                 )}
@@ -3530,11 +3658,12 @@ function App() {
   );
 }
 
-function MetricCard({ label, value }) {
+function MetricCard({ label, value, hint = "", tone = "", emphasize = false }) {
   return (
-    <div className="metric-card">
+    <div className={`metric-card ${tone} ${emphasize ? "emphasize" : ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
+      {hint ? <small>{hint}</small> : null}
     </div>
   );
 }
