@@ -1,7 +1,7 @@
 {
-  "name": "美容室経営管理",
+  "name": "サロン経営管理",
   "short_name": "Salon Manager",
-  "description": "美容室経営管理アプリ",
+  "description": "サロン経営管理アプリ",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f4f6fb",

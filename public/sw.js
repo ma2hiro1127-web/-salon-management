@@ -1,4 +1,4 @@
-const CACHE_NAME = 'salon-manager-cache-v2';
+const CACHE_NAME = 'salon-manager-cache-v3';
 const APP_SHELL = ['/', '/index.html', '/manifest.webmanifest', '/favicon.svg'];
 
 self.addEventListener('install', (event) => {
