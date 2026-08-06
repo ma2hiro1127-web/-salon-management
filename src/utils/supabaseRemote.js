@@ -1,4 +1,5 @@
 import { logSupabaseError, supabase } from "./supabase.js";
+import { mergeRemoteAppState, normalizeAppState } from "./storage.js";
 
 const getEnvValue = (key) => {
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
@@ -64,13 +65,18 @@ export const upsertTenantSnapshot = async ({ company, store, user, appState, tar
   }
 };
 
-// Each row's payload embeds the *entire* multi-store app state as of whichever save wrote
-// it (see buildTenantSnapshotRow), not just the data for its own store_id/target_month. So
-// picking the single most recently updated row for the company+month is more reliable than
-// preferring an exact store_id match, which can point at a row that hasn't been re-saved
-// since before a more recent edit to a different store landed. The caller is expected to
-// merge this payload into local state (see mergeRemoteAppState) rather than replace it
-// outright, so a slightly-stale fetch here can't discard newer local data either way.
+// Each row's payload embeds the *entire* multi-store app state as of whichever save wrote it
+// (see buildTenantSnapshotRow) — but only reliably reflects the store(s) that were actually
+// loaded into memory in that browser tab at the moment of that particular save, not every
+// store the company has. A save made while viewing store B does not necessarily still carry
+// store A's data in its payload (e.g. a fresh tab that never loaded store A yet). Picking only
+// the single freshest row for the company+month therefore used to silently drop any store
+// whose own most-recent save wasn't also the company's overall most-recent save — confirmed in
+// production: a snapshot saved while viewing フィーネ横浜 had no 本店 key in its dailyResults at
+// all, so fetching only that row made 本店's data disappear on any read that relied on it.
+// Fetching every recent row and folding them together (oldest to newest, via the same
+// mergeRemoteAppState used everywhere else) keeps each store's own latest known data instead
+// of only whichever store happened to be saved most recently overall.
 //
 // Returns {ok, data, error} rather than a bare snapshot-or-null: a genuinely empty result
 // ("no snapshot exists yet for this company/month") and a *failed* fetch (network blip, RLS
@@ -90,8 +96,18 @@ export const loadLatestTenantSnapshot = async ({ companyId, targetMonth, created
     if (error) throw error;
     const snapshots = Array.isArray(data) ? data : [];
     if (!snapshots.length) return { ok: true, data: null };
-    const sorted = [...snapshots].sort((left, right) => new Date(right.updated_at || 0) - new Date(left.updated_at || 0));
-    return { ok: true, data: sorted[0] || null };
+    const ascending = [...snapshots].sort((left, right) => new Date(left.updated_at || 0) - new Date(right.updated_at || 0));
+    const freshest = ascending[ascending.length - 1];
+    const mergedPayload = ascending
+      .map((row) => normalizeAppState(row.payload || {}))
+      .reduce((acc, payload) => mergeRemoteAppState(acc, payload));
+    return {
+      ok: true,
+      data: {
+        ...freshest,
+        payload: mergedPayload,
+      },
+    };
   } catch (error) {
     if (isMissingTableError(error)) {
       return { ok: true, skipped: true, data: null };
