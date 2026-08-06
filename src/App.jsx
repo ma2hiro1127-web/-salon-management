@@ -1160,6 +1160,11 @@ function App() {
           let merged = (fallbackState && Object.keys(fallbackState.dailyResults || {}).length)
             ? mergeRemoteAppState(prev, {
                 ...fallbackState,
+                // companies/users must always reflect the just-fetched stores/profiles tables,
+                // never a possibly-stale localStorage cache — see the identical fix below for
+                // why letting a cached list win here silently breaks store_id resolution.
+                companies: tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || []),
+                users: tenantState?.users?.length ? tenantState.users : (fallbackState.users || []),
                 currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
                 currentUserId: profile?.id || prev.currentUserId || "",
                 currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
@@ -1183,8 +1188,19 @@ function App() {
       const resolvedSelectedMonth = tenantState?.selectedMonth || targetMonth || remoteState.selectedMonth || new Date().toISOString().slice(0, 7);
       const nextRemoteState = {
         ...remoteState,
-        companies: remoteState.companies?.length ? remoteState.companies : (tenantState?.companies || []),
-        users: remoteState.users?.length ? remoteState.users : (tenantState?.users || []),
+        // companies/users must always come from tenantState (the fresh companies/stores/
+        // profiles/user_stores fetch this same hydrate just ran), never from this snapshot's
+        // embedded copy. loadLatestTenantSnapshot picks whichever row is freshest for the
+        // company+month *across every store* (it has no per-store scoping at all), so the
+        // snapshot on hand here can easily be one that was last saved while looking at a
+        // different store — its embedded companies/stores list is then stale by however long
+        // it's been since THAT store was last touched, not this one. Store_id resolution
+        // (resolveTargetCompanyAndStore, the ranking view's currentCompanyStores, etc.) reads
+        // straight from appState.companies, so a stale entry here silently redirects every
+        // write for a store to whatever id happened to be embedded in someone else's save —
+        // this was reproducible for whichever store hadn't been the most recently saved one.
+        companies: tenantState?.companies?.length ? tenantState.companies : (remoteState.companies || []),
+        users: tenantState?.users?.length ? tenantState.users : (remoteState.users || []),
         companySnapshots: remoteState.companySnapshots || (tenantState?.companySnapshots || {}),
         currentCompanyId: remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
         currentUserId: remoteState.currentUserId || tenantState?.currentUserId || profile.id || "",
@@ -1358,7 +1374,15 @@ function App() {
       if (!existingStore) {
         createdStore = await createStoreRecord({ companyId, name: storeForm.name.trim(), code: (storeForm.code || storeForm.name).trim().toLowerCase() });
       }
-      const storeId = existingStore?.id || createdStore?.id || `${companyId}-${String(storeForm.code || storeForm.name).toLowerCase().replace(/\s+/g, "-")}`;
+      // No locally-fabricated fallback id here on purpose: createStoreRecord throws on any
+      // failure (caught below), so existingStore/createdStore are the only legitimate sources
+      // for a store's id. A store id that never actually exists in the stores table would
+      // silently fail every subsequent daily_sales/monthly_targets write for it via FK/RLS —
+      // exactly the class of bug this whole store_id audit is trying to eliminate.
+      const storeId = existingStore?.id || createdStore?.id;
+      if (!storeId) {
+        throw new Error("店舗IDを取得できませんでした");
+      }
       const normalizedUrls = normalizeStoreUrls(storeForm.urls || []);
       const serviceTypes = (storeForm.serviceTypes || "")
         .split(",")
