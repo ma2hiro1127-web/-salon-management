@@ -94,9 +94,16 @@ const ensureInitialCompanyAndStore = async ({ companyId = null, preferredCompany
   let resolvedCompanyId = companyId;
   let resolvedStoreId = null;
 
-  const { data: existingCompanies, error: companyLookupError } = await supabase.from("companies").select("id").limit(1);
+  // When a specific companyId is passed (e.g. an invited user joining an existing company),
+  // check for THAT company, not just "does any company exist anywhere" — the previous version
+  // ignored the passed companyId entirely and could silently attach the user to a different,
+  // unrelated company that merely happened to be the first row.
+  const { data: existingCompanies, error: companyLookupError } = companyId
+    ? await supabase.from("companies").select("id").eq("id", companyId).limit(1)
+    : await supabase.from("companies").select("id").limit(1);
   if (companyLookupError) throw companyLookupError;
 
+  let created = false;
   if (!existingCompanies?.length) {
     const { data: company, error: companyError } = await supabase
       .from("companies")
@@ -110,6 +117,7 @@ const ensureInitialCompanyAndStore = async ({ companyId = null, preferredCompany
 
     if (companyError) throw companyError;
     resolvedCompanyId = company.id;
+    created = true;
 
     const { data: store, error: storeError } = await supabase
       .from("stores")
@@ -133,7 +141,11 @@ const ensureInitialCompanyAndStore = async ({ companyId = null, preferredCompany
     }
   }
 
-  return { companyId: resolvedCompanyId, storeId: resolvedStoreId };
+  // `created` tells the caller this user is the one who just founded the company, so they can
+  // be granted management access immediately instead of defaulting to "staff" (see
+  // ensureProfileForAuthUser) — without it, a brand-new owner would be locked out of their own
+  // company's monthly targets / month-closing / store & user management on their very first login.
+  return { companyId: resolvedCompanyId, storeId: resolvedStoreId, created };
 };
 
 export const initializeFirstTenantForUser = async ({ authUserId, email, role = null }) => {
@@ -239,7 +251,6 @@ export const ensureProfileForAuthUser = async ({ authUserId, email, role = null,
   }
 
   if (existingProfile) {
-    const resolvedRole = normalizeRole(role || resolveDefaultRole(normalizedEmail));
     const updates = {};
     if (!existingProfile.auth_user_id) updates.auth_user_id = authUserId;
     if (!existingProfile.company_id) {
@@ -247,7 +258,19 @@ export const ensureProfileForAuthUser = async ({ authUserId, email, role = null,
       updates.company_id = tenant.companyId;
     }
     if (!existingProfile.name) updates.name = normalizedEmail.split("@")[0];
-    if (!existingProfile.role || normalizeRole(existingProfile.role) !== resolvedRole) updates.role = resolvedRole;
+    // Role is deliberately left alone for an existing profile. This function runs on every
+    // login and every session restore (see App.jsx's initializeAuth/handleLogin), always
+    // called with `role` derived fresh from the email. Re-applying that derived role here used
+    // to silently overwrite whatever role an admin had actually set — an invite's
+    // store_manager, or a promotion via the 権限変更 button — back to the email-based default
+    // on the user's very next login. The only role change ever applied automatically is
+    // upgrading the hardcoded bootstrap admin email to system_admin, and only upgrading, never
+    // downgrading, so it can't undo a deliberate demotion either.
+    if (resolveRoleForEmail(normalizedEmail) === "system_admin" && normalizeRole(existingProfile.role) !== "system_admin") {
+      updates.role = "system_admin";
+    } else if (!existingProfile.role) {
+      updates.role = normalizeRole(role || resolveDefaultRole(normalizedEmail));
+    }
     if (Object.keys(updates).length) {
       const { data, error } = await supabase.from("profiles").update(updates).eq("id", existingProfile.id).select().single();
       if (error) throw error;
@@ -257,10 +280,19 @@ export const ensureProfileForAuthUser = async ({ authUserId, email, role = null,
   }
 
   const tenant = await ensureInitialCompanyAndStore({ companyId, preferredCompanyName: "サロン本社", preferredStoreName: "本店" });
+  // The user who causes a brand-new company to be provisioned is its founding owner: default
+  // them to plain "staff" and they'd be locked out of their own company's monthly targets,
+  // month-closing, and store/user management from their very first login (all restricted to
+  // company_admin/system_admin/store_manager by RLS). Only applies when this signup is what
+  // actually created the company — an invited user joining an existing company still gets
+  // whatever role their invite specified.
+  const resolvedRole = tenant.created
+    ? "company_admin"
+    : normalizeRole(role || resolveDefaultRole(normalizedEmail));
   const profile = await createUserProfileRecord({
     name: normalizedEmail.split("@")[0],
     email: normalizedEmail,
-    role: normalizeRole(role || resolveDefaultRole(normalizedEmail)),
+    role: resolvedRole,
     companyId: tenant.companyId,
     storeIds: tenant.storeId ? [tenant.storeId] : [],
     primaryStoreId: tenant.storeId || "",
@@ -489,6 +521,59 @@ export const getProfilesForDebug = async () => {
   return data || [];
 };
 
+// The Users management page's 権限変更/所属店舗変更 buttons used to only update appState.users
+// (local state + the legacy tenant_snapshots blob) — never the profiles/user_stores rows that
+// RLS and every other read path actually check. That made a role "change" pure UI theater: the
+// promoted user's next login would still see their old role, since ensureProfileForAuthUser
+// reads straight from profiles.role.
+export const updateProfileRole = async ({ profileId, role }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ userId: profileId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateProfileRole", table: "profiles", userId: profileId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase.from("profiles").update({ role: normalizeRole(role) }).eq("id", profileId).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateProfileRole", table: "profiles", userId: profileId, error });
+    return { ok: false, error };
+  }
+};
+
+// Replaces this profile's full store assignment set (delete-then-insert, since user_stores has
+// no natural single-row conflict target for "this user's whole assignment list").
+export const updateProfileStoreAssignments = async ({ profileId, companyId, storeIds = [], primaryStoreId = "" }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ userId: profileId, companyId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateProfileStoreAssignments", table: "user_stores", userId: profileId, companyId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { error: deleteError } = await supabase.from("user_stores").delete().eq("user_id", profileId);
+    if (deleteError) throw deleteError;
+
+    const storeList = (storeIds || []).filter(Boolean);
+    if (!storeList.length) return { ok: true, data: [] };
+
+    const assignments = storeList.map((storeId, index) => ({
+      user_id: profileId,
+      company_id: companyId,
+      store_id: storeId,
+      is_primary: primaryStoreId ? storeId === primaryStoreId : index === 0,
+    }));
+    const { data, error: insertError } = await supabase.from("user_stores").insert(assignments).select();
+    if (insertError) throw insertError;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateProfileStoreAssignments", table: "user_stores", userId: profileId, companyId, error });
+    return { ok: false, error };
+  }
+};
+
 // daily_sales is the row-per-day source of truth for daily sales figures: one row per
 // (company_id, store_id, business_date), upserted so re-saving the same date updates it in
 // place instead of creating a duplicate. Day-closing state (is_day_closed/closed_at) is
@@ -542,12 +627,20 @@ export const updateDailySalesClosingState = async ({ companyId, storeId, busines
   }
 
   try {
+    // updated_at must be bumped here even though it also reflects sales-figure edits
+    // elsewhere: buildDailyStateFromRows/dailySalesRowToEntry fall back to it as the
+    // dayClosingUpdatedAt for this date whenever closed_at is null (i.e. un-closing, which
+    // clears closed_at). Without this, un-closing left dayClosingUpdatedAt pointing at
+    // whatever the last unrelated sales-figure save happened to be — a stale timestamp that
+    // could lose a last-write-wins merge (see mergeDayClosingStatesMap) against a different
+    // device's stale cached "closed" state, silently reviving a day the user had just un-closed.
     const { data, error } = await supabase
       .from("daily_sales")
       .update({
         is_day_closed: Boolean(isClosed),
         closed_at: isClosed ? new Date().toISOString() : null,
         closed_by: isClosed ? (userId || null) : null,
+        updated_at: new Date().toISOString(),
       })
       .eq("company_id", companyId)
       .eq("store_id", storeId)

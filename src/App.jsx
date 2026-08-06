@@ -77,6 +77,8 @@ import {
   signUpWithEmail,
   getProfilesForDebug,
   resolveRoleForEmail,
+  updateProfileRole,
+  updateProfileStoreAssignments,
 } from "./utils/supabase.js";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
@@ -1634,7 +1636,15 @@ function App() {
     setNotice(user.isActive ? `${user.name} を停止しました` : `${user.name} を再開しました`);
   };
 
-  const handleUpdateUserRole = (user, nextRole) => {
+  const handleUpdateUserRole = async (user, nextRole) => {
+    if (isSupabaseConfigured) {
+      const result = await updateProfileRole({ profileId: user.id, role: nextRole });
+      if (!result?.ok && !result?.skipped) {
+        const reason = getSupabaseErrorMessage(result?.error);
+        setNotice(`権限の変更に失敗しました: ${reason}`);
+        return;
+      }
+    }
     const nextState = {
       ...appState,
       users: (appState.users || []).map((item) => item.id === user.id ? { ...item, role: nextRole } : item),
@@ -1643,7 +1653,15 @@ function App() {
     setNotice(`${user.name} の権限を ${nextRole} に変更しました`);
   };
 
-  const handleUpdateUserStores = (user, nextStoreIds) => {
+  const handleUpdateUserStores = async (user, nextStoreIds) => {
+    if (isSupabaseConfigured) {
+      const result = await updateProfileStoreAssignments({ profileId: user.id, companyId: appState.currentCompanyId, storeIds: nextStoreIds, primaryStoreId: nextStoreIds[0] || "" });
+      if (!result?.ok && !result?.skipped) {
+        const reason = getSupabaseErrorMessage(result?.error);
+        setNotice(`所属店舗の変更に失敗しました: ${reason}`);
+        return;
+      }
+    }
     const nextState = {
       ...appState,
       users: (appState.users || []).map((item) => item.id === user.id ? { ...item, storeIds: nextStoreIds, primaryStoreId: nextStoreIds[0] || "" } : item),
@@ -2734,7 +2752,10 @@ function App() {
     // Apply locally only after Supabase confirms the write (or Supabase isn't configured at
     // all, i.e. local-only/dev mode). daily_sales is authoritative for this now, so we trust
     // its returned row rather than re-deriving anything.
-    const toggledAt = remoteResult?.data?.closed_at || new Date().toISOString();
+    // Mirrors the closed_at-then-updated_at fallback that buildDailyStateFromRows uses when
+    // rebuilding dayClosingUpdatedAt from a fresh fetch, so the optimistic local timestamp set
+    // here can never drift from what a subsequent hydrate/re-fetch will derive for the same row.
+    const toggledAt = remoteResult?.data?.closed_at || remoteResult?.data?.updated_at || new Date().toISOString();
     setAppState((prev) => {
       const currentMap = prev.dayClosingStates?.[key] || {};
       const currentTimestamps = prev.dayClosingUpdatedAt?.[key] || {};
