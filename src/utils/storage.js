@@ -103,16 +103,29 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
     ? manualBusinessDayCount
     : Math.max(monthInfo.daysInMonth - holidayCount, 0);
   const closingMap = state.dayClosingStates?.[key] || {};
-  const closedDates = Object.entries(closingMap)
-    .filter(([, isClosed]) => Boolean(isClosed))
-    .map(([date]) => date);
+  const dailyEntries = deduplicateDailyEntries(state.dailyResults?.[key] || []).entries;
+  const closedDates = new Set();
+
+  Object.entries(closingMap).forEach(([date, isClosed]) => {
+    if (Boolean(isClosed) && String(date).startsWith(`${monthValue}-`)) {
+      closedDates.add(String(date));
+    }
+  });
+
+  dailyEntries.forEach((entry) => {
+    if (Boolean(entry?.isDayClosed) && String(entry?.date || "").startsWith(`${monthValue}-`)) {
+      closedDates.add(String(entry.date));
+    }
+  });
+
+  const closedDateList = [...closedDates].sort((a, b) => a.localeCompare(b));
 
   return {
     businessDayCount,
-    completedDays: closedDates.length,
-    remainingBusinessDays: businessDayCount === null ? null : Math.max(businessDayCount - closedDates.length, 0),
-    progressRate: businessDayCount === null ? null : (closedDates.length / businessDayCount) * 100,
-    closedDates,
+    completedDays: closedDateList.length,
+    remainingBusinessDays: businessDayCount === null ? null : Math.max(businessDayCount - closedDateList.length, 0),
+    progressRate: businessDayCount === null ? null : (closedDateList.length / Math.max(businessDayCount, 1)) * 100,
+    closedDates: closedDateList,
   };
 };
 
@@ -378,8 +391,11 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const progressRate = businessDaySummary.progressRate;
   const targetPerDay = businessDaySummary.businessDayCount ? targetSales / businessDaySummary.businessDayCount : 0;
   const dailyNeededSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
-  const pace = completedDays ? sales / completedDays : 0;
-  const forecast = businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : sales;
+  const closedDateSet = new Set(businessDaySummary.closedDates || []);
+  const closedEntries = effectiveEntries.filter((entry) => closedDateSet.has(String(entry?.date || "")) || Boolean(entry?.isDayClosed));
+  const closedSales = closedEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0);
+  const pace = completedDays > 0 ? closedSales / completedDays : 0;
+  const forecast = completedDays > 0 && businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : 0;
   const averageSales = effectiveEntries.length > 0 ? sales / effectiveEntries.length : 0;
   const remainingAverageSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const todayActual = effectiveEntries.filter((entry) => entry.date === todayIso).reduce((sum, item) => sum + parseNumber(item.totalSales || item.technicalSales || 0), 0);

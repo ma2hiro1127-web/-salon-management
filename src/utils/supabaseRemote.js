@@ -14,8 +14,7 @@ const buildSnapshotId = ({ company, store, user, targetMonth }) => {
   const companyId = company?.id || "company";
   const storeId = store?.id || "store";
   const resolvedMonth = targetMonth || new Date().toISOString().slice(0, 7);
-  const creator = resolveProfileUserId(user) || resolveAuthUserId(user) || "user";
-  return `${companyId}:${storeId}:${resolvedMonth}:${creator}`;
+  return `${companyId}:${storeId}:${resolvedMonth}`;
 };
 
 export const buildTenantSnapshotRow = ({ company, store, user, appState, targetMonth = null }) => {

@@ -56,6 +56,8 @@ import {
   createStoreRecord,
   createUserProfileRecord,
   syncLocalDraftToSupabase,
+  upsertMonthlyTargetToSupabase,
+  loadMonthlyTargetFromSupabase,
   signUpWithEmail,
   getProfilesForDebug,
   resolveRoleForEmail,
@@ -484,6 +486,9 @@ function App() {
   const [syncStatus, setSyncStatus] = useState({ status: "idle", message: "同期待機中", timestamp: "", error: false });
   const [syncInitialized, setSyncInitialized] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
+  const [isStoreLoading, setIsStoreLoading] = useState(false);
+  const [targetDraft, setTargetDraft] = useState(() => getTargetForStoreMonth(initialAppStateValue, initialAppStateValue.selectedStore, initialAppStateValue.selectedMonth));
+  const [targetSaveStatus, setTargetSaveStatus] = useState({ status: "idle", message: "" });
   const lastPersistedRef = useRef("");
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
@@ -491,6 +496,7 @@ function App() {
   const { stores, selectedStore, selectedMonth } = appState;
   const currentCompany = useMemo(() => appState.companies?.find((company) => company.id === appState.currentCompanyId) || appState.companies?.[0] || null, [appState.companies, appState.currentCompanyId]);
   const currentCompanyStores = useMemo(() => currentCompany?.stores || [], [currentCompany]);
+  const selectedStoreEntity = useMemo(() => currentCompanyStores.find((store) => store.name === selectedStore) || currentCompanyStores[0] || null, [currentCompanyStores, selectedStore]);
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -585,11 +591,10 @@ function App() {
   }, [currentCompany?.id, currentCompany?.settings]);
 
   useEffect(() => {
-    const matchingStore = currentCompanyStores.find((store) => store.name === selectedStore);
-    if (matchingStore) {
-      setStoreSettingsForm(matchingStore.settings || createStoreSettingsDefaults());
+    if (selectedStoreEntity) {
+      setStoreSettingsForm(selectedStoreEntity.settings || createStoreSettingsDefaults());
     }
-  }, [currentCompanyStores, selectedStore]);
+  }, [selectedStoreEntity]);
   const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
   const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
   const target = getTargetForStoreMonth(appState, selectedStore, selectedMonth);
@@ -637,15 +642,16 @@ function App() {
     const previousMonth = getMonthOffset(selectedMonth, -1);
     const previousPreviousMonth = getMonthOffset(selectedMonth, -2);
 
-    const rows = stores.map((storeName) => {
-      const storeSummary = calculateMonthSummary(appState, storeName, selectedMonth);
-      const previousSummary = calculateMonthSummary(appState, storeName, previousMonth);
-      const previousPreviousSummary = calculateMonthSummary(appState, storeName, previousPreviousMonth);
+    const rows = currentCompanyStores.map((store) => {
+      const storeSummary = calculateMonthSummary(appState, store.name, selectedMonth);
+      const previousSummary = calculateMonthSummary(appState, store.name, previousMonth);
+      const previousPreviousSummary = calculateMonthSummary(appState, store.name, previousPreviousMonth);
       const currentChangeRate = previousSummary.sales > 0 ? ((storeSummary.sales - previousSummary.sales) / previousSummary.sales) * 100 : 0;
       const previousChangeRate = previousPreviousSummary.sales > 0 ? ((previousSummary.sales - previousPreviousSummary.sales) / previousPreviousSummary.sales) * 100 : 0;
 
       return {
-        storeName,
+        storeId: store.id,
+        storeName: store.name,
         sales: storeSummary.sales,
         targetSales: storeSummary.target.targetSales,
         achievement: storeSummary.targetAchievement,
@@ -682,7 +688,7 @@ function App() {
       previousRank: previousRankMap.get(row.storeName) || 0,
       trend: row.previousRank ? (row.currentRank < row.previousRank ? "↑" : row.currentRank > row.previousRank ? "↓" : "→") : "→",
     }));
-  }, [appState, rankingSort, selectedMonth, stores]);
+  }, [appState, rankingSort, selectedMonth, currentCompanyStores]);
   const statusCards = useMemo(() => buildStatusCards({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }), [saveStatus, syncStatus, isSupabaseConfigured, isOnline]);
   const dashboardHeroMetrics = useMemo(() => ([
     {

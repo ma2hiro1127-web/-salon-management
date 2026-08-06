@@ -16,7 +16,7 @@ test("buildTenantSnapshotRow preserves the active company, store, and user conte
 
   const row = buildTenantSnapshotRow({ company, store, user, appState });
 
-  assert.equal(row.id, "company-1:store-1:2026-08:profile-1");
+  assert.equal(row.id, "company-1:store-1:2026-08");
   assert.equal(row.company_id, "company-1");
   assert.equal(row.store_id, "store-1");
   assert.equal(row.target_month, "2026-08");
