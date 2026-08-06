@@ -421,11 +421,65 @@ export const syncLocalDraftToSupabase = async ({ companyId, storeId, userId, pay
     store_id: storeId,
     business_date: payload.date,
     sales_amount: payload.totalSales || 0,
+    technical_sales_amount: payload.technicalSales || 0,
     retail_sales_amount: payload.retailSales || 0,
+    other_sales_amount: payload.otherSales || 0,
     customer_count: payload.customers || 0,
     new_customer_count: payload.newCustomers || 0,
+    repeat_customer_count: payload.repeatCustomers || 0,
+    is_day_closed: Boolean(payload.isDayClosed),
     created_by: userId,
   }, { onConflict: "company_id,store_id,business_date" });
   if (error) throw error;
   return { ok: true };
+};
+
+export const upsertMonthlyTargetToSupabase = async ({ companyId, storeId, targetMonth, userId, target }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!companyId || !storeId || !targetMonth || !userId) return { ok: true, skipped: true };
+
+  const payload = {
+    company_id: companyId,
+    store_id: storeId,
+    target_month: targetMonth,
+    target_sales: Number(target?.targetSales || 0),
+    target_technical_sales: Number(target?.targetTechnicalSales || 0),
+    target_retail_sales: Number(target?.targetRetailSales || 0),
+    target_customers: Number(target?.targetCustomers || 0),
+    target_average_spend: Number(target?.targetAverageSpend || 0),
+    target_new_customers: Number(target?.targetNewCustomers || 0),
+    target_repeat_customers: Number(target?.targetRepeatCustomers || 0),
+    target_repeat_rate: Number(target?.targetRepeatRate || 0),
+    target_average_customers_per_day: Number(target?.targetAverageCustomersPerDay || 0),
+    business_day_mode: String(target?.businessDayMode || ""),
+    business_day_count: Number(target?.businessDayCount || 0),
+    holiday_count: Number(target?.holidayCount || 0),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { data, error } = await supabase
+    .from("monthly_targets")
+    .upsert(payload, { onConflict: "company_id,store_id,target_month" })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return { ok: true, data };
+};
+
+export const loadMonthlyTargetFromSupabase = async ({ companyId, storeId, targetMonth }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true, data: null };
+  if (!companyId || !storeId || !targetMonth) return { ok: true, skipped: true, data: null };
+
+  const { data, error } = await supabase
+    .from("monthly_targets")
+    .select("*")
+    .eq("company_id", companyId)
+    .eq("store_id", storeId)
+    .eq("target_month", targetMonth)
+    .maybeSingle();
+
+  if (error) throw error;
+  return { ok: true, data: data || null };
 };
