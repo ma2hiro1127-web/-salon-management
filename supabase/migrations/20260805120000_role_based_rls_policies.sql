@@ -17,7 +17,7 @@ create policy tenant_snapshots_select_company_scope
     and (
       company_id is null
       or company_id in (
-        select company_id
+        select company_id::text
         from public.profiles
         where auth_user_id = auth.uid()
           and is_active = true
@@ -33,7 +33,7 @@ create policy tenant_snapshots_manage_company_scope
     and (
       company_id is null
       or company_id in (
-        select company_id
+        select company_id::text
         from public.profiles
         where auth_user_id = auth.uid()
           and is_active = true
@@ -49,7 +49,7 @@ create policy tenant_snapshots_update_company_scope
     and (
       company_id is null
       or company_id in (
-        select company_id
+        select company_id::text
         from public.profiles
         where auth_user_id = auth.uid()
           and is_active = true
@@ -61,7 +61,7 @@ create policy tenant_snapshots_update_company_scope
     and (
       company_id is null
       or company_id in (
-        select company_id
+        select company_id::text
         from public.profiles
         where auth_user_id = auth.uid()
           and is_active = true
@@ -77,7 +77,7 @@ create policy tenant_snapshots_delete_company_scope
     and (
       company_id is null
       or company_id in (
-        select company_id
+        select company_id::text
         from public.profiles
         where auth_user_id = auth.uid()
           and is_active = true

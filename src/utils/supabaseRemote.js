@@ -1,4 +1,4 @@
-import { supabase } from "./supabase.js";
+import { logSupabaseError, supabase } from "./supabase.js";
 
 const getEnvValue = (key) => {
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
@@ -43,6 +43,11 @@ export const buildTenantSnapshotRow = ({ company, store, user, appState, targetM
   };
 };
 
+const isMissingTableError = (error) => {
+  const status = error?.message || "";
+  return status.includes("does not exist") || status.includes("relation") || status.includes("schema cache");
+};
+
 export const upsertTenantSnapshot = async ({ company, store, user, appState, targetMonth = null, force = false } = {}) => {
   if (!isRemoteSupabaseAvailable || !company || !store || !user) return { ok: true, skipped: true };
   try {
@@ -51,19 +56,29 @@ export const upsertTenantSnapshot = async ({ company, store, user, appState, tar
     if (error) throw error;
     return { ok: true, data };
   } catch (error) {
-    const status = error?.message || "";
-    if (force) {
-      return { ok: false, error };
-    }
-    if (status.includes("does not exist") || status.includes("relation") || status.includes("schema cache")) {
+    if (!force && isMissingTableError(error)) {
       return { ok: true, skipped: true, error };
     }
+    logSupabaseError({ operation: "upsertTenantSnapshot", table: "tenant_snapshots", userId: user?.id, companyId: company?.id, storeId: store?.id, targetMonth, error });
     return { ok: false, error };
   }
 };
 
-export const loadLatestTenantSnapshot = async ({ companyId, storeId = null, targetMonth, createdBy = null, allowOfflineFallback = false } = {}) => {
-  if (!isRemoteSupabaseAvailable || !companyId || !targetMonth) return null;
+// Each row's payload embeds the *entire* multi-store app state as of whichever save wrote
+// it (see buildTenantSnapshotRow), not just the data for its own store_id/target_month. So
+// picking the single most recently updated row for the company+month is more reliable than
+// preferring an exact store_id match, which can point at a row that hasn't been re-saved
+// since before a more recent edit to a different store landed. The caller is expected to
+// merge this payload into local state (see mergeRemoteAppState) rather than replace it
+// outright, so a slightly-stale fetch here can't discard newer local data either way.
+//
+// Returns {ok, data, error} rather than a bare snapshot-or-null: a genuinely empty result
+// ("no snapshot exists yet for this company/month") and a *failed* fetch (network blip, RLS
+// denial, missing table) must never be treated the same way by the caller — collapsing them
+// to null previously meant a transient fetch failure looked exactly like "you have no data",
+// which is what let hydrateFromSupabase fall through to an empty/local-only state.
+export const loadLatestTenantSnapshot = async ({ companyId, targetMonth, createdBy = null, allowOfflineFallback = false } = {}) => {
+  if (!isRemoteSupabaseAvailable || !companyId || !targetMonth) return { ok: true, skipped: true, data: null };
   try {
     const { data, error } = await supabase
       .from("tenant_snapshots")
@@ -74,15 +89,36 @@ export const loadLatestTenantSnapshot = async ({ companyId, storeId = null, targ
       .limit(10);
     if (error) throw error;
     const snapshots = Array.isArray(data) ? data : [];
-    if (!snapshots.length) return null;
+    if (!snapshots.length) return { ok: true, data: null };
     const sorted = [...snapshots].sort((left, right) => new Date(right.updated_at || 0) - new Date(left.updated_at || 0));
-    const exactStoreMatch = sorted.find((row) => !storeId || row.store_id === storeId);
-    return exactStoreMatch || sorted[0] || null;
+    return { ok: true, data: sorted[0] || null };
   } catch (error) {
-    const status = error?.message || "";
-    if (status.includes("does not exist") || status.includes("relation") || status.includes("schema cache")) {
-      return null;
+    if (isMissingTableError(error)) {
+      return { ok: true, skipped: true, data: null };
     }
-    return null;
+    logSupabaseError({ operation: "loadLatestTenantSnapshot", table: "tenant_snapshots", companyId, targetMonth, error });
+    return { ok: false, error, data: null };
+  }
+};
+
+// Fetches exactly the row a given store+month upserts to (id = company:store:month), so a
+// save can be verified against the same row it just wrote instead of "whichever snapshot in
+// the company happens to be freshest right now" (which loadLatestTenantSnapshot returns and
+// could momentarily be a different store's row from a concurrent save elsewhere).
+export const loadTenantSnapshotForStore = async ({ companyId, storeId, targetMonth } = {}) => {
+  if (!isRemoteSupabaseAvailable || !companyId || !storeId || !targetMonth) return { ok: true, skipped: true, data: null };
+  try {
+    const { data, error } = await supabase
+      .from("tenant_snapshots")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("store_id", storeId)
+      .eq("target_month", targetMonth)
+      .maybeSingle();
+    if (error) throw error;
+    return { ok: true, data: data || null };
+  } catch (error) {
+    logSupabaseError({ operation: "loadTenantSnapshotForStore", table: "tenant_snapshots", companyId, storeId, targetMonth, error });
+    return { ok: false, error, data: null };
   }
 };

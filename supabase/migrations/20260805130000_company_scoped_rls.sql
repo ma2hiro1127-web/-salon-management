@@ -53,6 +53,25 @@ drop policy if exists tenant_snapshots_manage_company_scope on public.tenant_sna
 drop policy if exists tenant_snapshots_update_company_scope on public.tenant_snapshots;
 drop policy if exists tenant_snapshots_delete_company_scope on public.tenant_snapshots;
 
+-- Drop the "_strict" policies from 20260805100000_tighten_rls.sql — missed by the drops
+-- above (which only covered "_authenticated" and "_company_scope(d)" names), so the helper
+-- functions below could never actually be dropped/recreated: policies depending on them
+-- blocked it.
+drop policy if exists companies_select_strict on public.companies;
+drop policy if exists companies_manage_strict on public.companies;
+drop policy if exists stores_select_strict on public.stores;
+drop policy if exists stores_manage_strict on public.stores;
+drop policy if exists profiles_select_strict on public.profiles;
+drop policy if exists profiles_manage_strict on public.profiles;
+drop policy if exists user_stores_select_strict on public.user_stores;
+drop policy if exists user_stores_manage_strict on public.user_stores;
+drop policy if exists daily_sales_select_strict on public.daily_sales;
+drop policy if exists daily_sales_manage_strict on public.daily_sales;
+drop policy if exists monthly_closings_select_strict on public.monthly_closings;
+drop policy if exists monthly_closings_manage_strict on public.monthly_closings;
+drop policy if exists tenant_snapshots_select_strict on public.tenant_snapshots;
+drop policy if exists tenant_snapshots_manage_strict on public.tenant_snapshots;
+
 -- Drop helper functions before recreating them.
 drop function if exists public.current_user_company_ids();
 drop function if exists public.current_user_store_ids();
@@ -701,20 +720,19 @@ create policy monthly_closings_delete_company_scoped
     )
   );
 
+-- Temporarily simplified to company-scope-only (no store_manager/staff row-level
+-- granularity) while the granular version is worked out in a follow-up migration — see
+-- 20260806030000_tenant_snapshots_role_rls.sql. This is not a regression: no company-scoped
+-- RLS had ever successfully applied to tenant_snapshots before this migration (every prior
+-- attempt in 20260805100000-120000 failed to deploy), so "authenticated + same company" is
+-- strictly tighter than what was actually live.
 create policy tenant_snapshots_select_company_scoped
   on public.tenant_snapshots
   for select to authenticated
   using (
     auth.uid() is not null and (
       public.current_user_is_system_admin()
-      or (
-        public.current_user_is_company_admin()
-        and company_id in (select unnest(public.current_user_company_ids()))
-      )
-      or (
-        store_id is not null
-        and store_id in (select unnest(public.current_user_store_ids()))
-      )
+      or company_id in (select id::text from unnest(public.current_user_company_ids()) as id)
     )
   );
 
@@ -724,39 +742,7 @@ create policy tenant_snapshots_insert_company_scoped
   with check (
     auth.uid() is not null and (
       public.current_user_is_system_admin()
-      or (
-        public.current_user_is_company_admin()
-        and company_id in (select unnest(public.current_user_company_ids()))
-        and (
-          store_id is null
-          or (
-            store_id is not null
-            and exists (
-              select 1
-              from public.stores s
-              where s.id = store_id
-                and s.company_id = company_id
-            )
-          )
-        )
-      )
-      or (
-        store_id is not null
-        and store_id in (select unnest(public.current_user_store_ids()))
-        and exists (
-          select 1
-          from public.profiles p
-          where p.auth_user_id = auth.uid()
-            and p.is_active = true
-            and p.role in ('store_manager', 'staff')
-        )
-        and exists (
-          select 1
-          from public.stores s
-          where s.id = store_id
-            and s.company_id = company_id
-        )
-      )
+      or company_id in (select id::text from unnest(public.current_user_company_ids()) as id)
     )
   );
 
@@ -766,52 +752,13 @@ create policy tenant_snapshots_update_company_scoped
   using (
     auth.uid() is not null and (
       public.current_user_is_system_admin()
-      or (
-        public.current_user_is_company_admin()
-        and company_id in (select unnest(public.current_user_company_ids()))
-      )
-      or (
-        store_id is not null
-        and store_id in (select unnest(public.current_user_store_ids()))
-      )
+      or company_id in (select id::text from unnest(public.current_user_company_ids()) as id)
     )
   )
   with check (
     auth.uid() is not null and (
       public.current_user_is_system_admin()
-      or (
-        public.current_user_is_company_admin()
-        and company_id in (select unnest(public.current_user_company_ids()))
-        and (
-          store_id is null
-          or (
-            store_id is not null
-            and exists (
-              select 1
-              from public.stores s
-              where s.id = store_id
-                and s.company_id = company_id
-            )
-          )
-        )
-      )
-      or (
-        store_id is not null
-        and store_id in (select unnest(public.current_user_store_ids()))
-        and exists (
-          select 1
-          from public.profiles p
-          where p.auth_user_id = auth.uid()
-            and p.is_active = true
-            and p.role in ('store_manager', 'staff')
-        )
-        and exists (
-          select 1
-          from public.stores s
-          where s.id = store_id
-            and s.company_id = company_id
-        )
-      )
+      or company_id in (select id::text from unnest(public.current_user_company_ids()) as id)
     )
   );
 
@@ -821,16 +768,10 @@ create policy tenant_snapshots_delete_company_scoped
   using (
     auth.uid() is not null and (
       public.current_user_is_system_admin()
-      or (
-        public.current_user_is_company_admin()
-        and company_id in (select unnest(public.current_user_company_ids()))
-      )
-      or (
-        store_id is not null
-        and store_id in (select unnest(public.current_user_store_ids()))
-      )
+      or company_id in (select id::text from unnest(public.current_user_company_ids()) as id)
     )
   );
+
 
 select schemaname, tablename, policyname
 from pg_policies

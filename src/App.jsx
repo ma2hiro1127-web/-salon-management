@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import {
+  dailyFieldKeys,
+  dailyFieldPresets,
   defaultClosingItem,
   defaultDailyEntry,
+  defaultDailyFieldSettings,
   defaultFixedCostItem,
+  defaultTarget,
   defaultVariableCostItem,
   expenseCategories,
   fixedCostCategories,
@@ -11,21 +15,26 @@ import {
 } from "./data/defaults.js";
 import {
   STORAGE_KEYS,
+  buildDailyEntryPayload,
+  buildDailyStateFromRows,
+  buildMonthClosingStateFromRows,
   buildMonthKey,
   calculateMonthSummary,
   calculateTaxSummary,
   deduplicateDailyEntries,
-  getAiAnalysis,
   getBusinessDaySettings,
+  formatMonthLabel,
   getBusinessDaySummary,
   getClosingItemsForStoreMonth,
   getCustomerTargetSummary,
+  getSalesStatusComment,
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
   formatLocalDate,
   getMonthInfo,
   getTargetForStoreMonth,
   getVariableCostsForStoreMonth,
+  mergeRemoteAppState,
   money,
   moneyDiff,
   number,
@@ -54,10 +63,17 @@ import {
   getProfileByEmail,
   createCompanyRecord,
   createStoreRecord,
+  normalizeDailyFieldSettings,
+  updateStoreDailyFieldSettings,
   createUserProfileRecord,
-  syncLocalDraftToSupabase,
+  upsertDailySalesEntry,
+  updateDailySalesClosingState,
+  loadDailySalesForCompanyRange,
+  upsertMonthlyClosingState,
+  loadMonthlyClosingsForCompany,
   upsertMonthlyTargetToSupabase,
   loadMonthlyTargetFromSupabase,
+  logSupabaseError,
   signUpWithEmail,
   getProfilesForDebug,
   resolveRoleForEmail,
@@ -170,6 +186,16 @@ const getMonthOffset = (monthValue, offset) => {
   return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
 };
 
+// Covers the current month plus the two prior months the dashboard/ranking view compares
+// against (see rankingRows' previousMonth/previousPreviousMonth), so one daily_sales query
+// per hydrate is enough for both the selected-store daily entries and the cross-store ranking.
+const getDailySalesQueryRange = (targetMonth) => {
+  const startMonth = getMonthOffset(targetMonth, -2);
+  const { firstDate } = getMonthInfo(startMonth);
+  const { lastDate } = getMonthInfo(targetMonth);
+  return { startDate: formatLocalDate(firstDate), endDate: formatLocalDate(lastDate) };
+};
+
 const getRankTone = (achievement) => {
   if (achievement >= 100) return "good";
   if (achievement >= 95) return "warning";
@@ -238,10 +264,19 @@ const createStoreSettingsDefaults = () => ({
   openingHour: "09:00",
   closingHour: "20:00",
   closedDays: "月",
-  useFields: ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers"],
+  dailyFieldSettings: defaultDailyFieldSettings(),
   managerName: "",
   staffIds: [],
 });
+
+const dailyFieldLabels = {
+  technicalSales: "技術売上",
+  retailSales: "店販売上",
+  customers: "来店客数",
+  newCustomers: "新規客数",
+  repeatCustomers: "再来客数",
+  memo: "メモ",
+};
 
 const createStoreFormDefaults = () => ({
   name: "",
@@ -466,8 +501,11 @@ function App() {
   const updateDailyField = (field, value) => {
     setDailyForm((prev) => {
       const next = { ...prev, [field]: value };
-      if (field === "technicalSales" || field === "retailSales") {
+      if (totalSalesIsAutoCalculated && (field === "technicalSales" || field === "retailSales")) {
         next.totalSales = parseNumber(field === "technicalSales" ? value : prev.technicalSales) + parseNumber(field === "retailSales" ? value : prev.retailSales);
+      }
+      if (customersIsAutoCalculated && (field === "newCustomers" || field === "repeatCustomers")) {
+        next.customers = parseNumber(field === "newCustomers" ? value : prev.newCustomers) + parseNumber(field === "repeatCustomers" ? value : prev.repeatCustomers);
       }
       return next;
     });
@@ -486,17 +524,43 @@ function App() {
   const [syncStatus, setSyncStatus] = useState({ status: "idle", message: "同期待機中", timestamp: "", error: false });
   const [syncInitialized, setSyncInitialized] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
-  const [isStoreLoading, setIsStoreLoading] = useState(false);
-  const [targetDraft, setTargetDraft] = useState(() => getTargetForStoreMonth(initialAppStateValue, initialAppStateValue.selectedStore, initialAppStateValue.selectedMonth));
+  // 月間目標設定パネル専用の対象月。ヘッダーのグローバルな対象月とは独立して切り替えられる。
+  const [targetSelectedMonth, setTargetSelectedMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [targetDraft, setTargetDraft] = useState(() => ({ ...defaultTarget }));
+  const [targetHolidayDraft, setTargetHolidayDraft] = useState("");
   const [targetSaveStatus, setTargetSaveStatus] = useState({ status: "idle", message: "" });
+  const [targetLoadStatus, setTargetLoadStatus] = useState({ status: "idle", loadedMonth: "", loadedStore: "" });
+  const [targetDirty, setTargetDirty] = useState(false);
+  const targetLoadRequestRef = useRef(0);
+  // 日次入力項目の設定(店舗ごと、月の概念はない)。stores.daily_field_settings は他の店舗情報と
+  // 同じタイミングでロードされるため、対象月選択のような専用フェッチは不要。
+  const [dailyFieldDraft, setDailyFieldDraft] = useState(() => defaultDailyFieldSettings());
+  const [dailyFieldSaveStatus, setDailyFieldSaveStatus] = useState({ status: "idle", message: "" });
+  const [dailyFieldDirty, setDailyFieldDirty] = useState(false);
   const lastPersistedRef = useRef("");
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
   const remoteSyncChannelRef = useRef(null);
+  const hydrateRetryTimerRef = useRef(null);
+  const hydrateRetryCountRef = useRef(0);
   const { stores, selectedStore, selectedMonth } = appState;
   const currentCompany = useMemo(() => appState.companies?.find((company) => company.id === appState.currentCompanyId) || appState.companies?.[0] || null, [appState.companies, appState.currentCompanyId]);
   const currentCompanyStores = useMemo(() => currentCompany?.stores || [], [currentCompany]);
   const selectedStoreEntity = useMemo(() => currentCompanyStores.find((store) => store.name === selectedStore) || currentCompanyStores[0] || null, [currentCompanyStores, selectedStore]);
+  const activeDailyFieldSettings = useMemo(() => normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings), [selectedStoreEntity]);
+  const showTechnicalSalesField = Boolean(activeDailyFieldSettings.fields.technicalSales);
+  const showRetailSalesField = Boolean(activeDailyFieldSettings.fields.retailSales);
+  const showCustomersField = Boolean(activeDailyFieldSettings.fields.customers);
+  const showNewCustomersField = showCustomersField && Boolean(activeDailyFieldSettings.fields.newCustomers);
+  const showRepeatCustomersField = showCustomersField && Boolean(activeDailyFieldSettings.fields.repeatCustomers);
+  const showMemoField = Boolean(activeDailyFieldSettings.fields.memo);
+  const totalSalesIsAutoCalculated = showTechnicalSalesField && showRetailSalesField;
+  const customersIsAutoCalculated = showNewCustomersField && showRepeatCustomersField;
+  // updateDailyField keeps dailyForm.totalSales/dailyForm.customers correctly synced whether
+  // they're auto-calculated (technicalSales+retailSales / newCustomers+repeatCustomers) or
+  // typed directly, so both are always safe to read as-is here.
+  const dailyEffectiveTotalSales = parseNumber(dailyForm.totalSales);
+  const dailyEffectiveCustomers = parseNumber(dailyForm.customers);
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -540,23 +604,33 @@ function App() {
           const nextUser = buildAuthenticatedUser({ profile, authUser: session.user });
           setCurrentUser(nextUser);
           setCurrentRole(normalizeRole(profile?.role || "staff"));
+          const reconciledCompanies = tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [];
+          const reconciledCurrentCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
+          const availableStoreNames = new Set((reconciledCompanies.find((company) => company.id === reconciledCurrentCompanyId)?.stores || reconciledCompanies[0]?.stores || []).map((store) => store.name));
+          // loadTenantStateFromSupabase always defaults selectedStore to the alphabetically-first
+          // store in the company, which previously clobbered whichever store the user actually had
+          // open on this device (e.g. 本店 losing out to フィーネ横浜). Only fall back to that
+          // default when the device's own last-selected store no longer exists.
+          const preferredSelectedStore = localRecoveredState.selectedStore && availableStoreNames.has(localRecoveredState.selectedStore)
+            ? localRecoveredState.selectedStore
+            : (tenantState.selectedStore || localRecoveredState.selectedStore || "");
           const reconciledState = {
             ...tenantState,
             ...localRecoveredState,
-            currentCompanyId: profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "",
+            currentCompanyId: reconciledCurrentCompanyId,
             currentUserId: nextUser.profileId,
             currentAuthUserId: nextUser.authUserId,
-            companies: tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [],
+            companies: reconciledCompanies,
             users: tenantState.users?.length ? tenantState.users : localRecoveredState.users || [],
             companySnapshots: tenantState.companySnapshots || localRecoveredState.companySnapshots || {},
             stores: tenantState.stores?.length ? tenantState.stores : localRecoveredState.stores || [],
-            selectedStore: tenantState.selectedStore || localRecoveredState.selectedStore || "",
+            selectedStore: preferredSelectedStore,
             selectedMonth: tenantState.selectedMonth || localRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
           };
           writeAppState(reconciledState);
           setAppState(reconciledState);
           setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
-          void hydrateFromSupabase({ authUser: session.user, profile, tenantState });
+          void hydrateFromSupabase({ authUser: session.user, profile, tenantState: reconciledState });
           await refreshAuthDebugInfo({ sessionUser: session.user, role: profile?.role, profile, hasSession: true, authUser: session.user, setDebugInfo });
           setAuthMode("app");
           setActivePage(resolveDefaultPage(profile?.role || "staff"));
@@ -595,6 +669,15 @@ function App() {
       setStoreSettingsForm(selectedStoreEntity.settings || createStoreSettingsDefaults());
     }
   }, [selectedStoreEntity]);
+
+  useEffect(() => {
+    // 別の店舗に切り替えるたびに読み込み直す。保存していない変更は切り替え時に破棄される
+    // (この設定は数個のスイッチのみなので、対象月切り替えのような確認ダイアログは設けていない)。
+    setDailyFieldDraft(normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings));
+    setDailyFieldDirty(false);
+    setDailyFieldSaveStatus({ status: "idle", message: "" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStore]);
   const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
   const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
   const target = getTargetForStoreMonth(appState, selectedStore, selectedMonth);
@@ -606,7 +689,13 @@ function App() {
   const businessDaySummary = useMemo(() => getBusinessDaySummary(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
   const taxSummary = useMemo(() => calculateTaxSummary({ sales: summary.sales, totalExpenses: summary.expenseTotal, taxRate: appState.taxSettings?.rate ?? 0.1, roundingMode: appState.taxSettings?.roundingMode || "half-up" }), [appState.taxSettings?.rate, appState.taxSettings?.roundingMode, summary.expenseTotal, summary.sales]);
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
-  const aiAnalysis = useMemo(() => getAiAnalysis({ targetAchievement: summary.targetAchievement, customerAchievement: customerTargetSummary.achievementRate, customerTarget: customerTargetSummary.targetCustomers, customers: customerTargetSummary.customers, targetAverageSpend: parseNumber(target.targetAverageSpend), averageSpend: summary.averageSpend, operatingMargin: summary.operatingMargin, targetOperatingMargin: 10, fixedCost: summary.fixedCost, variableCost: summary.variableCost, equipmentInvestmentCost: summary.equipmentInvestmentCost, taxExclusiveSales: taxSummary.taxExclusiveSales, taxAmount: taxSummary.taxAmount, adjustedOperatingProfit: summary.adjustedOperatingProfit, remainingBusinessDays: summary.remainingBusinessDays, remainingSalesTarget: summary.remainingSalesTarget, remainingCustomersTarget: customerTargetSummary.remainingCustomers }), [customerTargetSummary, summary.adjustedOperatingProfit, summary.averageSpend, summary.fixedCost, summary.operatingMargin, summary.remainingBusinessDays, summary.remainingSalesTarget, summary.targetAchievement, summary.variableCost, summary.equipmentInvestmentCost, target.targetAverageSpend, taxSummary.taxAmount, taxSummary.taxExclusiveSales]);
+  const salesStatusComment = useMemo(() => getSalesStatusComment({
+    targetSales: parseNumber(target.targetSales),
+    closedSales: summary.closedSales,
+    businessDayCount: summary.businessDays,
+    completedDays: summary.completedDays,
+    remainingBusinessDays: summary.remainingBusinessDays,
+  }), [target.targetSales, summary.closedSales, summary.businessDays, summary.completedDays, summary.remainingBusinessDays]);
   const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
   const monthClosingStatus = useMemo(() => {
     const key = buildMonthKey(selectedStore, selectedMonth);
@@ -723,25 +812,25 @@ function App() {
     { label: "本日の目標売上", value: money(summary.todayTarget), hint: `現在 ${money(todayActual)}` },
   ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers, summary.todayTarget, todayActual]);
   const aiFocusCards = useMemo(() => {
-    const leadSummary = aiAnalysis.summary[0] || "売上・客数・利益の3点を継続確認してください";
+    const [targetLine, paceLine, dailyNeedLine] = salesStatusComment.lines;
     return [
       {
-        label: "AIサマリー",
-        value: leadSummary,
+        label: "目標まで",
+        value: targetLine || "データを入力すると表示されます",
         tone: summary.targetAchievement >= 100 ? "good" : "warning",
       },
       {
-        label: "最優先",
-        value: aiAnalysis.priorities[0] || "販促と来店導線の点検",
-        tone: aiAnalysis.priorities.length ? "warning" : "neutral",
+        label: "目標ペース",
+        value: paceLine || dailyNeedLine || "日締めするとペースが表示されます",
+        tone: summary.completedDays > 0 ? "saving" : "neutral",
       },
       {
-        label: "次の一手",
-        value: aiAnalysis.notes[0] || "まずは本日の入力を積み上げてください",
+        label: "必要な1日平均売上",
+        value: (paceLine ? dailyNeedLine : null) || "日締めが進むと表示されます",
         tone: summary.remainingBusinessDays > 0 ? "saving" : "neutral",
       },
     ];
-  }, [aiAnalysis.notes, aiAnalysis.priorities, aiAnalysis.summary, summary.remainingBusinessDays, summary.targetAchievement]);
+  }, [salesStatusComment.lines, summary.completedDays, summary.remainingBusinessDays, summary.targetAchievement]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -1011,7 +1100,48 @@ function App() {
       const store = company?.stores?.find((item) => item.name === selectedStoreName) || company?.stores?.[0] || null;
       const storeId = store?.id || null;
       const targetMonth = tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
-      const snapshot = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
+
+      // daily_sales is the authoritative source for daily sales figures + day-closing state
+      // (see upsertDailySalesEntry/updateDailySalesClosingState) — not the tenant_snapshots
+      // blob below, which may still hold older copies for dates saved before this table was
+      // wired up. Fetch a window wide enough for the dashboard/ranking view (current month +
+      // the two prior months it compares against) across every store in the company at once;
+      // RLS scopes the result to whichever stores this user can actually see. A failed fetch
+      // here fails the whole hydrate (see catch block) rather than silently showing stale or
+      // empty progress/ranking numbers.
+      const dailySalesRange = getDailySalesQueryRange(targetMonth);
+      const dailySalesResult = await loadDailySalesForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate });
+      if (!dailySalesResult.ok) {
+        throw dailySalesResult.error || new Error("日次売上データの取得に失敗しました");
+      }
+      const storeIdToName = Object.fromEntries((company?.stores || []).map((item) => [item.id, item.name]));
+      const dailySalesState = buildDailyStateFromRows(dailySalesResult.data, storeIdToName);
+
+      // Same reasoning for monthly_closings: it's the authoritative table now (see
+      // upsertMonthlyClosingState), so a fresh device/session needs this fetched directly
+      // instead of only ever reflecting whatever was last embedded in a tenant_snapshots row.
+      const closingMonths = [targetMonth, getMonthOffset(targetMonth, -1), getMonthOffset(targetMonth, -2)];
+      const monthlyClosingsResult = await loadMonthlyClosingsForCompany({ companyId, yearMonths: closingMonths });
+      if (!monthlyClosingsResult.ok) {
+        throw monthlyClosingsResult.error || new Error("月締めデータの取得に失敗しました");
+      }
+      const monthClosingStatusOverlay = buildMonthClosingStateFromRows(monthlyClosingsResult.data, storeIdToName);
+
+      const applyDailySalesOverlay = (state) => mergeRemoteAppState(state, {
+        dailyResults: dailySalesState.dailyResults,
+        dayClosingStates: dailySalesState.dayClosingStates,
+        dayClosingUpdatedAt: dailySalesState.dayClosingUpdatedAt,
+        monthClosingStatus: monthClosingStatusOverlay,
+      });
+
+      const snapshotResult = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
+      if (!snapshotResult.ok) {
+        // A failed fetch must never be treated as "no data exists" — throw so the outer
+        // catch block runs (leaves syncInitialized false, schedules a retry) instead of
+        // falling through to the empty-state branch below.
+        throw snapshotResult.error || new Error("同期データの取得に失敗しました");
+      }
+      const snapshot = snapshotResult.data;
       console.info("[sync-hydrate] snapshot", {
         authUserId: authUser?.id,
         companyId,
@@ -1024,28 +1154,31 @@ function App() {
       });
       if (!snapshot?.payload) {
         const fallbackState = normalizeAppState(readAppState());
-        if (fallbackState && Object.keys(fallbackState.dailyResults || {}).length) {
-          setAppState((prev) => ({
-            ...prev,
-            ...fallbackState,
-            currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
-            currentUserId: profile?.id || prev.currentUserId || "",
-            currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
-          }));
-          writeAppState({
-            ...fallbackState,
-            currentCompanyId: profile?.company_id || companyId,
-            currentUserId: profile?.id || "",
-            currentAuthUserId: profile?.auth_user_id || authUser.id || "",
-          });
-        }
+        setAppState((prev) => {
+          let merged = (fallbackState && Object.keys(fallbackState.dailyResults || {}).length)
+            ? mergeRemoteAppState(prev, {
+                ...fallbackState,
+                currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
+                currentUserId: profile?.id || prev.currentUserId || "",
+                currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
+              })
+            : prev;
+          merged = applyDailySalesOverlay(merged);
+          writeAppState(merged);
+          return merged;
+        });
         setSyncStatus({ status: "idle", message: "同期データはまだありません", timestamp: new Date().toISOString(), error: false });
+        hydrateRetryCountRef.current = 0;
         setSyncInitialized(true);
         return;
       }
       const remoteState = normalizeAppState(snapshot.payload);
-      const resolvedSelectedStore = remoteState.selectedStore || selectedStoreName || tenantState?.selectedStore || "";
-      const resolvedSelectedMonth = remoteState.selectedMonth || targetMonth || tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
+      // Prefer whatever store/month the user is actually looking at right now; the fetched
+      // snapshot may be the freshest one in the company but tagged for a different store
+      // (its payload still carries every store's data), and we don't want a background
+      // sync to yank the UI over to a store the user didn't select.
+      const resolvedSelectedStore = tenantState?.selectedStore || selectedStoreName || remoteState.selectedStore || "";
+      const resolvedSelectedMonth = tenantState?.selectedMonth || targetMonth || remoteState.selectedMonth || new Date().toISOString().slice(0, 7);
       const nextRemoteState = {
         ...remoteState,
         companies: remoteState.companies?.length ? remoteState.companies : (tenantState?.companies || []),
@@ -1064,15 +1197,36 @@ function App() {
           companySnapshots: undefined,
         }])),
       });
-      setAppState((prev) => ({ ...prev, ...nextRemoteState }));
+      setAppState((prev) => {
+        const merged = applyDailySalesOverlay(mergeRemoteAppState(prev, nextRemoteState));
+        writeAppState(merged);
+        return merged;
+      });
+      // Recorded against the *fetched* (pre-merge) snapshot, not the merged result: if the
+      // merge pulled in local-only data the snapshot didn't have, appState will now diverge
+      // from this signature, which is what makes the autosave effect push that data back up.
       lastPersistedRef.current = remoteSnapshotSignature;
       setSyncStatus({ status: "loaded", message: "同期データを読み込みました", timestamp: new Date().toISOString(), error: false });
+      hydrateRetryCountRef.current = 0;
       setSyncInitialized(true);
     } catch (error) {
-      const reason = error?.message || "同期読み込みに失敗しました";
-      console.warn("Supabase hydrate failed", error);
+      // Deliberately do NOT set syncInitialized(true) here. That flag is what gates the
+      // autosave effect (see its `!syncInitialized` guard) — flipping it on a failed fetch
+      // was the exact "open screen → state is empty → autosave fires → overwrites real
+      // Supabase data → THEN the real fetch finally lands" race this app was vulnerable to.
+      // Leaving it false blocks all outgoing writes until a hydrate genuinely succeeds.
+      logSupabaseError({ operation: "hydrateFromSupabase", table: "tenant_snapshots", userId: authUser?.id, companyId: profile?.company_id, storeId: tenantState?.selectedStore, error });
+      const reason = getSupabaseErrorMessage(error);
       setSyncStatus({ status: "error", message: `同期エラー: ${reason}`, timestamp: new Date().toISOString(), error: true });
-      setSyncInitialized(true);
+      if (hydrateRetryTimerRef.current) {
+        window.clearTimeout(hydrateRetryTimerRef.current);
+      }
+      const attempt = hydrateRetryCountRef.current + 1;
+      hydrateRetryCountRef.current = attempt;
+      const delayMs = Math.min(3000 * attempt, 15000);
+      hydrateRetryTimerRef.current = window.setTimeout(() => {
+        void hydrateFromSupabase({ authUser, profile, tenantState });
+      }, delayMs);
     }
   };
 
@@ -1578,6 +1732,64 @@ function App() {
     setNotice("店舗初期設定を保存しました");
   };
 
+  const applyDailyFieldPreset = (presetKey) => {
+    setDailyFieldDraft({ mode: presetKey, fields: { ...dailyFieldPresets[presetKey] } });
+    setDailyFieldDirty(true);
+  };
+
+  const updateDailyFieldToggle = (fieldKey, value) => {
+    setDailyFieldDraft((prev) => ({ mode: "custom", fields: { ...prev.fields, [fieldKey]: value } }));
+    setDailyFieldDirty(true);
+  };
+
+  const mirrorDailyFieldSettingsIntoAppState = (storeId, settings) => {
+    setAppState((prev) => ({
+      ...prev,
+      companies: (prev.companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((store) => (
+          (storeId ? store.id === storeId : store.name === selectedStore)
+            ? { ...store, settings: { ...(store.settings || createStoreSettingsDefaults()), dailyFieldSettings: settings } }
+            : store
+        )),
+      })),
+    }));
+  };
+
+  const handleSaveDailyFieldSettings = async () => {
+    if (!selectedStore) {
+      setNotice("店舗を先に追加してください");
+      return;
+    }
+    if (!isSupabaseConfigured) {
+      mirrorDailyFieldSettingsIntoAppState(null, dailyFieldDraft);
+      setDailyFieldDirty(false);
+      setDailyFieldSaveStatus({ status: "saved", message: "保存しました（ローカル）" });
+      return;
+    }
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setDailyFieldSaveStatus({ status: "error", message: "店舗情報を確認できませんでした" });
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+
+    setDailyFieldSaveStatus({ status: "saving", message: "保存中…" });
+    try {
+      const result = await updateStoreDailyFieldSettings({ storeId: store.id, settings: dailyFieldDraft });
+      if (!result?.ok) {
+        throw new Error(result?.error?.message || "保存に失敗しました");
+      }
+      mirrorDailyFieldSettingsIntoAppState(store.id, dailyFieldDraft);
+      setDailyFieldDirty(false);
+      setDailyFieldSaveStatus({ status: "saved", message: "保存しました" });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "保存に失敗しました";
+      setDailyFieldSaveStatus({ status: "error", message: reason });
+      setNotice(`日次入力項目設定の保存に失敗しました: ${reason}`);
+    }
+  };
+
   const handleInviteEmail = (user) => {
     const inviteTokenValue = user.inviteToken || createInviteToken();
     const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
@@ -1671,7 +1883,7 @@ function App() {
       return;
     }
 
-    const hasAnyValue = [dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0);
+    const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);
     const signature = getDailyAutoSaveSignature(dailyForm);
     if (!dailyForm.date || (!hasAnyValue && !dailyForm.id)) {
       return;
@@ -1693,7 +1905,7 @@ function App() {
         window.clearTimeout(autoSaveTimerRef.current);
       }
     };
-  }, [dailyForm.date, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyMode, selectedStore, selectedMonth, dailyForm.id, dailyEntries]);
+  }, [dailyForm.date, dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.memo, dailyMode, selectedStore, selectedMonth, dailyForm.id, dailyEntries]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -1751,13 +1963,20 @@ function App() {
     }
 
     const channel = supabase.channel(channelName);
-    channel.on("postgres_changes", { event: "*", schema: "public", table: "tenant_snapshots", filter: `company_id=eq.${companyId}` }, () => {
+    const triggerRehydrate = () => {
       void hydrateFromSupabase({
         authUser: { id: currentUser.authUserId, email: currentUser.email },
         profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
         tenantState: appState,
       });
-    });
+    };
+    // Listen across every table a device's edit can land in, so a change made on one
+    // device (PC) shows up on another (iPhone) without waiting for a manual refresh —
+    // daily_sales/monthly_closings are now the authoritative tables for their data, not
+    // just the legacy tenant_snapshots blob.
+    channel.on("postgres_changes", { event: "*", schema: "public", table: "tenant_snapshots", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
+    channel.on("postgres_changes", { event: "*", schema: "public", table: "daily_sales", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
+    channel.on("postgres_changes", { event: "*", schema: "public", table: "monthly_closings", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
     channel.subscribe();
     remoteSyncChannelRef.current = channel;
 
@@ -1795,30 +2014,21 @@ function App() {
     setSaveStatus({ status, message, timestamp: new Date().toISOString(), error });
   };
 
-  const getDailyEntryPayload = (form, existingEntryId = null) => {
-    const entryId = form.id || existingEntryId || crypto.randomUUID();
-    return {
-      ...form,
-      id: entryId,
-      updatedAt: new Date().toISOString(),
-      totalSales: parseNumber(form.technicalSales || 0) + parseNumber(form.retailSales || 0),
-      technicalSales: parseNumber(form.technicalSales),
-      retailSales: parseNumber(form.retailSales),
-      otherSales: parseNumber(form.otherSales || 0),
-      customers: parseNumber(form.customers),
-      newCustomers: parseNumber(form.newCustomers),
-      repeatCustomers: parseNumber(form.repeatCustomers),
-    };
+  const getDailyEntryPayload = (form, existingEntry = null) => {
+    const entryId = form.id || existingEntry?.id || crypto.randomUUID();
+    return buildDailyEntryPayload({ form, existingEntry, fieldSettings: activeDailyFieldSettings, entryId });
   };
 
   const getDailyAutoSaveSignature = (form) => JSON.stringify({
     date: form.date || "",
+    totalSales: form.totalSales ?? "",
     technicalSales: form.technicalSales ?? "",
     retailSales: form.retailSales ?? "",
     otherSales: form.otherSales ?? "",
     customers: form.customers ?? "",
     newCustomers: form.newCustomers ?? "",
     repeatCustomers: form.repeatCustomers ?? "",
+    memo: form.memo ?? "",
   });
 
   const saveDailyEntry = async ({ silent = false, force = false, autoSave = false, switchToView = false } = {}) => {
@@ -1842,7 +2052,7 @@ function App() {
       return { ok: true, skipped: true };
     }
 
-    const hasAnyValue = [dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0);
+    const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);
     if (!force && !hasAnyValue) {
       return { ok: true, skipped: true };
     }
@@ -1856,44 +2066,46 @@ function App() {
       return { ok: false, skipped: true };
     }
 
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured && (!company?.id || !store?.id || !appState.currentUserId)) {
+      const message = "会社・店舗・ユーザー情報を確認できませんでした";
+      logSupabaseError({ operation: "saveDailyEntry", table: "daily_sales", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, businessDate: dailyForm.date, error: new Error(message) });
+      persistSaveStatus("error", message, true);
+      if (!silent) setNotice(message);
+      return { ok: false, error: new Error(message) };
+    }
+
     try {
       persistSaveStatus("saving", "保存中…", false);
-      const entry = getDailyEntryPayload(dailyForm, existingEntry?.id);
-      const key = buildMonthKey(selectedStore, selectedMonth);
-      const list = appState.dailyResults?.[key] || [];
-      const mergedEntries = [...list.filter((item) => item.id !== entry.id && String(item.date) !== String(entry.date)), entry];
-      const deduped = deduplicateDailyEntries(mergedEntries);
-      const nextState = {
-        ...appState,
-        dailyResults: {
-          ...appState.dailyResults,
-          [key]: deduped.entries,
-        },
-        dailyResultBackups: {
-          ...appState.dailyResultBackups,
-          [key]: [...(appState.dailyResultBackups?.[key] || []), ...deduped.backups],
-        },
-      };
+      const entry = getDailyEntryPayload(dailyForm, existingEntry);
 
-      const remotePersistResult = await persistToSupabase(nextState);
-      if (!remotePersistResult?.ok && !remotePersistResult?.skipped) {
-        throw new Error(remotePersistResult?.error?.message || "Supabase への保存に失敗しました");
+      // daily_sales (company_id + store_id + business_date, upserted) is the source of truth
+      // for this entry now — not the tenant_snapshots blob. Local state is only committed
+      // once this write is confirmed, so a failed save can never look like a successful one.
+      const remoteResult = await upsertDailySalesEntry({
+        companyId: appState.currentCompanyId,
+        storeId: store?.id,
+        userId: appState.currentUserId,
+        entry,
+      });
+      if (!remoteResult?.ok && !remoteResult?.skipped) {
+        throw remoteResult.error || new Error("Supabase への保存に失敗しました");
       }
 
+      const key = buildMonthKey(selectedStore, selectedMonth);
       setAppState((prev) => {
-        const currentKey = buildMonthKey(selectedStore, selectedMonth);
-        const currentList = prev.dailyResults?.[currentKey] || [];
+        const currentList = prev.dailyResults?.[key] || [];
         const currentMergedEntries = [...currentList.filter((item) => item.id !== entry.id && String(item.date) !== String(entry.date)), entry];
         const currentDeduped = deduplicateDailyEntries(currentMergedEntries);
         return {
           ...prev,
           dailyResults: {
             ...prev.dailyResults,
-            [currentKey]: currentDeduped.entries,
+            [key]: currentDeduped.entries,
           },
           dailyResultBackups: {
             ...prev.dailyResultBackups,
-            [currentKey]: [...(prev.dailyResultBackups?.[currentKey] || []), ...currentDeduped.backups],
+            [key]: [...(prev.dailyResultBackups?.[key] || []), ...currentDeduped.backups],
           },
         };
       });
@@ -1914,29 +2126,155 @@ function App() {
       }
       return { ok: true, data: entry, autoSave };
     } catch (error) {
-      persistSaveStatus("error", error instanceof Error ? error.message : "保存に失敗しました", true);
+      logSupabaseError({ operation: "saveDailyEntry", table: "daily_sales", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, businessDate: dailyForm.date, error });
+      const reason = getSupabaseErrorMessage(error);
+      persistSaveStatus("error", reason, true);
       if (!silent) {
-        setNotice("保存に失敗しました");
+        setNotice(`保存に失敗しました: ${reason}`);
       }
       return { ok: false, error };
     }
   };
 
-  const updateTargetField = (field, value) => {
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const existing = prev.targets?.[key] || {};
-      return {
+  const resolveTargetCompanyAndStore = () => {
+    const company = (appState.companies || []).find((item) => item.id === appState.currentCompanyId) || null;
+    const store = company?.stores?.find((item) => item.name === selectedStore) || null;
+    return { company, store };
+  };
+
+  useEffect(() => {
+    if (!selectedStore || !targetSelectedMonth) return;
+    const requestId = targetLoadRequestRef.current + 1;
+    targetLoadRequestRef.current = requestId;
+    // Clear immediately so a month/store switch never shows the previous selection's
+    // numbers, even briefly, while the new ones are being fetched.
+    setTargetLoadStatus({ status: "loading", loadedMonth: "", loadedStore: "" });
+    setTargetDraft({ ...defaultTarget });
+    setTargetHolidayDraft("");
+
+    const load = async () => {
+      const { company, store } = resolveTargetCompanyAndStore();
+      let loadedTarget = null;
+      let loadedHolidayCount = null;
+      try {
+        if (isSupabaseConfigured && company?.id && store?.id) {
+          const result = await loadMonthlyTargetFromSupabase({ companyId: company.id, storeId: store.id, targetMonth: targetSelectedMonth });
+          if (!result?.ok) {
+            // A failed fetch must not be treated the same as "no target saved yet" — that
+            // would silently fall through to showing local/default values as if they were
+            // authoritative, exactly the kind of masked error this rewrite is meant to end.
+            throw result?.error || new Error("月間目標の取得に失敗しました");
+          }
+          if (result?.data) {
+            loadedTarget = {
+              targetSales: result.data.target_sales,
+              targetTechnicalSales: result.data.target_technical_sales,
+              targetRetailSales: result.data.target_retail_sales,
+              targetCustomers: result.data.target_customers,
+              targetAverageSpend: result.data.target_average_spend,
+              targetNewCustomers: result.data.target_new_customers,
+              targetRepeatCustomers: result.data.target_repeat_customers,
+              targetRepeatRate: result.data.target_repeat_rate,
+              targetAverageCustomersPerDay: result.data.target_average_customers_per_day,
+              targetLaborRate: result.data.target_labor_rate,
+              targetMaterialRate: result.data.target_material_rate,
+              targetAdRate: result.data.target_ad_rate,
+              targetOperatingMargin: result.data.target_operating_margin,
+            };
+            loadedHolidayCount = result.data.holiday_count;
+          }
+        }
+      } catch (error) {
+        if (targetLoadRequestRef.current !== requestId) return;
+        setTargetLoadStatus({ status: "error", loadedMonth: "", loadedStore: "" });
+        setNotice(getSupabaseErrorMessage(error));
+        return;
+      }
+
+      if (targetLoadRequestRef.current !== requestId) return; // a newer month/store switch superseded this fetch
+
+      if (!loadedTarget) {
+        // No Supabase row yet for this store+month (or Supabase unavailable): fall back to
+        // whatever is cached locally so the form isn't blank for no reason.
+        loadedTarget = getTargetForStoreMonth(appState, selectedStore, targetSelectedMonth);
+        loadedHolidayCount = getBusinessDaySettings(appState, selectedStore, targetSelectedMonth).holidayCount;
+      }
+
+      setTargetDraft({ ...defaultTarget, ...loadedTarget });
+      setTargetHolidayDraft(loadedHolidayCount ? String(loadedHolidayCount) : "");
+      setTargetLoadStatus({ status: "loaded", loadedMonth: targetSelectedMonth, loadedStore: selectedStore });
+      setTargetDirty(false);
+      setTargetSaveStatus({ status: "idle", message: "" });
+    };
+
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetSelectedMonth, selectedStore, appState.currentCompanyId]);
+
+  const updateTargetDraftField = (field, value) => {
+    setTargetDraft((prev) => ({ ...prev, [field]: value }));
+    setTargetDirty(true);
+  };
+
+  const handleTargetMonthChange = (nextMonth) => {
+    if (!nextMonth || nextMonth === targetSelectedMonth) return;
+    if (targetDirty && !window.confirm("変更内容が保存されていません。対象月を変更しますか？")) {
+      return;
+    }
+    setTargetSelectedMonth(nextMonth);
+  };
+
+  const handleSaveMonthlyTarget = async () => {
+    if (!selectedStore) {
+      setNotice("店舗を先に追加してください");
+      return;
+    }
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (!isSupabaseConfigured) {
+      // Local-only/dev mode: mirror straight into appState (still explicit-save, not
+      // per-keystroke) so the rest of the app reflects it.
+      const key = buildMonthKey(selectedStore, targetSelectedMonth);
+      setAppState((prev) => ({
         ...prev,
-        targets: {
-          ...prev.targets,
-          [key]: {
-            ...existing,
-            [field]: parseNumber(value),
-          },
-        },
-      };
-    });
+        targets: { ...prev.targets, [key]: { ...targetDraft } },
+        businessDaySettings: { ...prev.businessDaySettings, [key]: { ...(prev.businessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
+      }));
+      setTargetDirty(false);
+      setTargetSaveStatus({ status: "saved", message: "保存しました（ローカル）" });
+      return;
+    }
+    if (!company?.id || !store?.id) {
+      setTargetSaveStatus({ status: "error", message: "会社・店舗情報を確認できませんでした" });
+      setNotice("会社・店舗情報を確認できませんでした");
+      return;
+    }
+
+    setTargetSaveStatus({ status: "saving", message: "保存中…" });
+    try {
+      const result = await upsertMonthlyTargetToSupabase({
+        companyId: company.id,
+        storeId: store.id,
+        targetMonth: targetSelectedMonth,
+        userId: appState.currentUserId,
+        target: { ...targetDraft, holidayCount: parseNumber(targetHolidayDraft) },
+      });
+      if (!result?.ok || result?.skipped) {
+        throw new Error(result?.error?.message || (result?.skipped ? "ユーザー情報を確認できませんでした" : "保存に失敗しました"));
+      }
+
+      const key = buildMonthKey(selectedStore, targetSelectedMonth);
+      setAppState((prev) => ({
+        ...prev,
+        targets: { ...prev.targets, [key]: { ...targetDraft } },
+        businessDaySettings: { ...prev.businessDaySettings, [key]: { ...(prev.businessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
+      }));
+      setTargetDirty(false);
+      setTargetSaveStatus({ status: "saved", message: "保存しました" });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "保存に失敗しました";
+      setTargetSaveStatus({ status: "error", message: reason });
+      setNotice(`月間目標の保存に失敗しました: ${reason}`);
+    }
   };
 
   const handleDailyDateChange = (value) => {
@@ -1944,7 +2282,11 @@ function App() {
     const existingEntry = dailyEntries.find((entry) => entry.date === nextDate) || null;
 
     if (existingEntry) {
-      setDailyForm({ ...existingEntry, totalSales: parseNumber(existingEntry.technicalSales || 0) + parseNumber(existingEntry.retailSales || 0) });
+      // Load totalSales exactly as stored — recomputing it from technicalSales+retailSales
+      // here would zero out a legacy total-sales-only entry the instant it's opened, before
+      // the user has touched anything (updateDailyField is what re-derives it live once the
+      // user actually edits technicalSales/retailSales).
+      setDailyForm({ ...existingEntry });
       setDailyMode("view");
       setDailyOriginalEntry({ ...existingEntry });
       setDailyInsight(buildDailyInsight({ form: existingEntry, targetSales: parseNumber(target.targetSales), businessDayCount: businessDaySummary.businessDayCount || 0 }));
@@ -2288,7 +2630,7 @@ function App() {
     setNotice("営業日数を自動計算に戻しました");
   };
 
-  const toggleMonthClosing = () => {
+  const toggleMonthClosing = async () => {
     if (!selectedStore) {
       setNotice("店舗を選択してください");
       return;
@@ -2296,13 +2638,40 @@ function App() {
 
     const key = buildMonthKey(selectedStore, selectedMonth);
     const nextClosed = !Boolean(monthClosingStatus.closed);
+    const { store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured && !store?.id) {
+      const message = "店舗情報を確認できませんでした";
+      logSupabaseError({ operation: "toggleMonthClosing", table: "monthly_closings", userId: appState.currentUserId, companyId: appState.currentCompanyId, targetMonth: selectedMonth, error: new Error(message) });
+      persistSaveStatus("error", message, true);
+      setNotice(message);
+      return;
+    }
+
+    persistSaveStatus("saving", "保存中…", false);
+    const remoteResult = await upsertMonthlyClosingState({
+      companyId: appState.currentCompanyId,
+      storeId: store?.id,
+      yearMonth: selectedMonth,
+      userId: appState.currentUserId,
+      isClosed: nextClosed,
+    });
+
+    if (!remoteResult?.ok && !remoteResult?.skipped) {
+      logSupabaseError({ operation: "toggleMonthClosing", table: "monthly_closings", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, targetMonth: selectedMonth, error: remoteResult?.error });
+      const reason = getSupabaseErrorMessage(remoteResult?.error);
+      persistSaveStatus("error", `月締めの保存に失敗しました: ${reason}`, true);
+      setNotice(`月締めの保存に失敗しました: ${reason}`);
+      return;
+    }
+
+    const lockedAt = remoteResult?.data?.closed_at || (nextClosed ? new Date().toISOString() : "");
     setAppState((prev) => ({
       ...prev,
       monthClosingStatus: {
         ...prev.monthClosingStatus,
         [key]: {
           closed: nextClosed,
-          lockedAt: nextClosed ? new Date().toISOString() : "",
+          lockedAt,
           note: nextClosed ? "月締め済み" : "未確定",
         },
       },
@@ -2324,27 +2693,60 @@ function App() {
     if (!window.confirm(`この日の締めを${dailyForm.date}で切り替えますか？`)) {
       return;
     }
+    // Ensures the daily_sales row for this date exists (and reflects the currently-entered
+    // figures) before we flip its is_day_closed flag — updateDailySalesClosingState only
+    // updates an existing row, it can't create one.
     const saveResult = await saveDailyEntry({ silent: true, force: true });
     if (!saveResult?.ok) {
       return;
     }
+
     const key = buildMonthKey(selectedStore, selectedMonth);
+    const current = appState.dayClosingStates?.[key] || {};
+    const nextClosed = !Boolean(current[dailyForm.date]);
+
+    const { store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured && !store?.id) {
+      const message = "店舗情報を確認できませんでした";
+      logSupabaseError({ operation: "toggleDayClosing", table: "daily_sales", userId: appState.currentUserId, companyId: appState.currentCompanyId, businessDate: dailyForm.date, error: new Error(message) });
+      persistSaveStatus("error", message, true);
+      setNotice(message);
+      return;
+    }
+
+    persistSaveStatus("saving", "保存中…", false);
+    const remoteResult = await updateDailySalesClosingState({
+      companyId: appState.currentCompanyId,
+      storeId: store?.id,
+      businessDate: dailyForm.date,
+      userId: appState.currentUserId,
+      isClosed: nextClosed,
+    });
+
+    if (!remoteResult?.ok && !remoteResult?.skipped) {
+      logSupabaseError({ operation: "toggleDayClosing", table: "daily_sales", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, businessDate: dailyForm.date, error: remoteResult?.error });
+      const reason = getSupabaseErrorMessage(remoteResult?.error);
+      persistSaveStatus("error", `日締めの保存に失敗しました: ${reason}`, true);
+      setNotice(`日締めの保存に失敗しました: ${reason}`);
+      return;
+    }
+
+    // Apply locally only after Supabase confirms the write (or Supabase isn't configured at
+    // all, i.e. local-only/dev mode). daily_sales is authoritative for this now, so we trust
+    // its returned row rather than re-deriving anything.
+    const toggledAt = remoteResult?.data?.closed_at || new Date().toISOString();
     setAppState((prev) => {
-      const current = prev.dayClosingStates?.[key] || {};
-      const nextClosed = !Boolean(current[dailyForm.date]);
+      const currentMap = prev.dayClosingStates?.[key] || {};
+      const currentTimestamps = prev.dayClosingUpdatedAt?.[key] || {};
       return {
         ...prev,
-        dayClosingStates: {
-          ...prev.dayClosingStates,
-          [key]: {
-            ...current,
-            [dailyForm.date]: nextClosed,
-          },
-        },
+        dayClosingStates: { ...prev.dayClosingStates, [key]: { ...currentMap, [dailyForm.date]: nextClosed } },
+        dayClosingUpdatedAt: { ...prev.dayClosingUpdatedAt, [key]: { ...currentTimestamps, [dailyForm.date]: toggledAt } },
       };
     });
+
     persistSaveStatus("saved", "保存済み ✓");
-    setNotice("日締めが完了しました");
+    setNotice(nextClosed ? "日締めが完了しました" : "日締めを解除しました");
   };
 
   const handleStoreAdd = () => {
@@ -2869,21 +3271,44 @@ function App() {
 
                     <div className="daily-section-card">
                       <h3>売上入力</h3>
-                      <Field label="技術売上（税込）" value={dailyForm.technicalSales} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" disabled={dailyMode === "view"} />
-                      <Field label="店販売上（税込）" value={dailyForm.retailSales} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" disabled={dailyMode === "view"} />
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" disabled={dailyMode === "view"} /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" disabled={dailyMode === "view"} /> : null}
                       {appState.preferences?.showOtherSales ? <Field label="その他売上（税込）" value={dailyForm.otherSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, otherSales: value }))} suffix="円" disabled={dailyMode === "view"} /> : null}
-                      <div className="summary-card compact">
-                        <span>総売上（税込）</span>
-                        <strong>{money(parseNumber(dailyForm.technicalSales) + parseNumber(dailyForm.retailSales))}</strong>
-                      </div>
+                      {totalSalesIsAutoCalculated ? (
+                        <div className="summary-card compact">
+                          <span>総売上（税込）</span>
+                          <strong>{money(parseNumber(dailyForm.totalSales))}</strong>
+                        </div>
+                      ) : (
+                        <Field label="総売上（税込）" value={dailyForm.totalSales} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" disabled={dailyMode === "view"} />
+                      )}
                     </div>
 
-                    <div className="daily-section-card">
-                      <h3>客数</h3>
-                      <Field label="客数" value={dailyForm.customers} onChange={(value) => setDailyForm((prev) => ({ ...prev, customers: value }))} suffix="名" disabled={dailyMode === "view"} />
-                      <Field label="新規客数" value={dailyForm.newCustomers} onChange={(value) => setDailyForm((prev) => ({ ...prev, newCustomers: value }))} suffix="名" disabled={dailyMode === "view"} />
-                      <Field label="再来客数" value={dailyForm.repeatCustomers} onChange={(value) => setDailyForm((prev) => ({ ...prev, repeatCustomers: value }))} suffix="名" disabled={dailyMode === "view"} />
-                    </div>
+                    {showCustomersField ? (
+                      <div className="daily-section-card">
+                        <h3>客数</h3>
+                        {customersIsAutoCalculated ? (
+                          <div className="summary-card compact">
+                            <span>客数</span>
+                            <strong>{number(parseNumber(dailyForm.customers))}名</strong>
+                          </div>
+                        ) : (
+                          <Field label="客数" value={dailyForm.customers} onChange={(value) => updateDailyField("customers", value)} suffix="名" disabled={dailyMode === "view"} />
+                        )}
+                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" disabled={dailyMode === "view"} /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" disabled={dailyMode === "view"} /> : null}
+                      </div>
+                    ) : null}
+
+                    {showMemoField ? (
+                      <div className="daily-section-card">
+                        <h3>メモ</h3>
+                        <label className="field">
+                          <span>メモ</span>
+                          <textarea value={dailyForm.memo || ""} onChange={(event) => setDailyForm((prev) => ({ ...prev, memo: event.target.value }))} disabled={dailyMode === "view"} rows={3} />
+                        </label>
+                      </div>
+                    ) : null}
                   </form>
 
                   <div className="helper-text">必要な数字だけ入力すれば、客単価・店販率・新規率・再来率は自動計算されます。</div>
@@ -2895,10 +3320,10 @@ function App() {
                   ) : null}
 
                   <div className="kpi-grid compact-grid">
-                    <MetricCard label="客単価" value={money(parseNumber(dailyForm.customers) ? (parseNumber(dailyForm.technicalSales) + parseNumber(dailyForm.retailSales)) / parseNumber(dailyForm.customers) : 0)} />
-                    <MetricCard label="店販率" value={percent((parseNumber(dailyForm.technicalSales) + parseNumber(dailyForm.retailSales)) ? (parseNumber(dailyForm.retailSales) / (parseNumber(dailyForm.technicalSales) + parseNumber(dailyForm.retailSales))) * 100 : 0)} />
-                    <MetricCard label="新規率" value={percent(parseNumber(dailyForm.customers) ? (parseNumber(dailyForm.newCustomers) / parseNumber(dailyForm.customers)) * 100 : 0)} />
-                    <MetricCard label="再来率" value={percent(parseNumber(dailyForm.customers) ? (parseNumber(dailyForm.repeatCustomers) / parseNumber(dailyForm.customers)) * 100 : 0)} />
+                    {showCustomersField ? <MetricCard label="客単価" value={money(dailyEffectiveCustomers ? dailyEffectiveTotalSales / dailyEffectiveCustomers : 0)} /> : null}
+                    {totalSalesIsAutoCalculated ? <MetricCard label="店販率" value={percent(dailyEffectiveTotalSales ? (parseNumber(dailyForm.retailSales) / dailyEffectiveTotalSales) * 100 : 0)} /> : null}
+                    {showNewCustomersField ? <MetricCard label="新規率" value={percent(dailyEffectiveCustomers ? (parseNumber(dailyForm.newCustomers) / dailyEffectiveCustomers) * 100 : 0)} /> : null}
+                    {showRepeatCustomersField ? <MetricCard label="再来率" value={percent(dailyEffectiveCustomers ? (parseNumber(dailyForm.repeatCustomers) / dailyEffectiveCustomers) * 100 : 0)} /> : null}
                   </div>
 
                   <div className="insight-card">
@@ -2970,15 +3395,50 @@ function App() {
                         <h2>月間目標設定</h2>
                       </div>
                     </div>
-                    <div className="input-grid">
-                      <Field label="売上目標（税込）" value={target.targetSales} onChange={(value) => updateTargetField("targetSales", value)} suffix="円" />
-                      <Field label="技術売上目標（税込）" value={target.targetTechnicalSales} onChange={(value) => updateTargetField("targetTechnicalSales", value)} suffix="円" />
-                      <Field label="店販売上目標（税込）" value={target.targetRetailSales} onChange={(value) => updateTargetField("targetRetailSales", value)} suffix="円" />
-                      <Field label="客数目標" value={target.targetCustomers} onChange={(value) => updateTargetField("targetCustomers", value)} suffix="名" />
-                      <Field label="客単価目標" value={target.targetAverageSpend} onChange={(value) => updateTargetField("targetAverageSpend", value)} suffix="円" />
-                      <Field label="新規客数目標" value={target.targetNewCustomers} onChange={(value) => updateTargetField("targetNewCustomers", value)} suffix="名" />
-                      <Field label="再来客数目標" value={target.targetRepeatCustomers} onChange={(value) => updateTargetField("targetRepeatCustomers", value)} suffix="名" />
+                    <div className="filters">
+                      <label className="field">
+                        <span>対象月</span>
+                        <input
+                          type="month"
+                          value={targetSelectedMonth}
+                          onChange={(event) => handleTargetMonthChange(event.target.value)}
+                        />
+                      </label>
+                      <div className="value-pill">{formatMonthLabel(targetSelectedMonth)}</div>
                     </div>
+
+                    {targetLoadStatus.status === "loading" ? (
+                      <div className="empty-card">読み込み中…</div>
+                    ) : (
+                      <>
+                        <div className="input-grid">
+                          <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" type="number" />
+                          <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" type="number" />
+                          <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" type="number" />
+                          <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" type="number" />
+                          <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" type="number" />
+                          <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" type="number" />
+                          <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" type="number" />
+                          <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" />
+                          <Field label="人件費率目標" value={targetDraft.targetLaborRate} onChange={(value) => updateTargetDraftField("targetLaborRate", value)} suffix="%" type="number" />
+                          <Field label="材料費率目標" value={targetDraft.targetMaterialRate} onChange={(value) => updateTargetDraftField("targetMaterialRate", value)} suffix="%" type="number" />
+                          <Field label="広告費率目標" value={targetDraft.targetAdRate} onChange={(value) => updateTargetDraftField("targetAdRate", value)} suffix="%" type="number" />
+                          <Field label="営業利益率目標" value={targetDraft.targetOperatingMargin} onChange={(value) => updateTargetDraftField("targetOperatingMargin", value)} suffix="%" type="number" />
+                        </div>
+                        <div className="toggle-panel">
+                          <div>
+                            {targetSaveStatus.status === "error" ? (
+                              <strong className="danger-text">{targetSaveStatus.message}</strong>
+                            ) : (
+                              <strong>{targetSaveStatus.message || (targetDirty ? "未保存の変更があります" : "変更はありません")}</strong>
+                            )}
+                          </div>
+                          <button className="primary-button" type="button" onClick={handleSaveMonthlyTarget} disabled={targetSaveStatus.status === "saving"}>
+                            {targetSaveStatus.status === "saving" ? "保存中…" : "保存"}
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </section>
                 )}
 
@@ -3168,26 +3628,15 @@ function App() {
                     <div className="panel-heading compact">
                       <div>
                         <p className="eyebrow">AI</p>
-                        <h3>AI経営分析</h3>
+                        <h3>売上状況</h3>
                       </div>
                     </div>
-                    <div className="ai-analysis-grid">
-                      {aiAnalysis.summary.slice(0, 2).map((item) => (
-                        <article key={item} className="ai-analysis-card summary-card-tone">
-                          <span>サマリー</span>
-                          <strong>{item}</strong>
-                        </article>
-                      ))}
-                      <article className="ai-analysis-card priority-card-tone">
-                        <span>優先項目</span>
-                        <strong>{aiAnalysis.priorities[0] || "固定費と販管費の推移を確認してください"}</strong>
-                        <small>{aiAnalysis.priorities.slice(1).join(" / ")}</small>
-                      </article>
-                      <article className="ai-analysis-card action-card-tone">
-                        <span>次のアクション</span>
-                        <strong>{aiAnalysis.notes[0] || "入力データを継続して蓄積してください"}</strong>
-                        <small>{aiAnalysis.notes.slice(1, 3).join(" / ")}</small>
-                      </article>
+                    <div className="insight-card">
+                      {salesStatusComment.lines.length ? (
+                        salesStatusComment.lines.map((line, index) => <strong key={index} style={{ display: "block" }}>{line}</strong>)
+                      ) : (
+                        <strong>データを入力すると表示されます</strong>
+                      )}
                     </div>
                   </section>
                 )}
@@ -3414,6 +3863,49 @@ function App() {
               <div className="button-row">
                 <button className="secondary-button" type="button" onClick={handleSaveStoreSettings}>店舗設定を保存</button>
               </div>
+            </div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">DAILY FORM</p>
+                  <h3>日次入力項目の設定</h3>
+                </div>
+              </div>
+              {!selectedStore ? (
+                <div className="empty-card">店舗を選択してください。</div>
+              ) : (
+                <>
+                  <p className="helper-text">日付・総売上・日締めは常に表示されます。それ以外の項目は店舗ごとに表示・非表示を選べます。</p>
+                  <div className="button-row">
+                    <button className="secondary-button" type="button" onClick={() => applyDailyFieldPreset("simple")}>かんたん入力にする</button>
+                    <button className="secondary-button" type="button" onClick={() => applyDailyFieldPreset("detailed")}>詳細入力にする</button>
+                  </div>
+                  <div className="field-switch-grid">
+                    {dailyFieldKeys.map((fieldKey) => (
+                      <label key={fieldKey} className="field-switch">
+                        <span>{dailyFieldLabels[fieldKey]}</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(dailyFieldDraft.fields[fieldKey])}
+                          onChange={(event) => updateDailyFieldToggle(fieldKey, event.target.checked)}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="toggle-panel">
+                    <div>
+                      {dailyFieldSaveStatus.status === "error" ? (
+                        <strong className="danger-text">{dailyFieldSaveStatus.message}</strong>
+                      ) : (
+                        <strong>{dailyFieldSaveStatus.message || (dailyFieldDirty ? "未保存の変更があります" : "変更はありません")}</strong>
+                      )}
+                    </div>
+                    <button className="primary-button" type="button" onClick={handleSaveDailyFieldSettings} disabled={dailyFieldSaveStatus.status === "saving"}>
+                      {dailyFieldSaveStatus.status === "saving" ? "保存中…" : "保存"}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
             {filteredStores.length ? (
               <div className="card-grid store-card-grid">

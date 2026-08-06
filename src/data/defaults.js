@@ -14,6 +14,10 @@ export const defaultTarget = {
   targetRepeatCustomers: "",
   targetRepeatRate: "",
   targetAverageCustomersPerDay: "",
+  targetLaborRate: "",
+  targetMaterialRate: "",
+  targetAdRate: "",
+  targetOperatingMargin: "",
 };
 
 export const defaultDailyEntry = {
@@ -25,8 +29,24 @@ export const defaultDailyEntry = {
   customers: "",
   newCustomers: "",
   repeatCustomers: "",
+  memo: "",
   salesInputMode: "inclusive",
 };
+
+// 日次入力画面に表示する項目。日付・総売上・日締めは仕様上常に必須のため、ここには含めない
+// (非表示にできる6項目のみを管理する)。既存店舗にはこの設定がまだ無いので、デフォルトは
+// 全項目表示(詳細入力相当)にして、これまでの見え方を変えないようにする。
+export const dailyFieldKeys = ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers", "memo"];
+
+export const dailyFieldPresets = {
+  simple: { technicalSales: false, retailSales: false, customers: false, newCustomers: false, repeatCustomers: false, memo: false },
+  detailed: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true },
+};
+
+export const defaultDailyFieldSettings = () => ({
+  mode: "detailed",
+  fields: { ...dailyFieldPresets.detailed },
+});
 
 export const defaultFixedCostItem = {
   id: "",
@@ -82,6 +102,7 @@ export const createInitialAppState = () => {
     },
     businessDaySettings: {},
     dayClosingStates: {},
+    dayClosingUpdatedAt: {},
     saveStatus: {
       status: "saved",
       message: "自動保存済み",

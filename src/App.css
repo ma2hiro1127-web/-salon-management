@@ -200,6 +200,14 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .toggle-panel { padding: 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .toggle-panel strong { display: block; }
 .toggle-panel small { color: var(--muted); }
+.field-switch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.field-switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
+.field-switch span { font-size: 0.92rem; }
+.field-switch input[type="checkbox"] { appearance: none; -webkit-appearance: none; width: 44px; height: 26px; border-radius: 999px; background: var(--border); position: relative; cursor: pointer; flex-shrink: 0; transition: background 0.15s ease; }
+.field-switch input[type="checkbox"]::after { content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: var(--surface-strong); transition: transform 0.15s ease; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2); }
+.field-switch input[type="checkbox"]:checked { background: var(--accent); }
+.field-switch input[type="checkbox"]:checked::after { transform: translateX(18px); }
+.field-switch input[type="checkbox"]:disabled { opacity: 0.5; cursor: not-allowed; }
 .dashboard-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
 .kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
 .kpi-grid.compact-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }

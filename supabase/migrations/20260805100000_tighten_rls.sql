@@ -103,20 +103,23 @@ create policy monthly_closings_manage_strict on public.monthly_closings
     auth.uid() is not null and company_id in (select unnest(public.current_user_company_ids()))
   );
 
+-- tenant_snapshots.company_id is text (not uuid, unlike every other table here) so it can
+-- hold the "company"/"store" placeholder ids buildSnapshotId() falls back to locally; cast
+-- current_user_company_ids()'s uuid[] to text[] before unnesting so the comparison type-checks.
 create policy tenant_snapshots_select_strict on public.tenant_snapshots
   for select using (
     auth.uid() is not null and (
-      company_id in (select unnest(public.current_user_company_ids()))
+      company_id in (select unnest(public.current_user_company_ids()::text[]))
     )
   );
 
 create policy tenant_snapshots_manage_strict on public.tenant_snapshots
   for all using (
     auth.uid() is not null and (
-      company_id in (select unnest(public.current_user_company_ids()))
+      company_id in (select unnest(public.current_user_company_ids()::text[]))
     )
   ) with check (
     auth.uid() is not null and (
-      company_id in (select unnest(public.current_user_company_ids()))
+      company_id in (select unnest(public.current_user_company_ids()::text[]))
     )
   );

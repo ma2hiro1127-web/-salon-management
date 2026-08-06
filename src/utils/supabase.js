@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { createInitialAppState } from "../data/defaults.js";
+import { createInitialAppState, defaultDailyFieldSettings } from "../data/defaults.js";
 import { normalizeRole } from "./permissions.js";
 
 const getEnvValue = (key) => {
@@ -30,6 +30,48 @@ export const getSupabaseConfigurationIssue = () => {
 };
 
 export const getSupabaseErrorMessage = (error) => error?.message || "Supabase エラーが発生しました";
+
+// Common error-reporting shape for every Supabase read/write in the app: which operation,
+// which table, and the identifying keys involved (userId/companyId/storeId/date), so a failure
+// is traceable instead of a bare "an error occurred". Always logs full detail to the console
+// (harmless in prod — it's not user-facing UI) and returns the detail object so callers can
+// also fold it into a user-facing notice via getSupabaseErrorMessage(error).
+export const logSupabaseError = ({ operation, table, userId = null, companyId = null, storeId = null, targetMonth = null, businessDate = null, error } = {}) => {
+  const detail = {
+    operation: operation || "unknown",
+    table: table || "unknown",
+    userId,
+    companyId,
+    storeId,
+    targetMonth,
+    businessDate,
+    message: error?.message || String(error || "unknown error"),
+    code: error?.code || null,
+    details: error?.details || null,
+    hint: error?.hint || null,
+  };
+  console.error("[supabase-error]", detail, error);
+  return detail;
+};
+
+// Refuses to proceed with a save when any required identifying key is missing, instead of
+// silently writing a row with a null company_id/store_id/date that would be invisible to RLS
+// (and to every future query keyed on those columns). Returns null when valid, or a
+// user-facing Japanese error string naming exactly what's missing.
+export const validateRequiredKeys = (keys = {}) => {
+  const labels = {
+    companyId: "会社ID",
+    storeId: "店舗ID",
+    userId: "ユーザーID",
+    targetMonth: "対象年月",
+    businessDate: "日付",
+  };
+  const missing = Object.entries(keys)
+    .filter(([, value]) => value === undefined || value === null || value === "")
+    .map(([key]) => labels[key] || key);
+  if (!missing.length) return null;
+  return `${missing.join("・")}が未設定のため保存できません`;
+};
 
 const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 
@@ -136,10 +178,22 @@ const createDefaultStoreSettings = () => ({
   openingHour: "09:00",
   closingHour: "20:00",
   closedDays: "月",
-  useFields: ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers"],
+  dailyFieldSettings: defaultDailyFieldSettings(),
   managerName: "",
   staffIds: [],
 });
+
+// Merges a stores.daily_field_settings JSON value (possibly null, or saved before a field
+// like memo existed) with the current defaults, so a partial/older saved shape never causes
+// a field to silently disappear or a UI crash.
+export const normalizeDailyFieldSettings = (value) => {
+  const fallback = defaultDailyFieldSettings();
+  if (!value || typeof value !== "object") return fallback;
+  return {
+    mode: typeof value.mode === "string" ? value.mode : fallback.mode,
+    fields: { ...fallback.fields, ...(value.fields && typeof value.fields === "object" ? value.fields : {}) },
+  };
+};
 
 export const signUpWithEmail = async (email, password) => {
   if (!isSupabaseConfigured) {
@@ -230,8 +284,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       ? supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
       : supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").order("created_at", { ascending: true }),
     companyFilter
-      ? supabase.from("stores").select("id, company_id, name, code, is_active").eq("company_id", companyFilter).order("name", { ascending: true })
-      : supabase.from("stores").select("id, company_id, name, code, is_active").order("name", { ascending: true }),
+      ? supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").eq("company_id", companyFilter).order("name", { ascending: true })
+      : supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").order("name", { ascending: true }),
     role === "system_admin"
       ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").order("created_at", { ascending: true })
       : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
@@ -281,7 +335,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       closingHour: "20:00",
       closedDays: "月",
       isActive: store.is_active !== false,
-      settings: createDefaultStoreSettings(),
+      settings: { ...createDefaultStoreSettings(), dailyFieldSettings: normalizeDailyFieldSettings(store.daily_field_settings) },
     })),
   }));
 
@@ -365,6 +419,28 @@ export const createStoreRecord = async ({ companyId, name, code }) => {
   return data;
 };
 
+export const updateStoreDailyFieldSettings = async ({ storeId, settings }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ storeId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateStoreDailyFieldSettings", table: "stores", storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const { data, error } = await supabase
+    .from("stores")
+    .update({ daily_field_settings: normalizeDailyFieldSettings(settings) })
+    .eq("id", storeId)
+    .select()
+    .single();
+
+  if (error) {
+    logSupabaseError({ operation: "updateStoreDailyFieldSettings", table: "stores", storeId, error });
+    return { ok: false, error };
+  }
+  return { ok: true, data };
+};
+
 export const createUserProfileRecord = async ({ name, email, role, companyId, storeIds = [], primaryStoreId = "", authUserId = null }) => {
   const normalizedEmail = normalizeEmail(email);
   const resolvedRole = normalizeRole(role || resolveDefaultRole(normalizedEmail));
@@ -413,30 +489,185 @@ export const getProfilesForDebug = async () => {
   return data || [];
 };
 
-export const syncLocalDraftToSupabase = async ({ companyId, storeId, userId, payload }) => {
+// daily_sales is the row-per-day source of truth for daily sales figures: one row per
+// (company_id, store_id, business_date), upserted so re-saving the same date updates it in
+// place instead of creating a duplicate. Day-closing state (is_day_closed/closed_at) is
+// intentionally NOT touched here — see updateDailySalesClosingState — so a plain sales-entry
+// save can never accidentally re-open or re-close a day.
+export const upsertDailySalesEntry = async ({ companyId, storeId, userId, entry }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  if (!companyId || !storeId || !userId) return { ok: true, skipped: true };
-  const { error } = await supabase.from("daily_sales").upsert({
+  const validationError = validateRequiredKeys({ companyId, storeId, userId, businessDate: entry?.date });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertDailySalesEntry", table: "daily_sales", userId, companyId, storeId, businessDate: entry?.date, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
     company_id: companyId,
     store_id: storeId,
-    business_date: payload.date,
-    sales_amount: payload.totalSales || 0,
-    technical_sales_amount: payload.technicalSales || 0,
-    retail_sales_amount: payload.retailSales || 0,
-    other_sales_amount: payload.otherSales || 0,
-    customer_count: payload.customers || 0,
-    new_customer_count: payload.newCustomers || 0,
-    repeat_customer_count: payload.repeatCustomers || 0,
-    is_day_closed: Boolean(payload.isDayClosed),
+    business_date: entry.date,
+    sales_amount: Number(entry.totalSales || 0),
+    technical_sales_amount: Number(entry.technicalSales || 0),
+    retail_sales_amount: Number(entry.retailSales || 0),
+    other_sales_amount: Number(entry.otherSales || 0),
+    customer_count: Number(entry.customers || 0),
+    new_customer_count: Number(entry.newCustomers || 0),
+    repeat_customer_count: Number(entry.repeatCustomers || 0),
+    memo: String(entry.memo || ""),
     created_by: userId,
-  }, { onConflict: "company_id,store_id,business_date" });
-  if (error) throw error;
-  return { ok: true };
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("daily_sales")
+      .upsert(payload, { onConflict: "company_id,store_id,business_date" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertDailySalesEntry", table: "daily_sales", userId, companyId, storeId, businessDate: entry?.date, error });
+    return { ok: false, error };
+  }
+};
+
+export const updateDailySalesClosingState = async ({ companyId, storeId, businessDate, userId, isClosed }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, businessDate });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateDailySalesClosingState", table: "daily_sales", userId, companyId, storeId, businessDate, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from("daily_sales")
+      .update({
+        is_day_closed: Boolean(isClosed),
+        closed_at: isClosed ? new Date().toISOString() : null,
+        closed_by: isClosed ? (userId || null) : null,
+      })
+      .eq("company_id", companyId)
+      .eq("store_id", storeId)
+      .eq("business_date", businessDate)
+      .select()
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) {
+      const notFound = new Error("対象の日次売上データが見つかりませんでした");
+      logSupabaseError({ operation: "updateDailySalesClosingState", table: "daily_sales", userId, companyId, storeId, businessDate, error: notFound });
+      return { ok: false, error: notFound };
+    }
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateDailySalesClosingState", table: "daily_sales", userId, companyId, storeId, businessDate, error });
+    return { ok: false, error };
+  }
+};
+
+// Fetches every daily_sales row in [startDate, endDate] the current user can see (RLS
+// scopes this to their company, and to their assigned stores unless they're a company/system
+// admin) — used to rebuild dailyResults/dayClosingStates for every store at once, which is
+// what both the selected store's daily entries and the cross-store ranking view need.
+export const loadDailySalesForCompanyRange = async ({ companyId, startDate, endDate }) => {
+  if (!isSupabaseConfigured || !companyId || !startDate || !endDate) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("daily_sales")
+      .select("*")
+      .eq("company_id", companyId)
+      .gte("business_date", startDate)
+      .lte("business_date", endDate);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadDailySalesForCompanyRange", table: "daily_sales", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+// monthly_closings already existed in the schema (company-scoped RLS included) but the app's
+// month-closing toggle never actually wrote to it — it only lived in the tenant_snapshots
+// blob. This makes it a real per (company_id, store_id, year_month) row.
+export const upsertMonthlyClosingState = async ({ companyId, storeId, yearMonth, userId, isClosed }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, targetMonth: yearMonth });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertMonthlyClosingState", table: "monthly_closings", userId, companyId, storeId, targetMonth: yearMonth, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
+    company_id: companyId,
+    store_id: storeId,
+    year_month: yearMonth,
+    is_closed: Boolean(isClosed),
+    closed_by: isClosed ? (userId || null) : null,
+    closed_at: isClosed ? new Date().toISOString() : null,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("monthly_closings")
+      .upsert(payload, { onConflict: "company_id,store_id,year_month" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertMonthlyClosingState", table: "monthly_closings", userId, companyId, storeId, targetMonth: yearMonth, error });
+    return { ok: false, error };
+  }
+};
+
+export const loadMonthlyClosingState = async ({ companyId, storeId, yearMonth }) => {
+  if (!isSupabaseConfigured || !companyId || !storeId || !yearMonth) return { ok: true, skipped: true, data: null };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_closings")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("store_id", storeId)
+      .eq("year_month", yearMonth)
+      .maybeSingle();
+    if (error) throw error;
+    return { ok: true, data: data || null };
+  } catch (error) {
+    logSupabaseError({ operation: "loadMonthlyClosingState", table: "monthly_closings", companyId, storeId, targetMonth: yearMonth, error });
+    return { ok: false, error, data: null };
+  }
+};
+
+// Fetches every store's monthly_closings row across the given months in one call, mirroring
+// loadDailySalesForCompanyRange — used so the month-closing badge is correct on a fresh
+// device/session instead of only reflecting whatever happened to be in the tenant_snapshots
+// blob.
+export const loadMonthlyClosingsForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_closings")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("year_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadMonthlyClosingsForCompany", table: "monthly_closings", companyId, error });
+    return { ok: false, error, data: [] };
+  }
 };
 
 export const upsertMonthlyTargetToSupabase = async ({ companyId, storeId, targetMonth, userId, target }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  if (!companyId || !storeId || !targetMonth || !userId) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId, targetMonth });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertMonthlyTargetToSupabase", table: "monthly_targets", userId, companyId, storeId, targetMonth, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
 
   const payload = {
     company_id: companyId,
@@ -451,6 +682,10 @@ export const upsertMonthlyTargetToSupabase = async ({ companyId, storeId, target
     target_repeat_customers: Number(target?.targetRepeatCustomers || 0),
     target_repeat_rate: Number(target?.targetRepeatRate || 0),
     target_average_customers_per_day: Number(target?.targetAverageCustomersPerDay || 0),
+    target_labor_rate: Number(target?.targetLaborRate || 0),
+    target_material_rate: Number(target?.targetMaterialRate || 0),
+    target_ad_rate: Number(target?.targetAdRate || 0),
+    target_operating_margin: Number(target?.targetOperatingMargin || 0),
     business_day_mode: String(target?.businessDayMode || ""),
     business_day_count: Number(target?.businessDayCount || 0),
     holiday_count: Number(target?.holidayCount || 0),
@@ -458,28 +693,36 @@ export const upsertMonthlyTargetToSupabase = async ({ companyId, storeId, target
     updated_at: new Date().toISOString(),
   };
 
-  const { data, error } = await supabase
-    .from("monthly_targets")
-    .upsert(payload, { onConflict: "company_id,store_id,target_month" })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return { ok: true, data };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_targets")
+      .upsert(payload, { onConflict: "company_id,store_id,target_month" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertMonthlyTargetToSupabase", table: "monthly_targets", userId, companyId, storeId, targetMonth, error });
+    return { ok: false, error };
+  }
 };
 
 export const loadMonthlyTargetFromSupabase = async ({ companyId, storeId, targetMonth }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true, data: null };
   if (!companyId || !storeId || !targetMonth) return { ok: true, skipped: true, data: null };
 
-  const { data, error } = await supabase
-    .from("monthly_targets")
-    .select("*")
-    .eq("company_id", companyId)
-    .eq("store_id", storeId)
-    .eq("target_month", targetMonth)
-    .maybeSingle();
-
-  if (error) throw error;
-  return { ok: true, data: data || null };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_targets")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("store_id", storeId)
+      .eq("target_month", targetMonth)
+      .maybeSingle();
+    if (error) throw error;
+    return { ok: true, data: data || null };
+  } catch (error) {
+    logSupabaseError({ operation: "loadMonthlyTargetFromSupabase", table: "monthly_targets", companyId, storeId, targetMonth, error });
+    return { ok: false, error, data: null };
+  }
 };

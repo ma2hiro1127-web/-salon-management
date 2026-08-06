@@ -51,6 +51,15 @@ export const getMonthInfo = (monthValue) => {
 
 export const buildMonthKey = (store, month) => `${store}__${month}`;
 
+// "2026-08" -> "2026年8月". Storage always stays in the "YYYY-MM" form; this is display-only.
+export const formatMonthLabel = (monthValue) => {
+  const [year, month] = String(monthValue || "").split("-");
+  const yearNumber = Number(year);
+  const monthNumber = Number(month);
+  if (!Number.isFinite(yearNumber) || !Number.isFinite(monthNumber) || !yearNumber || !monthNumber) return "";
+  return `${yearNumber}年${monthNumber}月`;
+};
+
 export const getBusinessDaySettings = (state, storeName, monthValue) => {
   const key = buildMonthKey(storeName, monthValue);
   return state.businessDaySettings?.[key] || {};
@@ -93,6 +102,240 @@ export const deduplicateDailyEntries = (entries = [], backupTarget = {}) => {
   return { entries: deduped, backups };
 };
 
+// A store can hide technicalSales/retailSales/customers/newCustomers/repeatCustomers/memo
+// from its daily entry form (see dailyFieldSettings). This builds the saved entry so that a
+// hidden field's *existing* saved value is preserved untouched, never zeroed/blanked out just
+// because its input isn't on screen.
+//
+// totalSales and customers are treated as single-source-of-truth values living on `form`
+// itself, not recomputed here from technicalSales+retailSales / newCustomers+repeatCustomers:
+// the UI (updateDailyField) is what keeps form.totalSales/form.customers in sync live as the
+// user actually edits the constituent fields. Recomputing independently at save time would
+// re-derive from whatever technicalSales/retailSales happen to be sitting in `form` even when
+// the user never touched them this session (e.g. a legacy total-sales-only entry loaded back
+// into a now-detailed-mode form, where technicalSales/retailSales read as 0) — which would
+// silently zero out a total that was only ever entered as one number, exactly the retroactive
+// split the spec says not to do.
+// newCustomers/repeatCustomers are only ever treated as "shown" when customers itself is also
+// shown, since a new/repeat breakdown without a customer-count context isn't meaningful.
+export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettings, entryId } = {}) => {
+  const fields = fieldSettings?.fields || {};
+  const showTechnical = Boolean(fields.technicalSales);
+  const showRetail = Boolean(fields.retailSales);
+  const showCustomers = Boolean(fields.customers);
+  const showNewCustomers = showCustomers && Boolean(fields.newCustomers);
+  const showRepeatCustomers = showCustomers && Boolean(fields.repeatCustomers);
+  const showMemo = Boolean(fields.memo);
+
+  const preserveNumber = (existingValue) => parseNumber(existingValue ?? 0);
+  const preserveText = (existingValue) => existingValue ?? "";
+
+  const technicalSales = showTechnical ? parseNumber(form.technicalSales) : preserveNumber(existingEntry?.technicalSales);
+  const retailSales = showRetail ? parseNumber(form.retailSales) : preserveNumber(existingEntry?.retailSales);
+  const totalSales = parseNumber(form.totalSales || 0);
+
+  const newCustomers = showNewCustomers ? parseNumber(form.newCustomers) : preserveNumber(existingEntry?.newCustomers);
+  const repeatCustomers = showRepeatCustomers ? parseNumber(form.repeatCustomers) : preserveNumber(existingEntry?.repeatCustomers);
+  const customers = showCustomers ? parseNumber(form.customers) : preserveNumber(existingEntry?.customers);
+
+  const memo = showMemo ? (form.memo || "") : preserveText(existingEntry?.memo);
+
+  return {
+    ...form,
+    id: entryId,
+    updatedAt: new Date().toISOString(),
+    totalSales,
+    technicalSales,
+    retailSales,
+    otherSales: parseNumber(form.otherSales || 0),
+    customers,
+    newCustomers,
+    repeatCustomers,
+    memo,
+  };
+};
+
+// daily_sales is the row-per-day Supabase source of truth (see upsertDailySalesEntry /
+// loadDailySalesForCompanyRange in utils/supabase.js). These convert between its column
+// shape and the app's in-memory entry shape, and rebuild the dailyResults/dayClosingStates/
+// dayClosingUpdatedAt maps straight from freshly-queried rows — no merge-with-local needed
+// here, since a fresh table query is always authoritative (unlike the old tenant_snapshots
+// blob, where "freshest row wins" could still be stale for a specific store/date).
+export const dailySalesRowToEntry = (row = {}) => ({
+  id: row.id,
+  date: row.business_date,
+  totalSales: parseNumber(row.sales_amount),
+  technicalSales: parseNumber(row.technical_sales_amount),
+  retailSales: parseNumber(row.retail_sales_amount),
+  otherSales: parseNumber(row.other_sales_amount),
+  customers: parseNumber(row.customer_count),
+  newCustomers: parseNumber(row.new_customer_count),
+  repeatCustomers: parseNumber(row.repeat_customer_count),
+  memo: row.memo || "",
+  isDayClosed: Boolean(row.is_day_closed),
+  updatedAt: row.updated_at || "",
+});
+
+export const buildDailyStateFromRows = (rows = [], storeIdToName = {}) => {
+  const dailyResults = {};
+  const dayClosingStates = {};
+  const dayClosingUpdatedAt = {};
+
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.business_date) return;
+    const month = String(row.business_date).slice(0, 7);
+    const key = buildMonthKey(storeName, month);
+    const entry = dailySalesRowToEntry(row);
+
+    dailyResults[key] = [...(dailyResults[key] || []), entry];
+    dayClosingStates[key] = { ...(dayClosingStates[key] || {}), [entry.date]: entry.isDayClosed };
+    dayClosingUpdatedAt[key] = { ...(dayClosingUpdatedAt[key] || {}), [entry.date]: row.closed_at || entry.updatedAt || "" };
+  });
+
+  return { dailyResults, dayClosingStates, dayClosingUpdatedAt };
+};
+
+// Same idea as buildDailyStateFromRows but for monthly_closings rows -> monthClosingStatus.
+export const buildMonthClosingStateFromRows = (rows = [], storeIdToName = {}) => {
+  const monthClosingStatus = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.year_month) return;
+    const key = buildMonthKey(storeName, row.year_month);
+    monthClosingStatus[key] = {
+      closed: Boolean(row.is_closed),
+      lockedAt: row.closed_at || "",
+      note: row.is_closed ? "月締め済み" : "未確定",
+    };
+  });
+  return monthClosingStatus;
+};
+
+const mergeDailyResultsMap = (localMap = {}, remoteMap = {}) => {
+  const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
+  const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};
+  const keys = new Set([...Object.keys(safeLocal), ...Object.keys(safeRemote)]);
+  const merged = {};
+  keys.forEach((key) => {
+    const localList = Array.isArray(safeLocal[key]) ? safeLocal[key] : [];
+    const remoteList = Array.isArray(safeRemote[key]) ? safeRemote[key] : [];
+    merged[key] = deduplicateDailyEntries([...localList, ...remoteList]).entries;
+  });
+  return merged;
+};
+
+// dayClosingStates is a plain boolean per date, so a naive union can't tell "remote never
+// knew about this close" (should keep local's true) apart from "remote has a newer, explicit
+// un-close" (should keep remote's false) — both look like "remote is missing a true". We
+// resolve that with a parallel per-date updatedAt map: whichever side recorded the more
+// recent change to that specific date wins outright. Only when neither side has a timestamp
+// for a date (older data predating this tracking) do we fall back to OR, which never discards
+// a close but also can never un-discard one — acceptable since new toggles always carry a
+// timestamp going forward.
+const mergeDayClosingStatesMap = (localMap = {}, remoteMap = {}, localTimestamps = {}, remoteTimestamps = {}) => {
+  const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
+  const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};
+  const safeLocalTimestamps = localTimestamps && typeof localTimestamps === "object" ? localTimestamps : {};
+  const safeRemoteTimestamps = remoteTimestamps && typeof remoteTimestamps === "object" ? remoteTimestamps : {};
+  const keys = new Set([...Object.keys(safeLocal), ...Object.keys(safeRemote)]);
+  const merged = {};
+  keys.forEach((key) => {
+    const localDates = safeLocal[key] || {};
+    const remoteDates = safeRemote[key] || {};
+    const localDateTimestamps = safeLocalTimestamps[key] || {};
+    const remoteDateTimestamps = safeRemoteTimestamps[key] || {};
+    const dateKeys = new Set([...Object.keys(localDates), ...Object.keys(remoteDates)]);
+    const mergedDates = {};
+    dateKeys.forEach((date) => {
+      const localAt = String(localDateTimestamps[date] || "");
+      const remoteAt = String(remoteDateTimestamps[date] || "");
+      if (localAt && remoteAt) {
+        mergedDates[date] = localAt >= remoteAt ? Boolean(localDates[date]) : Boolean(remoteDates[date]);
+      } else if (localAt) {
+        mergedDates[date] = Boolean(localDates[date]);
+      } else if (remoteAt) {
+        mergedDates[date] = Boolean(remoteDates[date]);
+      } else {
+        mergedDates[date] = Boolean(localDates[date]) || Boolean(remoteDates[date]);
+      }
+    });
+    merged[key] = mergedDates;
+  });
+  return merged;
+};
+
+const mergeDayClosingUpdatedAtMap = (localMap = {}, remoteMap = {}) => {
+  const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
+  const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};
+  const keys = new Set([...Object.keys(safeLocal), ...Object.keys(safeRemote)]);
+  const merged = {};
+  keys.forEach((key) => {
+    const localDates = safeLocal[key] || {};
+    const remoteDates = safeRemote[key] || {};
+    const dateKeys = new Set([...Object.keys(localDates), ...Object.keys(remoteDates)]);
+    const mergedDates = {};
+    dateKeys.forEach((date) => {
+      const localAt = String(localDates[date] || "");
+      const remoteAt = String(remoteDates[date] || "");
+      mergedDates[date] = localAt >= remoteAt ? (localAt || remoteAt) : remoteAt;
+    });
+    merged[key] = mergedDates;
+  });
+  return merged;
+};
+
+const mergeItemsById = (localList = [], remoteList = []) => {
+  const safeLocal = Array.isArray(localList) ? localList : [];
+  const safeRemote = Array.isArray(remoteList) ? remoteList : [];
+  const byId = new Map();
+  safeLocal.forEach((item) => { if (item?.id) byId.set(item.id, item); });
+  safeRemote.forEach((item) => { if (item?.id) byId.set(item.id, item); });
+  const withoutId = [...safeLocal.filter((item) => !item?.id), ...safeRemote.filter((item) => !item?.id)];
+  return [...byId.values(), ...withoutId];
+};
+
+const mergeItemArrayMap = (localMap = {}, remoteMap = {}) => {
+  const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
+  const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};
+  const keys = new Set([...Object.keys(safeLocal), ...Object.keys(safeRemote)]);
+  const merged = {};
+  keys.forEach((key) => {
+    merged[key] = mergeItemsById(safeLocal[key], safeRemote[key]);
+  });
+  return merged;
+};
+
+const mergeShallowMap = (localMap = {}, remoteMap = {}) => ({
+  ...(localMap && typeof localMap === "object" ? localMap : {}),
+  ...(remoteMap && typeof remoteMap === "object" ? remoteMap : {}),
+});
+
+// Combines a freshly-fetched Supabase snapshot into the in-memory app state without
+// discarding store/month data the snapshot's payload doesn't happen to include: every
+// snapshot row embeds the *entire* multi-store app state as of whichever save produced
+// it, so a naive `{...local, ...remote}` swap can silently wipe out another store's (or
+// a more recently edited store's) data whenever an older/other-store snapshot is fetched.
+export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
+  ...localState,
+  ...remoteState,
+  dailyResults: mergeDailyResultsMap(localState.dailyResults, remoteState.dailyResults),
+  dayClosingStates: mergeDayClosingStatesMap(localState.dayClosingStates, remoteState.dayClosingStates, localState.dayClosingUpdatedAt, remoteState.dayClosingUpdatedAt),
+  dayClosingUpdatedAt: mergeDayClosingUpdatedAtMap(localState.dayClosingUpdatedAt, remoteState.dayClosingUpdatedAt),
+  dailyResultBackups: mergeItemArrayMap(localState.dailyResultBackups, remoteState.dailyResultBackups),
+  fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
+  variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
+  monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
+  targets: mergeShallowMap(localState.targets, remoteState.targets),
+  businessDaySettings: mergeShallowMap(localState.businessDaySettings, remoteState.businessDaySettings),
+  monthClosingStatus: mergeShallowMap(localState.monthClosingStatus, remoteState.monthClosingStatus),
+  dailyDrafts: mergeShallowMap(localState.dailyDrafts, remoteState.dailyDrafts),
+});
+
+// 営業進捗 = 選択中の店舗・対象月の日次データのうち、日締め済みになっているユニークな
+// 営業日の日付数。dayClosingStates が唯一の正となる情報源で、その日付に実際の日次データが
+// あるものだけを数える(日締めは常に saveDailyEntry を経てから立つため、通常は1:1で対応する)。
+// 保存しただけ(日締め未実施)や、日締めを解除した日はここに含まれない。
 export const getBusinessDaySummary = (state, storeName, monthValue) => {
   const key = buildMonthKey(storeName, monthValue);
   const settings = getBusinessDaySettings(state, storeName, monthValue);
@@ -103,22 +346,16 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
     ? manualBusinessDayCount
     : Math.max(monthInfo.daysInMonth - holidayCount, 0);
   const closingMap = state.dayClosingStates?.[key] || {};
-  const dailyEntries = deduplicateDailyEntries(state.dailyResults?.[key] || []).entries;
-  const closedDates = new Set();
+  const dailyEntryDates = new Set(
+    deduplicateDailyEntries(state.dailyResults?.[key] || []).entries
+      .map((entry) => String(entry?.date || ""))
+      .filter(Boolean)
+  );
 
-  Object.entries(closingMap).forEach(([date, isClosed]) => {
-    if (Boolean(isClosed) && String(date).startsWith(`${monthValue}-`)) {
-      closedDates.add(String(date));
-    }
-  });
-
-  dailyEntries.forEach((entry) => {
-    if (Boolean(entry?.isDayClosed) && String(entry?.date || "").startsWith(`${monthValue}-`)) {
-      closedDates.add(String(entry.date));
-    }
-  });
-
-  const closedDateList = [...closedDates].sort((a, b) => a.localeCompare(b));
+  const closedDateList = Object.entries(closingMap)
+    .filter(([date, isClosed]) => Boolean(isClosed) && String(date).startsWith(`${monthValue}-`) && dailyEntryDates.has(String(date)))
+    .map(([date]) => String(date))
+    .sort((a, b) => a.localeCompare(b));
 
   return {
     businessDayCount,
@@ -216,6 +453,7 @@ export const normalizeAppState = (value) => {
     },
     businessDaySettings: normalizeObjectMap(source.businessDaySettings),
     dayClosingStates: normalizeObjectMap(source.dayClosingStates),
+    dayClosingUpdatedAt: normalizeObjectMap(source.dayClosingUpdatedAt),
     saveStatus: {
       status: source.saveStatus?.status || "saved",
       message: source.saveStatus?.message || "自動保存済み",
@@ -392,7 +630,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const targetPerDay = businessDaySummary.businessDayCount ? targetSales / businessDaySummary.businessDayCount : 0;
   const dailyNeededSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const closedDateSet = new Set(businessDaySummary.closedDates || []);
-  const closedEntries = effectiveEntries.filter((entry) => closedDateSet.has(String(entry?.date || "")) || Boolean(entry?.isDayClosed));
+  const closedEntries = effectiveEntries.filter((entry) => closedDateSet.has(String(entry?.date || "")));
   const closedSales = closedEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0);
   const pace = completedDays > 0 ? closedSales / completedDays : 0;
   const forecast = completedDays > 0 && businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : 0;
@@ -462,6 +700,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
     targetPerDay,
     dailyNeededSales,
     forecast,
+    closedSales,
     todayActual,
     todayTarget,
     todayAchievement,
@@ -509,6 +748,50 @@ export const getCustomerTargetSummary = (input = {}) => {
     statusLabel,
     targetAverageCustomersPerDay,
   };
+};
+
+// 売上状況のAIコメント。客数・客単価・店販比率などは含めず、月間目標売上に対する売上の
+// 状況だけを3行で返す。「現在の累計売上」は日締め済みの営業日の売上合計(closedSales)のみを
+// 使い、未締めの日次売上は目標ペース・必要売上の計算に含めない。
+export const getSalesStatusComment = (input = {}) => {
+  const targetSales = parseNumber(input.targetSales);
+  const cumulativeSales = parseNumber(input.closedSales);
+  const businessDayCount = parseNumber(input.businessDayCount);
+  const completedDays = parseNumber(input.completedDays);
+  const remainingBusinessDays = parseNumber(input.remainingBusinessDays);
+
+  const lines = [];
+
+  const remainingToTarget = Math.round(targetSales - cumulativeSales);
+  if (remainingToTarget > 0) {
+    lines.push(`月間目標売上まで、あと${number(remainingToTarget)}円です。`);
+  } else if (remainingToTarget < 0) {
+    lines.push(`月間目標売上を${number(-remainingToTarget)}円上回っています。`);
+  } else {
+    lines.push("月間目標売上を達成しました。");
+  }
+
+  if (completedDays > 0) {
+    const perDayTarget = businessDayCount > 0 ? targetSales / businessDayCount : 0;
+    const requiredSoFar = perDayTarget * completedDays;
+    const paceDiff = Math.round(cumulativeSales - requiredSoFar);
+    if (paceDiff > 0) {
+      lines.push(`現時点の目標売上ペースを、${number(paceDiff)}円上回っています。`);
+    } else if (paceDiff < 0) {
+      lines.push(`現時点の目標売上ペースに対して、${number(-paceDiff)}円不足しています。`);
+    } else {
+      lines.push("現時点では、目標売上ペースどおりに進んでいます。");
+    }
+  }
+
+  if (remainingToTarget <= 0) {
+    lines.push("月間目標を達成済みです。");
+  } else if (remainingBusinessDays > 0) {
+    const dailyAverageNeeded = Math.round(remainingToTarget / remainingBusinessDays);
+    lines.push(`月間目標を達成するには、残り${number(remainingBusinessDays)}営業日で1日平均${number(dailyAverageNeeded)}円の売上が必要です。`);
+  }
+
+  return { headline: "売上状況", lines };
 };
 
 class AiSummary extends Array {
