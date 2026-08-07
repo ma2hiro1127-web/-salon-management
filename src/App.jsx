@@ -468,6 +468,34 @@ const canManageCompany = (role) => canManageCompanies(role);
 const canManageStore = (role) => canManageStores(role);
 const canManageUsers = (role) => canManageUsersByRole(role);
 
+// loadTenantStateFromSupabase always defaults selectedStore to the alphabetically-first store in
+// the company. Every login/session-restore path needs to override that with whatever store this
+// device actually had selected — but resolving that by NAME alone breaks the instant another
+// device renames the store (the cached name goes stale while the id stays valid), silently
+// stranding the session on a different, often-empty store while things like store ranking (which
+// always reads the company's current store list, never a cached selection) keep looking correct.
+// Resolving by the durable selectedStoreId first, and only falling back to a name match or
+// Supabase's own default when there's truly no id match, is what makes every entry point below
+// self-heal to the SAME store across a rename instead of drifting to an arbitrary one.
+const resolvePreferredStoreSelection = ({ tenantState, localRecoveredState, currentCompanyId }) => {
+  const targetStores = (tenantState?.companies || []).find((company) => company.id === currentCompanyId)?.stores
+    || tenantState?.companies?.[0]?.stores
+    || [];
+  const availableStoreNames = new Set(targetStores.map((store) => store.name));
+  const storeMatchedById = localRecoveredState?.selectedStoreId
+    ? targetStores.find((store) => store.id === localRecoveredState.selectedStoreId)
+    : null;
+  const selectedStore = storeMatchedById
+    ? storeMatchedById.name
+    : (localRecoveredState?.selectedStore && availableStoreNames.has(localRecoveredState.selectedStore)
+      ? localRecoveredState.selectedStore
+      : (tenantState?.selectedStore || localRecoveredState?.selectedStore || ""));
+  const selectedStoreId = storeMatchedById
+    ? storeMatchedById.id
+    : (targetStores.find((store) => store.name === selectedStore)?.id || tenantState?.selectedStoreId || "");
+  return { selectedStore, selectedStoreId };
+};
+
 const buildStoredUserHydrationState = async ({ storedUser, setCurrentUser, setCurrentRole, setAppState, setAuthMode, setActivePage, setDebugInfo, setSyncStatus, setAuthError, hydrateFromSupabase, refreshAuthDebugInfo }) => {
   if (!storedUser?.authUserId && !storedUser?.email) return false;
 
@@ -482,11 +510,21 @@ const buildStoredUserHydrationState = async ({ storedUser, setCurrentUser, setCu
       companyId: storedUser.company_id,
       storeId: storedUser.store_id,
     });
+    const storedHydrationCompanyId = nextUser.company_id || tenantState.currentCompanyId || storedUser.company_id || "";
+    const localRecoveredState = normalizeAppState(readAppState());
+    const { selectedStore: preferredSelectedStore, selectedStoreId: preferredSelectedStoreId } = resolvePreferredStoreSelection({
+      tenantState,
+      localRecoveredState,
+      currentCompanyId: storedHydrationCompanyId,
+    });
     const nextState = {
       ...tenantState,
-      currentCompanyId: nextUser.company_id || tenantState.currentCompanyId || storedUser.company_id || "",
+      currentCompanyId: storedHydrationCompanyId,
       currentUserId: nextUser.profileId,
       currentAuthUserId: nextUser.authUserId,
+      selectedStore: preferredSelectedStore,
+      selectedStoreId: preferredSelectedStoreId,
+      selectedMonth: tenantState.selectedMonth || localRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
     };
 
     setCurrentUser(nextUser);
@@ -612,10 +650,18 @@ function App() {
   const remoteSyncChannelRef = useRef(null);
   const hydrateRetryTimerRef = useRef(null);
   const hydrateRetryCountRef = useRef(0);
-  const { stores, selectedStore, selectedMonth } = appState;
+  const { stores, selectedStore, selectedStoreId, selectedMonth } = appState;
   const currentCompany = useMemo(() => appState.companies?.find((company) => company.id === appState.currentCompanyId) || appState.companies?.[0] || null, [appState.companies, appState.currentCompanyId]);
   const currentCompanyStores = useMemo(() => currentCompany?.stores || [], [currentCompany]);
-  const selectedStoreEntity = useMemo(() => currentCompanyStores.find((store) => store.name === selectedStore) || currentCompanyStores[0] || null, [currentCompanyStores, selectedStore]);
+  // Resolve by selectedStoreId first — see the self-healing effect below for why a name-only
+  // match can briefly be stale (e.g. right after another device renames the current store).
+  const selectedStoreEntity = useMemo(
+    () => (selectedStoreId && currentCompanyStores.find((store) => store.id === selectedStoreId))
+      || currentCompanyStores.find((store) => store.name === selectedStore)
+      || currentCompanyStores[0]
+      || null,
+    [currentCompanyStores, selectedStore, selectedStoreId]
+  );
   const activeDailyFieldSettings = useMemo(() => normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings), [selectedStoreEntity]);
   const activeMonthlyTargetFieldSettings = useMemo(() => normalizeMonthlyTargetFieldSettings(selectedStoreEntity?.settings?.monthlyTargetFields), [selectedStoreEntity]);
   const showTechnicalSalesField = Boolean(activeDailyFieldSettings.fields.technicalSales);
@@ -682,14 +728,30 @@ function App() {
           setCurrentRole(normalizeRole(profile?.role || "staff"));
           const reconciledCompanies = tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [];
           const reconciledCurrentCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
-          const availableStoreNames = new Set((reconciledCompanies.find((company) => company.id === reconciledCurrentCompanyId)?.stores || reconciledCompanies[0]?.stores || []).map((store) => store.name));
+          const targetCompanyStores = reconciledCompanies.find((company) => company.id === reconciledCurrentCompanyId)?.stores || reconciledCompanies[0]?.stores || [];
+          const availableStoreNames = new Set(targetCompanyStores.map((store) => store.name));
           // loadTenantStateFromSupabase always defaults selectedStore to the alphabetically-first
           // store in the company, which previously clobbered whichever store the user actually had
           // open on this device (e.g. 本店 losing out to フィーネ横浜). Only fall back to that
           // default when the device's own last-selected store no longer exists.
-          const preferredSelectedStore = localRecoveredState.selectedStore && availableStoreNames.has(localRecoveredState.selectedStore)
-            ? localRecoveredState.selectedStore
-            : (tenantState.selectedStore || localRecoveredState.selectedStore || "");
+          //
+          // Resolve by the durable selectedStoreId FIRST, before ever comparing names: a store
+          // rename invalidates the cached name (localRecoveredState.selectedStore) but not its id,
+          // and without this the name-only check below falls through to the "no longer exists"
+          // branch and silently redirects the session to a different (often empty) store. This
+          // was the confirmed root cause of ranking still showing data while every per-store KPI
+          // read 0/unregistered after a store was renamed.
+          const storeMatchedById = localRecoveredState.selectedStoreId
+            ? targetCompanyStores.find((store) => store.id === localRecoveredState.selectedStoreId)
+            : null;
+          const preferredSelectedStore = storeMatchedById
+            ? storeMatchedById.name
+            : (localRecoveredState.selectedStore && availableStoreNames.has(localRecoveredState.selectedStore)
+              ? localRecoveredState.selectedStore
+              : (tenantState.selectedStore || localRecoveredState.selectedStore || ""));
+          const preferredSelectedStoreId = storeMatchedById
+            ? storeMatchedById.id
+            : (targetCompanyStores.find((store) => store.name === preferredSelectedStore)?.id || tenantState.selectedStoreId || "");
           const reconciledState = {
             ...tenantState,
             ...localRecoveredState,
@@ -701,6 +763,7 @@ function App() {
             companySnapshots: tenantState.companySnapshots || localRecoveredState.companySnapshots || {},
             stores: tenantState.stores?.length ? tenantState.stores : localRecoveredState.stores || [],
             selectedStore: preferredSelectedStore,
+            selectedStoreId: preferredSelectedStoreId,
             selectedMonth: tenantState.selectedMonth || localRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
           };
           writeAppState(reconciledState);
@@ -801,6 +864,7 @@ function App() {
       ...createInitialAppState(),
       stores: targetCompany?.stores?.map((store) => store.name) || [],
       selectedStore: targetCompany?.stores?.[0]?.name || "",
+      selectedStoreId: targetCompany?.stores?.[0]?.id || "",
     };
     return {
       ...state,
@@ -951,11 +1015,21 @@ function App() {
         const nextUser = buildAuthenticatedUser({ profile, authUser, role: resolveRoleForEmail(authUser.email) });
         setCurrentUser(nextUser);
         setCurrentRole(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
+        const loginCompanyId = profile?.company_id || tenantState.currentCompanyId || "";
+        const loginLocalRecoveredState = normalizeAppState(readAppState());
+        const { selectedStore: loginPreferredSelectedStore, selectedStoreId: loginPreferredSelectedStoreId } = resolvePreferredStoreSelection({
+          tenantState,
+          localRecoveredState: loginLocalRecoveredState,
+          currentCompanyId: loginCompanyId,
+        });
         setAppState({
           ...tenantState,
-          currentCompanyId: profile?.company_id || tenantState.currentCompanyId || "",
+          currentCompanyId: loginCompanyId,
           currentUserId: nextUser.profileId,
           currentAuthUserId: nextUser.authUserId,
+          selectedStore: loginPreferredSelectedStore,
+          selectedStoreId: loginPreferredSelectedStoreId,
+          selectedMonth: tenantState.selectedMonth || loginLocalRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: Boolean(session || sessionData?.session), authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1079,11 +1153,21 @@ function App() {
         const nextUser = buildAuthenticatedUser({ profile, authUser, role: resolveRoleForEmail(authUser.email) });
         setCurrentUser(nextUser);
         setCurrentRole(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
+        const signupCompanyId = profile?.company_id || tenantState.currentCompanyId || "";
+        const signupLocalRecoveredState = normalizeAppState(readAppState());
+        const { selectedStore: signupPreferredSelectedStore, selectedStoreId: signupPreferredSelectedStoreId } = resolvePreferredStoreSelection({
+          tenantState,
+          localRecoveredState: signupLocalRecoveredState,
+          currentCompanyId: signupCompanyId,
+        });
         setAppState({
           ...tenantState,
-          currentCompanyId: profile?.company_id || tenantState.currentCompanyId || "",
+          currentCompanyId: signupCompanyId,
           currentUserId: nextUser.profileId,
           currentAuthUserId: nextUser.authUserId,
+          selectedStore: signupPreferredSelectedStore,
+          selectedStoreId: signupPreferredSelectedStoreId,
+          selectedMonth: tenantState.selectedMonth || signupLocalRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1159,8 +1243,14 @@ function App() {
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
       const companyId = profile.company_id || tenantState?.currentCompanyId || "";
       const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
-      const selectedStoreName = tenantState?.selectedStore || company?.stores?.[0]?.name || "";
-      const store = company?.stores?.find((item) => item.name === selectedStoreName) || company?.stores?.[0] || null;
+      // Resolve by the durable selectedStoreId first — a stale cached selectedStore *name*
+      // (e.g. left over from before another device renamed this store) must never pick a
+      // different store here, or every table below gets fetched/scoped for the wrong store id.
+      const store = (tenantState?.selectedStoreId && company?.stores?.find((item) => item.id === tenantState.selectedStoreId))
+        || company?.stores?.find((item) => item.name === tenantState?.selectedStore)
+        || company?.stores?.[0]
+        || null;
+      const selectedStoreName = store?.name || tenantState?.selectedStore || "";
       const storeId = store?.id || null;
       const targetMonth = tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
 
@@ -1291,6 +1381,14 @@ function App() {
       // (its payload still carries every store's data), and we don't want a background
       // sync to yank the UI over to a store the user didn't select.
       const resolvedSelectedStore = tenantState?.selectedStore || selectedStoreName || remoteState.selectedStore || "";
+      // Keep selectedStoreId locked to the same store as resolvedSelectedStore above rather than
+      // letting it fall through from remoteState (the snapshot payload's embedded id, which can
+      // belong to a different store than whichever name won out here) — a mismatched pair is
+      // exactly what let the display silently drift onto the wrong store's data before.
+      const resolvedSelectedStoreId = (store?.name === resolvedSelectedStore && store?.id)
+        || company?.stores?.find((item) => item.name === resolvedSelectedStore)?.id
+        || tenantState?.selectedStoreId
+        || "";
       const resolvedSelectedMonth = tenantState?.selectedMonth || targetMonth || remoteState.selectedMonth || new Date().toISOString().slice(0, 7);
       const nextRemoteState = {
         ...remoteState,
@@ -1312,6 +1410,7 @@ function App() {
         currentUserId: remoteState.currentUserId || tenantState?.currentUserId || profile.id || "",
         currentAuthUserId: remoteState.currentAuthUserId || tenantState?.currentAuthUserId || profile.auth_user_id || authUser.id || "",
         selectedStore: resolvedSelectedStore,
+        selectedStoreId: resolvedSelectedStoreId,
         selectedMonth: resolvedSelectedMonth,
       };
       const remoteSnapshotSignature = JSON.stringify({
@@ -1645,9 +1744,14 @@ function App() {
   };
 
   const handleStoreSwitch = (storeName) => {
+    // selectedStoreId is the durable identity — selectedStore (the display name) is kept in
+    // sync with it everywhere below specifically so a rename can never silently strand a
+    // session on a stale name. See the self-healing effect further down for why this matters.
+    const matchedStoreId = currentCompanyStores.find((store) => store.name === storeName)?.id || "";
     const nextState = {
       ...appState,
       selectedStore: storeName,
+      selectedStoreId: matchedStoreId,
       companySnapshots: { ...(appState.companySnapshots || {}), [appState.currentCompanyId]: { ...(appState.companySnapshots?.[appState.currentCompanyId] || createInitialAppState()), selectedStore: storeName } },
     };
     persistTenantState(nextState);
@@ -2158,21 +2262,38 @@ function App() {
   }, [authMode, currentUser?.authUserId, currentUser?.profileId, appState.currentCompanyId, appState.selectedStore, appState.selectedMonth, currentRole]);
 
   useEffect(() => {
-    if (!selectedStore) {
-      const fallbackStore = visibleStores[0]?.name || "";
-      if (fallbackStore) {
-        setAppState((prev) => ({ ...prev, selectedStore: fallbackStore }));
+    // Resolve by the durable selectedStoreId FIRST: a rename changes a store's name but never
+    // its id, so a session whose cached name went stale (e.g. another device renamed 本店 to
+    // フィーネ原宿) self-heals back to the SAME store under its new name. Only when there's no
+    // id match at all (first login, store actually deleted/unassigned) do we fall back to
+    // visibleStores[0] — previously this arbitrary alphabetical fallback silently redirected
+    // renamed-store sessions to a different, unrelated, often-empty store.
+    const storeMatchedById = selectedStoreId ? visibleStores.find((store) => store.id === selectedStoreId) : null;
+    if (storeMatchedById) {
+      if (storeMatchedById.name !== selectedStore) {
+        setAppState((prev) => ({ ...prev, selectedStore: storeMatchedById.name, selectedStoreId: storeMatchedById.id }));
       }
       return;
     }
-    const selectedStoreExists = visibleStores.some((store) => store.name === selectedStore);
-    if (!selectedStoreExists) {
-      const fallbackStore = visibleStores[0]?.name || "";
+    if (!selectedStore) {
+      const fallbackStore = visibleStores[0];
       if (fallbackStore) {
-        setAppState((prev) => ({ ...prev, selectedStore: fallbackStore }));
+        setAppState((prev) => ({ ...prev, selectedStore: fallbackStore.name, selectedStoreId: fallbackStore.id }));
       }
+      return;
     }
-  }, [selectedStore, visibleStores]);
+    const matchedByName = visibleStores.find((store) => store.name === selectedStore);
+    if (matchedByName) {
+      if (matchedByName.id !== selectedStoreId) {
+        setAppState((prev) => ({ ...prev, selectedStoreId: matchedByName.id }));
+      }
+      return;
+    }
+    const fallbackStore = visibleStores[0];
+    if (fallbackStore) {
+      setAppState((prev) => ({ ...prev, selectedStore: fallbackStore.name, selectedStoreId: fallbackStore.id }));
+    }
+  }, [selectedStore, selectedStoreId, visibleStores]);
 
   useEffect(() => {
     if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !appState.currentCompanyId) {
@@ -2367,7 +2488,12 @@ function App() {
 
   const resolveTargetCompanyAndStore = () => {
     const company = (appState.companies || []).find((item) => item.id === appState.currentCompanyId) || null;
-    const store = company?.stores?.find((item) => item.name === selectedStore) || null;
+    // selectedStoreEntity already resolves id-first (see its definition above) so every write
+    // path that goes through here (targets, daily entry, day-closing) stays locked to the same
+    // store as the rest of the dashboard even if selectedStore's cached name is momentarily stale.
+    const store = (selectedStoreEntity && selectedStoreEntity.id && company?.stores?.some((item) => item.id === selectedStoreEntity.id))
+      ? selectedStoreEntity
+      : company?.stores?.find((item) => item.name === selectedStore) || null;
     return { company, store };
   };
 

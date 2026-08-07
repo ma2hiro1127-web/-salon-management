@@ -96,6 +96,7 @@ export const createInitialAppState = () => {
   return {
     stores: [],
     selectedStore: "",
+    selectedStoreId: "",
     selectedMonth,
     targets: {},
     dailyResults: {},
