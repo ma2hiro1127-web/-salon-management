@@ -48,6 +48,20 @@ export const defaultDailyFieldSettings = () => ({
   fields: { ...dailyFieldPresets.detailed },
 });
 
+// Monthly target's toggleable fields. targetSales/targetTechnicalSales/... map 1:1 to
+// defaultTarget's own keys above; holidayCount is the separate 休業日 input alongside them.
+// company_id/store_id/target_month aren't here at all — those identify *which* target row is
+// being edited, not a value on it, so there's nothing to toggle.
+export const monthlyTargetFieldKeys = [
+  "targetSales", "targetTechnicalSales", "targetRetailSales", "targetCustomers",
+  "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers",
+  "targetLaborRate", "targetMaterialRate", "targetAdRate", "targetOperatingMargin", "holidayCount",
+];
+
+export const defaultMonthlyTargetFieldSettings = () => ({
+  fields: Object.fromEntries(monthlyTargetFieldKeys.map((key) => [key, true])),
+});
+
 export const defaultFixedCostItem = {
   id: "",
   name: "",

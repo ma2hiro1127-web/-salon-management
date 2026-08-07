@@ -7,10 +7,12 @@ import {
   defaultDailyEntry,
   defaultDailyFieldSettings,
   defaultFixedCostItem,
+  defaultMonthlyTargetFieldSettings,
   defaultTarget,
   defaultVariableCostItem,
   expenseCategories,
   fixedCostCategories,
+  monthlyTargetFieldKeys,
   variableCostCategories,
 } from "./data/defaults.js";
 import {
@@ -43,9 +45,10 @@ import {
   readAppState,
   readStorage,
   normalizeAppState,
+  rekeyStoreNamedMaps,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canManageUsers as canManageUsersByRole, canEditMonthlyData, canViewUserManagement, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canEditMonthlyData, canViewUserManagement, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import AuthGate from "./components/AuthGate.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -63,8 +66,11 @@ import {
   getProfileByEmail,
   createCompanyRecord,
   createStoreRecord,
+  updateStoreRecord,
   normalizeDailyFieldSettings,
-  updateStoreDailyFieldSettings,
+  normalizeMonthlyTargetFieldSettings,
+  loadStoreInputSettingsForCompany,
+  upsertStoreInputSettings,
   createUserProfileRecord,
   upsertDailySalesEntry,
   updateDailySalesClosingState,
@@ -96,6 +102,8 @@ const navItems = [
   { id: "users", label: "ユーザー管理" },
   { id: "settings", label: "設定" },
 ];
+
+const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
 const monthlyTabs = [
   { id: "target", label: "目標設定" },
@@ -267,6 +275,7 @@ const createStoreSettingsDefaults = () => ({
   closingHour: "20:00",
   closedDays: "月",
   dailyFieldSettings: defaultDailyFieldSettings(),
+  monthlyTargetFields: defaultMonthlyTargetFieldSettings(),
   managerName: "",
   staffIds: [],
 });
@@ -278,6 +287,21 @@ const dailyFieldLabels = {
   newCustomers: "新規客数",
   repeatCustomers: "再来客数",
   memo: "メモ",
+};
+
+const monthlyTargetFieldLabels = {
+  targetSales: "月間目標売上",
+  targetTechnicalSales: "技術売上目標",
+  targetRetailSales: "店販売上目標",
+  targetCustomers: "目標客数",
+  targetAverageSpend: "目標客単価",
+  targetNewCustomers: "目標新規数",
+  targetRepeatCustomers: "目標再来数",
+  targetLaborRate: "人件費率",
+  targetMaterialRate: "材料費率",
+  targetAdRate: "広告費率",
+  targetOperatingMargin: "営業利益率",
+  holidayCount: "休業日",
 };
 
 const createStoreFormDefaults = () => ({
@@ -374,6 +398,29 @@ const buildDailyInsight = ({ form, targetSales, businessDayCount }) => {
 
 const buildTenantState = (legacyState = {}) => {
   const seeded = typeof legacyState === "object" && legacyState ? legacyState : readAppState();
+
+  // When Supabase is configured, never seed appState.companies with placeholder data that
+  // carries non-UUID ids like "company-fine"/"store-main" below. Real company/store data
+  // always arrives from loadTenantStateFromSupabase after login — but every hook in this
+  // component runs on every render regardless of which screen is actually shown (conditional
+  // JSX doesn't skip hooks), so any Supabase-touching effect that reads appState.companies
+  // before that login/hydrate finishes would find this placeholder company sitting there,
+  // looking real enough (non-empty id) to pass truthiness checks, and send "company-fine"
+  // straight into a uuid column — exactly the "invalid input syntax for type uuid" error this
+  // was causing. Preserve genuinely saved data from a previous real login (seeded.companies),
+  // just never fabricate fake replacement data when there's nothing saved yet.
+  if (isSupabaseConfigured) {
+    return {
+      ...createInitialAppState(),
+      ...seeded,
+      companies: Array.isArray(seeded.companies) ? seeded.companies : [],
+      users: Array.isArray(seeded.users) ? seeded.users : [],
+      currentCompanyId: seeded.currentCompanyId || "",
+      currentUserId: seeded.currentUserId || "",
+      companySnapshots: seeded.companySnapshots && typeof seeded.companySnapshots === "object" ? seeded.companySnapshots : {},
+    };
+  }
+
   const defaultCompanyId = "company-fine";
   const defaultCompany = {
     id: defaultCompanyId,
@@ -534,11 +581,28 @@ function App() {
   const [targetLoadStatus, setTargetLoadStatus] = useState({ status: "idle", loadedMonth: "", loadedStore: "" });
   const [targetDirty, setTargetDirty] = useState(false);
   const targetLoadRequestRef = useRef(0);
+  const targetSaveInFlightRef = useRef(false);
+  const targetAutoSaveTimerRef = useRef(null);
+  const lastTargetAutoSaveSignatureRef = useRef("");
+  // Past and future months both need to be selectable (spec: "過去月と未来月も選択可能"). A
+  // fixed ±5 year window around "now" comfortably covers that, plus the currently selected
+  // year in case it's ever outside the window for any reason (e.g. data from an unusual date).
+  const targetYearOptions = useMemo(() => {
+    const currentYear = new Date().getFullYear();
+    const selectedYear = Number(targetSelectedMonth.slice(0, 4)) || currentYear;
+    const years = new Set([selectedYear]);
+    for (let offset = -5; offset <= 5; offset += 1) years.add(currentYear + offset);
+    return Array.from(years).sort((a, b) => a - b);
+  }, [targetSelectedMonth]);
   // 日次入力項目の設定(店舗ごと、月の概念はない)。stores.daily_field_settings は他の店舗情報と
   // 同じタイミングでロードされるため、対象月選択のような専用フェッチは不要。
   const [dailyFieldDraft, setDailyFieldDraft] = useState(() => defaultDailyFieldSettings());
   const [dailyFieldSaveStatus, setDailyFieldSaveStatus] = useState({ status: "idle", message: "" });
   const [dailyFieldDirty, setDailyFieldDirty] = useState(false);
+  // Same idea as dailyFieldDraft above, for 月間目標設定's own toggleable fields.
+  const [monthlyTargetFieldDraft, setMonthlyTargetFieldDraft] = useState(() => defaultMonthlyTargetFieldSettings());
+  const [monthlyTargetFieldSaveStatus, setMonthlyTargetFieldSaveStatus] = useState({ status: "idle", message: "" });
+  const [monthlyTargetFieldDirty, setMonthlyTargetFieldDirty] = useState(false);
   const lastPersistedRef = useRef("");
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
@@ -550,6 +614,7 @@ function App() {
   const currentCompanyStores = useMemo(() => currentCompany?.stores || [], [currentCompany]);
   const selectedStoreEntity = useMemo(() => currentCompanyStores.find((store) => store.name === selectedStore) || currentCompanyStores[0] || null, [currentCompanyStores, selectedStore]);
   const activeDailyFieldSettings = useMemo(() => normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings), [selectedStoreEntity]);
+  const activeMonthlyTargetFieldSettings = useMemo(() => normalizeMonthlyTargetFieldSettings(selectedStoreEntity?.settings?.monthlyTargetFields), [selectedStoreEntity]);
   const showTechnicalSalesField = Boolean(activeDailyFieldSettings.fields.technicalSales);
   const showRetailSalesField = Boolean(activeDailyFieldSettings.fields.retailSales);
   const showCustomersField = Boolean(activeDailyFieldSettings.fields.customers);
@@ -571,13 +636,19 @@ function App() {
   }, [allowedStoreIds, currentCompanyStores]);
   const filteredStores = useMemo(() => {
     const searchValue = storeSearch.trim().toLowerCase();
-    const source = (currentCompany?.stores || []).filter((store) => {
+    // company_admin/system_admin manage every store in the company; store_manager/staff only
+    // ever see the stores they're actually assigned to (allowedStoreIds), matching the same
+    // scoping used for the store switcher (visibleStores) and enforced server-side by RLS.
+    const roleScoped = canManageStores(currentRole)
+      ? (currentCompany?.stores || [])
+      : (currentCompany?.stores || []).filter((store) => allowedStoreIds.includes(store.id));
+    const source = roleScoped.filter((store) => {
       if (!searchValue) return true;
       const haystack = [store.name, store.code, store.address, store.phone, store.managerName, (store.serviceTypes || []).join(" ")].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(searchValue);
     });
     return sortStoresForManagement(source, storeSort);
-  }, [currentCompany?.stores, storeSearch, storeSort]);
+  }, [currentCompany?.stores, storeSearch, storeSort, currentRole, allowedStoreIds]);
   const activeBusinessType = companyForm.businessType || currentCompany?.businessType || "salon";
   const storeNamePlaceholder = getBusinessTypeDefaultStoreName(activeBusinessType);
 
@@ -678,6 +749,9 @@ function App() {
     setDailyFieldDraft(normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings));
     setDailyFieldDirty(false);
     setDailyFieldSaveStatus({ status: "idle", message: "" });
+    setMonthlyTargetFieldDraft(normalizeMonthlyTargetFieldSettings(selectedStoreEntity?.settings?.monthlyTargetFields));
+    setMonthlyTargetFieldDirty(false);
+    setMonthlyTargetFieldSaveStatus({ status: "idle", message: "" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStore]);
   const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
@@ -1129,6 +1203,31 @@ function App() {
       }
       const monthClosingStatusOverlay = buildMonthClosingStateFromRows(monthlyClosingsResult.data, storeIdToName);
 
+      // store_input_settings (daily/monthly field visibility) is the authoritative source now
+      // — see 20260807000000_create_store_input_settings.sql. Fetched company-wide alongside
+      // daily_sales/monthly_closings above, then merged onto each store's settings object
+      // below wherever appState.companies gets (re)built, the same way those other two tables
+      // overlay onto dailyResults/dayClosingStates/monthClosingStatus.
+      const storeInputSettingsResult = await loadStoreInputSettingsForCompany({ companyId });
+      const storeInputSettingsByStoreId = Object.fromEntries(
+        (storeInputSettingsResult.data || []).map((row) => [row.store_id, row])
+      );
+      const applyStoreInputSettingsToCompanies = (companies) => (companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((store) => {
+          const row = storeInputSettingsByStoreId[store.id];
+          if (!row) return store;
+          return {
+            ...store,
+            settings: {
+              ...(store.settings || createStoreSettingsDefaults()),
+              dailyFieldSettings: normalizeDailyFieldSettings(row.daily_fields),
+              monthlyTargetFields: normalizeMonthlyTargetFieldSettings(row.monthly_target_fields),
+            },
+          };
+        }),
+      }));
+
       const applyDailySalesOverlay = (state) => mergeRemoteAppState(state, {
         dailyResults: dailySalesState.dailyResults,
         dayClosingStates: dailySalesState.dayClosingStates,
@@ -1163,7 +1262,7 @@ function App() {
                 // companies/users must always reflect the just-fetched stores/profiles tables,
                 // never a possibly-stale localStorage cache — see the identical fix below for
                 // why letting a cached list win here silently breaks store_id resolution.
-                companies: tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || []),
+                companies: applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || [])),
                 users: tenantState?.users?.length ? tenantState.users : (fallbackState.users || []),
                 currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
                 currentUserId: profile?.id || prev.currentUserId || "",
@@ -1199,7 +1298,7 @@ function App() {
         // straight from appState.companies, so a stale entry here silently redirects every
         // write for a store to whatever id happened to be embedded in someone else's save —
         // this was reproducible for whichever store hadn't been the most recently saved one.
-        companies: tenantState?.companies?.length ? tenantState.companies : (remoteState.companies || []),
+        companies: applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (remoteState.companies || [])),
         users: tenantState?.users?.length ? tenantState.users : (remoteState.users || []),
         companySnapshots: remoteState.companySnapshots || (tenantState?.companySnapshots || {}),
         currentCompanyId: remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
@@ -1268,7 +1367,11 @@ function App() {
         loginCount: Number(user.loginCount || 0),
         inviteExpiresAt: user.inviteExpiresAt || "",
       })),
-      companySnapshots: { ...(nextState.companySnapshots || {}), [nextState.currentCompanyId || "company-fine"]: nextState },
+      // Keyed off the same resolved companyId as currentCompanyId above (never a fabricated
+      // placeholder id) — companySnapshots keys can end up feeding back into
+      // appState.currentCompanyId via applyCompanySnapshot, so a fake id here could
+      // reintroduce exactly the "invalid input syntax for type uuid" bug this was other half of.
+      companySnapshots: { ...(nextState.companySnapshots || {}), [nextState.currentCompanyId || currentUser?.company_id || ""]: nextState },
     };
     writeAppState(persisted);
     setAppState(persisted);
@@ -1361,18 +1464,33 @@ function App() {
   };
 
   const handleSaveStore = async () => {
-    if (!canManageStore(currentRole)) {
-      setNotice("店舗作成はシステム管理者または会社管理者が実行できます");
+    const companyId = appState.currentCompanyId;
+    const existingStore = currentCompany?.stores?.find((store) => store.id === storeEditId) || null;
+    // Creating/deleting/archiving stores stays company_admin/system_admin-only
+    // (canManageStore). Editing an existing store's own name is additionally allowed for a
+    // store_manager, but only for a store they're actually assigned to (allowedStoreIds) —
+    // never for an arbitrary other store in the company.
+    const canEditThisStore = existingStore
+      ? canEditStoreName(currentRole) && (canManageStore(currentRole) || allowedStoreIds.includes(existingStore.id))
+      : canManageStore(currentRole);
+    if (!canEditThisStore) {
+      setNotice(existingStore ? "この店舗の編集権限がありません" : "店舗作成はシステム管理者または会社管理者が実行できます");
       return;
     }
     if (!storeForm.name.trim()) return;
-    const companyId = appState.currentCompanyId;
-    const existingStore = currentCompany?.stores?.find((store) => store.id === storeEditId) || null;
 
     try {
       let createdStore = null;
       if (!existingStore) {
         createdStore = await createStoreRecord({ companyId, name: storeForm.name.trim(), code: (storeForm.code || storeForm.name).trim().toLowerCase() });
+      } else {
+        const nextName = storeForm.name.trim();
+        if (nextName !== existingStore.name) {
+          const renameResult = await updateStoreRecord({ storeId: existingStore.id, name: nextName });
+          if (!renameResult?.ok && !renameResult?.skipped) {
+            throw renameResult.error || new Error("店舗名の更新に失敗しました");
+          }
+        }
       }
       // No locally-fabricated fallback id here on purpose: createStoreRecord throws on any
       // failure (caught below), so existingStore/createdStore are the only legitimate sources
@@ -1420,13 +1538,16 @@ function App() {
           : [...(currentCompany?.stores || []), nextStore],
         setup: { ...(currentCompany?.setup || {}), store: true },
       };
+      const renamedState = existingStore && existingStore.name !== nextStore.name
+        ? rekeyStoreNamedMaps(appState, existingStore.name, nextStore.name)
+        : appState;
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+        ...renamedState,
+        companies: (renamedState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
         companySnapshots: {
-          ...(appState.companySnapshots || {}),
+          ...(renamedState.companySnapshots || {}),
           [companyId]: {
-            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            ...(renamedState.companySnapshots?.[companyId] || createInitialAppState()),
             stores: nextCompany.stores.map((store) => store.name),
             selectedStore: nextStore.name,
           },
@@ -1818,7 +1939,12 @@ function App() {
 
     setDailyFieldSaveStatus({ status: "saving", message: "保存中…" });
     try {
-      const result = await updateStoreDailyFieldSettings({ storeId: store.id, settings: dailyFieldDraft });
+      // store_input_settings is the authoritative field-visibility table now (see
+      // 20260807000000_create_store_input_settings.sql); it's what hydrateFromSupabase reads
+      // back. updateStoreDailyFieldSettings (the old stores.daily_field_settings column) is
+      // left as-is rather than deleted, so nothing that ever read that column directly loses
+      // its last-known value, but this save path no longer needs to write it too.
+      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, dailyFields: dailyFieldDraft });
       if (!result?.ok) {
         throw new Error(result?.error?.message || "保存に失敗しました");
       }
@@ -1829,6 +1955,59 @@ function App() {
       const reason = error instanceof Error ? error.message : "保存に失敗しました";
       setDailyFieldSaveStatus({ status: "error", message: reason });
       setNotice(`日次入力項目設定の保存に失敗しました: ${reason}`);
+    }
+  };
+
+  const updateMonthlyTargetFieldToggle = (fieldKey, value) => {
+    setMonthlyTargetFieldDraft((prev) => ({ fields: { ...prev.fields, [fieldKey]: value } }));
+    setMonthlyTargetFieldDirty(true);
+  };
+
+  const mirrorMonthlyTargetFieldSettingsIntoAppState = (storeId, settings) => {
+    setAppState((prev) => ({
+      ...prev,
+      companies: (prev.companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((store) => (
+          (storeId ? store.id === storeId : store.name === selectedStore)
+            ? { ...store, settings: { ...(store.settings || createStoreSettingsDefaults()), monthlyTargetFields: settings } }
+            : store
+        )),
+      })),
+    }));
+  };
+
+  const handleSaveMonthlyTargetFieldSettings = async () => {
+    if (!selectedStore) {
+      setNotice("店舗を先に追加してください");
+      return;
+    }
+    if (!isSupabaseConfigured) {
+      mirrorMonthlyTargetFieldSettingsIntoAppState(null, monthlyTargetFieldDraft);
+      setMonthlyTargetFieldDirty(false);
+      setMonthlyTargetFieldSaveStatus({ status: "saved", message: "保存しました（ローカル）" });
+      return;
+    }
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setMonthlyTargetFieldSaveStatus({ status: "error", message: "店舗情報を確認できませんでした" });
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+
+    setMonthlyTargetFieldSaveStatus({ status: "saving", message: "保存中…" });
+    try {
+      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, monthlyTargetFields: monthlyTargetFieldDraft });
+      if (!result?.ok) {
+        throw new Error(result?.error?.message || "保存に失敗しました");
+      }
+      mirrorMonthlyTargetFieldSettingsIntoAppState(store.id, monthlyTargetFieldDraft);
+      setMonthlyTargetFieldDirty(false);
+      setMonthlyTargetFieldSaveStatus({ status: "saved", message: "保存しました" });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "保存に失敗しました";
+      setMonthlyTargetFieldSaveStatus({ status: "error", message: reason });
+      setNotice(`月間目標項目設定の保存に失敗しました: ${reason}`);
     }
   };
 
@@ -2242,11 +2421,17 @@ function App() {
         loadedHolidayCount = getBusinessDaySettings(appState, selectedStore, targetSelectedMonth).holidayCount;
       }
 
-      setTargetDraft({ ...defaultTarget, ...loadedTarget });
-      setTargetHolidayDraft(loadedHolidayCount ? String(loadedHolidayCount) : "");
+      const resolvedTarget = { ...defaultTarget, ...loadedTarget };
+      const resolvedHolidayDraft = loadedHolidayCount ? String(loadedHolidayCount) : "";
+      setTargetDraft(resolvedTarget);
+      setTargetHolidayDraft(resolvedHolidayDraft);
       setTargetLoadStatus({ status: "loaded", loadedMonth: targetSelectedMonth, loadedStore: selectedStore });
       setTargetDirty(false);
       setTargetSaveStatus({ status: "idle", message: "" });
+      // Seeded to what was just loaded, not cleared to "" — otherwise the autosave effect
+      // below would see freshly-loaded data as "different from last saved" on the very next
+      // tick and immediately re-save data that was already saved, for every month switch.
+      lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft: resolvedTarget, targetHolidayDraft: resolvedHolidayDraft });
     };
 
     void load();
@@ -2266,11 +2451,14 @@ function App() {
     setTargetSelectedMonth(nextMonth);
   };
 
-  const handleSaveMonthlyTarget = async () => {
+  const persistMonthlyTarget = async ({ silent = false } = {}) => {
     if (!selectedStore) {
-      setNotice("店舗を先に追加してください");
-      return;
+      if (!silent) setNotice("店舗を先に追加してください");
+      return { ok: false, skipped: true };
     }
+    if (targetSaveInFlightRef.current) return { ok: false, skipped: true };
+    const savedStoreName = selectedStore;
+    const savedMonthLabel = formatMonthLabel(targetSelectedMonth);
     const { company, store } = resolveTargetCompanyAndStore();
     if (!isSupabaseConfigured) {
       // Local-only/dev mode: mirror straight into appState (still explicit-save, not
@@ -2282,15 +2470,17 @@ function App() {
         businessDaySettings: { ...prev.businessDaySettings, [key]: { ...(prev.businessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
       }));
       setTargetDirty(false);
-      setTargetSaveStatus({ status: "saved", message: "保存しました（ローカル）" });
-      return;
+      setTargetSaveStatus({ status: "saved", message: `保存しました（ローカル） / ${savedStoreName} ${savedMonthLabel}` });
+      lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft, targetHolidayDraft });
+      return { ok: true };
     }
     if (!company?.id || !store?.id) {
       setTargetSaveStatus({ status: "error", message: "会社・店舗情報を確認できませんでした" });
-      setNotice("会社・店舗情報を確認できませんでした");
-      return;
+      if (!silent) setNotice("会社・店舗情報を確認できませんでした");
+      return { ok: false };
     }
 
+    targetSaveInFlightRef.current = true;
     setTargetSaveStatus({ status: "saving", message: "保存中…" });
     try {
       const result = await upsertMonthlyTargetToSupabase({
@@ -2311,13 +2501,40 @@ function App() {
         businessDaySettings: { ...prev.businessDaySettings, [key]: { ...(prev.businessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
       }));
       setTargetDirty(false);
-      setTargetSaveStatus({ status: "saved", message: "保存しました" });
+      setTargetSaveStatus({ status: "saved", message: `保存しました / ${savedStoreName} ${savedMonthLabel}` });
+      lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft, targetHolidayDraft });
+      return { ok: true };
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "保存に失敗しました";
-      setTargetSaveStatus({ status: "error", message: reason });
-      setNotice(`月間目標の保存に失敗しました: ${reason}`);
+      setTargetSaveStatus({ status: "error", message: "保存に失敗しました。もう一度お試しください" });
+      if (!silent) setNotice(`月間目標の保存に失敗しました: ${getSupabaseErrorMessage(error)}`);
+      return { ok: false, error };
+    } finally {
+      targetSaveInFlightRef.current = false;
     }
   };
+
+  const handleSaveMonthlyTarget = () => {
+    void persistMonthlyTarget({ silent: false });
+  };
+
+  // Debounced autosave: fires ~0.9s after the draft actually diverges from what's already
+  // saved (tracked via lastTargetAutoSaveSignatureRef, seeded on load), so switching months or
+  // first loading a store's saved target never triggers a spurious re-save. Only runs once a
+  // load has actually completed, and reuses persistMonthlyTarget so autosave and the manual
+  // button can never create two different rows or leave one out of sync with the other.
+  useEffect(() => {
+    if (targetLoadStatus.status !== "loaded") return undefined;
+    const signature = JSON.stringify({ targetDraft, targetHolidayDraft });
+    if (signature === lastTargetAutoSaveSignatureRef.current) return undefined;
+    if (targetAutoSaveTimerRef.current) window.clearTimeout(targetAutoSaveTimerRef.current);
+    targetAutoSaveTimerRef.current = window.setTimeout(() => {
+      void persistMonthlyTarget({ silent: true });
+    }, 900);
+    return () => {
+      if (targetAutoSaveTimerRef.current) window.clearTimeout(targetAutoSaveTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [targetDraft, targetHolidayDraft, targetLoadStatus.status]);
 
   const handleDailyDateChange = (value) => {
     const nextDate = value;
@@ -3068,24 +3285,26 @@ function App() {
           </div>
         </header>
 
-        <section className="status-overview-panel">
-          <div className="status-overview-header">
-            <div>
-              <p className="eyebrow">SYNC STATUS</p>
-              <h2>保存と同期</h2>
-            </div>
-            <small>{isSupabaseConfigured ? "Supabase へ自動保存" : "ローカル保存のみ"}</small>
-          </div>
-          <div className="status-overview-grid">
-            {statusCards.map((item) => (
-              <div key={item.key} className={`status-overview-card ${item.tone}`}>
-                <span>{item.label}</span>
-                <strong>{item.message}</strong>
-                <small>{item.timestamp ? formatTimestamp(item.timestamp) : ""}</small>
+        {normalizeRole(currentRole) === "system_admin" && (
+          <section className="status-overview-panel">
+            <div className="status-overview-header">
+              <div>
+                <p className="eyebrow">SYNC STATUS (system_admin only)</p>
+                <h2>保存と同期</h2>
               </div>
-            ))}
-          </div>
-        </section>
+              <small>{isSupabaseConfigured ? "Supabase へ自動保存" : "ローカル保存のみ"}</small>
+            </div>
+            <div className="status-overview-grid">
+              {statusCards.map((item) => (
+                <div key={item.key} className={`status-overview-card ${item.tone}`}>
+                  <span>{item.label}</span>
+                  <strong>{item.message}</strong>
+                  <small>{item.timestamp ? formatTimestamp(item.timestamp) : ""}</small>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
         {notice ? <div className="notice-box">{notice}</div> : null}
@@ -3097,10 +3316,12 @@ function App() {
                   <p className="eyebrow">KPI</p>
                   <h2>売上</h2>
                 </div>
-                <div className="status-stack compact-status-stack">
-                  <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
-                  <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
-                </div>
+                {normalizeRole(currentRole) === "system_admin" && (
+                  <div className="status-stack compact-status-stack">
+                    <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
+                    <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
+                  </div>
+                )}
               </div>
               <div className="kpi-hero-grid">
                 {dashboardHeroMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} tone={item.tone} emphasize />)}
@@ -3239,11 +3460,13 @@ function App() {
                       <p className="eyebrow">DAILY</p>
                       <h2>売上入力</h2>
                     </div>
-                    <div className="status-stack compact-status-stack">
-                      <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
-                      <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
-                      {saveStatus.timestamp ? <div className="timestamp-pill">最終保存 {formatTimestamp(saveStatus.timestamp)}</div> : null}
-                    </div>
+                    {normalizeRole(currentRole) === "system_admin" && (
+                      <div className="status-stack compact-status-stack">
+                        <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
+                        <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
+                        {saveStatus.timestamp ? <div className="timestamp-pill">最終保存 {formatTimestamp(saveStatus.timestamp)}</div> : null}
+                      </div>
+                    )}
                   </div>
 
                   <div className="daily-save-banner">
@@ -3316,16 +3539,22 @@ function App() {
 
                     <div className="daily-section-card">
                       <h3>売上入力</h3>
-                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" disabled={dailyMode === "view"} /> : null}
-                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" disabled={dailyMode === "view"} /> : null}
-                      {appState.preferences?.showOtherSales ? <Field label="その他売上（税込）" value={dailyForm.otherSales} onChange={(value) => setDailyForm((prev) => ({ ...prev, otherSales: value }))} suffix="円" disabled={dailyMode === "view"} /> : null}
+                      {/* value={x || ""}, not value={x}: an untouched field is "" or a loaded
+                          0 (both falsy) and must show blank, not literal "0"; the moment the
+                          user types "0" it's the non-empty *string* "0" (truthy) and displays
+                          correctly. Save-time parseNumber()/buildDailyEntryPayload treat "" and
+                          0 identically, so totals/KPIs/progress are never affected — this is
+                          display-only. */}
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
+                      {appState.preferences?.showOtherSales ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => setDailyForm((prev) => ({ ...prev, otherSales: value }))} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
                       {totalSalesIsAutoCalculated ? (
                         <div className="summary-card compact">
                           <span>総売上（税込）</span>
                           <strong>{money(parseNumber(dailyForm.totalSales))}</strong>
                         </div>
                       ) : (
-                        <Field label="総売上（税込）" value={dailyForm.totalSales} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" disabled={dailyMode === "view"} />
+                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} />
                       )}
                     </div>
 
@@ -3338,10 +3567,10 @@ function App() {
                             <strong>{number(parseNumber(dailyForm.customers))}名</strong>
                           </div>
                         ) : (
-                          <Field label="客数" value={dailyForm.customers} onChange={(value) => updateDailyField("customers", value)} suffix="名" disabled={dailyMode === "view"} />
+                          <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} />
                         )}
-                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" disabled={dailyMode === "view"} /> : null}
-                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" disabled={dailyMode === "view"} /> : null}
+                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} /> : null}
                       </div>
                     ) : null}
 
@@ -3442,12 +3671,22 @@ function App() {
                     </div>
                     <div className="filters">
                       <label className="field">
+                        <span>対象年</span>
+                        <select
+                          value={targetSelectedMonth.slice(0, 4)}
+                          onChange={(event) => handleTargetMonthChange(`${event.target.value}-${targetSelectedMonth.slice(5, 7)}`)}
+                        >
+                          {targetYearOptions.map((year) => <option key={year} value={year}>{year}年</option>)}
+                        </select>
+                      </label>
+                      <label className="field">
                         <span>対象月</span>
-                        <input
-                          type="month"
-                          value={targetSelectedMonth}
-                          onChange={(event) => handleTargetMonthChange(event.target.value)}
-                        />
+                        <select
+                          value={targetSelectedMonth.slice(5, 7)}
+                          onChange={(event) => handleTargetMonthChange(`${targetSelectedMonth.slice(0, 4)}-${event.target.value}`)}
+                        >
+                          {targetMonthOptions.map((month) => <option key={month} value={month}>{Number(month)}月</option>)}
+                        </select>
                       </label>
                       <div className="value-pill">{formatMonthLabel(targetSelectedMonth)}</div>
                     </div>
@@ -3457,18 +3696,18 @@ function App() {
                     ) : (
                       <>
                         <div className="input-grid">
-                          <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" type="number" />
-                          <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" type="number" />
-                          <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" type="number" />
-                          <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" type="number" />
-                          <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" type="number" />
-                          <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" type="number" />
-                          <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" type="number" />
-                          <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" />
-                          <Field label="人件費率目標" value={targetDraft.targetLaborRate} onChange={(value) => updateTargetDraftField("targetLaborRate", value)} suffix="%" type="number" />
-                          <Field label="材料費率目標" value={targetDraft.targetMaterialRate} onChange={(value) => updateTargetDraftField("targetMaterialRate", value)} suffix="%" type="number" />
-                          <Field label="広告費率目標" value={targetDraft.targetAdRate} onChange={(value) => updateTargetDraftField("targetAdRate", value)} suffix="%" type="number" />
-                          <Field label="営業利益率目標" value={targetDraft.targetOperatingMargin} onChange={(value) => updateTargetDraftField("targetOperatingMargin", value)} suffix="%" type="number" />
+                          {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetLaborRate ? <Field label="人件費率目標" value={targetDraft.targetLaborRate} onChange={(value) => updateTargetDraftField("targetLaborRate", value)} suffix="%" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetMaterialRate ? <Field label="材料費率目標" value={targetDraft.targetMaterialRate} onChange={(value) => updateTargetDraftField("targetMaterialRate", value)} suffix="%" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetAdRate ? <Field label="広告費率目標" value={targetDraft.targetAdRate} onChange={(value) => updateTargetDraftField("targetAdRate", value)} suffix="%" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetOperatingMargin ? <Field label="営業利益率目標" value={targetDraft.targetOperatingMargin} onChange={(value) => updateTargetDraftField("targetOperatingMargin", value)} suffix="%" type="number" /> : null}
                         </div>
                         <div className="toggle-panel">
                           <div>
@@ -3766,10 +4005,12 @@ function App() {
                 <p className="eyebrow">STORE</p>
                 <h2>店舗管理</h2>
               </div>
-              <button className="primary-button" type="button" onClick={() => {
-                setStoreEditId("");
-                setStoreForm(createStoreFormDefaults());
-              }}>店舗を追加</button>
+              {canManageStores(currentRole) && (
+                <button className="primary-button" type="button" onClick={() => {
+                  setStoreEditId("");
+                  setStoreForm(createStoreFormDefaults());
+                }}>店舗を追加</button>
+              )}
             </div>
             <p className="management-help">店舗ごとに基本情報・売上目標・問い合わせ先・URLをまとめて管理できるように整理しました。検索・並替え・複製・アーカイブもすぐに利用できます。</p>
             <div className="inline-form">
@@ -3788,6 +4029,7 @@ function App() {
                 </select>
               </label>
             </div>
+            {canEditStoreName(currentRole) && (
             <div className="setup-card">
               <div className="panel-heading compact">
                 <div>
@@ -3880,6 +4122,7 @@ function App() {
                 <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreForm(createStoreFormDefaults()); }}>クリア</button>
               </div>
             </div>
+            )}
             <div className="setup-card">
               <div className="panel-heading compact">
                 <div>
@@ -3918,6 +4161,15 @@ function App() {
               </div>
               {!selectedStore ? (
                 <div className="empty-card">店舗を選択してください。</div>
+              ) : !canEditStoreName(currentRole) ? (
+                <div className="field-switch-grid">
+                  {dailyFieldKeys.map((fieldKey) => (
+                    <label key={fieldKey} className="field-switch">
+                      <span>{dailyFieldLabels[fieldKey]}</span>
+                      <input type="checkbox" checked={Boolean(dailyFieldDraft.fields[fieldKey])} disabled />
+                    </label>
+                  ))}
+                </div>
               ) : (
                 <>
                   <p className="helper-text">日付・総売上・日締めは常に表示されます。それ以外の項目は店舗ごとに表示・非表示を選べます。</p>
@@ -3947,6 +4199,54 @@ function App() {
                     </div>
                     <button className="primary-button" type="button" onClick={handleSaveDailyFieldSettings} disabled={dailyFieldSaveStatus.status === "saving"}>
                       {dailyFieldSaveStatus.status === "saving" ? "保存中…" : "保存"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">TARGET FORM</p>
+                  <h3>月間目標設定の項目設定</h3>
+                </div>
+              </div>
+              {!selectedStore ? (
+                <div className="empty-card">店舗を選択してください。</div>
+              ) : !canEditStoreName(currentRole) ? (
+                <div className="field-switch-grid">
+                  {monthlyTargetFieldKeys.map((fieldKey) => (
+                    <label key={fieldKey} className="field-switch">
+                      <span>{monthlyTargetFieldLabels[fieldKey]}</span>
+                      <input type="checkbox" checked={Boolean(monthlyTargetFieldDraft.fields[fieldKey])} disabled />
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <>
+                  <p className="helper-text">対象店舗・対象年月は常に表示されます。それ以外の項目は店舗ごとに表示・非表示を選べます。</p>
+                  <div className="field-switch-grid">
+                    {monthlyTargetFieldKeys.map((fieldKey) => (
+                      <label key={fieldKey} className="field-switch">
+                        <span>{monthlyTargetFieldLabels[fieldKey]}</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(monthlyTargetFieldDraft.fields[fieldKey])}
+                          onChange={(event) => updateMonthlyTargetFieldToggle(fieldKey, event.target.checked)}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <div className="toggle-panel">
+                    <div>
+                      {monthlyTargetFieldSaveStatus.status === "error" ? (
+                        <strong className="danger-text">{monthlyTargetFieldSaveStatus.message}</strong>
+                      ) : (
+                        <strong>{monthlyTargetFieldSaveStatus.message || (monthlyTargetFieldDirty ? "未保存の変更があります" : "変更はありません")}</strong>
+                      )}
+                    </div>
+                    <button className="primary-button" type="button" onClick={handleSaveMonthlyTargetFieldSettings} disabled={monthlyTargetFieldSaveStatus.status === "saving"}>
+                      {monthlyTargetFieldSaveStatus.status === "saving" ? "保存中…" : "保存"}
                     </button>
                   </div>
                 </>
@@ -3990,18 +4290,22 @@ function App() {
                       </div>
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleStoreSwitch(store.name)}>選択</button>
-                        <button className="text-button" type="button" onClick={() => handleEditStore(store)}>編集</button>
-                        {store.status === "archived" ? (
+                        {canEditStoreName(currentRole) && (canManageStores(currentRole) || allowedStoreIds.includes(store.id)) && (
+                          <button className="text-button" type="button" onClick={() => handleEditStore(store)}>編集</button>
+                        )}
+                        {canManageStores(currentRole) && (store.status === "archived" ? (
                           <button className="text-button" type="button" onClick={() => handleRestoreStore(store)}>復元</button>
                         ) : (
                           <button className="text-button" type="button" onClick={() => handleToggleStoreStatus(store)}>{store.isActive ? "停止" : "再開"}</button>
-                        )}
+                        ))}
                       </div>
-                      <div className="row-actions compact-actions">
-                        <button className="text-button" type="button" onClick={() => handleDuplicateStore(store)}>複製</button>
-                        {store.status === "archived" ? null : <button className="text-button" type="button" onClick={() => handleArchiveStore(store)}>アーカイブ</button>}
-                        <button className="text-button danger" type="button" onClick={() => handleDeleteStore(store)}>削除</button>
-                      </div>
+                      {canManageStores(currentRole) && (
+                        <div className="row-actions compact-actions">
+                          <button className="text-button" type="button" onClick={() => handleDuplicateStore(store)}>複製</button>
+                          {store.status === "archived" ? null : <button className="text-button" type="button" onClick={() => handleArchiveStore(store)}>アーカイブ</button>}
+                          <button className="text-button danger" type="button" onClick={() => handleDeleteStore(store)}>削除</button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -4115,9 +4419,11 @@ function App() {
                 <p className="eyebrow">PREFS</p>
                 <h2>表示設定</h2>
               </div>
-              <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
-                {saveStatus.message || "自動保存済み"}
-              </div>
+              {normalizeRole(currentRole) === "system_admin" && (
+                <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
+                  {saveStatus.message || "自動保存済み"}
+                </div>
+              )}
             </div>
             <div className="toggle-panel">
               <div>
@@ -4194,6 +4500,34 @@ function App() {
               </div>
             </div>
             <div className="empty-card">初期設定が完了すると、各権限ごとの画面がそのまま使えます。</div>
+
+            {normalizeRole(currentRole) === "system_admin" && (
+              <div className="setup-card">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">DEBUG (system_admin only)</p>
+                    <h3>保存・同期デバッグ情報</h3>
+                  </div>
+                </div>
+                <div className="status-overview-grid">
+                  {statusCards.map((item) => (
+                    <div key={item.key} className={`status-overview-card ${item.tone}`}>
+                      <span>{item.label}</span>
+                      <strong>{item.message}</strong>
+                      <small>{item.timestamp ? formatTimestamp(item.timestamp) : ""}</small>
+                    </div>
+                  ))}
+                </div>
+                <div className="input-grid">
+                  <label className="field"><span>auth user id</span><input value={debugInfo.userId || ""} readOnly /></label>
+                  <label className="field"><span>email</span><input value={debugInfo.email || ""} readOnly /></label>
+                  <label className="field"><span>role</span><input value={debugInfo.role || ""} readOnly /></label>
+                  <label className="field"><span>session</span><input value={debugInfo.hasSession ? "active" : "none"} readOnly /></label>
+                  <label className="field"><span>company_id</span><input value={appState.currentCompanyId || ""} readOnly /></label>
+                  <label className="field"><span>profile_id (currentUserId)</span><input value={appState.currentUserId || ""} readOnly /></label>
+                </div>
+              </div>
+            )}
           </section>
         )}
       </main>
@@ -4211,13 +4545,13 @@ function MetricCard({ label, value, hint = "", tone = "", emphasize = false }) {
   );
 }
 
-function Field({ label, value, onChange, suffix = "", type = "text", disabled = false }) {
+function Field({ label, value, onChange, suffix = "", type = "text", disabled = false, placeholder = "" }) {
   const normalizedValue = value === undefined || value === null ? "" : value;
   return (
     <label className="field">
       <span>{label}</span>
       <div className="input-with-suffix">
-        <input type={type} value={normalizedValue} onChange={(event) => onChange(event.target.value)} disabled={disabled} />
+        <input type={type} value={normalizedValue} onChange={(event) => onChange(event.target.value)} disabled={disabled} placeholder={placeholder} />
         {suffix ? <span>{suffix}</span> : null}
       </div>
     </label>

@@ -13,8 +13,8 @@ export const isAdminRole = (role) => normalizeRole(role) === "system_admin" || n
 export const NAV_ITEMS_BY_ROLE = {
   system_admin: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
   company_admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
-  store_manager: ["dashboard", "daily", "monthly", "settings"],
-  staff: ["dashboard", "daily"],
+  store_manager: ["dashboard", "daily", "monthly", "stores", "settings"],
+  staff: ["dashboard", "daily", "stores"],
   owner: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
   admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
 };
@@ -27,6 +27,11 @@ export const canAccessPage = (role, page) => {
 
 export const canManageCompanies = (role) => normalizeRole(role) === "system_admin";
 export const canManageStores = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
+// Store name editing is intentionally broader than full store management (create/delete/
+// archive stay canManageStores-only): a store_manager should be able to rename their own
+// store, but callers must still additionally check the store is in the caller's
+// allowedStoreIds — this only says the *role* is ever allowed to edit a name, not which store.
+export const canEditStoreName = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin" || normalizeRole(role) === "store_manager";
 export const canManageUsers = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
 export const canEditMonthlyData = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin" || normalizeRole(role) === "store_manager";
 export const canViewUserManagement = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";

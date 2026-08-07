@@ -51,6 +51,43 @@ export const getMonthInfo = (monthValue) => {
 
 export const buildMonthKey = (store, month) => `${store}__${month}`;
 
+// Every per-store/month map in appState is keyed "storeName__month", not by store_id — a
+// pragmatic tradeoff kept from the original design rather than a full id-keyed rewrite (out of
+// scope for a rename fix). Renaming a store must never look like that store's data vanished:
+// this atomically moves every "oldName__*" key in every one of these maps to "newName__*" in
+// the same appState update the rename applies, so nothing is ever dropped or duplicated. The
+// real source of truth (daily_sales/monthly_targets/monthly_closings) is keyed by store_id and
+// is unaffected either way — this only keeps the in-memory/local view consistent immediately,
+// without waiting for the next hydrate to re-derive it from the store_id-keyed tables.
+const STORE_NAME_KEYED_MAPS = [
+  "dailyResults", "dayClosingStates", "dayClosingUpdatedAt", "targets", "businessDaySettings",
+  "monthClosingStatus", "dailyDrafts", "fixedCosts", "variableCosts", "monthClosing", "dailyResultBackups",
+];
+
+export const rekeyStoreNamedMaps = (state, oldName, newName) => {
+  if (!oldName || !newName || oldName === newName) return state;
+  const oldPrefix = `${oldName}__`;
+  const newPrefix = `${newName}__`;
+  const next = { ...state };
+  STORE_NAME_KEYED_MAPS.forEach((mapKey) => {
+    const source = state[mapKey];
+    if (!source || typeof source !== "object") return;
+    const rekeyed = {};
+    let changed = false;
+    Object.entries(source).forEach(([key, value]) => {
+      if (key.startsWith(oldPrefix)) {
+        rekeyed[newPrefix + key.slice(oldPrefix.length)] = value;
+        changed = true;
+      } else {
+        rekeyed[key] = value;
+      }
+    });
+    if (changed) next[mapKey] = rekeyed;
+  });
+  if (state.selectedStore === oldName) next.selectedStore = newName;
+  return next;
+};
+
 // "2026-08" -> "2026年8月". Storage always stays in the "YYYY-MM" form; this is display-only.
 export const formatMonthLabel = (monthValue) => {
   const [year, month] = String(monthValue || "").split("-");

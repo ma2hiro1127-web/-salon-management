@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { createInitialAppState, defaultDailyFieldSettings } from "../data/defaults.js";
+import { createInitialAppState, defaultDailyFieldSettings, defaultMonthlyTargetFieldSettings } from "../data/defaults.js";
 import { normalizeRole } from "./permissions.js";
 
 const getEnvValue = (key) => {
@@ -205,6 +205,54 @@ export const normalizeDailyFieldSettings = (value) => {
     mode: typeof value.mode === "string" ? value.mode : fallback.mode,
     fields: { ...fallback.fields, ...(value.fields && typeof value.fields === "object" ? value.fields : {}) },
   };
+};
+
+export const normalizeMonthlyTargetFieldSettings = (value) => {
+  const fallback = defaultMonthlyTargetFieldSettings();
+  if (!value || typeof value !== "object") return fallback;
+  return {
+    fields: { ...fallback.fields, ...(value.fields && typeof value.fields === "object" ? value.fields : {}) },
+  };
+};
+
+// store_input_settings is the authoritative per-store field-visibility source (see
+// 20260807000000_create_store_input_settings.sql). Fetched company-wide in one call — same
+// pattern as loadDailySalesForCompanyRange/loadMonthlyClosingsForCompany — so hydrating any
+// store's settings never requires a second round trip, and RLS naturally scopes the result to
+// whatever stores this user can actually see.
+export const loadStoreInputSettingsForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase.from("store_input_settings").select("*").eq("company_id", companyId);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreInputSettingsForCompany", table: "store_input_settings", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+// Partial upserts are safe here: PostgREST's upsert only sets the columns present in the
+// payload, so saving just dailyFields (or just monthlyTargetFields) can never null out the
+// other column on an existing row.
+export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertStoreInputSettings", table: "store_input_settings", companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const payload = { company_id: companyId, store_id: storeId };
+  if (dailyFields !== undefined) payload.daily_fields = dailyFields;
+  if (monthlyTargetFields !== undefined) payload.monthly_target_fields = monthlyTargetFields;
+  try {
+    const { data, error } = await supabase.from("store_input_settings").upsert(payload, { onConflict: "company_id,store_id" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertStoreInputSettings", table: "store_input_settings", companyId, storeId, error });
+    return { ok: false, error };
+  }
 };
 
 export const signUpWithEmail = async (email, password) => {
@@ -449,6 +497,27 @@ export const createStoreRecord = async ({ companyId, name, code }) => {
 
   if (error) throw error;
   return data;
+};
+
+// Updates a store's own row in place — store_id never changes, so every daily_sales/
+// monthly_targets/monthly_closings/user_stores row already keyed to this store_id stays
+// correctly linked. Only the display name changes; nothing about how the store is identified
+// anywhere else in the schema does.
+export const updateStoreRecord = async ({ storeId, name }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ storeId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateStoreRecord", table: "stores", storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase.from("stores").update({ name, updated_at: new Date().toISOString() }).eq("id", storeId).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateStoreRecord", table: "stores", storeId, error });
+    return { ok: false, error };
+  }
 };
 
 export const updateStoreDailyFieldSettings = async ({ storeId, settings }) => {
