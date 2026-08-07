@@ -787,22 +787,22 @@ export const getCustomerTargetSummary = (input = {}) => {
   };
 };
 
-// 売上状況のAIコメント。一つの統一カードとして表示するため、以前のように3行を3枚のカード
-// (目標まで/目標ペース/必要な1日平均売上)に分けるのではなく、単一のメッセージ本文
-// (message、\n区切り)と3段階の判定(tier: "順調"|"やや遅れ"|"要改善")を返す。
-// 「現在の累計売上」は日締め済みの営業日の売上合計(closedSales)のみを使い、未締めの日次
-// 売上は目標ペース・必要売上の計算に一切含めない。
+// 売上状況のAIコメント。カードには常に3行だけを表示する: ①目標売上との差額
+// ②目標ペースとの差額(符号付き) ③状況に応じたポジティブな一言。あわせて3段階の判定
+// (tier: "順調"|"注意"|"要改善")を返す。「現在の累計売上」は日締め済みの営業日の売上合計
+// (closedSales)のみを使い、未締めの日次売上は目標ペース・必要売上の計算に一切含めない。
 //
 // 判定に使う4つの入力:
 //   ①targetGap    = targetSales - cumulativeSales           (目標売上との差額)
 //   ②paceDiff     = cumulativeSales - (targetPerDay * completedDays)  (目標ペースとの差額)
 //   ③remainingBusinessDays                                   (残り営業日)
-//   ④dailyAverageNeeded = max(targetGap, 0) / remainingBusinessDays   (1日必要売上)
+//   ④dailyAverageNeeded = max(targetGap, 0) / remainingBusinessDays   (1日必要売上 — カード本文
+//     には出さないが、tier判定と「残り1日必要売上」KPIカード側の表示に使う)
 //
 // tier:
-//   順調   … 達成済み、またはペース以上(paceDiff >= 0)
-//   やや遅れ … ペースは下回るが、残り日数で必要な1日平均が本来の1日目標の115%以内に収まり、
-//              現実的に十分取り返せる範囲
+//   順調 … 達成済み、またはペース以上(paceDiff >= 0)
+//   注意 … ペースは下回るが、残り日数で必要な1日平均が本来の1日目標の115%以内に収まり、
+//          現実的に十分取り返せる範囲
 //   要改善 … それ以上の遅れ、または残り営業日が尽きて未達
 // このしきい値(115%)はコメントの温度感を決めるためのもので、他のKPI計算(進捗・着地予想・
 // 必要売上そのもの)には一切影響しない。
@@ -827,40 +827,27 @@ export const getSalesStatusComment = (input = {}) => {
   if (achieved || onOrAheadOfPace) {
     tier = "順調";
   } else if (recoverable) {
-    tier = "やや遅れ";
+    tier = "注意";
   } else {
     tier = "要改善";
   }
 
+  // ①目標売上との差額 — 常に1行目、全tier共通。
   const targetGapLine = achieved
     ? (targetGap < 0 ? `月間目標売上を${number(-targetGap)}円上回っています。` : "月間目標売上を達成しました。")
     : `目標売上まであと${number(targetGap)}円です。`;
+  // ②目標ペースとの差額 — 符号付きの一つの言い回しに統一(上回り/不足で表現を分けない)。
   const paceLine = paceDiff === null
-    ? null
-    : paceDiff > 0
-      ? `現在は目標ペースを${number(paceDiff)}円上回っています。`
-      : paceDiff < 0
-        ? `現在は目標ペースより${number(-paceDiff)}円不足しています。`
-        : "現在は目標ペースどおりに進んでいます。";
-  const dailyNeedLine = remainingBusinessDays > 0 && dailyAverageNeeded > 0
-    ? `残り営業日は${number(remainingBusinessDays)}日ありますので、1日${number(dailyAverageNeeded)}円を目標に積み上げていきましょう。`
-    : null;
+    ? "日締めが完了すると、目標ペースとの差額が表示されます。"
+    : `現在は目標ペースに対して${paceDiff > 0 ? "+" : paceDiff < 0 ? "−" : "±"}${number(Math.abs(paceDiff))}円です。`;
+  // ③状況に応じたポジティブな一言 — tierごとに1文だけ。
+  const encouragementLine = tier === "順調"
+    ? (achieved ? "この調子で月間目標の達成を維持しましょう！" : "非常に良いスタートです。この調子で積み上げていきましょう！")
+    : tier === "注意"
+      ? "まだ十分巻き返せます。この調子で取り戻していきましょう！"
+      : (remainingBusinessDays > 0 ? "ここからでも十分挽回できます。まずは今日の目標売上を達成することを目指しましょう！" : "来月に向けて今日からできることを始めましょう！");
 
-  const lines = [];
-  if (tier === "順調") {
-    lines.push(targetGapLine);
-    if (paceLine) lines.push(paceLine);
-    lines.push(achieved ? "この調子で月間目標の達成を維持しましょう！" : "非常に良いスタートです。この調子で積み上げていきましょう！");
-  } else if (tier === "やや遅れ") {
-    if (paceLine) lines.push(paceLine);
-    lines.push("まだ十分巻き返せます。");
-    if (dailyNeedLine) lines.push(dailyNeedLine);
-  } else {
-    lines.push(targetGapLine);
-    if (paceLine) lines.push(paceLine);
-    lines.push("ここからでも十分挽回できます。");
-    lines.push(remainingBusinessDays > 0 ? "まずは今日の目標売上を達成することを目指しましょう！" : "来月に向けて今日からできることを始めましょう！");
-  }
+  const lines = [targetGapLine, paceLine, encouragementLine];
 
   return { tier, headline: "売上状況", lines, message: lines.join("\n"), targetGap, paceDiff, dailyAverageNeeded };
 };

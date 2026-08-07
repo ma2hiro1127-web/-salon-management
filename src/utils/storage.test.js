@@ -384,7 +384,7 @@ test("business day progress: a closed day with no matching daily entry is not co
   assert.equal(summary.completedDays, 0);
 });
 
-test("getSalesStatusComment: 未達 + ペース遅れだが挽回可能 → やや遅れ", () => {
+test("getSalesStatusComment: 未達 + ペース遅れだが挽回可能 → 注意、常に3行", () => {
   const comment = getSalesStatusComment({
     targetSales: 9000000,
     closedSales: 2950000,
@@ -393,14 +393,14 @@ test("getSalesStatusComment: 未達 + ペース遅れだが挽回可能 → や�
     remainingBusinessDays: 20,
   });
 
-  assert.equal(comment.tier, "やや遅れ");
+  assert.equal(comment.tier, "注意");
   assert.equal(comment.targetGap, 6050000);
   assert.equal(comment.paceDiff, -50000);
   assert.equal(comment.dailyAverageNeeded, 302500);
   assert.deepEqual(comment.lines, [
-    "現在は目標ペースより50,000円不足しています。",
-    "まだ十分巻き返せます。",
-    "残り営業日は20日ありますので、1日302,500円を目標に積み上げていきましょう。",
+    "目標売上まであと6,050,000円です。",
+    "現在は目標ペースに対して−50,000円です。",
+    "まだ十分巻き返せます。この調子で取り戻していきましょう！",
   ]);
 });
 
@@ -414,7 +414,9 @@ test("getSalesStatusComment: 目標達成済み + ペース上回り → 順調"
   });
 
   assert.equal(comment.tier, "順調");
+  assert.equal(comment.lines.length, 3);
   assert.equal(comment.lines[0], "月間目標売上を300,000円上回っています。");
+  assert.equal(comment.lines[1], "現在は目標ペースに対して+4,800,000円です。");
   assert.equal(comment.lines[2], "この調子で月間目標の達成を維持しましょう！");
 });
 
@@ -429,10 +431,10 @@ test("getSalesStatusComment: 目標売上ペースどおり(差額0)は順調扱
 
   assert.equal(comment.tier, "順調");
   assert.equal(comment.paceDiff, 0);
-  assert.equal(comment.lines[1], "現在は目標ペースどおりに進んでいます。");
+  assert.equal(comment.lines[1], "現在は目標ペースに対して±0円です。");
 });
 
-test("getSalesStatusComment: 営業完了日数が0日ならペース差の行を表示しない", () => {
+test("getSalesStatusComment: 営業完了日数が0日でもペース行は常に表示される(未計測メッセージ)", () => {
   const comment = getSalesStatusComment({
     targetSales: 9000000,
     closedSales: 0,
@@ -442,10 +444,11 @@ test("getSalesStatusComment: 営業完了日数が0日ならペース差の行�
   });
 
   assert.equal(comment.paceDiff, null);
-  assert.equal(comment.lines.some((line) => line.includes("ペース")), false);
+  assert.equal(comment.lines.length, 3);
+  assert.equal(comment.lines[1], "日締めが完了すると、目標ペースとの差額が表示されます。");
 });
 
-test("getSalesStatusComment: 残り営業日数が0日なら1日必要売上の行を表示しない", () => {
+test("getSalesStatusComment: 残り営業日数が0日でも常に3行構成", () => {
   const comment = getSalesStatusComment({
     targetSales: 9000000,
     closedSales: 5000000,
@@ -455,10 +458,11 @@ test("getSalesStatusComment: 残り営業日数が0日なら1日必要売上の�
   });
 
   assert.equal(comment.dailyAverageNeeded, 0);
-  assert.equal(comment.lines.some((line) => line.includes("1日")), false);
+  assert.equal(comment.lines.length, 3);
+  assert.equal(comment.lines[2], "来月に向けて今日からできることを始めましょう！");
 });
 
-test("getSalesStatusComment: 大きく遅れているケースは要改善", () => {
+test("getSalesStatusComment: 大きく遅れているケースは要改善、常に3行", () => {
   const comment = getSalesStatusComment({
     targetSales: 9000000,
     closedSales: 1000000,
@@ -468,9 +472,10 @@ test("getSalesStatusComment: 大きく遅れているケースは要改善", () 
   });
 
   assert.equal(comment.tier, "要改善");
+  assert.equal(comment.lines.length, 3);
   assert.equal(comment.lines[0], "目標売上まであと8,000,000円です。");
-  assert.equal(comment.lines[2], "ここからでも十分挽回できます。");
-  assert.equal(comment.lines[3], "まずは今日の目標売上を達成することを目指しましょう！");
+  assert.equal(comment.lines[1], "現在は目標ペースに対して−2,000,000円です。");
+  assert.equal(comment.lines[2], "ここからでも十分挽回できます。まずは今日の目標売上を達成することを目指しましょう！");
 });
 
 test("getSalesStatusComment: 未締めの日次売上は計算に含めない(closedSalesのみ使用)", () => {

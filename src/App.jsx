@@ -888,7 +888,7 @@ function App() {
     { label: "顧客数", value: number(summary.customers), hint: `新規 ${number(summary.newCustomers)} / 再来 ${number(summary.repeatCustomers)}` },
     { label: "本日の目標売上", value: money(summary.todayTarget), hint: `現在 ${money(todayActual)}` },
   ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers, summary.todayTarget, todayActual]);
-  // One unified AI comment card (順調/やや遅れ/要改善), replacing the previous 3-card split
+  // One unified AI comment card (順調/注意/要改善), replacing the previous 3-card split
   // (目標まで/目標ペース/必要な1日平均売上) — see getSalesStatusComment for the tier logic.
   const aiComment = useMemo(() => {
     if (!parseNumber(target.targetSales)) {
@@ -899,7 +899,7 @@ function App() {
     }
     return salesStatusComment;
   }, [salesStatusComment, summary.completedDays, target.targetSales]);
-  const aiCommentTone = { "順調": "good", "やや遅れ": "warning", "要改善": "danger", "unset": "neutral" }[aiComment.tier] || "neutral";
+  const aiCommentTone = { "順調": "good", "注意": "warning", "要改善": "danger", "unset": "neutral" }[aiComment.tier] || "neutral";
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -3357,10 +3357,7 @@ function App() {
               </div>
               <div className={`ai-comment-card ${aiCommentTone}`}>
                 <div className="panel-heading compact">
-                  <div>
-                    <p className="eyebrow">AI COMMENT</p>
-                    <h3>{aiComment.tier === "unset" ? "AIコメント" : `AIコメント（${aiComment.tier}）`}</h3>
-                  </div>
+                  <p className="eyebrow">AI COMMENT</p>
                   {aiComment.tier !== "unset" && <span className={`status-chip ${aiCommentTone}`}>{aiComment.tier}</span>}
                 </div>
                 {aiComment.lines.map((line, index) => <p key={index}>{line}</p>)}
