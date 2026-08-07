@@ -1412,20 +1412,29 @@ function App() {
       });
       if (!snapshot?.payload) {
         const fallbackState = normalizeAppState(readAppState());
+        // Only the broad "...fallbackState" spread (dailyResults/etc from localStorage) is
+        // conditional on there actually being cached data worth folding in — companies/users/
+        // currentCompanyId below must NEVER be gated behind this same check. A brand-new
+        // session with no local dailyResults cache and no tenant_snapshot row (a freshly
+        // restored-from-backup company, or simply a brand-new onboarding with no daily entry
+        // yet) previously took the "prev unchanged" branch entirely, which skipped
+        // applyStoreInputSettingsToCompanies — so store_input_settings/company_settings/
+        // store_profiles never made it into appState.companies on that very first hydrate, even
+        // though the row existed correctly in Supabase all along. Confirmed via a live
+        // fresh-session-after-restore test.
+        const hasLocalFallbackCache = Boolean(fallbackState && Object.keys(fallbackState.dailyResults || {}).length);
         setAppState((prev) => {
-          let merged = (fallbackState && Object.keys(fallbackState.dailyResults || {}).length)
-            ? mergeRemoteAppState(prev, {
-                ...fallbackState,
-                // companies/users must always reflect the just-fetched stores/profiles tables,
-                // never a possibly-stale localStorage cache — see the identical fix below for
-                // why letting a cached list win here silently breaks store_id resolution.
-                companies: applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || [])),
-                users: tenantState?.users?.length ? tenantState.users : (fallbackState.users || []),
-                currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
-                currentUserId: profile?.id || prev.currentUserId || "",
-                currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
-              })
-            : prev;
+          let merged = mergeRemoteAppState(prev, {
+            ...(hasLocalFallbackCache ? fallbackState : {}),
+            // companies/users must always reflect the just-fetched stores/profiles tables,
+            // never a possibly-stale localStorage cache — see the identical fix below for
+            // why letting a cached list win here silently breaks store_id resolution.
+            companies: applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || [])),
+            users: tenantState?.users?.length ? tenantState.users : (fallbackState.users || []),
+            currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
+            currentUserId: profile?.id || prev.currentUserId || "",
+            currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
+          });
           merged = applyDailySalesOverlay(merged);
           writeAppState(merged);
           return merged;
