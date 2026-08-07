@@ -140,13 +140,6 @@ const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = n
 
 const coerceId = (...values) => values.find((value) => typeof value === "string" && value.trim()) || "";
 
-const getStatusTone = ({ error = false, status = "idle" } = {}) => {
-  if (error) return "error";
-  if (status === "saving" || status === "syncing" || status === "loaded") return "saving";
-  if (status === "saved" || status === "synced") return "saved";
-  return "neutral";
-};
-
 const buildAuthenticatedUser = ({ profile = null, authUser = null, fallback = null, role = "staff", companyId = "", storeId = "" } = {}) => {
   const profileId = coerceId(profile?.id, fallback?.profileId, fallback?.id);
   const authUserId = coerceId(authUser?.id, profile?.auth_user_id, fallback?.authUserId);
@@ -161,30 +154,6 @@ const buildAuthenticatedUser = ({ profile = null, authUser = null, fallback = nu
     authUserId,
   };
 };
-
-const buildStatusCards = ({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }) => ([
-  {
-    key: "save",
-    label: "入力保存",
-    message: saveStatus.message || "自動保存待機中",
-    tone: getStatusTone(saveStatus),
-    timestamp: saveStatus.timestamp,
-  },
-  {
-    key: "sync",
-    label: "Supabase同期",
-    message: syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応"),
-    tone: getStatusTone(syncStatus),
-    timestamp: syncStatus.timestamp,
-  },
-  {
-    key: "network",
-    label: "通信状態",
-    message: isOnline ? "オンライン" : "オフラインでも端末保存中",
-    tone: isOnline ? "saved" : "error",
-    timestamp: "",
-  },
-]);
 
 const getMetricTone = (value, warningThreshold = 80, successThreshold = 100) => {
   if (!Number.isFinite(value)) return "neutral";
@@ -928,7 +897,6 @@ function App() {
       trend: row.previousRank ? (row.currentRank < row.previousRank ? "↑" : row.currentRank > row.previousRank ? "↓" : "→") : "→",
     }));
   }, [appState, rankingSort, selectedMonth, currentCompanyStores]);
-  const statusCards = useMemo(() => buildStatusCards({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }), [saveStatus, syncStatus, isSupabaseConfigured, isOnline]);
   const goToMonthlyTargetSetting = () => {
     // 月間目標設定パネルは selectedMonth (ヘッダーの対象月) とは独立した専用の月選択
     // (targetSelectedMonth) を持つため、ここで同期させないとダッシュボードで見ていた
@@ -1323,19 +1291,40 @@ function App() {
         }),
       }));
 
-      const applyDailySalesOverlay = (state) => mergeRemoteAppState(state, {
-        dailyResults: dailySalesState.dailyResults,
-        dayClosingStates: dailySalesState.dayClosingStates,
-        dayClosingUpdatedAt: dailySalesState.dayClosingUpdatedAt,
-        monthClosingStatus: monthClosingStatusOverlay,
-        // Only targets, deliberately not businessDaySettings here: saveHolidayCount/
-        // saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定 quick-edit on the
-        // daily entry page) only ever update businessDaySettings locally — they don't persist
-        // to monthly_targets at all (a separate, pre-existing gap outside this change's scope).
-        // Overlaying it here would let a fresh hydrate silently discard an unsaved local
-        // holiday-count edit sooner than it already can.
-        targets: targetStateOverlay.targets,
+      // mergeShallowMap (used by mergeRemoteAppState for `targets` below) only ever unions keys
+      // in — it never removes a key that exists in local/cached state but has no row in this
+      // fresh Supabase fetch. Left alone, a target that was only ever a local/stale value (old
+      // localStorage, a target since deleted from Supabase, a leftover from early testing before
+      // monthly_targets exised) would survive forever and get shown as if it were really
+      // registered. We just authoritatively fetched every store × the last 3 months, so for
+      // every key in that window we now know for certain whether Supabase has a row — build that
+      // exact key set to prune any impostor after the merge below.
+      const expectedTargetKeys = new Set();
+      (company?.stores || []).forEach((store) => {
+        closingMonths.forEach((month) => expectedTargetKeys.add(buildMonthKey(store.name, month)));
       });
+      const applyDailySalesOverlay = (state) => {
+        const merged = mergeRemoteAppState(state, {
+          dailyResults: dailySalesState.dailyResults,
+          dayClosingStates: dailySalesState.dayClosingStates,
+          dayClosingUpdatedAt: dailySalesState.dayClosingUpdatedAt,
+          monthClosingStatus: monthClosingStatusOverlay,
+          // Only targets, deliberately not businessDaySettings here: saveHolidayCount/
+          // saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定 quick-edit on the
+          // daily entry page) only ever update businessDaySettings locally — they don't persist
+          // to monthly_targets at all (a separate, pre-existing gap outside this change's scope).
+          // Overlaying it here would let a fresh hydrate silently discard an unsaved local
+          // holiday-count edit sooner than it already can.
+          targets: targetStateOverlay.targets,
+        });
+        const prunedTargets = { ...merged.targets };
+        expectedTargetKeys.forEach((key) => {
+          if (!(key in targetStateOverlay.targets)) {
+            delete prunedTargets[key];
+          }
+        });
+        return { ...merged, targets: prunedTargets };
+      };
 
       const snapshotResult = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
       if (!snapshotResult.ok) {
@@ -3440,27 +3429,6 @@ function App() {
           </div>
         </header>
 
-        {normalizeRole(currentRole) === "system_admin" && (
-          <section className="status-overview-panel">
-            <div className="status-overview-header">
-              <div>
-                <p className="eyebrow">SYNC STATUS (system_admin only)</p>
-                <h2>保存と同期</h2>
-              </div>
-              <small>{isSupabaseConfigured ? "Supabase へ自動保存" : "ローカル保存のみ"}</small>
-            </div>
-            <div className="status-overview-grid">
-              {statusCards.map((item) => (
-                <div key={item.key} className={`status-overview-card ${item.tone}`}>
-                  <span>{item.label}</span>
-                  <strong>{item.message}</strong>
-                  <small>{item.timestamp ? formatTimestamp(item.timestamp) : ""}</small>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
-
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
         {notice ? <div className="notice-box">{notice}</div> : null}
         {activePage === "dashboard" && (
@@ -3471,12 +3439,6 @@ function App() {
                   <p className="eyebrow">KPI</p>
                   <h2>売上</h2>
                 </div>
-                {normalizeRole(currentRole) === "system_admin" && (
-                  <div className="status-stack compact-status-stack">
-                    <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
-                    <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
-                  </div>
-                )}
               </div>
               <div className="kpi-hero-grid">
                 {hasSalesTarget ? (
@@ -3661,13 +3623,6 @@ function App() {
                       <p className="eyebrow">DAILY</p>
                       <h2>売上入力</h2>
                     </div>
-                    {normalizeRole(currentRole) === "system_admin" && (
-                      <div className="status-stack compact-status-stack">
-                        <div className={`status-pill ${getStatusTone(saveStatus)}`}>{saveStatus.message || "自動保存済み"}</div>
-                        <div className={`status-pill ${getStatusTone(syncStatus)}`}>{syncStatus.message || (isSupabaseConfigured ? "同期待機中" : "同期未対応")}</div>
-                        {saveStatus.timestamp ? <div className="timestamp-pill">最終保存 {formatTimestamp(saveStatus.timestamp)}</div> : null}
-                      </div>
-                    )}
                   </div>
 
                   <div className="daily-save-banner">
@@ -4620,11 +4575,6 @@ function App() {
                 <p className="eyebrow">PREFS</p>
                 <h2>表示設定</h2>
               </div>
-              {normalizeRole(currentRole) === "system_admin" && (
-                <div className={`status-pill ${saveStatus.error ? "error" : saveStatus.status === "saving" ? "saving" : "saved"}`}>
-                  {saveStatus.message || "自動保存済み"}
-                </div>
-              )}
             </div>
             <div className="toggle-panel">
               <div>
@@ -4707,17 +4657,8 @@ function App() {
                 <div className="panel-heading compact">
                   <div>
                     <p className="eyebrow">DEBUG (system_admin only)</p>
-                    <h3>保存・同期デバッグ情報</h3>
+                    <h3>デバッグ情報</h3>
                   </div>
-                </div>
-                <div className="status-overview-grid">
-                  {statusCards.map((item) => (
-                    <div key={item.key} className={`status-overview-card ${item.tone}`}>
-                      <span>{item.label}</span>
-                      <strong>{item.message}</strong>
-                      <small>{item.timestamp ? formatTimestamp(item.timestamp) : ""}</small>
-                    </div>
-                  ))}
                 </div>
                 <div className="input-grid">
                   <label className="field"><span>auth user id</span><input value={debugInfo.userId || ""} readOnly /></label>
