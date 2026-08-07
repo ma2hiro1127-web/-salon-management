@@ -363,9 +363,14 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     companyFilter
       ? supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
       : supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").order("created_at", { ascending: true }),
+    // Ordered by creation time, not name: a fresh session/device with no cached selection
+    // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
+    // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
+    // store that lands on — including onto a brand-new, still-empty store. Creation order is
+    // stable across renames and naturally favors whichever store has been in use longest.
     companyFilter
-      ? supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").eq("company_id", companyFilter).order("name", { ascending: true })
-      : supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").order("name", { ascending: true }),
+      ? supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").eq("company_id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").order("created_at", { ascending: true }),
     role === "system_admin"
       ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").order("created_at", { ascending: true })
       : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
