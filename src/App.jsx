@@ -1493,7 +1493,12 @@ function App() {
       return { ok: true, skipped: true };
     }
     const company = (nextState.companies || []).find((item) => item.id === nextState.currentCompanyId);
-    const store = company?.stores?.find((item) => item.name === nextState.selectedStore) || company?.stores?.[0] || null;
+    // Id-first, same reasoning as everywhere else this pattern appears: a stale selectedStore
+    // name must never make this tag a snapshot with the wrong store's id.
+    const store = (nextState.selectedStoreId && company?.stores?.find((item) => item.id === nextState.selectedStoreId))
+      || company?.stores?.find((item) => item.name === nextState.selectedStore)
+      || company?.stores?.[0]
+      || null;
     const user = (nextState.users || []).find((item) => item.id === nextState.currentUserId);
     if (!company || !store || !user) {
       setSyncStatus({ status: "idle", message: "同期対象データが未準備です", timestamp: new Date().toISOString(), error: false });
@@ -3418,7 +3423,7 @@ function App() {
           <div className="filters">
             <label>
               店舗
-              <select value={selectedStore} onChange={(event) => setAppState((prev) => ({ ...prev, selectedStore: event.target.value }))}>
+              <select value={selectedStore} onChange={(event) => handleStoreSwitch(event.target.value)}>
                 {visibleStores.length ? visibleStores.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
               </select>
             </label>
@@ -3709,7 +3714,7 @@ function App() {
                       <h3>基本情報</h3>
                       <label className="field">
                         <span>店舗</span>
-                        <select value={selectedStore} onChange={(event) => setAppState((prev) => ({ ...prev, selectedStore: event.target.value }))}>
+                        <select value={selectedStore} onChange={(event) => handleStoreSwitch(event.target.value)}>
                           {stores.length ? stores.map((storeName) => <option key={storeName} value={storeName}>{storeName}</option>) : <option value="">未登録</option>}
                         </select>
                       </label>
