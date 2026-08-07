@@ -25,3 +25,6 @@ dist-ssr
 .vercel
 .env*
 .vercel-production.env
+
+# Local Supabase data backups (scripts/backup-supabase-data.mjs) — real business data, never commit
+backups/
