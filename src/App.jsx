@@ -930,6 +930,11 @@ function App() {
   }, [appState, rankingSort, selectedMonth, currentCompanyStores]);
   const statusCards = useMemo(() => buildStatusCards({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }), [saveStatus, syncStatus, isSupabaseConfigured, isOnline]);
   const goToMonthlyTargetSetting = () => {
+    // 月間目標設定パネルは selectedMonth (ヘッダーの対象月) とは独立した専用の月選択
+    // (targetSelectedMonth) を持つため、ここで同期させないとダッシュボードで見ていた
+    // 月とは違う月の目標画面に着地してしまう。店舗 (selectedStore) はグローバルな状態
+    // なので自動的に引き継がれる。
+    setTargetSelectedMonth(selectedMonth);
     setActivePage("monthly");
     setActiveMonthlyTab("target");
   };
@@ -3492,6 +3497,7 @@ function App() {
                     hint={`現在売上 ${money(summary.sales)}`}
                     tone={salesVsTarget >= 0 ? "good" : "danger"}
                     emphasize
+                    onClick={goToMonthlyTargetSetting}
                   />
                 ) : (
                   <TargetMissingCard label="目標との差額" onGoToTarget={goToMonthlyTargetSetting} emphasize />
@@ -3501,7 +3507,12 @@ function App() {
                   value={money(summary.forecast)}
                   hint={hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
-                    : `残り営業日 ${summary.remainingBusinessDays ?? 0}日`}
+                    : (
+                      <span className="metric-missing-inline">
+                        <span className="metric-missing-label">月間目標未登録</span>
+                        <button type="button" className="metric-missing-link" onClick={(event) => { event.stopPropagation(); goToMonthlyTargetSetting(); }}>月間目標設定</button>
+                      </span>
+                    )}
                   tone={hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : ""}
                   emphasize
                 />
@@ -4725,9 +4736,15 @@ function App() {
   );
 }
 
-function MetricCard({ label, value, hint = "", tone = "", emphasize = false }) {
+function MetricCard({ label, value, hint = "", tone = "", emphasize = false, onClick = null }) {
   return (
-    <div className={`metric-card ${tone} ${emphasize ? "emphasize" : ""}`}>
+    <div
+      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${onClick ? "clickable" : ""}`}
+      onClick={onClick || undefined}
+      role={onClick ? "button" : undefined}
+      tabIndex={onClick ? 0 : undefined}
+      onKeyDown={onClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); } } : undefined}
+    >
       <span>{label}</span>
       <strong>{value}</strong>
       {hint ? <small>{hint}</small> : null}
