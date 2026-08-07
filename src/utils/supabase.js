@@ -912,6 +912,29 @@ export const upsertMonthlyTargetToSupabase = async ({ companyId, storeId, target
   }
 };
 
+// Fetches every store's monthly_targets rows across the given months in one call, mirroring
+// loadMonthlyClosingsForCompany/loadDailySalesForCompanyRange. Without this, appState.targets
+// was only ever populated by the 月間目標設定 panel's own per-visit fetch (for whichever
+// store+month *that panel* happens to be showing, via its own independent targetSelectedMonth)
+// — so anything else that reads a target (dashboard hero metrics, cross-store ranking) could
+// see a store/month as "no target registered" simply because nobody had opened the target panel
+// for it yet this session, not because no target was actually saved.
+export const loadMonthlyTargetsForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_targets")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("target_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadMonthlyTargetsForCompany", table: "monthly_targets", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
 export const loadMonthlyTargetFromSupabase = async ({ companyId, storeId, targetMonth }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true, data: null };
   if (!companyId || !storeId || !targetMonth) return { ok: true, skipped: true, data: null };

@@ -21,6 +21,7 @@ import {
   buildDailyStateFromRows,
   dailySalesRowToEntry,
   buildMonthClosingStateFromRows,
+  buildTargetStateFromRows,
   buildMonthKey,
   calculateMonthSummary,
   calculateTaxSummary,
@@ -78,6 +79,7 @@ import {
   loadDailySalesForCompanyRange,
   upsertMonthlyClosingState,
   loadMonthlyClosingsForCompany,
+  loadMonthlyTargetsForCompany,
   upsertMonthlyTargetToSupabase,
   loadMonthlyTargetFromSupabase,
   logSupabaseError,
@@ -772,7 +774,14 @@ function App() {
     businessDayCount: summary.businessDays,
     completedDays: summary.completedDays,
     remainingBusinessDays: summary.remainingBusinessDays,
-  }), [target.targetSales, summary.closedSales, summary.businessDays, summary.completedDays, summary.remainingBusinessDays]);
+    targetCustomers: summary.customerTarget,
+    customers: summary.customers,
+    targetAverageSpend: parseNumber(target.targetAverageSpend),
+    averageSpend: summary.averageSpend,
+    // Included so the same underlying situation reads differently across different days
+    // instead of repeating verbatim (see pickVariant) — stable within a single day/store/month.
+    seed: `${selectedStore}-${selectedMonth}-${new Date().toISOString().slice(0, 10)}`,
+  }), [target.targetSales, target.targetAverageSpend, summary.closedSales, summary.businessDays, summary.completedDays, summary.remainingBusinessDays, summary.customerTarget, summary.customers, summary.averageSpend, selectedStore, selectedMonth]);
   const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
   const monthClosingStatus = useMemo(() => {
     const key = buildMonthKey(selectedStore, selectedMonth);
@@ -856,50 +865,35 @@ function App() {
     }));
   }, [appState, rankingSort, selectedMonth, currentCompanyStores]);
   const statusCards = useMemo(() => buildStatusCards({ saveStatus, syncStatus, isSupabaseConfigured, isOnline }), [saveStatus, syncStatus, isSupabaseConfigured, isOnline]);
-  const dashboardHeroMetrics = useMemo(() => ([
-    {
-      label: "月間達成率",
-      value: percent(summary.targetAchievement),
-      hint: `目標 ${money(target.targetSales || 0)} に対して ${money(summary.sales)}`,
-      tone: getMetricTone(summary.targetAchievement, 85, 100),
-    },
-    {
-      label: "月末着地予測",
-      value: money(summary.forecast),
-      hint: `残り営業日 ${summary.remainingBusinessDays ?? 0}日`,
-      tone: summary.forecast >= (target.targetSales || 0) ? "good" : "warning",
-    },
-    {
-      label: "営業利益",
-      value: money(summary.operatingProfit),
-      hint: `利益率 ${percent(summary.operatingMargin)}`,
-      tone: summary.operatingProfit >= 0 ? "good" : "danger",
-    },
-    {
-      label: "客数達成率",
-      value: percent(customerTargetSummary.achievementRate),
-      hint: `残り ${customerTargetSummary.remainingCustomers}名`,
-      tone: getMetricTone(customerTargetSummary.achievementRate, 85, 100),
-    },
-  ]), [summary.targetAchievement, target.targetSales, summary.sales, summary.forecast, summary.remainingBusinessDays, summary.operatingProfit, summary.operatingMargin, customerTargetSummary.achievementRate, customerTargetSummary.remainingCustomers]);
+  const goToMonthlyTargetSetting = () => {
+    setActivePage("monthly");
+    setActiveMonthlyTab("target");
+  };
+  // Whether a monthly target actually exists in Supabase for the store+month currently on
+  // screen — not just "is the target panel showing something", since that panel has its own
+  // independent month selector (see targetSelectedMonth) and could be looking at a different
+  // month entirely. appState.targets is kept fresh for this exact store+month by
+  // hydrateFromSupabase's monthly_targets overlay (see loadMonthlyTargetsForCompany).
+  const hasSalesTarget = parseNumber(target.targetSales) > 0;
+  const hasCustomerTarget = parseNumber(target.targetCustomers) > 0;
+  // ④ 目標との差額: positive (at/over target) is green "＋", short of target is red "▲".
+  const salesVsTarget = summary.sales - parseNumber(target.targetSales);
+  // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
+  // only this comparison line does.
+  const forecastVsTarget = summary.forecast - parseNumber(target.targetSales);
   const dashboardSupportMetrics = useMemo(() => ([
     { label: "平均客単価", value: money(summary.averageSpend), hint: `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` },
     { label: "1日平均売上", value: money(summary.averageSales), hint: `必要売上 ${money(summary.dailyNeededSales)}` },
     { label: "顧客数", value: number(summary.customers), hint: `新規 ${number(summary.newCustomers)} / 再来 ${number(summary.repeatCustomers)}` },
-    { label: "本日の目標売上", value: money(summary.todayTarget), hint: `現在 ${money(todayActual)}` },
-  ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers, summary.todayTarget, todayActual]);
+  ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers]);
   // One unified AI comment card (順調/注意/要改善), replacing the previous 3-card split
   // (目標まで/目標ペース/必要な1日平均売上) — see getSalesStatusComment for the tier logic.
-  const aiComment = useMemo(() => {
-    if (!parseNumber(target.targetSales)) {
-      return { tier: "unset", lines: ["月間目標売上を設定すると、AIコメントが表示されます。"] };
-    }
-    if (summary.completedDays <= 0) {
-      return { tier: "unset", lines: ["日締めが完了すると、目標との差額やペースをもとにAIコメントが表示されます。"] };
-    }
-    return salesStatusComment;
-  }, [salesStatusComment, summary.completedDays, target.targetSales]);
-  const aiCommentTone = { "順調": "good", "注意": "warning", "要改善": "danger", "unset": "neutral" }[aiComment.tier] || "neutral";
+  // getSalesStatusComment already produces a sensible "月間目標を設定すると..." fallback
+  // message when neither a sales nor a customer target is registered (salesState/customerState
+  // both null) — this just decides whether to show the tier badge for that case.
+  const aiComment = salesStatusComment;
+  const aiCommentUnset = !aiComment.salesState && !aiComment.customerState;
+  const aiCommentTone = aiCommentUnset ? "neutral" : ({ "順調": "good", "注意": "warning", "要改善": "danger" }[aiComment.tier] || "neutral");
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -1196,6 +1190,19 @@ function App() {
       }
       const monthClosingStatusOverlay = buildMonthClosingStateFromRows(monthlyClosingsResult.data, storeIdToName);
 
+      // Same reasoning again for monthly_targets: without this, appState.targets was only ever
+      // populated by the 月間目標設定 panel's own per-visit fetch for whichever store+month
+      // *that panel* happens to be showing (a separate, independent month selector from this
+      // one) — so the dashboard's target-based metrics could see a store/month as "no target
+      // registered" simply because nobody had opened the target panel for it this session, not
+      // because no target was actually ever saved. Reuses the same 3-month window as
+      // monthly_closings above.
+      const monthlyTargetsResult = await loadMonthlyTargetsForCompany({ companyId, yearMonths: closingMonths });
+      if (!monthlyTargetsResult.ok) {
+        throw monthlyTargetsResult.error || new Error("月間目標データの取得に失敗しました");
+      }
+      const targetStateOverlay = buildTargetStateFromRows(monthlyTargetsResult.data, storeIdToName);
+
       // store_input_settings (daily/monthly field visibility) is the authoritative source now
       // — see 20260807000000_create_store_input_settings.sql. Fetched company-wide alongside
       // daily_sales/monthly_closings above, then merged onto each store's settings object
@@ -1226,6 +1233,13 @@ function App() {
         dayClosingStates: dailySalesState.dayClosingStates,
         dayClosingUpdatedAt: dailySalesState.dayClosingUpdatedAt,
         monthClosingStatus: monthClosingStatusOverlay,
+        // Only targets, deliberately not businessDaySettings here: saveHolidayCount/
+        // saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定 quick-edit on the
+        // daily entry page) only ever update businessDaySettings locally — they don't persist
+        // to monthly_targets at all (a separate, pre-existing gap outside this change's scope).
+        // Overlaying it here would let a fresh hydrate silently discard an unsaved local
+        // holiday-count edit sooner than it already can.
+        targets: targetStateOverlay.targets,
       });
 
       const snapshotResult = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
@@ -2191,6 +2205,7 @@ function App() {
     channel.on("postgres_changes", { event: "*", schema: "public", table: "tenant_snapshots", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
     channel.on("postgres_changes", { event: "*", schema: "public", table: "daily_sales", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
     channel.on("postgres_changes", { event: "*", schema: "public", table: "monthly_closings", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
+    channel.on("postgres_changes", { event: "*", schema: "public", table: "monthly_targets", filter: `company_id=eq.${companyId}` }, triggerRehydrate);
     channel.subscribe();
     remoteSyncChannelRef.current = channel;
 
@@ -3328,7 +3343,48 @@ function App() {
                 )}
               </div>
               <div className="kpi-hero-grid">
-                {dashboardHeroMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} tone={item.tone} emphasize />)}
+                {hasSalesTarget ? (
+                  <MetricCard
+                    label="月間達成率"
+                    value={percent(summary.targetAchievement)}
+                    hint={`目標 ${money(target.targetSales || 0)} に対して ${money(summary.sales)}`}
+                    tone={getMetricTone(summary.targetAchievement, 85, 100)}
+                    emphasize
+                  />
+                ) : (
+                  <TargetMissingCard label="月間達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
+                )}
+                {hasSalesTarget ? (
+                  <MetricCard
+                    label="目標との差額"
+                    value={salesVsTarget >= 0 ? `＋${money(salesVsTarget)}（目標達成）` : `▲${money(Math.abs(salesVsTarget))}`}
+                    hint={`現在売上 ${money(summary.sales)}`}
+                    tone={salesVsTarget >= 0 ? "good" : "danger"}
+                    emphasize
+                  />
+                ) : (
+                  <TargetMissingCard label="目標との差額" onGoToTarget={goToMonthlyTargetSetting} emphasize />
+                )}
+                <MetricCard
+                  label="月末着地予測"
+                  value={money(summary.forecast)}
+                  hint={hasSalesTarget
+                    ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
+                    : `残り営業日 ${summary.remainingBusinessDays ?? 0}日`}
+                  tone={hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : ""}
+                  emphasize
+                />
+                {hasCustomerTarget ? (
+                  <MetricCard
+                    label="客数達成率"
+                    value={percent(customerTargetSummary.achievementRate)}
+                    hint={`残り ${customerTargetSummary.remainingCustomers}名`}
+                    tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
+                    emphasize
+                  />
+                ) : (
+                  <TargetMissingCard label="客数達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
+                )}
               </div>
               <div className="business-progress-card">
                 <div className="business-progress-header">
@@ -3358,7 +3414,7 @@ function App() {
               <div className={`ai-comment-card ${aiCommentTone}`}>
                 <div className="panel-heading compact">
                   <p className="eyebrow">AI COMMENT</p>
-                  {aiComment.tier !== "unset" && <span className={`status-chip ${aiCommentTone}`}>{aiComment.tier}</span>}
+                  {!aiCommentUnset && <span className={`status-chip ${aiCommentTone}`}>{aiComment.tier}</span>}
                 </div>
                 {aiComment.lines.map((line, index) => <p key={index}>{line}</p>)}
               </div>
@@ -4544,6 +4600,19 @@ function MetricCard({ label, value, hint = "", tone = "", emphasize = false }) {
       <span>{label}</span>
       <strong>{value}</strong>
       {hint ? <small>{hint}</small> : null}
+    </div>
+  );
+}
+
+// Fallback for a dashboard metric that's computed from a monthly target when none has been
+// saved yet for the store+month on screen — shown instead of a misleading 0%/¥0, with a direct
+// link into the 月間目標設定 panel so there's always an obvious next action.
+function TargetMissingCard({ label, onGoToTarget, emphasize = false }) {
+  return (
+    <div className={`metric-card neutral ${emphasize ? "emphasize" : ""}`}>
+      <span>{label}</span>
+      <strong className="metric-missing-label">月間目標未登録</strong>
+      <button type="button" className="metric-missing-link" onClick={onGoToTarget}>月間目標設定</button>
     </div>
   );
 }

@@ -249,6 +249,39 @@ export const buildMonthClosingStateFromRows = (rows = [], storeIdToName = {}) =>
   return monthClosingStatus;
 };
 
+// Same idea as buildMonthClosingStateFromRows but for monthly_targets rows -> the targets/
+// businessDaySettings maps calculateMonthSummary/getBusinessDaySummary actually read.
+export const buildTargetStateFromRows = (rows = [], storeIdToName = {}) => {
+  const targets = {};
+  const businessDaySettings = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.target_month) return;
+    const key = buildMonthKey(storeName, row.target_month);
+    targets[key] = {
+      targetSales: row.target_sales,
+      targetTechnicalSales: row.target_technical_sales,
+      targetRetailSales: row.target_retail_sales,
+      targetCustomers: row.target_customers,
+      targetAverageSpend: row.target_average_spend,
+      targetNewCustomers: row.target_new_customers,
+      targetRepeatCustomers: row.target_repeat_customers,
+      targetRepeatRate: row.target_repeat_rate,
+      targetAverageCustomersPerDay: row.target_average_customers_per_day,
+      targetLaborRate: row.target_labor_rate,
+      targetMaterialRate: row.target_material_rate,
+      targetAdRate: row.target_ad_rate,
+      targetOperatingMargin: row.target_operating_margin,
+    };
+    businessDaySettings[key] = {
+      mode: row.business_day_mode || "",
+      businessDayCount: row.business_day_count,
+      holidayCount: row.holiday_count,
+    };
+  });
+  return { targets, businessDaySettings };
+};
+
 const mergeDailyResultsMap = (localMap = {}, remoteMap = {}) => {
   const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
   const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};
@@ -787,69 +820,178 @@ export const getCustomerTargetSummary = (input = {}) => {
   };
 };
 
-// 売上状況のAIコメント。カードには常に3行だけを表示する: ①目標売上との差額
-// ②目標ペースとの差額(符号付き) ③状況に応じたポジティブな一言。あわせて3段階の判定
-// (tier: "順調"|"注意"|"要改善")を返す。「現在の累計売上」は日締め済みの営業日の売上合計
-// (closedSales)のみを使い、未締めの日次売上は目標ペース・必要売上の計算に一切含めない。
-//
-// 判定に使う4つの入力:
-//   ①targetGap    = targetSales - cumulativeSales           (目標売上との差額)
-//   ②paceDiff     = cumulativeSales - (targetPerDay * completedDays)  (目標ペースとの差額)
-//   ③remainingBusinessDays                                   (残り営業日)
-//   ④dailyAverageNeeded = max(targetGap, 0) / remainingBusinessDays   (1日必要売上 — カード本文
-//     には出さないが、tier判定と「残り1日必要売上」KPIカード側の表示に使う)
-//
-// tier:
-//   順調 … 達成済み、またはペース以上(paceDiff >= 0)
-//   注意 … ペースは下回るが、残り日数で必要な1日平均が本来の1日目標の115%以内に収まり、
-//          現実的に十分取り返せる範囲
-//   要改善 … それ以上の遅れ、または残り営業日が尽きて未達
-// このしきい値(115%)はコメントの温度感を決めるためのもので、他のKPI計算(進捗・着地予想・
-// 必要売上そのもの)には一切影響しない。
+// 文字列シードから安定したインデックスを作るだけの軽量ハッシュ。同じシードなら常に同じ
+// バリアントを選ぶため同一レンダー内でコメントが揺れ動くことはないが、シードに日付を含めて
+// 呼び出すことで、同じ状況でも日が変われば言い回しが変わる(状態を持たずに「毎日変化し、
+// 同じ文章が続かない」を実現する)。
+const pickVariant = (variants, seed) => {
+  const text = String(seed || "");
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return variants[hash % variants.length];
+};
+
+const SALES_LINES = {
+  ahead: ["売上は目標ペースを上回って推移しています。", "売上は好調で、目標ペースを上回るペースです。", "売上は目標ペースを上回るハイペースです。"],
+  onPace: ["売上は目標ペースどおりに推移しています。", "売上はほぼ目標ペースで進んでいます。"],
+  slight: ["売上はやや目標ペースを下回っています。", "売上は目標ペースに対して少し届いていません。", "売上が目標ペースにわずかに追いついていません。"],
+  large: ["売上は目標ペースを大きく下回っています。", "売上が目標ペースに対して大きく遅れています。"],
+};
+const CUSTOMER_LINES = {
+  achieving: ["客数は目標を達成しています。", "客数はしっかり目標をクリアしています。", "客数は目標をキープできています。"],
+  slight: ["客数はやや目標を下回っています。", "客数はもう一歩で目標到達です。", "客数が目標にわずかに届いていません。"],
+  large: ["客数が目標を大きく下回っています。", "客数の伸び悩みが課題になっています。"],
+};
+// 「ため、」「ことで」に自然に続くよう、あえて言い切らない活用形(丁寧語で終わらない)にしている。
+const SPEND_SUPPORT_LINES = {
+  achieving: ["客単価は目標を維持できている", "客単価は目標水準をキープできている", "客単価はしっかり維持できている"],
+  behind: ["客単価アップを意識する", "客単価をもう一段引き上げる", "客単価の底上げを意識する"],
+};
+const CLOSING_GOOD_LINES = [
+  "この調子で残り営業日も積み重ねていきましょう！",
+  "この調子を維持して、最高の月を目指しましょう！",
+  "素晴らしいペースです。このまま突き進みましょう！",
+  "この調子を維持して、良い結果につなげましょう！",
+];
+const CLOSING_MIXED_LINES = [
+  "十分巻き返せます。この調子で積み上げていきましょう！",
+  "まだまだ挽回できる状況です。着実に積み重ねていきましょう！",
+  "十分に取り戻せる差です。一歩ずつ積み上げていきましょう！",
+];
+const CLOSING_HARD_LINES = [
+  "ここからでも十分挽回できます。まずは今日の目標達成を目指しましょう！",
+  "まだ挽回のチャンスは十分にあります。今日からできることを一つずつ積み重ねましょう！",
+  "ここからの巻き返しに期待しましょう。小さな積み重ねが結果につながります！",
+];
+const NO_TARGET_LINES = [
+  "月間目標を設定すると、達成状況を踏まえたコメントを表示できます。",
+  "月間目標を登録すると、より具体的なアドバイスを表示できるようになります。",
+];
+
+// AIコメント。以前のような「目標との差額の説明」ではなく、売上達成状況・客数達成状況・
+// 客単価・月末着地予測・営業日数の進捗などを総合した「売上全体の総括コメント」を生成する。
+// 常に ①今何が達成できているか ②今何が達成できていないか ③前向きな一言 の流れで、状況ごとに
+// 複数の言い回しを用意し(pickVariant)、同じ状況でも日によって違う文章になるようにしている。
+// tier(順調|注意|要改善)は売上ペースと客数達成の2軸のうち、達成できている軸の数で決める:
+// 両方 → 順調、片方 → 注意、どちらも未達 → 要改善(どちらの目標も未登録なら順調扱い)。
 export const getSalesStatusComment = (input = {}) => {
   const targetSales = parseNumber(input.targetSales);
   const cumulativeSales = parseNumber(input.closedSales);
   const businessDayCount = parseNumber(input.businessDayCount);
   const completedDays = parseNumber(input.completedDays);
   const remainingBusinessDays = parseNumber(input.remainingBusinessDays);
+  const targetCustomers = parseNumber(input.targetCustomers);
+  const customers = parseNumber(input.customers);
+  const targetAverageSpend = parseNumber(input.targetAverageSpend);
+  const averageSpend = parseNumber(input.averageSpend);
+  const seed = String(input.seed || "");
 
   const targetGap = Math.round(targetSales - cumulativeSales);
   const targetPerDay = businessDayCount > 0 ? targetSales / businessDayCount : 0;
   const requiredSoFar = targetPerDay * completedDays;
-  const paceDiff = completedDays > 0 ? Math.round(cumulativeSales - requiredSoFar) : null;
+  const paceDiff = targetSales > 0 && completedDays > 0 ? Math.round(cumulativeSales - requiredSoFar) : null;
   const dailyAverageNeeded = targetGap > 0 && remainingBusinessDays > 0 ? Math.round(targetGap / remainingBusinessDays) : 0;
 
-  const achieved = targetGap <= 0;
-  const onOrAheadOfPace = paceDiff !== null && paceDiff >= 0;
-  const recoverable = paceDiff !== null && paceDiff < 0 && targetPerDay > 0 && remainingBusinessDays > 0 && dailyAverageNeeded <= targetPerDay * 1.15;
-
-  let tier;
-  if (achieved || onOrAheadOfPace) {
-    tier = "順調";
-  } else if (recoverable) {
-    tier = "注意";
-  } else {
-    tier = "要改善";
+  // 軸①: 売上ペース。requiredSoFar の5%(最低でも1日分の目標額)を「ほぼペースどおり」の
+  // 許容幅とし、それを超えて下回っていれば "slight"、さらにその4倍を超えて下回れば "large"。
+  let salesState = null;
+  if (paceDiff !== null) {
+    const band = Math.max(requiredSoFar * 0.05, targetPerDay || 0);
+    if (paceDiff > band) salesState = "ahead";
+    else if (paceDiff >= -band) salesState = "onPace";
+    else if (paceDiff >= -band * 4) salesState = "slight";
+    else salesState = "large";
   }
 
-  // ①目標売上との差額 — 常に1行目、全tier共通。
-  const targetGapLine = achieved
-    ? (targetGap < 0 ? `月間目標売上を${number(-targetGap)}円上回っています。` : "月間目標売上を達成しました。")
-    : `目標売上まであと${number(targetGap)}円です。`;
-  // ②目標ペースとの差額 — 符号付きの一つの言い回しに統一(上回り/不足で表現を分けない)。
-  const paceLine = paceDiff === null
-    ? "日締めが完了すると、目標ペースとの差額が表示されます。"
-    : `現在は目標ペースに対して${paceDiff > 0 ? "+" : paceDiff < 0 ? "−" : "±"}${number(Math.abs(paceDiff))}円です。`;
-  // ③状況に応じたポジティブな一言 — tierごとに1文だけ。
-  const encouragementLine = tier === "順調"
-    ? (achieved ? "この調子で月間目標の達成を維持しましょう！" : "非常に良いスタートです。この調子で積み上げていきましょう！")
-    : tier === "注意"
-      ? "まだ十分巻き返せます。この調子で取り戻していきましょう！"
-      : (remainingBusinessDays > 0 ? "ここからでも十分挽回できます。まずは今日の目標売上を達成することを目指しましょう！" : "来月に向けて今日からできることを始めましょう！");
+  // 軸②: 客数達成率。
+  let customerAchievementRate = null;
+  let customerState = null;
+  if (targetCustomers > 0) {
+    customerAchievementRate = (customers / targetCustomers) * 100;
+    if (customerAchievementRate >= 100) customerState = "achieving";
+    else if (customerAchievementRate >= 85) customerState = "slight";
+    else customerState = "large";
+  }
 
-  const lines = [targetGapLine, paceLine, encouragementLine];
+  // 軸③: 客単価。①②の補足として使うだけで、tier判定には使わない。
+  const spendState = targetAverageSpend > 0
+    ? (averageSpend >= targetAverageSpend ? "achieving" : "behind")
+    : null;
 
-  return { tier, headline: "売上状況", lines, message: lines.join("\n"), targetGap, paceDiff, dailyAverageNeeded };
+  const salesAchieving = salesState === "ahead" || salesState === "onPace";
+  const salesLagging = salesState === "slight" || salesState === "large";
+  const customerAchieving = customerState === "achieving";
+  const customerLagging = customerState === "slight" || customerState === "large";
+
+  const knownAxes = [salesState, customerState].filter(Boolean).length;
+  const achievingAxes = (salesAchieving ? 1 : 0) + (customerAchieving ? 1 : 0);
+  const laggingAxes = (salesLagging ? 1 : 0) + (customerLagging ? 1 : 0);
+
+  let tier;
+  if (knownAxes === 0) tier = "順調";
+  else if (laggingAxes === 0) tier = "順調";
+  else if (achievingAxes === 0) tier = "要改善";
+  else tier = "注意";
+
+  const lines = [];
+
+  if (knownAxes === 0) {
+    lines.push(pickVariant(NO_TARGET_LINES, `${seed}-no-target`));
+  } else if (salesState && customerState) {
+    // 両軸とも目標がある: ①達成できている方、②できていない方の順で1文にまとめる。
+    const salesLine = pickVariant(SALES_LINES[salesState], `${seed}-sales`);
+    const customerLine = pickVariant(CUSTOMER_LINES[customerState] || CUSTOMER_LINES.achieving, `${seed}-customer`);
+    if (salesAchieving && customerAchieving) {
+      lines.push(pickVariant([
+        "売上・客数ともに順調に推移しています。",
+        "売上、客数ともに好調な状況です。",
+        "売上・客数とも目標を上回るペースです。",
+      ], `${seed}-both-good`));
+    } else if (salesAchieving && customerLagging) {
+      lines.push(`${salesLine.replace(/。$/, "")}が、${customerLine}`);
+    } else if (customerAchieving && salesLagging) {
+      lines.push(`${customerLine.replace(/。$/, "")}が、${salesLine}`);
+    } else {
+      lines.push(`${salesLine.replace(/。$/, "")}。${customerLine}`);
+    }
+  } else if (salesState) {
+    lines.push(pickVariant(SALES_LINES[salesState], `${seed}-sales`));
+  } else if (customerState) {
+    lines.push(pickVariant(CUSTOMER_LINES[customerState] || CUSTOMER_LINES.achieving, `${seed}-customer`));
+  }
+
+  // ③ 前向きな一言。目標が何も登録されていない場合は①の案内文だけを返し、ペースも何も
+  // わかっていないのに「素晴らしいペースです」のような的外れな一言を続けない。
+  if (knownAxes > 0) {
+    if (spendState === "behind" && laggingAxes > 0) {
+      // 客単価アップの一言そのものが前向きな締めを兼ねる(例: 「客単価アップを意識すること
+      // で十分巻き返せます！」)。
+      lines.push(`${pickVariant(SPEND_SUPPORT_LINES.behind, `${seed}-spend`)}ことで十分巻き返せます！`);
+    } else {
+      const closingPool = tier === "順調" ? CLOSING_GOOD_LINES : tier === "注意" ? CLOSING_MIXED_LINES : CLOSING_HARD_LINES;
+      const closingLine = pickVariant(closingPool, `${seed}-closing`);
+      const closingPrefix = spendState === "achieving" && tier !== "要改善"
+        ? `${pickVariant(SPEND_SUPPORT_LINES.achieving, `${seed}-spend`)}ため、`
+        : "";
+      lines.push(closingPrefix ? `${closingPrefix}${closingLine}` : closingLine);
+    }
+  }
+
+  return {
+    tier,
+    headline: "売上状況",
+    lines,
+    message: lines.join("\n"),
+    targetGap,
+    paceDiff,
+    dailyAverageNeeded,
+    salesState,
+    customerState,
+    customerAchievementRate,
+    spendState,
+  };
 };
 
 class AiSummary extends Array {
