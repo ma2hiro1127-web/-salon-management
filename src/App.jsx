@@ -23,6 +23,11 @@ import {
   buildMonthClosingStateFromRows,
   buildTargetStateFromRows,
   buildFixedCostsStateFromRows,
+  buildVariableCostsStateFromRows,
+  buildMonthlyClosingItemsStateFromRows,
+  buildCompanySettingsFromRow,
+  buildStoreProfilesByStoreId,
+  pruneStaleKeys,
   buildMonthKey,
   calculateMonthSummary,
   calculateTaxSummary,
@@ -51,9 +56,8 @@ import {
   rekeyStoreNamedMaps,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canEditMonthlyData, canViewUserManagement, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
-import AuthGate from "./components/AuthGate.jsx";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
 import {
@@ -66,7 +70,6 @@ import {
   getSupabaseSession,
   loadTenantStateFromSupabase,
   ensureProfileForAuthUser,
-  getProfileByEmail,
   createCompanyRecord,
   createStoreRecord,
   updateStoreRecord,
@@ -86,6 +89,16 @@ import {
   loadFixedCostsForCompany,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
+  loadVariableCostsForCompany,
+  upsertVariableCostToSupabase,
+  deleteVariableCostFromSupabase,
+  loadMonthlyClosingItemsForCompany,
+  upsertMonthlyClosingItemToSupabase,
+  deleteMonthlyClosingItemFromSupabase,
+  loadCompanySettings,
+  upsertCompanySettings,
+  loadStoreProfilesForCompany,
+  upsertStoreProfile,
   logSupabaseError,
   signUpWithEmail,
   getProfilesForDebug,
@@ -97,18 +110,7 @@ import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabase
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, getInvitationStatusMeta, isInviteExpired } from "./utils/invitations.js";
-import { resolveLocalLoginCandidate } from "./utils/authFlow.js";
 import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
-
-const navItems = [
-  { id: "dashboard", label: "売上" },
-  { id: "daily", label: "日次入力" },
-  { id: "monthly", label: "管理画面" },
-  { id: "companies", label: "会社管理" },
-  { id: "stores", label: "店舗管理" },
-  { id: "users", label: "ユーザー管理" },
-  { id: "settings", label: "設定" },
-];
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
@@ -218,13 +220,6 @@ const getRankingMetric = (row, rankingSort, mode = "current") => {
     default:
       return row.sales;
   }
-};
-
-const formatTimestamp = (value) => {
-  if (!value) return "";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return "";
-  return parsed.toLocaleString("ja-JP", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 };
 
 const createCompanySettingsDefaults = () => ({
@@ -435,8 +430,6 @@ const buildTenantState = (legacyState = {}) => {
 
 const initialAppStateValue = buildTenantState(readAppState());
 
-const getLocalFallbackAuthUser = () => null;
-
 const canManageCompany = (role) => canManageCompanies(role);
 const canManageStore = (role) => canManageStores(role);
 const canManageUsers = (role) => canManageUsersByRole(role);
@@ -467,59 +460,6 @@ const resolvePreferredStoreSelection = ({ tenantState, localRecoveredState, curr
     ? storeMatchedById.id
     : (targetStores.find((store) => store.name === selectedStore)?.id || tenantState?.selectedStoreId || "");
   return { selectedStore, selectedStoreId };
-};
-
-const buildStoredUserHydrationState = async ({ storedUser, setCurrentUser, setCurrentRole, setAppState, setAuthMode, setActivePage, setDebugInfo, setSyncStatus, setAuthError, hydrateFromSupabase, refreshAuthDebugInfo }) => {
-  if (!storedUser?.authUserId && !storedUser?.email) return false;
-
-  try {
-    const profile = await ensureProfileForAuthUser({ authUserId: storedUser.authUserId, email: storedUser.email, role: storedUser.role });
-    const tenantState = await loadTenantStateFromSupabase({ authUserId: storedUser.authUserId, email: storedUser.email, currentProfile: profile });
-    const nextUser = buildAuthenticatedUser({
-      profile,
-      authUser: storedUser.authUserId ? { id: storedUser.authUserId, email: storedUser.email } : null,
-      fallback: storedUser,
-      role: storedUser.role,
-      companyId: storedUser.company_id,
-      storeId: storedUser.store_id,
-    });
-    const storedHydrationCompanyId = nextUser.company_id || tenantState.currentCompanyId || storedUser.company_id || "";
-    const localRecoveredState = normalizeAppState(readAppState());
-    const { selectedStore: preferredSelectedStore, selectedStoreId: preferredSelectedStoreId } = resolvePreferredStoreSelection({
-      tenantState,
-      localRecoveredState,
-      currentCompanyId: storedHydrationCompanyId,
-    });
-    const nextState = {
-      ...tenantState,
-      currentCompanyId: storedHydrationCompanyId,
-      currentUserId: nextUser.profileId,
-      currentAuthUserId: nextUser.authUserId,
-      selectedStore: preferredSelectedStore,
-      selectedStoreId: preferredSelectedStoreId,
-      selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
-    };
-
-    setCurrentUser(nextUser);
-    setCurrentRole(normalizeRole(profile?.role || storedUser.role || "staff"));
-    setAppState(nextState);
-    setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
-    await hydrateFromSupabase({
-      authUser: { id: nextUser.authUserId, email: nextUser.email },
-      profile: { id: nextUser.profileId, company_id: nextState.currentCompanyId, role: normalizeRole(profile?.role || storedUser.role || "staff") },
-      tenantState: nextState,
-    });
-    await refreshAuthDebugInfo({ sessionUser: { id: nextUser.authUserId, email: nextUser.email }, role: profile?.role, profile, hasSession: false, authUser: { id: nextUser.authUserId, email: nextUser.email }, setDebugInfo });
-    window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
-    window.localStorage.setItem("salon-role", normalizeRole(profile?.role || storedUser.role || "staff"));
-    setAuthMode("app");
-    setActivePage(resolveDefaultPage(normalizeRole(profile?.role || storedUser.role || "staff")));
-    return true;
-  } catch (error) {
-    console.warn("Stored-user hydration failed", error);
-    setAuthError(getLocalizedSupabaseErrorMessage(error));
-    return false;
-  }
 };
 
 function App() {
@@ -559,7 +499,6 @@ function App() {
   const [userEditId, setUserEditId] = useState("");
   const [companySettingsForm, setCompanySettingsForm] = useState(createCompanySettingsDefaults());
   const [storeSettingsForm, setStoreSettingsForm] = useState(createStoreSettingsDefaults());
-  const [setupStep, setSetupStep] = useState("company");
   const [dailyForm, setDailyForm] = useState({ ...defaultDailyEntry });
   const updateDailyField = (field, value) => {
     setDailyForm((prev) => {
@@ -799,6 +738,12 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStore]);
   const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
+  // Only ever reachable in local/demo mode (isSupabaseConfigured === false): every company
+  // fetched from Supabase (see normalizedCompanies in supabase.js) has setup.complete hardcoded
+  // to true, since there's no per-step "is this company fully onboarded" concept once companies/
+  // stores/store_input_settings/company_settings are all real tables — a company either exists
+  // or it doesn't. Not dead code — it's the non-Supabase demo mode's own onboarding flow — just
+  // never triggered once Supabase is configured.
   const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
   const target = getTargetForStoreMonth(appState, selectedStore, selectedMonth);
   const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
@@ -1301,6 +1246,32 @@ function App() {
       }
       const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data, storeIdToName);
 
+      // variable_costs (販管費) and monthly_closing_items (月締め項目) — direct month lookup,
+      // no carry-forward, so windowed the same as monthly_targets/monthly_closings above.
+      const variableCostsResult = await loadVariableCostsForCompany({ companyId, yearMonths: closingMonths });
+      if (!variableCostsResult.ok) {
+        throw variableCostsResult.error || new Error("販管費データの取得に失敗しました");
+      }
+      const variableCostsOverlay = buildVariableCostsStateFromRows(variableCostsResult.data, storeIdToName);
+
+      const monthlyClosingItemsResult = await loadMonthlyClosingItemsForCompany({ companyId, yearMonths: closingMonths });
+      if (!monthlyClosingItemsResult.ok) {
+        throw monthlyClosingItemsResult.error || new Error("月締め項目データの取得に失敗しました");
+      }
+      const monthlyClosingItemsOverlay = buildMonthlyClosingItemsStateFromRows(monthlyClosingItemsResult.data, storeIdToName);
+
+      // company_settings (business type/currency/display prefs/tax settings/showOtherSales) —
+      // a single row for the whole company. null when no row exists yet (brand-new company);
+      // applyCompanySettingsToCompanies below falls back to the hardcoded defaults in that case,
+      // same as before this table existed.
+      const companySettingsResult = await loadCompanySettings({ companyId });
+      const companySettingsOverlay = buildCompanySettingsFromRow(companySettingsResult.data);
+
+      // store_profiles (address/phone/manager/representative/hours/description/URLs/etc) —
+      // keyed by store_id, one row per store, fetched company-wide alongside store_input_settings.
+      const storeProfilesResult = await loadStoreProfilesForCompany({ companyId });
+      const storeProfilesByStoreId = buildStoreProfilesByStoreId(storeProfilesResult.data);
+
       // store_input_settings (daily/monthly field visibility) is the authoritative source now
       // — see 20260807000000_create_store_input_settings.sql. Fetched company-wide alongside
       // daily_sales/monthly_closings above, then merged onto each store's settings object
@@ -1310,39 +1281,50 @@ function App() {
       const storeInputSettingsByStoreId = Object.fromEntries(
         (storeInputSettingsResult.data || []).map((row) => [row.store_id, row])
       );
+      // Applies every per-store/per-company Supabase-backed settings overlay in one pass: field
+      // visibility (store_input_settings), profile fields (store_profiles), and company-wide
+      // settings/tax/showOtherSales (company_settings) — all keyed by id, never by name.
       const applyStoreInputSettingsToCompanies = (companies) => (companies || []).map((company) => ({
         ...company,
+        settings: company.id === companyId && companySettingsOverlay ? { ...company.settings, ...companySettingsOverlay.settings } : company.settings,
         stores: (company.stores || []).map((store) => {
-          const row = storeInputSettingsByStoreId[store.id];
-          if (!row) return store;
+          const inputRow = storeInputSettingsByStoreId[store.id];
+          const profile = storeProfilesByStoreId[store.id];
           return {
             ...store,
+            ...(profile || {}),
             settings: {
               ...(store.settings || createStoreSettingsDefaults()),
-              dailyFieldSettings: normalizeDailyFieldSettings(row.daily_fields),
-              monthlyTargetFields: normalizeMonthlyTargetFieldSettings(row.monthly_target_fields),
+              ...(inputRow ? {
+                dailyFieldSettings: normalizeDailyFieldSettings(inputRow.daily_fields),
+                monthlyTargetFields: normalizeMonthlyTargetFieldSettings(inputRow.monthly_target_fields),
+              } : {}),
             },
           };
         }),
       }));
 
-      // mergeShallowMap (used by mergeRemoteAppState for `targets` below) only ever unions keys
-      // in — it never removes a key that exists in local/cached state but has no row in this
-      // fresh Supabase fetch. Left alone, a target that was only ever a local/stale value (old
-      // localStorage, a target since deleted from Supabase, a leftover from early testing before
-      // monthly_targets exised) would survive forever and get shown as if it were really
-      // registered. We just authoritatively fetched every store × the last 3 months, so for
-      // every key in that window we now know for certain whether Supabase has a row — build that
-      // exact key set to prune any impostor after the merge below.
-      const expectedTargetKeys = new Set();
+      // mergeShallowMap/mergeItemArrayMap (used by mergeRemoteAppState below) only ever union
+      // keys in — they never remove a key that exists in local/cached state but has no row in
+      // this fresh Supabase fetch. Left alone, a value that was only ever a local/stale artifact
+      // (old localStorage, a row since deleted from Supabase, a leftover from before a table
+      // existed) would survive forever and get shown as if it were really registered. We just
+      // authoritatively fetched every store × the last 3 months (or, for fixed_costs, every
+      // month unbounded — see above), so for every key in that window we now know for certain
+      // whether Supabase has a row. Build each domain's exact expected-key set once so
+      // pruneStaleKeys (storage.js) can drop any impostor after the merge below — this is the
+      // single mechanism every Supabase-backed map field in appState goes through, so a future
+      // domain added the same way automatically gets the same protection.
+      const windowedExpectedKeys = new Set();
       (company?.stores || []).forEach((store) => {
-        closingMonths.forEach((month) => expectedTargetKeys.add(buildMonthKey(store.name, month)));
+        closingMonths.forEach((month) => windowedExpectedKeys.add(buildMonthKey(store.name, month)));
       });
       // fixed_costs has no month window (see above) — every key belonging to one of this
-      // company's stores is inside the just-fetched, fully authoritative set, so any such key
-      // NOT present in fixedCostsOverlay.fixedCosts is confirmed gone (deleted, or never
-      // existed in Supabase to begin with) and must be pruned the same way targets are above.
+      // company's stores is inside the just-fetched, fully authoritative set.
       const companyStoreNamePrefixes = (company?.stores || []).map((store) => `${store.name}__`);
+      const unboundedExpectedKeysFor = (mergedMap) => new Set(
+        Object.keys(mergedMap || {}).filter((key) => companyStoreNamePrefixes.some((prefix) => key.startsWith(prefix)))
+      );
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
           dailyResults: dailySalesState.dailyResults,
@@ -1352,25 +1334,62 @@ function App() {
           // Only targets, deliberately not businessDaySettings here: saveHolidayCount/
           // saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定 quick-edit on the
           // daily entry page) only ever update businessDaySettings locally — they don't persist
-          // to monthly_targets at all (a separate, pre-existing gap outside this change's scope).
-          // Overlaying it here would let a fresh hydrate silently discard an unsaved local
-          // holiday-count edit sooner than it already can.
+          // to monthly_targets at all (a separate, pre-existing gap outside this change's scope,
+          // tracked as a known remaining risk).
           targets: targetStateOverlay.targets,
           fixedCosts: fixedCostsOverlay.fixedCosts,
+          variableCosts: variableCostsOverlay.variableCosts,
+          monthClosing: monthlyClosingItemsOverlay.monthClosing,
+          // company_settings also carries the global showOtherSales toggle and taxSettings —
+          // both top-level appState fields, not nested under companies. Only overlay them when
+          // a row actually exists (companySettingsOverlay is null for a brand-new company that
+          // has never saved settings yet), so a not-yet-registered company still falls through
+          // to createInitialAppState's defaults instead of being forced to false/0.1 here too.
+          ...(companySettingsOverlay ? {
+            preferences: { ...state.preferences, showOtherSales: companySettingsOverlay.showOtherSales },
+            taxSettings: companySettingsOverlay.taxSettings,
+          } : {}),
         });
-        const prunedTargets = { ...merged.targets };
-        expectedTargetKeys.forEach((key) => {
-          if (!(key in targetStateOverlay.targets)) {
-            delete prunedTargets[key];
+        // daily_sales itself: prune any date within the just-fetched range that Supabase no
+        // longer has a row for (entries outside the fetched date range are left untouched —
+        // we simply don't know their status).
+        const prunedDailyResults = { ...merged.dailyResults };
+        const prunedDayClosingStates = { ...merged.dayClosingStates };
+        const prunedDayClosingUpdatedAt = { ...merged.dayClosingUpdatedAt };
+        Object.keys(prunedDailyResults).forEach((key) => {
+          if (!companyStoreNamePrefixes.some((prefix) => key.startsWith(prefix))) return;
+          const freshDates = new Set((dailySalesState.dailyResults[key] || []).map((entry) => entry.date));
+          prunedDailyResults[key] = (prunedDailyResults[key] || []).filter((entry) => {
+            const withinFetchedWindow = entry.date >= dailySalesRange.startDate && entry.date <= dailySalesRange.endDate;
+            return !withinFetchedWindow || freshDates.has(entry.date);
+          });
+          if (prunedDayClosingStates[key]) {
+            const nextClosingDates = { ...prunedDayClosingStates[key] };
+            Object.keys(nextClosingDates).forEach((date) => {
+              const withinFetchedWindow = date >= dailySalesRange.startDate && date <= dailySalesRange.endDate;
+              if (withinFetchedWindow && !freshDates.has(date)) delete nextClosingDates[date];
+            });
+            prunedDayClosingStates[key] = nextClosingDates;
+          }
+          if (prunedDayClosingUpdatedAt[key]) {
+            const nextTimestamps = { ...prunedDayClosingUpdatedAt[key] };
+            Object.keys(nextTimestamps).forEach((date) => {
+              const withinFetchedWindow = date >= dailySalesRange.startDate && date <= dailySalesRange.endDate;
+              if (withinFetchedWindow && !freshDates.has(date)) delete nextTimestamps[date];
+            });
+            prunedDayClosingUpdatedAt[key] = nextTimestamps;
           }
         });
-        const prunedFixedCosts = { ...merged.fixedCosts };
-        Object.keys(prunedFixedCosts).forEach((key) => {
-          if (companyStoreNamePrefixes.some((prefix) => key.startsWith(prefix)) && !(key in fixedCostsOverlay.fixedCosts)) {
-            delete prunedFixedCosts[key];
-          }
-        });
-        return { ...merged, targets: prunedTargets, fixedCosts: prunedFixedCosts };
+        return {
+          ...merged,
+          dailyResults: prunedDailyResults,
+          dayClosingStates: prunedDayClosingStates,
+          dayClosingUpdatedAt: prunedDayClosingUpdatedAt,
+          targets: pruneStaleKeys(merged.targets, windowedExpectedKeys, targetStateOverlay.targets),
+          fixedCosts: pruneStaleKeys(merged.fixedCosts, unboundedExpectedKeysFor(merged.fixedCosts), fixedCostsOverlay.fixedCosts),
+          variableCosts: pruneStaleKeys(merged.variableCosts, windowedExpectedKeys, variableCostsOverlay.variableCosts),
+          monthClosing: pruneStaleKeys(merged.monthClosing, windowedExpectedKeys, monthlyClosingItemsOverlay.monthClosing),
+        };
       };
 
       const snapshotResult = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
@@ -1683,6 +1702,16 @@ function App() {
         isActive: storeForm.isActive !== false,
         settings: { ...createStoreSettingsDefaults(), ...(existingStore?.settings || {}), ...(storeSettingsForm || {}) },
       };
+      if (isSupabaseConfigured) {
+        // store_profiles is keyed by store_id, never by name — this is the fix for the profile
+        // fields (address/phone/manager/etc) that previously only ever lived in local React
+        // state and got silently reset to blank on every hydrate, since stores/companies have
+        // no columns for them at all.
+        const profileResult = await upsertStoreProfile({ companyId, storeId, userId: appState.currentUserId, profile: nextStore });
+        if (!profileResult.ok) {
+          throw profileResult.error || new Error("店舗プロフィールの保存に失敗しました");
+        }
+      }
       const nextCompany = {
         ...currentCompany,
         stores: existingStore
@@ -1810,6 +1839,24 @@ function App() {
   // localStorage synchronously instead.
   const handleMonthSwitch = (monthValue) => {
     persistTenantState({ ...appState, selectedMonth: monthValue });
+  };
+
+  const handleToggleShowOtherSales = async () => {
+    const nextShowOtherSales = !Boolean(appState.preferences?.showOtherSales);
+    if (isSupabaseConfigured && currentCompany?.id) {
+      const result = await upsertCompanySettings({
+        companyId: currentCompany.id,
+        userId: appState.currentUserId,
+        settings: currentCompany.settings || createCompanySettingsDefaults(),
+        taxSettings: appState.taxSettings,
+        showOtherSales: nextShowOtherSales,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => ({ ...prev, preferences: { ...prev.preferences, showOtherSales: nextShowOtherSales } }));
   };
 
   const handleEditCompany = (company) => {
@@ -2033,32 +2080,37 @@ function App() {
     setNotice("初期設定を完了しました");
   };
 
-  const handleSaveCompanySettings = () => {
+  const handleSaveCompanySettings = async () => {
+    if (!currentCompany?.id) {
+      setNotice("会社情報を確認できませんでした");
+      return;
+    }
+    const nextSettings = { ...createCompanySettingsDefaults(), ...(currentCompany.settings || {}), ...(companySettingsForm || {}), businessType: companySettingsForm.businessType || currentCompany.businessType || "salon" };
+    if (isSupabaseConfigured) {
+      const result = await upsertCompanySettings({
+        companyId: currentCompany.id,
+        userId: appState.currentUserId,
+        settings: nextSettings,
+        taxSettings: appState.taxSettings,
+        showOtherSales: appState.preferences?.showOtherSales,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
     const nextState = {
       ...appState,
       companies: (appState.companies || []).map((company) => company.id === currentCompany?.id ? {
         ...company,
-        businessType: companySettingsForm.businessType || company.businessType || "salon",
-        settings: { ...createCompanySettingsDefaults(), ...(company.settings || {}), ...(companySettingsForm || {}), businessType: companySettingsForm.businessType || company.businessType || "salon" },
+        businessType: nextSettings.businessType,
+        settings: nextSettings,
         setup: { ...(company.setup || {}), settings: true, complete: Boolean(company.setup?.company && company.setup?.store && company.setup?.admin && company.setup?.settings) },
         lastUpdatedAt: new Date().toISOString(),
       } : company),
     };
     persistTenantState(nextState);
     setNotice("会社基本設定を保存しました");
-  };
-
-  const handleSaveStoreSettings = () => {
-    const nextCompany = {
-      ...currentCompany,
-      stores: (currentCompany?.stores || []).map((store) => store.name === selectedStore ? { ...store, settings: storeSettingsForm } : store),
-    };
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => company.id === currentCompany?.id ? nextCompany : company),
-    };
-    persistTenantState(nextState);
-    setNotice("店舗初期設定を保存しました");
   };
 
   const applyDailyFieldPreset = (presetKey) => {
@@ -2786,51 +2838,6 @@ function App() {
     setNotice("入力をキャンセルしました");
   };
 
-  const copyPreviousDayData = () => {
-    const selectedDate = dailyForm.date || new Date().toISOString().slice(0, 10);
-    const currentDate = new Date(`${selectedDate}T00:00:00`);
-    currentDate.setDate(currentDate.getDate() - 1);
-    const previousDate = formatLocalDate(currentDate);
-    const sourceEntry = dailyEntries.find((entry) => entry.date === previousDate) || null;
-    if (!sourceEntry) {
-      setNotice("前日のデータがありません");
-      return;
-    }
-    setDailyForm({
-      ...defaultDailyEntry,
-      date: selectedDate,
-      totalSales: sourceEntry.totalSales ?? "",
-      technicalSales: sourceEntry.technicalSales ?? "",
-      retailSales: sourceEntry.retailSales ?? "",
-      otherSales: sourceEntry.otherSales ?? "",
-      customers: sourceEntry.customers ?? "",
-      newCustomers: sourceEntry.newCustomers ?? "",
-      repeatCustomers: sourceEntry.repeatCustomers ?? "",
-    });
-    setDailyMode("edit");
-    setDailyOriginalEntry(null);
-    setDailyInsight("");
-    setNotice(`${previousDate}のデータをコピーしました`);
-  };
-
-  const removeDailyEntry = (entryId) => {
-    if (!window.confirm("この日次実績を削除しますか？")) {
-      return;
-    }
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const list = prev.dailyResults?.[key] || [];
-      return {
-        ...prev,
-        dailyResults: {
-          ...prev.dailyResults,
-          [key]: list.filter((item) => item.id !== entryId),
-        },
-      };
-    });
-    setNotice("日次実績を削除しました");
-  };
-
   const submitFixedCost = async (event) => {
     event.preventDefault();
     if (!fixedForm.name || !fixedForm.amount) {
@@ -2910,21 +2917,42 @@ function App() {
     setNotice("固定費を削除しました");
   };
 
-  const submitVariableCost = (event) => {
+  const submitVariableCost = async (event) => {
     event.preventDefault();
     if (!variableForm.name || !variableForm.amount) {
       setNotice("項目名と金額は必須です");
       return;
     }
 
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const list = prev.variableCosts?.[key] || [];
-      const nextItem = { ...variableForm, amount: parseNumber(variableForm.amount) };
-      const updated = variableForm.id
-        ? list.map((item) => (item.id === variableForm.id ? nextItem : item))
-        : [...list, { ...nextItem, id: crypto.randomUUID() }];
+    const key = buildMonthKey(selectedStore, selectedMonth);
+    const itemId = variableForm.id || crypto.randomUUID();
+    const nextItem = { ...variableForm, id: itemId, amount: parseNumber(variableForm.amount) };
 
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured) {
+      if (!company?.id || !store?.id) {
+        setNotice("店舗情報を確認できませんでした");
+        return;
+      }
+      const result = await upsertVariableCostToSupabase({
+        id: itemId,
+        companyId: company.id,
+        storeId: store.id,
+        targetMonth: selectedMonth,
+        userId: appState.currentUserId,
+        item: nextItem,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+
+    setAppState((prev) => {
+      const list = prev.variableCosts?.[key] || [];
+      const updated = variableForm.id
+        ? list.map((item) => (item.id === itemId ? nextItem : item))
+        : [...list, nextItem];
       return {
         ...prev,
         variableCosts: {
@@ -2943,9 +2971,16 @@ function App() {
     setNotice("販管費を編集します");
   };
 
-  const removeVariableCost = (itemId) => {
+  const removeVariableCost = async (itemId) => {
     if (!window.confirm("この販管費を削除しますか？")) {
       return;
+    }
+    if (isSupabaseConfigured) {
+      const result = await deleteVariableCostFromSupabase({ id: itemId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
     }
     setAppState((prev) => {
       const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
@@ -2961,21 +2996,42 @@ function App() {
     setNotice("販管費を削除しました");
   };
 
-  const submitClosingItem = (event) => {
+  const submitClosingItem = async (event) => {
     event.preventDefault();
     if (!closingForm.name || !closingForm.amount) {
       setNotice("項目名と金額は必須です");
       return;
     }
 
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const list = prev.monthClosing?.[key] || [];
-      const nextItem = { ...closingForm, amount: parseNumber(closingForm.amount) };
-      const updated = closingForm.id
-        ? list.map((item) => (item.id === closingForm.id ? nextItem : item))
-        : [...list, { ...nextItem, id: crypto.randomUUID() }];
+    const key = buildMonthKey(selectedStore, selectedMonth);
+    const itemId = closingForm.id || crypto.randomUUID();
+    const nextItem = { ...closingForm, id: itemId, amount: parseNumber(closingForm.amount) };
 
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured) {
+      if (!company?.id || !store?.id) {
+        setNotice("店舗情報を確認できませんでした");
+        return;
+      }
+      const result = await upsertMonthlyClosingItemToSupabase({
+        id: itemId,
+        companyId: company.id,
+        storeId: store.id,
+        targetMonth: selectedMonth,
+        userId: appState.currentUserId,
+        item: nextItem,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+
+    setAppState((prev) => {
+      const list = prev.monthClosing?.[key] || [];
+      const updated = closingForm.id
+        ? list.map((item) => (item.id === itemId ? nextItem : item))
+        : [...list, nextItem];
       return {
         ...prev,
         monthClosing: {
@@ -2994,9 +3050,16 @@ function App() {
     setNotice("月締め項目を編集します");
   };
 
-  const removeClosingItem = (itemId) => {
+  const removeClosingItem = async (itemId) => {
     if (!window.confirm("この月締め項目を削除しますか？")) {
       return;
+    }
+    if (isSupabaseConfigured) {
+      const result = await deleteMonthlyClosingItemFromSupabase({ id: itemId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
     }
     setAppState((prev) => {
       const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
@@ -3239,95 +3302,53 @@ function App() {
     setNotice(nextClosed ? "日締めが完了しました" : "日締めを解除しました");
   };
 
-  const handleStoreAdd = () => {
-    const trimmed = newStoreName.trim();
-    if (!trimmed) {
-      setNotice("店舗名を入力してください");
-      return;
-    }
-    if (stores.includes(trimmed)) {
-      setNotice("既に登録済みの店舗名です");
-      return;
-    }
-    setAppState((prev) => ({
-      ...prev,
-      stores: [...prev.stores, trimmed],
-      selectedStore: trimmed,
-    }));
-    setNewStoreName("");
-    setNotice("店舗を追加しました");
-  };
-
-  const handleStoreUpdate = (event) => {
-    event.preventDefault();
-    const trimmed = storeFormName.trim();
-    if (!trimmed || !storeEditId) return;
-    setAppState((prev) => ({
-      ...prev,
-      stores: prev.stores.map((store) => (store === storeEditId ? trimmed : store)),
-      selectedStore: prev.selectedStore === storeEditId ? trimmed : prev.selectedStore,
-    }));
-    setStoreFormName("");
-    setStoreEditId("");
-    setNotice("店舗名を更新しました");
-  };
-
-  const handleStoreDelete = (storeName) => {
-    if (!window.confirm(`${storeName} を削除しますか？`)) {
-      return;
-    }
-    if (stores.length <= 1) {
-      setAppState((prev) => ({ ...prev, stores: [], selectedStore: "" }));
-      setNotice("最後の店舗を削除しました");
-      return;
-    }
-    const nextStores = stores.filter((item) => item !== storeName);
-    setAppState((prev) => ({
-      ...prev,
-      stores: nextStores,
-      selectedStore: prev.selectedStore === storeName ? nextStores[0] : prev.selectedStore,
-    }));
-    setNotice("店舗を削除しました");
-  };
-
-  const copyPreviousMonthData = (section) => {
+  const copyPreviousMonthData = async (section) => {
     const previousMonth = getMonthOffset(selectedMonth, -1);
     const sourceKey = buildMonthKey(selectedStore, previousMonth);
     const targetKey = buildMonthKey(selectedStore, selectedMonth);
+    const stateKey = section === "fixed" ? "fixedCosts" : section === "variable" ? "variableCosts" : "monthClosing";
+    const sourceItems = appState[stateKey]?.[sourceKey] || [];
+    if (!sourceItems.length) {
+      setNotice("前月のデータがありません");
+      return;
+    }
+    const copiedItems = sourceItems.map((item) => ({ ...item, id: crypto.randomUUID() }));
 
-    setAppState((prev) => {
-      if (section === "fixed") {
-        return {
-          ...prev,
-          fixedCosts: {
-            ...prev.fixedCosts,
-            [targetKey]: (prev.fixedCosts?.[sourceKey] || []).map((item) => ({ ...item, id: crypto.randomUUID() })),
-          },
-        };
+    // variable_costs/monthly_closing_items have no dedicated-table equivalent of
+    // rekeyStoreNamedMaps to fall back on — a copy that only ever reached local state would be
+    // silently pruned back out on the very next hydrate (fixedCosts/variableCosts/monthClosing
+    // are all now confirmed-present-in-Supabase-or-gone, per the same rule as targets). Persist
+    // every copied item for real before reflecting it locally.
+    if (isSupabaseConfigured) {
+      const { company, store } = resolveTargetCompanyAndStore();
+      if (!company?.id || !store?.id) {
+        setNotice("店舗情報を確認できませんでした");
+        return;
       }
-      if (section === "variable") {
-        return {
-          ...prev,
-          variableCosts: {
-            ...prev.variableCosts,
-            [targetKey]: (prev.variableCosts?.[sourceKey] || []).map((item) => ({ ...item, id: crypto.randomUUID() })),
-          },
-        };
+      const upsertFn = section === "fixed" ? upsertFixedCostToSupabase : section === "variable" ? upsertVariableCostToSupabase : upsertMonthlyClosingItemToSupabase;
+      const results = await Promise.all(copiedItems.map((item) => upsertFn({
+        id: item.id,
+        companyId: company.id,
+        storeId: store.id,
+        ...(section === "fixed" ? { entryMonth: selectedMonth } : { targetMonth: selectedMonth }),
+        userId: appState.currentUserId,
+        item,
+      })));
+      const failed = results.find((result) => !result.ok);
+      if (failed) {
+        setNotice(getSupabaseErrorMessage(failed.error));
+        return;
       }
-      return {
-        ...prev,
-        monthClosing: {
-          ...prev.monthClosing,
-          [targetKey]: (prev.monthClosing?.[sourceKey] || []).map((item) => ({ ...item, id: crypto.randomUUID() })),
-        },
-      };
-    });
+    }
+
+    setAppState((prev) => ({
+      ...prev,
+      [stateKey]: {
+        ...prev[stateKey],
+        [targetKey]: copiedItems,
+      },
+    }));
     setNotice(`前月データを${selectedMonth}へコピーしました`);
-  };
-
-  const startEditStore = (storeName) => {
-    setStoreEditId(storeName);
-    setStoreFormName(storeName);
   };
 
   if (authLoading) {
@@ -4369,35 +4390,6 @@ function App() {
             <div className="setup-card">
               <div className="panel-heading compact">
                 <div>
-                  <p className="eyebrow">STORE SETTINGS</p>
-                  <h3>店舗初期設定</h3>
-                </div>
-              </div>
-              <div className="input-grid">
-                <label className="field">
-                  <span>月間売上目標</span>
-                  <input value={storeSettingsForm.monthlyTargetSales || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, monthlyTargetSales: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>店販売上目標</span>
-                  <input value={storeSettingsForm.retailTargetSales || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, retailTargetSales: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>客数目標</span>
-                  <input value={storeSettingsForm.customerTarget || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, customerTarget: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>営業日</span>
-                  <input value={storeSettingsForm.businessDays || ""} onChange={(event) => setStoreSettingsForm((prev) => ({ ...prev, businessDays: event.target.value }))} />
-                </label>
-              </div>
-              <div className="button-row">
-                <button className="secondary-button" type="button" onClick={handleSaveStoreSettings}>店舗設定を保存</button>
-              </div>
-            </div>
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
                   <p className="eyebrow">DAILY FORM</p>
                   <h3>日次入力項目の設定</h3>
                 </div>
@@ -4677,7 +4669,7 @@ function App() {
                 <strong>その他売上を使用する</strong>
                 <small>{appState.preferences?.showOtherSales ? "オン" : "オフ"}</small>
               </div>
-              <button className="secondary-button" type="button" onClick={() => setAppState((prev) => ({ ...prev, preferences: { ...prev.preferences, showOtherSales: !Boolean(prev.preferences?.showOtherSales) } }))}>
+              <button className="secondary-button" type="button" onClick={handleToggleShowOtherSales}>
                 {appState.preferences?.showOtherSales ? "オフにする" : "オンにする"}
               </button>
             </div>

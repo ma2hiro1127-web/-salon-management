@@ -1,6 +1,20 @@
 import { logSupabaseError, supabase } from "./supabase.js";
 import { mergeRemoteAppState, normalizeAppState } from "./storage.js";
 
+// tenant_snapshots is a legacy whole-appState cache/fallback, never the production source of
+// truth for anything it embeds. Every domain that has its own dedicated table (companies,
+// stores, profiles, user_stores, daily_sales, monthly_targets, monthly_closings,
+// store_input_settings, fixed_costs, variable_costs, monthly_closing_items, company_settings,
+// store_profiles) is fetched fresh from that table in hydrateFromSupabase (App.jsx) and always
+// wins over whatever a stale snapshot's payload happens to contain — see the "never from this
+// snapshot's embedded copy" comments throughout hydrateFromSupabase for the specific precedence
+// each field follows. What a snapshot is still useful for: a fast first paint before those
+// per-table fetches resolve, and an offline/degraded fallback if a fetch fails outright. It
+// should never gain a new field that isn't also backed by a real table — if a new domain needs
+// to persist reliably, it needs its own table the same way this session's fixes added one for
+// fixed_costs/variable_costs/monthly_closing_items/company_settings/store_profiles, not a new
+// reliance on this blob.
+
 const getEnvValue = (key) => {
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
   return env[key] || "";

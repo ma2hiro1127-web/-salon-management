@@ -61,7 +61,7 @@ export const buildMonthKey = (store, month) => `${store}__${month}`;
 // without waiting for the next hydrate to re-derive it from the store_id-keyed tables.
 const STORE_NAME_KEYED_MAPS = [
   "dailyResults", "dayClosingStates", "dayClosingUpdatedAt", "targets", "businessDaySettings",
-  "monthClosingStatus", "dailyDrafts", "fixedCosts", "variableCosts", "monthClosing", "dailyResultBackups",
+  "monthClosingStatus", "fixedCosts", "variableCosts", "monthClosing", "dailyResultBackups",
 ];
 
 export const rekeyStoreNamedMaps = (state, oldName, newName) => {
@@ -102,7 +102,13 @@ export const getBusinessDaySettings = (state, storeName, monthValue) => {
   return state.businessDaySettings?.[key] || {};
 };
 
-export const deduplicateDailyEntries = (entries = [], backupTarget = {}) => {
+// The returned `backups` array is a local-only historical log (see dailyResultBackups in
+// defaults.js) of whichever duplicate entries lost out during this pass — it is NEVER read back
+// in to influence a future dedup decision, so it cannot resurrect a duplicate that was correctly
+// dropped once, and it cannot cause a Supabase-deleted daily_sales row to reappear either
+// (dailyResults itself always comes from a fresh Supabase fetch — see applyDailySalesOverlay in
+// App.jsx — not from this backup log).
+export const deduplicateDailyEntries = (entries = []) => {
   const deduped = [];
   const backups = [];
   const byDate = new Map();
@@ -306,6 +312,114 @@ export const buildFixedCostsStateFromRows = (rows = [], storeIdToName = {}) => {
   return { fixedCosts };
 };
 
+// variable_costs (販管費) — direct month lookup (target_month), no carry-forward.
+export const buildVariableCostsStateFromRows = (rows = [], storeIdToName = {}) => {
+  const variableCosts = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.target_month) return;
+    const key = buildMonthKey(storeName, row.target_month);
+    const item = {
+      id: row.id,
+      name: row.name || "",
+      amount: row.amount,
+      category: row.category || "",
+      memo: row.memo || "",
+      incurredDate: row.incurred_date || "",
+      type: row.type || "regular",
+    };
+    variableCosts[key] = [...(variableCosts[key] || []), item];
+  });
+  return { variableCosts };
+};
+
+// monthly_closing_items (月締め項目) — same shape of fix as variable_costs above.
+export const buildMonthlyClosingItemsStateFromRows = (rows = [], storeIdToName = {}) => {
+  const monthClosing = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.target_month) return;
+    const key = buildMonthKey(storeName, row.target_month);
+    const item = {
+      id: row.id,
+      name: row.name || "",
+      amount: row.amount,
+      category: row.category || "",
+    };
+    monthClosing[key] = [...(monthClosing[key] || []), item];
+  });
+  return { monthClosing };
+};
+
+// company_settings — a single row for the whole company; returns null fields (not a default
+// object) when no row exists yet, so the caller can tell "not registered" apart from "registered
+// with default values" the same way targets/fixed_costs do.
+export const buildCompanySettingsFromRow = (row) => {
+  if (!row) return null;
+  return {
+    settings: {
+      businessType: row.business_type || "salon",
+      currency: row.currency || "JPY",
+      fiscalYearStartMonth: row.fiscal_year_start_month || "1",
+      salesDisplayMode: row.sales_display_mode || "inclusive",
+      retailSalesLabel: row.retail_sales_label || "店販売上",
+      closingDay: row.closing_day || "月末",
+      editDeadlineDays: row.edit_deadline_days ?? 7,
+      allowStaffPastEdit: Boolean(row.allow_staff_past_edit),
+      visibleSalesFields: Array.isArray(row.visible_sales_fields) ? row.visible_sales_fields : ["technicalSales", "retailSales", "otherSales"],
+      activeKpis: Array.isArray(row.active_kpis) ? row.active_kpis : ["sales", "customers", "retailRatio"],
+    },
+    taxSettings: {
+      rate: row.tax_rate ?? 0.1,
+      roundingMode: row.tax_rounding_mode || "half-up",
+      salesInputMode: row.tax_sales_input_mode || "inclusive",
+      expenseInputMode: row.tax_expense_input_mode || "inclusive",
+    },
+    showOtherSales: Boolean(row.show_other_sales),
+  };
+};
+
+// store_profiles — keyed by store_id (not name), merged directly onto each store object by id.
+export const buildStoreProfilesByStoreId = (rows = []) => {
+  const byStoreId = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    byStoreId[row.store_id] = {
+      postalCode: row.postal_code || "",
+      address: row.address || "",
+      phone: row.phone || "",
+      managerName: row.manager_name || "",
+      representativeName: row.representative_name || "",
+      openingDate: row.opening_date || "",
+      openingHour: row.opening_hour || "09:00",
+      closingHour: row.closing_hour || "20:00",
+      closedDays: row.closed_days || "",
+      businessHours: row.business_hours || "",
+      description: row.description || "",
+      website: row.website || "",
+      instagram: row.instagram || "",
+      googleMapUrl: row.google_map_url || "",
+      serviceTypes: Array.isArray(row.service_types) ? row.service_types.join(", ") : "",
+      urls: Array.isArray(row.urls) ? row.urls : [],
+      status: row.status || "active",
+    };
+  });
+  return byStoreId;
+};
+
+// Shared by every Supabase-backed map field (targets, fixedCosts, variableCosts, monthClosing,
+// ...): mergeShallowMap/mergeItemArrayMap only ever union local+remote in, so a key that used to
+// exist locally (old localStorage, a row since deleted from Supabase, a leftover from before a
+// table existed) survives forever unless something explicitly drops it. Call this after merging,
+// passing every key we just authoritatively fetched for (expectedKeys) and the fresh overlay we
+// fetched it into (freshMap) — any expected key NOT in freshMap is confirmed gone and pruned.
+export const pruneStaleKeys = (mergedMap, expectedKeys, freshMap) => {
+  const pruned = { ...mergedMap };
+  expectedKeys.forEach((key) => {
+    if (!(key in freshMap)) delete pruned[key];
+  });
+  return pruned;
+};
+
 const mergeDailyResultsMap = (localMap = {}, remoteMap = {}) => {
   const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
   const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};
@@ -423,7 +537,6 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   targets: mergeShallowMap(localState.targets, remoteState.targets),
   businessDaySettings: mergeShallowMap(localState.businessDaySettings, remoteState.businessDaySettings),
   monthClosingStatus: mergeShallowMap(localState.monthClosingStatus, remoteState.monthClosingStatus),
-  dailyDrafts: mergeShallowMap(localState.dailyDrafts, remoteState.dailyDrafts),
 });
 
 // 営業進捗 = 選択中の店舗・対象月の日次データのうち、日締め済みになっているユニークな
@@ -539,7 +652,6 @@ export const normalizeAppState = (value) => {
     variableCosts: normalizeObjectMap(source.variableCosts),
     monthClosing: normalizeObjectMap(source.monthClosing),
     monthClosingStatus: normalizeObjectMap(source.monthClosingStatus),
-    dailyDrafts: normalizeObjectMap(source.dailyDrafts),
     dailyResultBackups: normalizeObjectMap(source.dailyResultBackups),
     preferences: {
       ...(source.preferences || {}),
@@ -637,7 +749,7 @@ export const getTargetForStoreMonth = (state, storeName, monthValue) => ({
 
 export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
   const items = state.dailyResults?.[buildMonthKey(storeName, monthValue)] || [];
-  const { entries } = deduplicateDailyEntries(items, state.dailyResultBackups || {});
+  const { entries } = deduplicateDailyEntries(items);
   return entries;
 };
 

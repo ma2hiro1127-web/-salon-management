@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, calculateMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getCustomerTargetSummary, getFixedCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, readAppState, writeAppState } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, pruneStaleKeys, readAppState, writeAppState } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -763,4 +763,64 @@ test("buildFixedCostsStateFromRows: a this-month item (not onward) never carries
 
   assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-06").length, 1);
   assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 0);
+});
+
+test("buildVariableCostsStateFromRows: direct month lookup, no carry-forward to a later month", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "vc-1", store_id: "store-honten", target_month: "2026-08", name: "広告費", amount: 40000, category: "広告費", memo: "", incurred_date: "", type: "regular" },
+  ];
+  const { variableCosts } = buildVariableCostsStateFromRows(rows, storeIdToName);
+  const state = { ...createInitialAppState(), variableCosts };
+
+  assert.equal(getVariableCostsForStoreMonth(state, "本店", "2026-08").length, 1);
+  assert.equal(getVariableCostsForStoreMonth(state, "本店", "2026-09").length, 0);
+});
+
+test("buildMonthlyClosingItemsStateFromRows rebuilds monthClosing per store/month from monthly_closing_items rows", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "mci-1", store_id: "store-honten", target_month: "2026-08", name: "人件費", amount: 300000, category: "人件費" },
+  ];
+  const { monthClosing } = buildMonthlyClosingItemsStateFromRows(rows, storeIdToName);
+  assert.deepEqual(monthClosing["本店__2026-08"], [{ id: "mci-1", name: "人件費", amount: 300000, category: "人件費" }]);
+});
+
+test("buildCompanySettingsFromRow returns null when no row exists yet (not-registered, not a default object)", () => {
+  assert.equal(buildCompanySettingsFromRow(null), null);
+});
+
+test("buildCompanySettingsFromRow maps a company_settings row to settings/taxSettings/showOtherSales", () => {
+  const row = {
+    business_type: "nail", currency: "USD", fiscal_year_start_month: "4", sales_display_mode: "exclusive",
+    retail_sales_label: "物販売上", closing_day: "25日", edit_deadline_days: 3, allow_staff_past_edit: true,
+    visible_sales_fields: ["technicalSales"], active_kpis: ["sales"], show_other_sales: true,
+    tax_rate: 0.08, tax_rounding_mode: "round-down", tax_sales_input_mode: "exclusive", tax_expense_input_mode: "exclusive",
+  };
+  const result = buildCompanySettingsFromRow(row);
+  assert.equal(result.settings.businessType, "nail");
+  assert.equal(result.settings.currency, "USD");
+  assert.equal(result.showOtherSales, true);
+  assert.equal(result.taxSettings.rate, 0.08);
+  assert.equal(result.taxSettings.roundingMode, "round-down");
+});
+
+test("buildStoreProfilesByStoreId keys profile fields by store_id, joins service_types back into a comma-separated string", () => {
+  const rows = [
+    { store_id: "store-honten", address: "東京都渋谷区1-2-3", phone: "03-1234-5678", representative_name: "山田太郎", service_types: ["カット", "カラー"] },
+  ];
+  const result = buildStoreProfilesByStoreId(rows);
+  assert.equal(result["store-honten"].address, "東京都渋谷区1-2-3");
+  assert.equal(result["store-honten"].representativeName, "山田太郎");
+  assert.equal(result["store-honten"].serviceTypes, "カット, カラー");
+});
+
+test("pruneStaleKeys drops any expected key Supabase no longer has a row for, leaves everything else untouched", () => {
+  const merged = { "本店__2026-08": { targetSales: 100000 }, "本店__2026-07": { targetSales: 90000 }, "フィーネ横浜__2026-08": { targetSales: 50000 } };
+  // Only 本店__2026-08 and 本店__2026-07 were inside the just-fetched window; フィーネ横浜__2026-08
+  // wasn't fetched this time and must be left alone regardless of what freshMap contains.
+  const expectedKeys = new Set(["本店__2026-08", "本店__2026-07"]);
+  const freshMap = { "本店__2026-08": { targetSales: 100000 } }; // 本店__2026-07's target was deleted from Supabase
+  const pruned = pruneStaleKeys(merged, expectedKeys, freshMap);
+  assert.deepEqual(Object.keys(pruned).sort(), ["フィーネ横浜__2026-08", "本店__2026-08"]);
 });

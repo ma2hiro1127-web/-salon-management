@@ -1029,3 +1029,233 @@ export const deleteFixedCostFromSupabase = async ({ id }) => {
     return { ok: false, error };
   }
 };
+
+// variable_costs (販管費) — direct month lookup, no carry-forward, so unlike fixed_costs this
+// can safely be windowed the same way monthly_targets/monthly_closings are (current + recent
+// months) rather than fetched unbounded for the whole company.
+export const loadVariableCostsForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("variable_costs")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("target_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadVariableCostsForCompany", table: "variable_costs", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const upsertVariableCostToSupabase = async ({ id, companyId, storeId, targetMonth, userId, item }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ id, companyId, storeId, targetMonth, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertVariableCostToSupabase", table: "variable_costs", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const payload = {
+    id,
+    company_id: companyId,
+    store_id: storeId,
+    target_month: targetMonth,
+    name: String(item?.name || ""),
+    amount: Number(item?.amount || 0),
+    category: String(item?.category || ""),
+    memo: String(item?.memo || ""),
+    incurred_date: String(item?.incurredDate || ""),
+    type: String(item?.type || "regular"),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    const { data, error } = await supabase.from("variable_costs").upsert(payload, { onConflict: "id" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertVariableCostToSupabase", table: "variable_costs", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const deleteVariableCostFromSupabase = async ({ id }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!id) return { ok: true, skipped: true };
+  try {
+    const { error } = await supabase.from("variable_costs").delete().eq("id", id);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteVariableCostFromSupabase", table: "variable_costs", id, error });
+    return { ok: false, error };
+  }
+};
+
+// monthly_closing_items (月締め項目) — same shape of fix as variable_costs above.
+export const loadMonthlyClosingItemsForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_closing_items")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("target_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadMonthlyClosingItemsForCompany", table: "monthly_closing_items", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const upsertMonthlyClosingItemToSupabase = async ({ id, companyId, storeId, targetMonth, userId, item }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ id, companyId, storeId, targetMonth, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertMonthlyClosingItemToSupabase", table: "monthly_closing_items", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const payload = {
+    id,
+    company_id: companyId,
+    store_id: storeId,
+    target_month: targetMonth,
+    name: String(item?.name || ""),
+    amount: Number(item?.amount || 0),
+    category: String(item?.category || ""),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    const { data, error } = await supabase.from("monthly_closing_items").upsert(payload, { onConflict: "id" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertMonthlyClosingItemToSupabase", table: "monthly_closing_items", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const deleteMonthlyClosingItemFromSupabase = async ({ id }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!id) return { ok: true, skipped: true };
+  try {
+    const { error } = await supabase.from("monthly_closing_items").delete().eq("id", id);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteMonthlyClosingItemFromSupabase", table: "monthly_closing_items", id, error });
+    return { ok: false, error };
+  }
+};
+
+// company_settings — one row per company (business type, currency, display prefs, tax
+// settings, the global showOtherSales toggle). Fetched company-wide (single row) alongside
+// companies/stores in loadTenantStateFromSupabase's caller, not windowed by month.
+export const loadCompanySettings = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: null };
+  try {
+    const { data, error } = await supabase.from("company_settings").select("*").eq("company_id", companyId).maybeSingle();
+    if (error) throw error;
+    return { ok: true, data: data || null };
+  } catch (error) {
+    logSupabaseError({ operation: "loadCompanySettings", table: "company_settings", companyId, error });
+    return { ok: false, error, data: null };
+  }
+};
+
+export const upsertCompanySettings = async ({ companyId, userId, settings, taxSettings, showOtherSales }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertCompanySettings", table: "company_settings", userId, companyId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const payload = {
+    company_id: companyId,
+    business_type: String(settings?.businessType || "salon"),
+    currency: String(settings?.currency || "JPY"),
+    fiscal_year_start_month: String(settings?.fiscalYearStartMonth || "1"),
+    sales_display_mode: String(settings?.salesDisplayMode || "inclusive"),
+    retail_sales_label: String(settings?.retailSalesLabel || "店販売上"),
+    closing_day: String(settings?.closingDay || "月末"),
+    edit_deadline_days: Number(settings?.editDeadlineDays ?? 7),
+    allow_staff_past_edit: Boolean(settings?.allowStaffPastEdit),
+    visible_sales_fields: Array.isArray(settings?.visibleSalesFields) ? settings.visibleSalesFields : ["technicalSales", "retailSales", "otherSales"],
+    active_kpis: Array.isArray(settings?.activeKpis) ? settings.activeKpis : ["sales", "customers", "retailRatio"],
+    show_other_sales: Boolean(showOtherSales),
+    tax_rate: Number(taxSettings?.rate ?? 0.1),
+    tax_rounding_mode: String(taxSettings?.roundingMode || "half-up"),
+    tax_sales_input_mode: String(taxSettings?.salesInputMode || "inclusive"),
+    tax_expense_input_mode: String(taxSettings?.expenseInputMode || "inclusive"),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    const { data, error } = await supabase.from("company_settings").upsert(payload, { onConflict: "company_id" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertCompanySettings", table: "company_settings", userId, companyId, error });
+    return { ok: false, error };
+  }
+};
+
+// store_profiles — one row per store (address/phone/manager/representative/hours/description/
+// URLs/etc), keyed by store_id so a rename can never orphan a profile.
+export const loadStoreProfilesForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase.from("store_profiles").select("*").eq("company_id", companyId);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreProfilesForCompany", table: "store_profiles", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const upsertStoreProfile = async ({ companyId, storeId, userId, profile }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertStoreProfile", table: "store_profiles", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const serviceTypesArray = Array.isArray(profile?.serviceTypes)
+    ? profile.serviceTypes
+    : String(profile?.serviceTypes || "").split(",").map((item) => item.trim()).filter(Boolean);
+  const payload = {
+    store_id: storeId,
+    company_id: companyId,
+    postal_code: String(profile?.postalCode || ""),
+    address: String(profile?.address || ""),
+    phone: String(profile?.phone || ""),
+    manager_name: String(profile?.managerName || ""),
+    representative_name: String(profile?.representativeName || ""),
+    opening_date: String(profile?.openingDate || ""),
+    opening_hour: String(profile?.openingHour || "09:00"),
+    closing_hour: String(profile?.closingHour || "20:00"),
+    closed_days: String(profile?.closedDays || ""),
+    business_hours: String(profile?.businessHours || ""),
+    description: String(profile?.description || ""),
+    website: String(profile?.website || ""),
+    instagram: String(profile?.instagram || ""),
+    google_map_url: String(profile?.googleMapUrl || ""),
+    service_types: serviceTypesArray,
+    urls: Array.isArray(profile?.urls) ? profile.urls : [],
+    status: String(profile?.status || "active"),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+  try {
+    const { data, error } = await supabase.from("store_profiles").upsert(payload, { onConflict: "store_id" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertStoreProfile", table: "store_profiles", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};

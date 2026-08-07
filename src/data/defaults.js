@@ -104,7 +104,11 @@ export const createInitialAppState = () => {
     variableCosts: {},
     monthClosing: {},
     monthClosingStatus: {},
-    dailyDrafts: {},
+    // Local-only historical log of daily entries dropped during dedup (see
+    // deduplicateDailyEntries in storage.js) — deliberately NOT a Supabase table. It's write-only
+    // bookkeeping, never read back to influence which entry wins a future merge, so it can never
+    // resurrect a duplicate or a Supabase-deleted daily_sales row. Safe to lose on a fresh
+    // device/browser; not production data.
     dailyResultBackups: {},
     preferences: {
       showOtherSales: false,
