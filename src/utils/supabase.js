@@ -687,7 +687,17 @@ export const upsertDailySalesEntry = async ({ companyId, storeId, userId, entry 
   }
 };
 
-export const updateDailySalesClosingState = async ({ companyId, storeId, businessDate, userId, isClosed }) => {
+// Day-closing used to be UPDATE-only, on the assumption that a prior upsertDailySalesEntry
+// call had already guaranteed the row exists (see toggleDayClosing in App.jsx, which called
+// saveDailyEntry first specifically for this reason). That assumption had a real gap:
+// saveDailyEntry silently no-ops whenever dailyMode is "view" — the normal state right after
+// opening an already-saved entry, which is exactly when a user goes to close it — so if the
+// row's actual persistence was ever in question, this UPDATE would find nothing to update and
+// day-closing would fail (or, before an earlier fix, fail silently). Accepting an optional
+// `entry` here turns this into a full upsert: it can create the row itself if needed instead
+// of only ever assuming one already exists, closing that gap entirely regardless of what did
+// or didn't happen earlier in the flow.
+export const updateDailySalesClosingState = async ({ companyId, storeId, businessDate, userId, isClosed, entry = null }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId, storeId, businessDate });
   if (validationError) {
@@ -695,22 +705,55 @@ export const updateDailySalesClosingState = async ({ companyId, storeId, busines
     return { ok: false, error: new Error(detail.message) };
   }
 
+  // updated_at must be bumped here even though it also reflects sales-figure edits elsewhere:
+  // buildDailyStateFromRows/dailySalesRowToEntry fall back to it as the dayClosingUpdatedAt for
+  // this date whenever closed_at is null (i.e. un-closing, which clears closed_at). Without
+  // this, un-closing left dayClosingUpdatedAt pointing at whatever the last unrelated
+  // sales-figure save happened to be — a stale timestamp that could lose a last-write-wins
+  // merge (see mergeDayClosingStatesMap) against a different device's stale cached "closed"
+  // state, silently reviving a day the user had just un-closed.
+  const closingPayload = {
+    is_day_closed: Boolean(isClosed),
+    closed_at: isClosed ? new Date().toISOString() : null,
+    closed_by: isClosed ? (userId || null) : null,
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
   try {
-    // updated_at must be bumped here even though it also reflects sales-figure edits
-    // elsewhere: buildDailyStateFromRows/dailySalesRowToEntry fall back to it as the
-    // dayClosingUpdatedAt for this date whenever closed_at is null (i.e. un-closing, which
-    // clears closed_at). Without this, un-closing left dayClosingUpdatedAt pointing at
-    // whatever the last unrelated sales-figure save happened to be — a stale timestamp that
-    // could lose a last-write-wins merge (see mergeDayClosingStatesMap) against a different
-    // device's stale cached "closed" state, silently reviving a day the user had just un-closed.
+    if (entry) {
+      // created_by is included so RLS's insert path (which requires created_by = the acting
+      // user for non-admin roles) can succeed if this is the first time the row is written —
+      // on an existing row this does mean the original creator gets overwritten by whoever
+      // closes the day, a minor audit-trail tradeoff accepted in exchange for day-closing
+      // never silently failing because the row didn't already exist.
+      const payload = {
+        company_id: companyId,
+        store_id: storeId,
+        business_date: businessDate,
+        sales_amount: Number(entry.totalSales || 0),
+        technical_sales_amount: Number(entry.technicalSales || 0),
+        retail_sales_amount: Number(entry.retailSales || 0),
+        other_sales_amount: Number(entry.otherSales || 0),
+        customer_count: Number(entry.customers || 0),
+        new_customer_count: Number(entry.newCustomers || 0),
+        repeat_customer_count: Number(entry.repeatCustomers || 0),
+        memo: String(entry.memo || ""),
+        created_by: userId,
+        ...closingPayload,
+      };
+      const { data, error } = await supabase
+        .from("daily_sales")
+        .upsert(payload, { onConflict: "company_id,store_id,business_date" })
+        .select()
+        .single();
+      if (error) throw error;
+      return { ok: true, data };
+    }
+
     const { data, error } = await supabase
       .from("daily_sales")
-      .update({
-        is_day_closed: Boolean(isClosed),
-        closed_at: isClosed ? new Date().toISOString() : null,
-        closed_by: isClosed ? (userId || null) : null,
-        updated_at: new Date().toISOString(),
-      })
+      .update(closingPayload)
       .eq("company_id", companyId)
       .eq("store_id", storeId)
       .eq("business_date", businessDate)

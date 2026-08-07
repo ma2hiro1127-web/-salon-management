@@ -787,9 +787,25 @@ export const getCustomerTargetSummary = (input = {}) => {
   };
 };
 
-// 売上状況のAIコメント。客数・客単価・店販比率などは含めず、月間目標売上に対する売上の
-// 状況だけを3行で返す。「現在の累計売上」は日締め済みの営業日の売上合計(closedSales)のみを
-// 使い、未締めの日次売上は目標ペース・必要売上の計算に含めない。
+// 売上状況のAIコメント。一つの統一カードとして表示するため、以前のように3行を3枚のカード
+// (目標まで/目標ペース/必要な1日平均売上)に分けるのではなく、単一のメッセージ本文
+// (message、\n区切り)と3段階の判定(tier: "順調"|"やや遅れ"|"要改善")を返す。
+// 「現在の累計売上」は日締め済みの営業日の売上合計(closedSales)のみを使い、未締めの日次
+// 売上は目標ペース・必要売上の計算に一切含めない。
+//
+// 判定に使う4つの入力:
+//   ①targetGap    = targetSales - cumulativeSales           (目標売上との差額)
+//   ②paceDiff     = cumulativeSales - (targetPerDay * completedDays)  (目標ペースとの差額)
+//   ③remainingBusinessDays                                   (残り営業日)
+//   ④dailyAverageNeeded = max(targetGap, 0) / remainingBusinessDays   (1日必要売上)
+//
+// tier:
+//   順調   … 達成済み、またはペース以上(paceDiff >= 0)
+//   やや遅れ … ペースは下回るが、残り日数で必要な1日平均が本来の1日目標の115%以内に収まり、
+//              現実的に十分取り返せる範囲
+//   要改善 … それ以上の遅れ、または残り営業日が尽きて未達
+// このしきい値(115%)はコメントの温度感を決めるためのもので、他のKPI計算(進捗・着地予想・
+// 必要売上そのもの)には一切影響しない。
 export const getSalesStatusComment = (input = {}) => {
   const targetSales = parseNumber(input.targetSales);
   const cumulativeSales = parseNumber(input.closedSales);
@@ -797,38 +813,56 @@ export const getSalesStatusComment = (input = {}) => {
   const completedDays = parseNumber(input.completedDays);
   const remainingBusinessDays = parseNumber(input.remainingBusinessDays);
 
-  const lines = [];
+  const targetGap = Math.round(targetSales - cumulativeSales);
+  const targetPerDay = businessDayCount > 0 ? targetSales / businessDayCount : 0;
+  const requiredSoFar = targetPerDay * completedDays;
+  const paceDiff = completedDays > 0 ? Math.round(cumulativeSales - requiredSoFar) : null;
+  const dailyAverageNeeded = targetGap > 0 && remainingBusinessDays > 0 ? Math.round(targetGap / remainingBusinessDays) : 0;
 
-  const remainingToTarget = Math.round(targetSales - cumulativeSales);
-  if (remainingToTarget > 0) {
-    lines.push(`月間目標売上まで、あと${number(remainingToTarget)}円です。`);
-  } else if (remainingToTarget < 0) {
-    lines.push(`月間目標売上を${number(-remainingToTarget)}円上回っています。`);
+  const achieved = targetGap <= 0;
+  const onOrAheadOfPace = paceDiff !== null && paceDiff >= 0;
+  const recoverable = paceDiff !== null && paceDiff < 0 && targetPerDay > 0 && remainingBusinessDays > 0 && dailyAverageNeeded <= targetPerDay * 1.15;
+
+  let tier;
+  if (achieved || onOrAheadOfPace) {
+    tier = "順調";
+  } else if (recoverable) {
+    tier = "やや遅れ";
   } else {
-    lines.push("月間目標売上を達成しました。");
+    tier = "要改善";
   }
 
-  if (completedDays > 0) {
-    const perDayTarget = businessDayCount > 0 ? targetSales / businessDayCount : 0;
-    const requiredSoFar = perDayTarget * completedDays;
-    const paceDiff = Math.round(cumulativeSales - requiredSoFar);
-    if (paceDiff > 0) {
-      lines.push(`現時点の目標売上ペースを、${number(paceDiff)}円上回っています。`);
-    } else if (paceDiff < 0) {
-      lines.push(`現時点の目標売上ペースに対して、${number(-paceDiff)}円不足しています。`);
-    } else {
-      lines.push("現時点では、目標売上ペースどおりに進んでいます。");
-    }
+  const targetGapLine = achieved
+    ? (targetGap < 0 ? `月間目標売上を${number(-targetGap)}円上回っています。` : "月間目標売上を達成しました。")
+    : `目標売上まであと${number(targetGap)}円です。`;
+  const paceLine = paceDiff === null
+    ? null
+    : paceDiff > 0
+      ? `現在は目標ペースを${number(paceDiff)}円上回っています。`
+      : paceDiff < 0
+        ? `現在は目標ペースより${number(-paceDiff)}円不足しています。`
+        : "現在は目標ペースどおりに進んでいます。";
+  const dailyNeedLine = remainingBusinessDays > 0 && dailyAverageNeeded > 0
+    ? `残り営業日は${number(remainingBusinessDays)}日ありますので、1日${number(dailyAverageNeeded)}円を目標に積み上げていきましょう。`
+    : null;
+
+  const lines = [];
+  if (tier === "順調") {
+    lines.push(targetGapLine);
+    if (paceLine) lines.push(paceLine);
+    lines.push(achieved ? "この調子で月間目標の達成を維持しましょう！" : "非常に良いスタートです。この調子で積み上げていきましょう！");
+  } else if (tier === "やや遅れ") {
+    if (paceLine) lines.push(paceLine);
+    lines.push("まだ十分巻き返せます。");
+    if (dailyNeedLine) lines.push(dailyNeedLine);
+  } else {
+    lines.push(targetGapLine);
+    if (paceLine) lines.push(paceLine);
+    lines.push("ここからでも十分挽回できます。");
+    lines.push(remainingBusinessDays > 0 ? "まずは今日の目標売上を達成することを目指しましょう！" : "来月に向けて今日からできることを始めましょう！");
   }
 
-  if (remainingToTarget <= 0) {
-    lines.push("月間目標を達成済みです。");
-  } else if (remainingBusinessDays > 0) {
-    const dailyAverageNeeded = Math.round(remainingToTarget / remainingBusinessDays);
-    lines.push(`月間目標を達成するには、残り${number(remainingBusinessDays)}営業日で1日平均${number(dailyAverageNeeded)}円の売上が必要です。`);
-  }
-
-  return { headline: "売上状況", lines };
+  return { tier, headline: "売上状況", lines, message: lines.join("\n"), targetGap, paceDiff, dailyAverageNeeded };
 };
 
 class AiSummary extends Array {

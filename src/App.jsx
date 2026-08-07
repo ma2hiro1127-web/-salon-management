@@ -19,6 +19,7 @@ import {
   STORAGE_KEYS,
   buildDailyEntryPayload,
   buildDailyStateFromRows,
+  dailySalesRowToEntry,
   buildMonthClosingStateFromRows,
   buildMonthKey,
   calculateMonthSummary,
@@ -887,26 +888,18 @@ function App() {
     { label: "顧客数", value: number(summary.customers), hint: `新規 ${number(summary.newCustomers)} / 再来 ${number(summary.repeatCustomers)}` },
     { label: "本日の目標売上", value: money(summary.todayTarget), hint: `現在 ${money(todayActual)}` },
   ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers, summary.todayTarget, todayActual]);
-  const aiFocusCards = useMemo(() => {
-    const [targetLine, paceLine, dailyNeedLine] = salesStatusComment.lines;
-    return [
-      {
-        label: "目標まで",
-        value: targetLine || "データを入力すると表示されます",
-        tone: summary.targetAchievement >= 100 ? "good" : "warning",
-      },
-      {
-        label: "目標ペース",
-        value: paceLine || dailyNeedLine || "日締めするとペースが表示されます",
-        tone: summary.completedDays > 0 ? "saving" : "neutral",
-      },
-      {
-        label: "必要な1日平均売上",
-        value: (paceLine ? dailyNeedLine : null) || "日締めが進むと表示されます",
-        tone: summary.remainingBusinessDays > 0 ? "saving" : "neutral",
-      },
-    ];
-  }, [salesStatusComment.lines, summary.completedDays, summary.remainingBusinessDays, summary.targetAchievement]);
+  // One unified AI comment card (順調/やや遅れ/要改善), replacing the previous 3-card split
+  // (目標まで/目標ペース/必要な1日平均売上) — see getSalesStatusComment for the tier logic.
+  const aiComment = useMemo(() => {
+    if (!parseNumber(target.targetSales)) {
+      return { tier: "unset", lines: ["月間目標売上を設定すると、AIコメントが表示されます。"] };
+    }
+    if (summary.completedDays <= 0) {
+      return { tier: "unset", lines: ["日締めが完了すると、目標との差額やペースをもとにAIコメントが表示されます。"] };
+    }
+    return salesStatusComment;
+  }, [salesStatusComment, summary.completedDays, target.targetSales]);
+  const aiCommentTone = { "順調": "good", "やや遅れ": "warning", "要改善": "danger", "unset": "neutral" }[aiComment.tier] || "neutral";
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -2952,13 +2945,13 @@ function App() {
     if (!window.confirm(`この日の締めを${dailyForm.date}で切り替えますか？`)) {
       return;
     }
-    // Ensures the daily_sales row for this date exists (and reflects the currently-entered
-    // figures) before we flip its is_day_closed flag — updateDailySalesClosingState only
-    // updates an existing row, it can't create one.
-    const saveResult = await saveDailyEntry({ silent: true, force: true });
-    if (!saveResult?.ok) {
-      return;
-    }
+    // Best-effort: keeps the normal save path (validation, local dailyForm/insight updates)
+    // working the same as always for the common case. Its result is deliberately NOT treated
+    // as a precondition below anymore — see updateDailySalesClosingState, which now upserts
+    // the row itself using dailyForm, so day-closing can no longer be silently blocked by
+    // saveDailyEntry's dailyMode==="view" no-op (the normal state right after opening an
+    // already-saved entry, which is exactly when a user goes to close it).
+    await saveDailyEntry({ silent: true, force: true });
 
     const key = buildMonthKey(selectedStore, selectedMonth);
     const current = appState.dayClosingStates?.[key] || {};
@@ -2979,6 +2972,7 @@ function App() {
       storeId: store?.id,
       businessDate: dailyForm.date,
       userId: appState.currentUserId,
+      entry: dailyForm,
       isClosed: nextClosed,
     });
 
@@ -3000,8 +2994,18 @@ function App() {
     setAppState((prev) => {
       const currentMap = prev.dayClosingStates?.[key] || {};
       const currentTimestamps = prev.dayClosingUpdatedAt?.[key] || {};
+      const currentList = prev.dailyResults?.[key] || [];
+      // updateDailySalesClosingState now upserts (see its own comment) so remoteResult.data is
+      // always the row's full current contents, not just the closing flags — mirror it into
+      // dailyResults too, the same way saveDailyEntry does, so a close that had to create the
+      // row (saveDailyEntry having no-op'd in view mode) doesn't leave dailyResults out of
+      // sync with what Supabase actually has.
+      const updatedEntries = remoteResult?.data
+        ? deduplicateDailyEntries([...currentList.filter((item) => String(item.date) !== String(dailyForm.date)), dailySalesRowToEntry(remoteResult.data)]).entries
+        : currentList;
       return {
         ...prev,
+        dailyResults: { ...prev.dailyResults, [key]: updatedEntries },
         dayClosingStates: { ...prev.dayClosingStates, [key]: { ...currentMap, [dailyForm.date]: nextClosed } },
         dayClosingUpdatedAt: { ...prev.dayClosingUpdatedAt, [key]: { ...currentTimestamps, [dailyForm.date]: toggledAt } },
       };
@@ -3351,13 +3355,15 @@ function App() {
               <div className="kpi-grid">
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
               </div>
-              <div className="ai-focus-grid">
-                {aiFocusCards.map((item) => (
-                  <article key={item.label} className={`ai-focus-card ${item.tone}`}>
-                    <span>{item.label}</span>
-                    <strong>{item.value}</strong>
-                  </article>
-                ))}
+              <div className={`ai-comment-card ${aiCommentTone}`}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">AI COMMENT</p>
+                    <h3>{aiComment.tier === "unset" ? "AIコメント" : `AIコメント（${aiComment.tier}）`}</h3>
+                  </div>
+                  {aiComment.tier !== "unset" && <span className={`status-chip ${aiCommentTone}`}>{aiComment.tier}</span>}
+                </div>
+                {aiComment.lines.map((line, index) => <p key={index}>{line}</p>)}
               </div>
               {todayEntry ? (
                 <div className="today-result-card">
