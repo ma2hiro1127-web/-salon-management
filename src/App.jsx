@@ -22,6 +22,7 @@ import {
   dailySalesRowToEntry,
   buildMonthClosingStateFromRows,
   buildTargetStateFromRows,
+  buildFixedCostsStateFromRows,
   buildMonthKey,
   calculateMonthSummary,
   calculateTaxSummary,
@@ -82,6 +83,9 @@ import {
   loadMonthlyTargetsForCompany,
   upsertMonthlyTargetToSupabase,
   loadMonthlyTargetFromSupabase,
+  loadFixedCostsForCompany,
+  upsertFixedCostToSupabase,
+  deleteFixedCostFromSupabase,
   logSupabaseError,
   signUpWithEmail,
   getProfilesForDebug,
@@ -493,7 +497,7 @@ const buildStoredUserHydrationState = async ({ storedUser, setCurrentUser, setCu
       currentAuthUserId: nextUser.authUserId,
       selectedStore: preferredSelectedStore,
       selectedStoreId: preferredSelectedStoreId,
-      selectedMonth: tenantState.selectedMonth || localRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
+      selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
     };
 
     setCurrentUser(nextUser);
@@ -733,7 +737,12 @@ function App() {
             stores: tenantState.stores?.length ? tenantState.stores : localRecoveredState.stores || [],
             selectedStore: preferredSelectedStore,
             selectedStoreId: preferredSelectedStoreId,
-            selectedMonth: tenantState.selectedMonth || localRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
+            // Same class of bug as the store-selection fix above: loadTenantStateFromSupabase's
+            // tenantState.selectedMonth is always just "today's real month" (createInitialAppState's
+            // default), never the month the user actually had open — putting it first here meant a
+            // session viewing, say, next month's fixed costs would silently snap back to the
+            // current month on every refresh/re-login. Prefer the device's own cached month.
+            selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
           };
           writeAppState(reconciledState);
           setAppState(reconciledState);
@@ -931,6 +940,22 @@ function App() {
   const aiComment = salesStatusComment;
   const aiCommentUnset = !aiComment.salesState && !aiComment.customerState;
   const aiCommentTone = aiCommentUnset ? "neutral" : ({ "順調": "good", "注意": "warning", "要改善": "danger" }[aiComment.tier] || "neutral");
+  // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
+  // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
+  // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
+  // array to automatically show up here too, no dashboard changes required. Percentages are of
+  // the sum of whatever's shown here (not summary.sales), so they always add up to 100% even if
+  // some untracked/legacy amount exists outside these categories.
+  const salesComposition = useMemo(() => {
+    const items = [];
+    if (showTechnicalSalesField) items.push({ key: "technicalSales", label: "技術売上", amount: summary.technicalSales });
+    if (showRetailSalesField) items.push({ key: "retailSales", label: "店販売上", amount: summary.retailSales });
+    if (appState.preferences?.showOtherSales) items.push({ key: "otherSales", label: "その他", amount: summary.otherSales });
+    const total = items.reduce((sum, item) => sum + Math.max(item.amount, 0), 0);
+    return items
+      .filter((item) => item.amount > 0)
+      .map((item) => ({ ...item, ratio: total > 0 ? item.amount / total : 0 }));
+  }, [showTechnicalSalesField, showRetailSalesField, appState.preferences?.showOtherSales, summary.technicalSales, summary.retailSales, summary.otherSales]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -1002,7 +1027,7 @@ function App() {
           currentAuthUserId: nextUser.authUserId,
           selectedStore: loginPreferredSelectedStore,
           selectedStoreId: loginPreferredSelectedStoreId,
-          selectedMonth: tenantState.selectedMonth || loginLocalRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
+          selectedMonth: loginLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: Boolean(session || sessionData?.session), authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1140,7 +1165,7 @@ function App() {
           currentAuthUserId: nextUser.authUserId,
           selectedStore: signupPreferredSelectedStore,
           selectedStoreId: signupPreferredSelectedStoreId,
-          selectedMonth: tenantState.selectedMonth || signupLocalRecoveredState.selectedMonth || new Date().toISOString().slice(0, 7),
+          selectedMonth: signupLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1266,6 +1291,16 @@ function App() {
       }
       const targetStateOverlay = buildTargetStateFromRows(monthlyTargetsResult.data, storeIdToName);
 
+      // fixed_costs (see 20260808000000_create_fixed_costs.sql): a "翌月以降も継続" item is
+      // computed by looking backwards across every earlier month's entries for the store (see
+      // getFixedCostsForStoreMonth), so — unlike monthly_targets/monthly_closings above — this
+      // can't be windowed to a few recent months; fetch every fixed_costs row for the company.
+      const fixedCostsResult = await loadFixedCostsForCompany({ companyId });
+      if (!fixedCostsResult.ok) {
+        throw fixedCostsResult.error || new Error("固定費データの取得に失敗しました");
+      }
+      const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data, storeIdToName);
+
       // store_input_settings (daily/monthly field visibility) is the authoritative source now
       // — see 20260807000000_create_store_input_settings.sql. Fetched company-wide alongside
       // daily_sales/monthly_closings above, then merged onto each store's settings object
@@ -1303,6 +1338,11 @@ function App() {
       (company?.stores || []).forEach((store) => {
         closingMonths.forEach((month) => expectedTargetKeys.add(buildMonthKey(store.name, month)));
       });
+      // fixed_costs has no month window (see above) — every key belonging to one of this
+      // company's stores is inside the just-fetched, fully authoritative set, so any such key
+      // NOT present in fixedCostsOverlay.fixedCosts is confirmed gone (deleted, or never
+      // existed in Supabase to begin with) and must be pruned the same way targets are above.
+      const companyStoreNamePrefixes = (company?.stores || []).map((store) => `${store.name}__`);
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
           dailyResults: dailySalesState.dailyResults,
@@ -1316,6 +1356,7 @@ function App() {
           // Overlaying it here would let a fresh hydrate silently discard an unsaved local
           // holiday-count edit sooner than it already can.
           targets: targetStateOverlay.targets,
+          fixedCosts: fixedCostsOverlay.fixedCosts,
         });
         const prunedTargets = { ...merged.targets };
         expectedTargetKeys.forEach((key) => {
@@ -1323,7 +1364,13 @@ function App() {
             delete prunedTargets[key];
           }
         });
-        return { ...merged, targets: prunedTargets };
+        const prunedFixedCosts = { ...merged.fixedCosts };
+        Object.keys(prunedFixedCosts).forEach((key) => {
+          if (companyStoreNamePrefixes.some((prefix) => key.startsWith(prefix)) && !(key in fixedCostsOverlay.fixedCosts)) {
+            delete prunedFixedCosts[key];
+          }
+        });
+        return { ...merged, targets: prunedTargets, fixedCosts: prunedFixedCosts };
       };
 
       const snapshotResult = await loadLatestTenantSnapshot({ companyId, storeId, targetMonth, createdBy: authUser.id });
@@ -1754,6 +1801,15 @@ function App() {
       companySnapshots: { ...(appState.companySnapshots || {}), [appState.currentCompanyId]: { ...(appState.companySnapshots?.[appState.currentCompanyId] || createInitialAppState()), selectedStore: storeName } },
     };
     persistTenantState(nextState);
+  };
+
+  // Mirrors handleStoreSwitch: a bare setAppState here left the month selection living only in
+  // React state until whichever debounced background effect (hydrate, autosave) happened to
+  // catch up and write it to localStorage next — a refresh in that gap silently reverted the
+  // view back to the real current month, discarding the switch. persistTenantState writes it to
+  // localStorage synchronously instead.
+  const handleMonthSwitch = (monthValue) => {
+    persistTenantState({ ...appState, selectedMonth: monthValue });
   };
 
   const handleEditCompany = (company) => {
@@ -2775,21 +2831,42 @@ function App() {
     setNotice("日次実績を削除しました");
   };
 
-  const submitFixedCost = (event) => {
+  const submitFixedCost = async (event) => {
     event.preventDefault();
     if (!fixedForm.name || !fixedForm.amount) {
       setNotice("項目名と金額は必須です");
       return;
     }
 
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
-      const list = prev.fixedCosts?.[key] || [];
-      const nextItem = { ...fixedForm, amount: parseNumber(fixedForm.amount) };
-      const updated = fixedForm.id
-        ? list.map((item) => (item.id === fixedForm.id ? nextItem : item))
-        : [...list, { ...nextItem, id: crypto.randomUUID() }];
+    const key = buildMonthKey(selectedStore, selectedMonth);
+    const itemId = fixedForm.id || crypto.randomUUID();
+    const nextItem = { ...fixedForm, id: itemId, amount: parseNumber(fixedForm.amount) };
 
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured) {
+      if (!company?.id || !store?.id) {
+        setNotice("店舗情報を確認できませんでした");
+        return;
+      }
+      const result = await upsertFixedCostToSupabase({
+        id: itemId,
+        companyId: company.id,
+        storeId: store.id,
+        entryMonth: selectedMonth,
+        userId: appState.currentUserId,
+        item: nextItem,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+
+    setAppState((prev) => {
+      const list = prev.fixedCosts?.[key] || [];
+      const updated = fixedForm.id
+        ? list.map((item) => (item.id === itemId ? nextItem : item))
+        : [...list, nextItem];
       return {
         ...prev,
         fixedCosts: {
@@ -2808,9 +2885,16 @@ function App() {
     setNotice("固定費を編集します");
   };
 
-  const removeFixedCost = (itemId) => {
+  const removeFixedCost = async (itemId) => {
     if (!window.confirm("この固定費を削除しますか？")) {
       return;
+    }
+    if (isSupabaseConfigured) {
+      const result = await deleteFixedCostFromSupabase({ id: itemId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
     }
     setAppState((prev) => {
       const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
@@ -3424,7 +3508,7 @@ function App() {
             <button className="secondary-button" type="button" onClick={handleLogout}>ログアウト</button>
             <label>
               対象月
-              <input type="month" value={ensureMonthValue(selectedMonth)} onChange={(event) => setAppState((prev) => ({ ...prev, selectedMonth: event.target.value }))} />
+              <input type="month" value={ensureMonthValue(selectedMonth)} onChange={(event) => handleMonthSwitch(event.target.value)} />
             </label>
           </div>
         </header>
@@ -3539,6 +3623,7 @@ function App() {
               ) : null}
             </section>
 
+            <div className="dashboard-right-column">
             <section className="panel">
               <div className="panel-heading">
                 <div>
@@ -3608,6 +3693,8 @@ function App() {
                 </div>
               )}
             </section>
+            <SalesCompositionCard items={salesComposition} />
+            </div>
           </div>
         )}
 
@@ -4703,6 +4790,52 @@ function TargetMissingCard({ label, onGoToTarget, emphasize = false }) {
       <strong className="metric-missing-label">月間目標未登録</strong>
       <button type="button" className="metric-missing-link" onClick={onGoToTarget}>月間目標設定</button>
     </div>
+  );
+}
+
+// Cycled by index, not tied to a specific field name — a category added later just gets the
+// next color in the loop, so this never needs updating when new sales fields show up.
+const SALES_COMPOSITION_COLORS = ["#2f7df6", "#38b28f", "#f5a524", "#e35757", "#8b5cf6", "#14b8a6", "#ec4899", "#84cc16"];
+
+function SalesCompositionCard({ items }) {
+  const gradientStops = (() => {
+    let cursor = 0;
+    return items.map((item, index) => {
+      const start = cursor;
+      cursor += item.ratio * 360;
+      return `${SALES_COMPOSITION_COLORS[index % SALES_COMPOSITION_COLORS.length]} ${start}deg ${cursor}deg`;
+    });
+  })();
+
+  return (
+    <section className="panel sales-composition-card">
+      <div className="panel-heading">
+        <div>
+          <p className="eyebrow">COMPOSITION</p>
+          <h2>売上構成</h2>
+        </div>
+      </div>
+      {items.length === 0 ? (
+        <div className="empty-card">売上データが入力されると内訳を表示します。</div>
+      ) : (
+        <div className="sales-composition-body">
+          <div
+            className="sales-composition-pie"
+            style={{ background: items.length === 1 ? SALES_COMPOSITION_COLORS[0] : `conic-gradient(${gradientStops.join(", ")})` }}
+          />
+          <ul className="sales-composition-legend">
+            {items.map((item, index) => (
+              <li key={item.key}>
+                <span className="sales-composition-swatch" style={{ background: SALES_COMPOSITION_COLORS[index % SALES_COMPOSITION_COLORS.length] }} />
+                <span className="sales-composition-label">{item.label}</span>
+                <strong className="sales-composition-amount">{money(item.amount)}</strong>
+                <span className="sales-composition-percent">{percent(item.ratio * 100)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
   );
 }
 

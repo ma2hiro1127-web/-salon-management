@@ -282,6 +282,30 @@ export const buildTargetStateFromRows = (rows = [], storeIdToName = {}) => {
   return { targets, businessDaySettings };
 };
 
+// Rebuilds the fixedCosts map (storeName__entryMonth -> item[]) from fixed_costs rows, in the
+// exact shape getFixedCostsForStoreMonth already expects — entry_month is the month the item
+// was originally filed under, which is what that function's "翌月以降も継続" lookback keys on.
+export const buildFixedCostsStateFromRows = (rows = [], storeIdToName = {}) => {
+  const fixedCosts = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.entry_month) return;
+    const key = buildMonthKey(storeName, row.entry_month);
+    const item = {
+      id: row.id,
+      name: row.name || "",
+      amount: row.amount,
+      category: row.category || "",
+      memo: row.memo || "",
+      startMonth: row.start_month || "",
+      endMonth: row.end_month || "",
+      applyMode: row.apply_mode || "this-month",
+    };
+    fixedCosts[key] = [...(fixedCosts[key] || []), item];
+  });
+  return { fixedCosts };
+};
+
 const mergeDailyResultsMap = (localMap = {}, remoteMap = {}) => {
   const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
   const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};

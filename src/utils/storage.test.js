@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildDailyEntryPayload, buildDailyStateFromRows, buildMonthClosingStateFromRows, calculateMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getCustomerTargetSummary, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, readAppState, writeAppState } from "./storage.js";
+import { buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, calculateMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getCustomerTargetSummary, getFixedCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, readAppState, writeAppState } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -719,4 +719,48 @@ test("buildMonthClosingStateFromRows rebuilds monthClosingStatus per store from 
   assert.equal(status["本店__2026-08"].closed, true);
   assert.equal(status["本店__2026-08"].lockedAt, "2026-09-01T00:00:00.000Z");
   assert.equal(status["フィーネ横浜__2026-08"].closed, false);
+});
+
+test("buildFixedCostsStateFromRows rebuilds fixedCosts per store from fixed_costs rows, keyed by the item's original entry month", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "fc-1", store_id: "store-honten", entry_month: "2026-06", name: "家賃", amount: 150000, category: "家賃", memo: "", start_month: "", end_month: "", apply_mode: "this-month-onward" },
+    { id: "fc-2", store_id: "store-honten", entry_month: "2026-08", name: "臨時費用", amount: 20000, category: "その他", memo: "", start_month: "", end_month: "", apply_mode: "this-month" },
+  ];
+
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+
+  assert.deepEqual(fixedCosts["本店__2026-06"], [{ id: "fc-1", name: "家賃", amount: 150000, category: "家賃", memo: "", startMonth: "", endMonth: "", applyMode: "this-month-onward" }]);
+  assert.deepEqual(fixedCosts["本店__2026-08"], [{ id: "fc-2", name: "臨時費用", amount: 20000, category: "その他", memo: "", startMonth: "", endMonth: "", applyMode: "this-month" }]);
+});
+
+test("buildFixedCostsStateFromRows: a this-month-onward item entered in an earlier month is still visible via getFixedCostsForStoreMonth in a later month it was never directly saved under", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "fc-rent", store_id: "store-honten", entry_month: "2026-06", name: "家賃", amount: 150000, category: "家賃", memo: "", start_month: "", end_month: "", apply_mode: "this-month-onward" },
+  ];
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const state = { ...createInitialAppState(), fixedCosts };
+
+  // A fresh session that only ever fetched this rebuilt state (as hydrateFromSupabase does)
+  // must still see the June-filed rent cost when looking at August — this is exactly the
+  // cross-device/cross-session scenario a snapshot-only fetch (windowed to one month) would miss.
+  const augustItems = getFixedCostsForStoreMonth(state, "本店", "2026-08");
+  assert.equal(augustItems.length, 1);
+  assert.equal(augustItems[0].id, "fc-rent");
+
+  const mayItems = getFixedCostsForStoreMonth(state, "本店", "2026-05");
+  assert.equal(mayItems.length, 0);
+});
+
+test("buildFixedCostsStateFromRows: a this-month item (not onward) never carries into later months", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "fc-onetime", store_id: "store-honten", entry_month: "2026-06", name: "修繕費", amount: 50000, category: "その他", memo: "", start_month: "", end_month: "", apply_mode: "this-month" },
+  ];
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const state = { ...createInitialAppState(), fixedCosts };
+
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-06").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 0);
 });

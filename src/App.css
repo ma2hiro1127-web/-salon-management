@@ -215,7 +215,16 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .field-switch input[type="checkbox"]:checked { background: var(--accent); }
 .field-switch input[type="checkbox"]:checked::after { transform: translateX(18px); }
 .field-switch input[type="checkbox"]:disabled { opacity: 0.5; cursor: not-allowed; }
-.dashboard-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; }
+.dashboard-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }
+.dashboard-right-column { display: flex; flex-direction: column; gap: 16px; }
+.sales-composition-body { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.sales-composition-pie { width: 128px; height: 128px; min-width: 128px; border-radius: 50%; }
+.sales-composition-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 160px; }
+.sales-composition-legend li { display: flex; align-items: center; gap: 8px; }
+.sales-composition-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.sales-composition-label { color: var(--muted); font-size: 0.85rem; flex: 1; }
+.sales-composition-amount { font-size: 0.9rem; }
+.sales-composition-percent { color: var(--muted); font-size: 0.8rem; min-width: 46px; text-align: right; }
 .kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
 .kpi-grid.compact-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .metric-card { padding: 14px; display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; }

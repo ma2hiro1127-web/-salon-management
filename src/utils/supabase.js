@@ -959,3 +959,73 @@ export const loadMonthlyTargetFromSupabase = async ({ companyId, storeId, target
     return { ok: false, error, data: null };
   }
 };
+
+// fixed_costs has no month-window fetch (unlike monthly_targets/monthly_closings): a
+// "翌月以降も継続" item must stay visible however many months after it was first entered, so a
+// fresh device/session needs every row for the company, not just a recent slice — the list per
+// store is small enough in practice that this is cheap.
+export const loadFixedCostsForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("fixed_costs")
+      .select("*")
+      .eq("company_id", companyId);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadFixedCostsForCompany", table: "fixed_costs", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryMonth, userId, item }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ id, companyId, storeId, entryMonth, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertFixedCostToSupabase", table: "fixed_costs", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
+    id,
+    company_id: companyId,
+    store_id: storeId,
+    entry_month: entryMonth,
+    name: String(item?.name || ""),
+    amount: Number(item?.amount || 0),
+    category: String(item?.category || ""),
+    memo: String(item?.memo || ""),
+    start_month: String(item?.startMonth || ""),
+    end_month: String(item?.endMonth || ""),
+    apply_mode: String(item?.applyMode || "this-month"),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("fixed_costs")
+      .upsert(payload, { onConflict: "id" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertFixedCostToSupabase", table: "fixed_costs", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const deleteFixedCostFromSupabase = async ({ id }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!id) return { ok: true, skipped: true };
+  try {
+    const { error } = await supabase.from("fixed_costs").delete().eq("id", id);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteFixedCostFromSupabase", table: "fixed_costs", id, error });
+    return { ok: false, error };
+  }
+};
