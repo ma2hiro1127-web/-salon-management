@@ -113,6 +113,10 @@ export const defaultClosingItem = {
   category: "人件費",
 };
 
+// company_admin専用の「全店舗」仮想ビューをselectedStoreとして表す予約値。実店舗のnameとは
+// 絶対に衝突しない(実店舗名として保存できない形式)。実店舗のstoreレコードは一切作らない。
+export const ALL_STORES_VALUE = "__all_stores__";
+
 export const createInitialAppState = () => {
   const selectedMonth = new Date().toISOString().slice(0, 7);
 
@@ -122,6 +126,10 @@ export const createInitialAppState = () => {
     selectedStoreId: "",
     selectedMonth,
     targets: {},
+    // 「全店舗」専用の目標値・営業日設定(company_id__target_monthでキー化、店舗には紐づかない)。
+    // 各店舗のtargets/businessDaySettingsとは完全に別管理で、実店舗の目標を書き換えない。
+    allStoresTargets: {},
+    allStoresBusinessDaySettings: {},
     dailyResults: {},
     fixedCosts: {},
     variableCosts: {},

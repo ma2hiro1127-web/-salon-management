@@ -35,6 +35,9 @@ export const canEditStoreName = (role) => normalizeRole(role) === "system_admin"
 export const canManageUsers = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
 export const canEditMonthlyData = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin" || normalizeRole(role) === "store_manager";
 export const canViewUserManagement = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
+// 「全店舗」(company_admin専用の仮想集計ビュー)を店舗選択欄に表示・選択できるかどうか。
+// 一般スタッフ・店舗管理者には表示しない。
+export const canViewAllStores = (role) => normalizeRole(role) === "company_admin";
 
 export const getVisibleNavItems = (role) => {
   const normalizedRole = normalizeRole(role);

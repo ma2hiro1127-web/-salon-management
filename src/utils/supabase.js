@@ -920,6 +920,83 @@ export const upsertMonthlyTargetToSupabase = async ({ companyId, storeId, target
   }
 };
 
+// company_all_stores_targets (「全店舗」company_admin専用の集計ビュー用の目標/営業日設定) —
+// store_idを持たず company_id + target_month で一意。実績データはここには保存しない
+// (実績は各店舗のdaily_salesから都度集計する。calculateAllStoresMonthSummary参照)。
+export const loadAllStoresTargetsForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("company_all_stores_targets")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("target_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadAllStoresTargetsForCompany", table: "company_all_stores_targets", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const loadAllStoresTargetFromSupabase = async ({ companyId, targetMonth }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true, data: null };
+  if (!companyId || !targetMonth) return { ok: true, skipped: true, data: null };
+  try {
+    const { data, error } = await supabase
+      .from("company_all_stores_targets")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("target_month", targetMonth)
+      .maybeSingle();
+    if (error) throw error;
+    return { ok: true, data: data || null };
+  } catch (error) {
+    logSupabaseError({ operation: "loadAllStoresTargetFromSupabase", table: "company_all_stores_targets", companyId, targetMonth, error });
+    return { ok: false, error, data: null };
+  }
+};
+
+export const upsertAllStoresTargetToSupabase = async ({ companyId, targetMonth, userId, target }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, userId, targetMonth });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertAllStoresTargetToSupabase", table: "company_all_stores_targets", userId, companyId, targetMonth, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
+    company_id: companyId,
+    target_month: targetMonth,
+    target_sales: Number(target?.targetSales || 0),
+    target_technical_sales: Number(target?.targetTechnicalSales || 0),
+    target_retail_sales: Number(target?.targetRetailSales || 0),
+    target_customers: Number(target?.targetCustomers || 0),
+    target_average_spend: Number(target?.targetAverageSpend || 0),
+    target_new_customers: Number(target?.targetNewCustomers || 0),
+    target_repeat_customers: Number(target?.targetRepeatCustomers || 0),
+    target_review_count: Number(target?.targetReviewCount || 0),
+    business_day_mode: String(target?.businessDayMode || ""),
+    business_day_count: Number(target?.businessDayCount || 0),
+    holiday_count: Number(target?.holidayCount || 0),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("company_all_stores_targets")
+      .upsert(payload, { onConflict: "company_id,target_month" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertAllStoresTargetToSupabase", table: "company_all_stores_targets", userId, companyId, targetMonth, error });
+    return { ok: false, error };
+  }
+};
+
 // Fetches every store's monthly_targets rows across the given months in one call, mirroring
 // loadMonthlyClosingsForCompany/loadDailySalesForCompanyRange. Without this, appState.targets
 // was only ever populated by the 月間目標設定 panel's own per-visit fetch (for whichever

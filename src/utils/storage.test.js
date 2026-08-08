@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, pruneStaleKeys, readAppState, writeAppState } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, pruneStaleKeys, readAppState, writeAppState } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -887,4 +887,80 @@ test("pruneStaleKeys drops any expected key Supabase no longer has a row for, le
   const freshMap = { "本店__2026-08": { targetSales: 100000 } }; // 本店__2026-07's target was deleted from Supabase
   const pruned = pruneStaleKeys(merged, expectedKeys, freshMap);
   assert.deepEqual(Object.keys(pruned).sort(), ["フィーネ横浜__2026-08", "本店__2026-08"]);
+});
+
+// 「全店舗」(company_admin専用の仮想集計ビュー)関連のテスト。実店舗を新規作成せず、
+// company_id単位で各店舗のdaily_sales由来データを集計するロジックが正しいことを確認する。
+const buildAllStoresTestState = () => ({
+  ...createInitialAppState(),
+  dailyResults: {
+    [buildMonthKey("A店", "2026-08")]: [
+      { date: "2026-08-01", totalSales: 100000, customers: 10 },
+      // A店の8/2は未締め: 全店舗合算には一切含まれてはいけない
+      { date: "2026-08-02", totalSales: 500000, customers: 50 },
+    ],
+    [buildMonthKey("B店", "2026-08")]: [
+      { date: "2026-08-01", totalSales: 200000, customers: 5 },
+      // B店は8/2は日締めしたが、A店が8/2未締めなので「全店舗として営業完了」にはならない
+      { date: "2026-08-02", totalSales: 300000, customers: 30 },
+    ],
+  },
+  dayClosingStates: {
+    [buildMonthKey("A店", "2026-08")]: { "2026-08-01": true, "2026-08-02": false },
+    [buildMonthKey("B店", "2026-08")]: { "2026-08-01": true, "2026-08-02": true },
+  },
+  allStoresTargets: {
+    [buildCompanyMonthKey("company-1", "2026-08")]: { targetSales: 200000, targetCustomers: 10 },
+  },
+  allStoresBusinessDaySettings: {
+    [buildCompanyMonthKey("company-1", "2026-08")]: { holidayCount: 4 },
+  },
+});
+const allStoresTestCompany = { id: "company-1", stores: [{ name: "A店" }, { name: "B店" }] };
+
+test("getAllStoresBusinessDaySummary: a date counts as 全店舗営業完了 only once every registered store has closed it that day (not a per-store sum)", () => {
+  const state = buildAllStoresTestState();
+  const result = getAllStoresBusinessDaySummary(state, "company-1", ["A店", "B店"], "2026-08");
+  // 31日 - 休業日4日 = 27営業日。3店舗あっても27×店舗数にはならない。
+  assert.equal(result.businessDayCount, 27);
+  // 8/1は両店とも締め済み→カウント。8/2はA店が未締めなので、B店が締めていてもカウントしない。
+  assert.deepEqual(result.closedDates, ["2026-08-01"]);
+  assert.equal(result.completedDays, 1);
+  assert.equal(result.remainingBusinessDays, 26);
+});
+
+test("getAllStoresBusinessDaySummary: with no registered stores, completedDays is 0 (not NaN/crash)", () => {
+  const state = buildAllStoresTestState();
+  const result = getAllStoresBusinessDaySummary(state, "company-1", [], "2026-08");
+  assert.equal(result.completedDays, 0);
+  assert.equal(result.businessDayCount, 27);
+});
+
+test("calculateAllStoresMonthSummary: sales aggregation and 営業完了日数 follow two different rules — sales reflect each store's own closed days independently, while completedDays only counts a day once EVERY store has closed it", () => {
+  const state = buildAllStoresTestState();
+  const summary = calculateAllStoresMonthSummary(state, allStoresTestCompany, "2026-08");
+  // sales = A店8/1(100000,締め済み) + B店8/1(200000,締め済み) + B店8/2(300000,締め済み)。
+  // B店は自店が締めた時点で全店舗の実績に反映される — A店が8/2をまだ締めていなくても、
+  // B店自身の確定済み実績(8/2分)は合算対象に含まれる(未締めなのはA店の8/2データだけ)。
+  assert.equal(summary.sales, 600000);
+  assert.equal(summary.customers, 45);
+  // 一方、「営業完了1日」とカウントされるのは全店舗の日締めが揃った8/1だけ(8/2はA店が
+  // 未締めなので、たとえB店が締めていても全店舗としてはまだ営業完了日にならない)。
+  assert.equal(summary.completedDays, 1);
+  // targetSales=200000 (全店舗目標) に対して実績600000 → 300%。個々の店舗のtargetは無関係。
+  assert.equal(summary.targetAchievement, 300);
+  assert.equal(summary.customerAchievement, 450);
+  // 1日平均売上 = 全店舗確定済み総売上(600000) ÷ 全店舗として営業完了した日数(1)
+  assert.equal(summary.averageDailySales, 600000);
+});
+
+test("calculateAllStoresMonthSummary: a newly added store with no data yet doesn't zero out the other stores' sales, but does block 営業完了日数 from ever counting a day (since it never closes)", () => {
+  const state = buildAllStoresTestState();
+  const companyWithNewStore = { id: "company-1", stores: [{ name: "A店" }, { name: "B店" }, { name: "C店（新規）" }] };
+  const summary = calculateAllStoresMonthSummary(state, companyWithNewStore, "2026-08");
+  // C店が一度も日締めしていないため、全店舗の積集合は常に空 → 営業完了日数は0日。
+  assert.equal(summary.completedDays, 0);
+  // それでもA店・B店それぞれの確定済み売上(店舗ごとの集計)はそのまま反映される —
+  // 新規店舗の追加が既存店舗の実績集計を壊してはいけない。
+  assert.equal(summary.sales, 600000);
 });

@@ -6,6 +6,7 @@ import {
   defaultTarget,
   defaultVariableCostItem,
   expenseCategories,
+  ALL_STORES_VALUE,
 } from "../data/defaults.js";
 
 export { createInitialAppState } from "../data/defaults.js";
@@ -540,6 +541,8 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
   targets: mergeShallowMap(localState.targets, remoteState.targets),
+  allStoresTargets: mergeShallowMap(localState.allStoresTargets, remoteState.allStoresTargets),
+  allStoresBusinessDaySettings: mergeShallowMap(localState.allStoresBusinessDaySettings, remoteState.allStoresBusinessDaySettings),
   businessDaySettings: mergeShallowMap(localState.businessDaySettings, remoteState.businessDaySettings),
   monthClosingStatus: mergeShallowMap(localState.monthClosingStatus, remoteState.monthClosingStatus),
 });
@@ -574,6 +577,39 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
     completedDays: closedDateList.length,
     remainingBusinessDays: businessDayCount === null ? null : Math.max(businessDayCount - closedDateList.length, 0),
     progressRate: businessDayCount === null ? null : (closedDateList.length / Math.max(businessDayCount, 1)) * 100,
+    closedDates: closedDateList,
+  };
+};
+
+// 「全店舗」専用の営業進捗。店舗数に応じて営業日数が増えないよう、営業日数・休業日は
+// company_adminが設定する全店舗共通の値(getAllStoresBusinessDaySettings)を使い、各店舗の
+// businessDayCountは一切合算しない。
+// 「営業完了」の判定も店舗横断の特別ルール: ある日付が「全店舗として営業完了」になるのは、
+// 登録されている全ての実店舗がその日の日締めを終えている時だけ(店舗ごとのclosedDatesの積集合)。
+// 1店舗でも未締めなら、他の店舗が締めていてもその日はまだカウントしない。
+export const getAllStoresBusinessDaySummary = (state, companyId, storeNames, monthValue) => {
+  const settings = getAllStoresBusinessDaySettings(state, companyId, monthValue);
+  const monthInfo = getMonthInfo(monthValue);
+  const holidayCount = Math.max(parseNumber(settings.holidayCount), 0);
+  const manualBusinessDayCount = parseNumber(settings.businessDayCount);
+  const businessDayCount = settings.mode === "manual" && Number.isInteger(manualBusinessDayCount) && manualBusinessDayCount > 0
+    ? manualBusinessDayCount
+    : Math.max(monthInfo.daysInMonth - holidayCount, 0);
+
+  const names = (storeNames || []).filter(Boolean);
+  if (!names.length) {
+    return { businessDayCount, completedDays: 0, remainingBusinessDays: Math.max(businessDayCount, 0), progressRate: businessDayCount ? 0 : null, closedDates: [] };
+  }
+
+  const perStoreClosedDateSets = names.map((storeName) => new Set(getBusinessDaySummary(state, storeName, monthValue).closedDates || []));
+  const [firstSet, ...restSets] = perStoreClosedDateSets;
+  const closedDateList = [...firstSet].filter((date) => restSets.every((set) => set.has(date))).sort((a, b) => a.localeCompare(b));
+
+  return {
+    businessDayCount,
+    completedDays: closedDateList.length,
+    remainingBusinessDays: Math.max(businessDayCount - closedDateList.length, 0),
+    progressRate: businessDayCount ? (closedDateList.length / Math.max(businessDayCount, 1)) * 100 : null,
     closedDates: closedDateList,
   };
 };
@@ -629,7 +665,13 @@ export const normalizeAppState = (value) => {
     ? source.stores.filter(Boolean).map(String)
     : [];
   const fallbackSelectedStore = typeof source.selectedStore === "string" && source.selectedStore.trim() ? source.selectedStore : "";
-  const selectedStore = stores.includes(fallbackSelectedStore) ? fallbackSelectedStore : (stores[0] || fallbackSelectedStore);
+  // 「全店舗」(company_admin専用の仮想ビュー)は実店舗名の一覧(stores)には絶対に含まれない
+  // ため、それだけを理由にstores[0](実店舗)へ戻してしまわないようにする。権限チェック自体は
+  // ここでは行わない(role情報を持たない低レベル関数のため) — 呼び出し側(App.jsxの
+  // self-healing effect等)が権限を失ったユーザーを実店舗へ戻す責務を持つ。
+  const selectedStore = fallbackSelectedStore === ALL_STORES_VALUE
+    ? ALL_STORES_VALUE
+    : (stores.includes(fallbackSelectedStore) ? fallbackSelectedStore : (stores[0] || fallbackSelectedStore));
   const selectedMonth = source.selectedMonth || seeded.selectedMonth;
   const users = normalizeUserList(source.users);
   const currentUserId = resolveCurrentProfileId({
@@ -751,6 +793,48 @@ export const getTargetForStoreMonth = (state, storeName, monthValue) => ({
   ...defaultTarget,
   ...(state.targets?.[buildMonthKey(storeName, monthValue)] || {}),
 });
+
+// 「全店舗」(company_admin専用の仮想集計ビュー)専用のキー。実店舗のbuildMonthKeyとは別の
+// マップ(state.allStoresTargets/state.allStoresBusinessDaySettings)を使うので、店舗名と
+// 衝突する心配がない。company_idを含めるのは、system_adminが会社を切り替えた際に前の会社の
+// 全店舗目標が新しい会社のビューに残留(≒他社データ混在)しないようにするため。
+export const buildCompanyMonthKey = (companyId, monthValue) => `${companyId}__${monthValue}`;
+
+export const getAllStoresTargetForCompanyMonth = (state, companyId, monthValue) => ({
+  ...defaultTarget,
+  ...(state.allStoresTargets?.[buildCompanyMonthKey(companyId, monthValue)] || {}),
+});
+
+export const getAllStoresBusinessDaySettings = (state, companyId, monthValue) =>
+  state.allStoresBusinessDaySettings?.[buildCompanyMonthKey(companyId, monthValue)] || {};
+
+// company_all_stores_targets の行から、targets形状(店舗別targetsと同じキー名)と
+// businessDaySettings形状に分けて復元する。monthly_targetsの行をbuildTargetStateFromRowsが
+// targets/businessDaySettingsの2マップに分けているのと同じ考え方。
+export const buildAllStoresTargetStateFromRows = (rows = []) => {
+  const allStoresTargets = {};
+  const allStoresBusinessDaySettings = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.company_id || !row.target_month) return;
+    const key = buildCompanyMonthKey(row.company_id, row.target_month);
+    allStoresTargets[key] = {
+      targetSales: row.target_sales,
+      targetTechnicalSales: row.target_technical_sales,
+      targetRetailSales: row.target_retail_sales,
+      targetCustomers: row.target_customers,
+      targetAverageSpend: row.target_average_spend,
+      targetNewCustomers: row.target_new_customers,
+      targetRepeatCustomers: row.target_repeat_customers,
+      targetReviewCount: row.target_review_count,
+    };
+    allStoresBusinessDaySettings[key] = {
+      mode: row.business_day_mode || "",
+      businessDayCount: row.business_day_count,
+      holidayCount: row.holiday_count,
+    };
+  });
+  return { allStoresTargets, allStoresBusinessDaySettings };
+};
 
 export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
   const items = state.dailyResults?.[buildMonthKey(storeName, monthValue)] || [];
@@ -974,6 +1058,101 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
     variableCosts,
     closingItems,
     expenseCategories,
+  };
+};
+
+// 「全店舗」(company_admin専用の仮想集計ビュー)専用の売上サマリー。calculateMonthSummaryを
+// 単純に店舗ごとに呼んで合算するのではなく、各店舗の元データ(daily_sales由来のdailyResults)
+// から日締め済みの日付だけを拾って直接合算し、達成率・客単価・1日平均売上・月末着地予測などの
+// 比率/平均/予測は全店舗合計データから計算し直す(店舗ごとの計算結果を足し合わせない)。
+// 費用・損益(人件費/材料費/粗利益など)はこの関数では扱わない — 全店舗ビューは売上ページの
+// KPI/営業進捗のみが対象で、損益表・費用入力・月締めは店舗ごとの機能のまま(要件範囲外)。
+export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
+  const companyId = company?.id || "";
+  const storeNames = (company?.stores || []).map((store) => store.name).filter(Boolean);
+  const target = getAllStoresTargetForCompanyMonth(state, companyId, monthValue);
+  const businessDaySummary = getAllStoresBusinessDaySummary(state, companyId, storeNames, monthValue);
+
+  let sales = 0;
+  let technicalSales = 0;
+  let retailSales = 0;
+  let otherSales = 0;
+  let customers = 0;
+  let newCustomers = 0;
+  let repeatCustomers = 0;
+  let reviewCount = 0;
+
+  storeNames.forEach((storeName) => {
+    const entries = getDailyResultsForStoreMonth(state, storeName, monthValue);
+    // 日締め済みの日だけを合算対象にする(未締めのB店の当日実績はまだ全店舗に反映しない)。
+    const closedDateSet = new Set(getBusinessDaySummary(state, storeName, monthValue).closedDates || []);
+    entries.forEach((entry) => {
+      if (!closedDateSet.has(String(entry?.date || ""))) return;
+      sales += parseNumber(entry.totalSales || entry.technicalSales || 0);
+      technicalSales += parseNumber(entry.technicalSales || 0);
+      retailSales += parseNumber(entry.retailSales || 0);
+      otherSales += parseNumber(entry.otherSales || 0);
+      customers += parseNumber(entry.customers || 0);
+      newCustomers += parseNumber(entry.newCustomers || 0);
+      repeatCustomers += parseNumber(entry.repeatCustomers || 0);
+      reviewCount += parseNumber(entry.reviewCount || 0);
+    });
+  });
+
+  const closedSales = sales;
+  const completedDays = businessDaySummary.completedDays;
+  const remainingBusinessDays = businessDaySummary.remainingBusinessDays;
+  const progressRate = businessDaySummary.progressRate;
+
+  const targetSales = parseNumber(target.targetSales);
+  const targetAchievement = targetSales ? (sales / targetSales) * 100 : 0;
+  const remainingSalesTarget = Math.max(targetSales - sales, 0);
+  const dailyNeededSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
+  const pace = completedDays > 0 ? closedSales / completedDays : 0;
+  const forecast = completedDays > 0 && businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : 0;
+  // 1日平均売上 = 全店舗の確定済み総売上 ÷ 全店舗として営業完了した日数。
+  const averageDailySales = completedDays > 0 ? sales / completedDays : 0;
+  const averageSpend = customers ? sales / customers : 0;
+
+  const customerTarget = parseNumber(target.targetCustomers);
+  const customerAchievement = customerTarget ? (customers / customerTarget) * 100 : 0;
+  const remainingCustomersTarget = Math.max(customerTarget - customers, 0);
+  const remainingCustomersPerDay = remainingBusinessDays ? remainingCustomersTarget / remainingBusinessDays : 0;
+
+  const reviewCountTarget = parseNumber(target.targetReviewCount);
+  const reviewCountAchievement = reviewCountTarget ? (reviewCount / reviewCountTarget) * 100 : 0;
+  const remainingReviewCountTarget = Math.max(reviewCountTarget - reviewCount, 0);
+
+  return {
+    sales,
+    technicalSales,
+    retailSales,
+    otherSales,
+    customers,
+    newCustomers,
+    repeatCustomers,
+    reviewCount,
+    reviewCountTarget,
+    reviewCountAchievement,
+    remainingReviewCountTarget,
+    averageSpend,
+    targetAchievement,
+    remainingSalesTarget,
+    dailyNeededSales,
+    forecast,
+    closedSales,
+    todayTarget: 0,
+    completedDays,
+    businessDays: businessDaySummary.businessDayCount,
+    remainingBusinessDays,
+    progressRate,
+    averageSales: averageDailySales,
+    averageDailySales,
+    customerTarget,
+    customerAchievement,
+    remainingCustomersTarget,
+    remainingCustomersPerDay,
+    target,
   };
 };
 
