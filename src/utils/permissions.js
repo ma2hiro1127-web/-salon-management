@@ -35,9 +35,12 @@ export const canEditStoreName = (role) => normalizeRole(role) === "system_admin"
 export const canManageUsers = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
 export const canEditMonthlyData = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin" || normalizeRole(role) === "store_manager";
 export const canViewUserManagement = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
-// 「全店舗」(company_admin専用の仮想集計ビュー)を店舗選択欄に表示・選択できるかどうか。
-// 一般スタッフ・店舗管理者には表示しない。
-export const canViewAllStores = (role) => normalizeRole(role) === "company_admin";
+// 「全店舗」(company_admin/system_admin専用の仮想集計ビュー)を店舗選択欄に表示・選択できる
+// かどうか。一般スタッフ・店舗管理者には表示しない。system_adminは複数会社を横断管理できる
+// ロールだが、「全店舗」はあくまで現在対象にしているcompany_id(currentCompanyId)の店舗を
+// 集計するものであり、会社をまたいで合算するものではない(呼び出し側で必ずcurrentCompanyId
+// でスコープする — calculateAllStoresMonthSummary/getAllStoresBusinessDaySummary等を参照)。
+export const canViewAllStores = (role) => normalizeRole(role) === "company_admin" || normalizeRole(role) === "system_admin";
 
 export const getVisibleNavItems = (role) => {
   const normalizedRole = normalizeRole(role);
