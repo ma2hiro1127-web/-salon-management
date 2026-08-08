@@ -255,6 +255,7 @@ const dailyFieldLabels = {
   newCustomers: "新規客数",
   repeatCustomers: "再来客数",
   memo: "メモ",
+  reviewCount: "口コミ数",
 };
 
 const monthlyTargetFieldLabels = {
@@ -578,6 +579,7 @@ function App() {
   const showNewCustomersField = showCustomersField && Boolean(activeDailyFieldSettings.fields.newCustomers);
   const showRepeatCustomersField = showCustomersField && Boolean(activeDailyFieldSettings.fields.repeatCustomers);
   const showMemoField = Boolean(activeDailyFieldSettings.fields.memo);
+  const showReviewCountField = Boolean(activeDailyFieldSettings.fields.reviewCount);
   const totalSalesIsAutoCalculated = showTechnicalSalesField && showRetailSalesField;
   const customersIsAutoCalculated = showNewCustomersField && showRepeatCustomersField;
   // updateDailyField keeps dailyForm.totalSales/dailyForm.customers correctly synced whether
@@ -868,16 +870,17 @@ function App() {
   // hydrateFromSupabase's monthly_targets overlay (see loadMonthlyTargetsForCompany).
   const hasSalesTarget = parseNumber(target.targetSales) > 0;
   const hasCustomerTarget = parseNumber(target.targetCustomers) > 0;
-  // ④ 目標との差額: positive (at/over target) is green "＋", short of target is red "▲".
-  const salesVsTarget = summary.sales - parseNumber(target.targetSales);
+  const hasReviewCountTarget = parseNumber(target.targetReviewCount) > 0;
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
   const forecastVsTarget = summary.forecast - parseNumber(target.targetSales);
+  // KPIエリア(目標に対する数値)用。実績値は営業進捗カードに表示するため、ここには置かない
+  // (数字を混在させない、という今回の整理方針)。
   const dashboardSupportMetrics = useMemo(() => ([
     { label: "平均客単価", value: money(summary.averageSpend), hint: `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` },
-    { label: "1日平均売上", value: money(summary.averageSales), hint: `必要売上 ${money(summary.dailyNeededSales)}` },
-    { label: "顧客数", value: number(summary.customers), hint: `新規 ${number(summary.newCustomers)} / 再来 ${number(summary.repeatCustomers)}` },
-  ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.averageSales, summary.dailyNeededSales, summary.customers, summary.newCustomers, summary.repeatCustomers]);
+    { label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` },
+    { label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` },
+  ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers]);
   // One unified AI comment card (順調/注意/要改善), replacing the previous 3-card split
   // (目標まで/目標ペース/必要な1日平均売上) — see getSalesStatusComment for the tier logic.
   // getSalesStatusComment already produces a sensible "月間目標を設定すると..." fallback
@@ -2332,7 +2335,7 @@ function App() {
       return;
     }
 
-    const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);
+    const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.reviewCount].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);
     const signature = getDailyAutoSaveSignature(dailyForm);
     if (!dailyForm.date || (!hasAnyValue && !dailyForm.id)) {
       return;
@@ -2354,7 +2357,7 @@ function App() {
         window.clearTimeout(autoSaveTimerRef.current);
       }
     };
-  }, [dailyForm.date, dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.memo, dailyMode, selectedStore, selectedMonth, dailyForm.id, dailyEntries]);
+  }, [dailyForm.date, dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.reviewCount, dailyForm.memo, dailyMode, selectedStore, selectedMonth, dailyForm.id, dailyEntries]);
 
   useEffect(() => {
     const handleFocus = () => {
@@ -2495,6 +2498,7 @@ function App() {
     customers: form.customers ?? "",
     newCustomers: form.newCustomers ?? "",
     repeatCustomers: form.repeatCustomers ?? "",
+    reviewCount: form.reviewCount ?? "",
     memo: form.memo ?? "",
   });
 
@@ -2519,7 +2523,7 @@ function App() {
       return { ok: true, skipped: true };
     }
 
-    const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);
+    const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.reviewCount].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);
     if (!force && !hasAnyValue) {
       return { ok: true, skipped: true };
     }
@@ -2652,6 +2656,7 @@ function App() {
               targetMaterialRate: result.data.target_material_rate,
               targetAdRate: result.data.target_ad_rate,
               targetOperatingMargin: result.data.target_operating_margin,
+              targetReviewCount: result.data.target_review_count,
             };
             loadedHolidayCount = result.data.holiday_count;
           }
@@ -3489,6 +3494,28 @@ function App() {
         {activePage === "dashboard" && (
           <div className="dashboard-layout">
             <section className="panel">
+              <div className="business-progress-card">
+                <div className="business-progress-header">
+                  <div>
+                    <p className="eyebrow">PROGRESS</p>
+                    <h3>営業進捗</h3>
+                  </div>
+                  <span className={`status-chip ${businessDaySummary.progressRate === null ? "neutral" : businessDaySummary.progressRate >= 100 ? "good" : businessDaySummary.progressRate >= 50 ? "warning" : "danger"}`}>
+                    {businessDaySummary.progressRate === null ? "未設定" : `${Math.round(businessDaySummary.progressRate)}%`}
+                  </span>
+                </div>
+                <div className="progress-track">
+                  <div className="progress-fill" style={{ width: `${Math.min(100, businessDaySummary.progressRate || 0)}%` }} />
+                </div>
+                <div className="business-progress-grid">
+                  <div><span>今月営業日数</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"}</strong></div>
+                  <div><span>営業完了</span><strong>{businessDaySummary.completedDays}日</strong></div>
+                  <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
+                  <div><span>総売上</span><strong>{money(summary.sales)}</strong></div>
+                  <div><span>1日平均売上</span><strong>{money(summary.averageDailySales)}</strong></div>
+                  <div><span>顧客数</span><strong>{number(summary.customers)}名</strong></div>
+                </div>
+              </div>
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">KPI</p>
@@ -3509,15 +3536,15 @@ function App() {
                 )}
                 {hasSalesTarget ? (
                   <MetricCard
-                    label="目標との差額"
-                    value={salesVsTarget >= 0 ? `＋${money(salesVsTarget)}（目標達成）` : `▲${money(Math.abs(salesVsTarget))}`}
+                    label="目標売上まで"
+                    value={money(summary.remainingSalesTarget)}
                     hint={`現在売上 ${money(summary.sales)}`}
-                    tone={salesVsTarget >= 0 ? "good" : "danger"}
+                    tone={summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100)}
                     emphasize
                     onClick={goToMonthlyTargetSetting}
                   />
                 ) : (
-                  <TargetMissingCard label="目標との差額" onGoToTarget={goToMonthlyTargetSetting} emphasize />
+                  <TargetMissingCard label="目標売上まで" onGoToTarget={goToMonthlyTargetSetting} emphasize />
                 )}
                 <MetricCard
                   label="月末着地予測"
@@ -3544,28 +3571,19 @@ function App() {
                 ) : (
                   <TargetMissingCard label="客数達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
                 )}
-              </div>
-              <div className="business-progress-card">
-                <div className="business-progress-header">
-                  <div>
-                    <p className="eyebrow">PROGRESS</p>
-                    <h3>営業進捗</h3>
-                  </div>
-                  <span className={`status-chip ${businessDaySummary.progressRate === null ? "neutral" : businessDaySummary.progressRate >= 100 ? "good" : businessDaySummary.progressRate >= 50 ? "warning" : "danger"}`}>
-                    {businessDaySummary.progressRate === null ? "未設定" : `${Math.round(businessDaySummary.progressRate)}%`}
-                  </span>
-                </div>
-                <div className="progress-track">
-                  <div className="progress-fill" style={{ width: `${Math.min(100, businessDaySummary.progressRate || 0)}%` }} />
-                </div>
-                <div className="business-progress-grid">
-                  <div><span>今月営業日数</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"}</strong></div>
-                  <div><span>営業完了</span><strong>{businessDaySummary.completedDays}日</strong></div>
-                  <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
-                  <div><span>目標売上まで</span><strong>{money(summary.remainingSalesTarget)}</strong></div>
-                  <div><span>残り1日必要売上</span><strong>{money(summary.dailyNeededSales)}</strong></div>
-                  <div><span>目標客数まで</span><strong>{summary.remainingCustomersTarget}名</strong></div>
-                </div>
+                {showReviewCountField ? (
+                  hasReviewCountTarget ? (
+                    <MetricCard
+                      label="口コミ数達成率"
+                      value={percent(summary.reviewCountAchievement)}
+                      hint={`現在 ${number(summary.reviewCount)}件 / 目標 ${number(summary.reviewCountTarget)}件・残り ${number(summary.remainingReviewCountTarget)}件`}
+                      tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
+                      emphasize
+                    />
+                  ) : (
+                    <TargetMissingCard label="口コミ数達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
+                  )
+                ) : null}
               </div>
               <div className="kpi-grid">
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
@@ -3788,6 +3806,13 @@ function App() {
                       </div>
                     ) : null}
 
+                    {showReviewCountField ? (
+                      <div className="daily-section-card">
+                        <h3>口コミ</h3>
+                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={(value) => updateDailyField("reviewCount", value)} suffix="件" placeholder="件数を入力" disabled={dailyMode === "view"} type="number" />
+                      </div>
+                    ) : null}
+
                     {showMemoField ? (
                       <div className="daily-section-card">
                         <h3>メモ</h3>
@@ -3918,6 +3943,7 @@ function App() {
                           {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" /> : null}
+                          {showReviewCountField ? <Field label="口コミ数目標" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" type="number" /> : null}
                         </div>
                         <div className="toggle-panel">
                           <div>

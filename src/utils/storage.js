@@ -169,6 +169,7 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
   const showNewCustomers = showCustomers && Boolean(fields.newCustomers);
   const showRepeatCustomers = showCustomers && Boolean(fields.repeatCustomers);
   const showMemo = Boolean(fields.memo);
+  const showReviewCount = Boolean(fields.reviewCount);
 
   const preserveNumber = (existingValue) => parseNumber(existingValue ?? 0);
   const preserveText = (existingValue) => existingValue ?? "";
@@ -180,6 +181,7 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
   const newCustomers = showNewCustomers ? parseNumber(form.newCustomers) : preserveNumber(existingEntry?.newCustomers);
   const repeatCustomers = showRepeatCustomers ? parseNumber(form.repeatCustomers) : preserveNumber(existingEntry?.repeatCustomers);
   const customers = showCustomers ? parseNumber(form.customers) : preserveNumber(existingEntry?.customers);
+  const reviewCount = showReviewCount ? parseNumber(form.reviewCount) : preserveNumber(existingEntry?.reviewCount);
 
   const memo = showMemo ? (form.memo || "") : preserveText(existingEntry?.memo);
 
@@ -194,6 +196,7 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
     customers,
     newCustomers,
     repeatCustomers,
+    reviewCount,
     memo,
   };
 };
@@ -214,6 +217,7 @@ export const dailySalesRowToEntry = (row = {}) => ({
   customers: parseNumber(row.customer_count),
   newCustomers: parseNumber(row.new_customer_count),
   repeatCustomers: parseNumber(row.repeat_customer_count),
+  reviewCount: parseNumber(row.review_count),
   memo: row.memo || "",
   isDayClosed: Boolean(row.is_day_closed),
   updatedAt: row.updated_at || "",
@@ -278,6 +282,7 @@ export const buildTargetStateFromRows = (rows = [], storeIdToName = {}) => {
       targetMaterialRate: row.target_material_rate,
       targetAdRate: row.target_ad_rate,
       targetOperatingMargin: row.target_operating_margin,
+      targetReviewCount: row.target_review_count,
     };
     businessDaySettings[key] = {
       mode: row.business_day_mode || "",
@@ -829,6 +834,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const customers = effectiveEntries.reduce((total, item) => total + parseNumber(item.customers || 0), 0);
   const newCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.newCustomers || 0), 0);
   const repeatCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.repeatCustomers || 0), 0);
+  const reviewCount = effectiveEntries.reduce((total, item) => total + parseNumber(item.reviewCount || 0), 0);
 
   const laborCost = closingItems.filter((item) => item.category === "人件費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const materialCost = closingItems.filter((item) => item.category === "材料費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
@@ -866,6 +872,10 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const pace = completedDays > 0 ? closedSales / completedDays : 0;
   const forecast = completedDays > 0 && businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : 0;
   const averageSales = effectiveEntries.length > 0 ? sales / effectiveEntries.length : 0;
+  // 営業進捗カードの「1日平均売上」(実績)用: 総売上 ÷ 営業完了日数。averageSales(入力日数で
+  // 割る既存値、pace/forecastが使う)とは別の新規フィールドで、既存のaverageSales/pace/forecast
+  // の計算には一切手を入れない。
+  const averageDailySales = completedDays > 0 ? sales / completedDays : 0;
   const remainingAverageSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const todayActual = effectiveEntries.filter((entry) => entry.date === todayIso).reduce((sum, item) => sum + parseNumber(item.totalSales || item.technicalSales || 0), 0);
   const todayTarget = targetPerDay;
@@ -889,6 +899,9 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const remainingCustomersTarget = Math.max(customerTarget - customers, 0);
   const remainingCustomersPerDay = remainingBusinessDays ? remainingCustomersTarget / remainingBusinessDays : 0;
   const forecastCustomers = businessDaySummary.businessDayCount ? averageCustomersPerDay * businessDaySummary.businessDayCount : customers;
+  const reviewCountTarget = parseNumber(target.targetReviewCount);
+  const reviewCountAchievement = reviewCountTarget ? (reviewCount / reviewCountTarget) * 100 : 0;
+  const remainingReviewCountTarget = Math.max(reviewCountTarget - reviewCount, 0);
   const repeatTarget = parseNumber(target.targetRepeatRate);
   const repeatTargetAchievement = repeatTarget ? (repeatRate / repeatTarget) * 100 : 0;
 
@@ -900,6 +913,10 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
     customers,
     newCustomers,
     repeatCustomers,
+    reviewCount,
+    reviewCountTarget,
+    reviewCountAchievement,
+    remainingReviewCountTarget,
     averageSpend,
     averageCustomersPerDay,
     repeatRate,
@@ -943,6 +960,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
     remainingBusinessDays,
     progressRate,
     averageSales,
+    averageDailySales,
     remainingAverageSales,
     customerTarget,
     customerAchievement,

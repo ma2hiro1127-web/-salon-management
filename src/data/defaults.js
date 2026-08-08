@@ -26,6 +26,9 @@ export const defaultTarget = {
   targetMaterialRate: "",
   targetAdRate: "",
   targetOperatingMargin: "",
+  // 口コミ数目標: 日次入力項目設定で口コミ数がONの店舗だけが月間目標設定に表示・入力する
+  // (monthlyTargetFieldKeysの一般トグルとは別の、口コミ数フィールドONに完全連動した表示条件)。
+  targetReviewCount: "",
 };
 
 export const defaultDailyEntry = {
@@ -37,6 +40,7 @@ export const defaultDailyEntry = {
   customers: "",
   newCustomers: "",
   repeatCustomers: "",
+  reviewCount: "",
   memo: "",
   salesInputMode: "inclusive",
 };
@@ -44,11 +48,14 @@ export const defaultDailyEntry = {
 // 日次入力画面に表示する項目。日付・総売上・日締めは仕様上常に必須のため、ここには含めない
 // (非表示にできる6項目のみを管理する)。既存店舗にはこの設定がまだ無いので、デフォルトは
 // 全項目表示(詳細入力相当)にして、これまでの見え方を変えないようにする。
-export const dailyFieldKeys = ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers", "memo"];
+// 口コミ数はデフォルトOFF: simple/detailedどちらのプリセットにも含めず、店舗ごとに個別で
+// ONにした場合だけ日次入力・月間目標設定・売上画面KPIに登場する(既存店舗は未設定=false
+// にフォールバックするため、既存データ・既存の見え方には一切影響しない)。
+export const dailyFieldKeys = ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers", "memo", "reviewCount"];
 
 export const dailyFieldPresets = {
-  simple: { technicalSales: false, retailSales: false, customers: false, newCustomers: false, repeatCustomers: false, memo: false },
-  detailed: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true },
+  simple: { technicalSales: false, retailSales: false, customers: false, newCustomers: false, repeatCustomers: false, memo: false, reviewCount: false },
+  detailed: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true, reviewCount: false },
 };
 
 export const defaultDailyFieldSettings = () => ({
