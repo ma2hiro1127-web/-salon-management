@@ -144,8 +144,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .calendar-day { min-height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-weight: 600; }
 .calendar-day.muted { opacity: 0.4; border-style: dashed; }
 .calendar-day.filled { background: rgba(22, 163, 74, 0.16); color: var(--success); border-color: rgba(22, 163, 74, 0.24); }
-.calendar-day.closed { background: rgba(37, 99, 235, 0.16); color: var(--accent); border-color: rgba(37, 99, 235, 0.24); }
+/* 緑 = 日締め完了 */
+.calendar-day.closed { background: rgba(22, 163, 74, 0.16); color: var(--success); border-color: rgba(22, 163, 74, 0.24); }
+/* 赤 = 店休日 */
+.calendar-day.holiday { background: rgba(220, 38, 38, 0.12); color: var(--danger); border-color: rgba(220, 38, 38, 0.24); }
 .calendar-day.empty { background: rgba(100, 116, 139, 0.08); color: var(--muted); }
+.calendar-day.clickable { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
+.calendar-day.clickable:hover, .calendar-day.clickable:focus-visible { transform: translateY(-1px); box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08); outline: none; }
+.calendar-day.today { box-shadow: inset 0 0 0 2px var(--accent); }
 .status-pill.saved { background: rgba(46, 163, 97, 0.12); color: var(--success); }
 .status-pill.saving { background: rgba(47, 125, 246, 0.12); color: var(--accent); }
 .status-pill.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }

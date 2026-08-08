@@ -543,6 +543,8 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   targets: mergeShallowMap(localState.targets, remoteState.targets),
   allStoresTargets: mergeShallowMap(localState.allStoresTargets, remoteState.allStoresTargets),
   allStoresBusinessDaySettings: mergeShallowMap(localState.allStoresBusinessDaySettings, remoteState.allStoresBusinessDaySettings),
+  storeHolidays: mergeShallowMap(localState.storeHolidays, remoteState.storeHolidays),
+  allStoresHolidays: mergeShallowMap(localState.allStoresHolidays, remoteState.allStoresHolidays),
   businessDaySettings: mergeShallowMap(localState.businessDaySettings, remoteState.businessDaySettings),
   monthClosingStatus: mergeShallowMap(localState.monthClosingStatus, remoteState.monthClosingStatus),
 });
@@ -555,11 +557,17 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
   const key = buildMonthKey(storeName, monthValue);
   const settings = getBusinessDaySettings(state, storeName, monthValue);
   const monthInfo = getMonthInfo(monthValue);
+  const holidayDates = getStoreHolidayDates(state, storeName, monthValue);
+  const holidayDateSet = new Set(holidayDates);
   const holidayCount = Math.max(parseNumber(settings.holidayCount), 0);
   const manualBusinessDayCount = parseNumber(settings.businessDayCount);
-  const businessDayCount = settings.mode === "manual" && Number.isInteger(manualBusinessDayCount) && manualBusinessDayCount > 0
-    ? manualBusinessDayCount
-    : Math.max(monthInfo.daysInMonth - holidayCount, 0);
+  // 優先順位: カレンダーで具体的な日付が設定されていればそれを最優先(実際の日数を数える)。
+  // 次に手動営業日数の上書き。どちらも無ければ既存の休業日「数」から算出する(後方互換)。
+  const businessDayCount = holidayDateSet.size > 0
+    ? Math.max(monthInfo.daysInMonth - holidayDateSet.size, 0)
+    : (settings.mode === "manual" && Number.isInteger(manualBusinessDayCount) && manualBusinessDayCount > 0
+      ? manualBusinessDayCount
+      : Math.max(monthInfo.daysInMonth - holidayCount, 0));
   const closingMap = state.dayClosingStates?.[key] || {};
   const dailyEntryDates = new Set(
     deduplicateDailyEntries(state.dailyResults?.[key] || []).entries
@@ -567,8 +575,9 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
       .filter(Boolean)
   );
 
+  // 店休日は営業完了数に含めない(要件11)。
   const closedDateList = Object.entries(closingMap)
-    .filter(([date, isClosed]) => Boolean(isClosed) && String(date).startsWith(`${monthValue}-`) && dailyEntryDates.has(String(date)))
+    .filter(([date, isClosed]) => Boolean(isClosed) && String(date).startsWith(`${monthValue}-`) && dailyEntryDates.has(String(date)) && !holidayDateSet.has(String(date)))
     .map(([date]) => String(date))
     .sort((a, b) => a.localeCompare(b));
 
@@ -578,6 +587,7 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
     remainingBusinessDays: businessDayCount === null ? null : Math.max(businessDayCount - closedDateList.length, 0),
     progressRate: businessDayCount === null ? null : (closedDateList.length / Math.max(businessDayCount, 1)) * 100,
     closedDates: closedDateList,
+    holidayDates,
   };
 };
 
@@ -587,23 +597,49 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
 // 「営業完了」の判定も店舗横断の特別ルール: ある日付が「全店舗として営業完了」になるのは、
 // 登録されている全ての実店舗がその日の日締めを終えている時だけ(店舗ごとのclosedDatesの積集合)。
 // 1店舗でも未締めなら、他の店舗が締めていてもその日はまだカウントしない。
-export const getAllStoresBusinessDaySummary = (state, companyId, storeNames, monthValue) => {
+// storeNamesOrStores: 文字列(店舗名)の配列でも{name, openingDate}オブジェクトの配列でも
+// どちらでも受け付ける(openingDateが分かれば要件26の「新規店舗追加時に過去日を未締め扱いに
+// しない」判定に使う。文字列だけ渡された場合はopeningDateなし=常に開店済み扱いとなり、
+// 従来どおりの挙動を維持する)。
+export const getAllStoresBusinessDaySummary = (state, companyId, storeNamesOrStores, monthValue) => {
+  const stores = (storeNamesOrStores || [])
+    .map((item) => (typeof item === "string" ? { name: item, openingDate: "" } : item))
+    .filter((item) => item && item.name);
+
   const settings = getAllStoresBusinessDaySettings(state, companyId, monthValue);
   const monthInfo = getMonthInfo(monthValue);
+  const holidayDates = getAllStoresHolidayDates(state, companyId, monthValue);
+  const holidayDateSet = new Set(holidayDates);
   const holidayCount = Math.max(parseNumber(settings.holidayCount), 0);
   const manualBusinessDayCount = parseNumber(settings.businessDayCount);
-  const businessDayCount = settings.mode === "manual" && Number.isInteger(manualBusinessDayCount) && manualBusinessDayCount > 0
-    ? manualBusinessDayCount
-    : Math.max(monthInfo.daysInMonth - holidayCount, 0);
+  // 実店舗と同じ優先順位: カレンダー日付 > 手動営業日数 > 従来の休業日「数」。
+  const businessDayCount = holidayDateSet.size > 0
+    ? Math.max(monthInfo.daysInMonth - holidayDateSet.size, 0)
+    : (settings.mode === "manual" && Number.isInteger(manualBusinessDayCount) && manualBusinessDayCount > 0
+      ? manualBusinessDayCount
+      : Math.max(monthInfo.daysInMonth - holidayCount, 0));
 
-  const names = (storeNames || []).filter(Boolean);
-  if (!names.length) {
-    return { businessDayCount, completedDays: 0, remainingBusinessDays: Math.max(businessDayCount, 0), progressRate: businessDayCount ? 0 : null, closedDates: [] };
+  if (!stores.length) {
+    return { businessDayCount, completedDays: 0, remainingBusinessDays: Math.max(businessDayCount, 0), progressRate: businessDayCount ? 0 : null, closedDates: [], holidayDates };
   }
 
-  const perStoreClosedDateSets = names.map((storeName) => new Set(getBusinessDaySummary(state, storeName, monthValue).closedDates || []));
-  const [firstSet, ...restSets] = perStoreClosedDateSets;
-  const closedDateList = [...firstSet].filter((date) => restSets.every((set) => set.has(date))).sort((a, b) => a.localeCompare(b));
+  const perStoreClosedDateSets = stores.map((store) => new Set(getBusinessDaySummary(state, store.name, monthValue).closedDates || []));
+
+  // 日付ごとに判定する(要件10・26): 全店舗の店休日は対象外、かつその日にまだ開店していない
+  // 店舗(openingDateが未来)は「未締め店舗」として扱わない — 新店舗を追加しても過去日の
+  // 営業完了数が突然減らないようにする。
+  const closedDateList = [];
+  for (let day = 1; day <= monthInfo.daysInMonth; day += 1) {
+    const dateIso = `${monthValue}-${String(day).padStart(2, "0")}`;
+    if (holidayDateSet.has(dateIso)) continue;
+    const applicableIndexes = [];
+    stores.forEach((store, index) => {
+      if (!store.openingDate || store.openingDate <= dateIso) applicableIndexes.push(index);
+    });
+    if (!applicableIndexes.length) continue;
+    const allClosed = applicableIndexes.every((index) => perStoreClosedDateSets[index].has(dateIso));
+    if (allClosed) closedDateList.push(dateIso);
+  }
 
   return {
     businessDayCount,
@@ -611,6 +647,7 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storeNames, mon
     remainingBusinessDays: Math.max(businessDayCount - closedDateList.length, 0),
     progressRate: businessDayCount ? (closedDateList.length / Math.max(businessDayCount, 1)) * 100 : null,
     closedDates: closedDateList,
+    holidayDates,
   };
 };
 
@@ -834,6 +871,40 @@ export const buildAllStoresTargetStateFromRows = (rows = []) => {
     };
   });
   return { allStoresTargets, allStoresBusinessDaySettings };
+};
+
+// 店休日(カレンダーの具体的な日付)。実店舗はbuildMonthKey、全店舗はbuildCompanyMonthKeyで
+// キー化し、値はその月のISO日付文字列の配列("2026-08-08"等)。設定されていなければ空配列
+// (=カレンダーでは未設定。既存のholidayCount数値のほうにフォールバックする)。
+export const getStoreHolidayDates = (state, storeName, monthValue) =>
+  state.storeHolidays?.[buildMonthKey(storeName, monthValue)] || [];
+
+export const getAllStoresHolidayDates = (state, companyId, monthValue) =>
+  state.allStoresHolidays?.[buildCompanyMonthKey(companyId, monthValue)] || [];
+
+export const isHolidayDate = (holidayDates, dateIso) => (holidayDates || []).includes(dateIso);
+
+export const buildStoreHolidaysStateFromRows = (rows = [], storeIdToName = {}) => {
+  const storeHolidays = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const storeName = storeIdToName[row.store_id];
+    if (!storeName || !row.holiday_date) return;
+    const month = String(row.holiday_date).slice(0, 7);
+    const key = buildMonthKey(storeName, month);
+    storeHolidays[key] = [...(storeHolidays[key] || []), String(row.holiday_date)];
+  });
+  return { storeHolidays };
+};
+
+export const buildAllStoresHolidaysStateFromRows = (rows = []) => {
+  const allStoresHolidays = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.company_id || !row.holiday_date) return;
+    const month = String(row.holiday_date).slice(0, 7);
+    const key = buildCompanyMonthKey(row.company_id, month);
+    allStoresHolidays[key] = [...(allStoresHolidays[key] || []), String(row.holiday_date)];
+  });
+  return { allStoresHolidays };
 };
 
 export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
@@ -1069,9 +1140,10 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
 // KPI/営業進捗のみが対象で、損益表・費用入力・月締めは店舗ごとの機能のまま(要件範囲外)。
 export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   const companyId = company?.id || "";
-  const storeNames = (company?.stores || []).map((store) => store.name).filter(Boolean);
+  const stores = (company?.stores || []).filter((store) => store?.name);
+  const storeNames = stores.map((store) => store.name);
   const target = getAllStoresTargetForCompanyMonth(state, companyId, monthValue);
-  const businessDaySummary = getAllStoresBusinessDaySummary(state, companyId, storeNames, monthValue);
+  const businessDaySummary = getAllStoresBusinessDaySummary(state, companyId, stores, monthValue);
 
   let sales = 0;
   let technicalSales = 0;

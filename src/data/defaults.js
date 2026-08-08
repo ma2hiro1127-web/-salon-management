@@ -130,6 +130,11 @@ export const createInitialAppState = () => {
     // 各店舗のtargets/businessDaySettingsとは完全に別管理で、実店舗の目標を書き換えない。
     allStoresTargets: {},
     allStoresBusinessDaySettings: {},
+    // 店休日をカレンダーの具体的な日付で管理する新形式(storeName__month / companyId__month
+    // でキー化した、その月の店休日ISO日付の配列)。既存のholidayCount(日数のみ)とは別管理で、
+    // カレンダーで日付が設定されている場合にそちらを優先する(getBusinessDaySummary参照)。
+    storeHolidays: {},
+    allStoresHolidays: {},
     dailyResults: {},
     fixedCosts: {},
     variableCosts: {},

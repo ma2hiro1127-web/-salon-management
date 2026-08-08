@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, pruneStaleKeys, readAppState, writeAppState } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -963,4 +963,111 @@ test("calculateAllStoresMonthSummary: a newly added store with no data yet doesn
   // それでもA店・B店それぞれの確定済み売上(店舗ごとの集計)はそのまま反映される —
   // 新規店舗の追加が既存店舗の実績集計を壊してはいけない。
   assert.equal(summary.sales, 600000);
+});
+
+// 店休日をカレンダーの具体的な日付で管理する新機能のテスト。既存の「休業日数(数値)」だけを
+// 保存しているデータを勝手に日付へ変換しないこと、優先順位(カレンダー日付 > 手動営業日数 >
+// 従来の休業日数)、店休日は営業完了数に含めないこと、を確認する。
+
+test("buildStoreHolidaysStateFromRows / buildAllStoresHolidaysStateFromRows rebuild the date-list maps from raw rows", () => {
+  const storeRows = [
+    { store_id: "store-a", holiday_date: "2026-08-08" },
+    { store_id: "store-a", holiday_date: "2026-08-15" },
+  ];
+  const { storeHolidays } = buildStoreHolidaysStateFromRows(storeRows, { "store-a": "A店" });
+  assert.deepEqual(storeHolidays["A店__2026-08"].sort(), ["2026-08-08", "2026-08-15"]);
+
+  const allStoresRows = [{ company_id: "company-1", holiday_date: "2026-08-08" }];
+  const { allStoresHolidays } = buildAllStoresHolidaysStateFromRows(allStoresRows);
+  assert.deepEqual(allStoresHolidays["company-1__2026-08"], ["2026-08-08"]);
+});
+
+test("getBusinessDaySummary: カレンダーで具体的な店休日が設定されている場合、従来の休業日「数」より優先して営業日数を計算する", () => {
+  const state = {
+    ...createInitialAppState(),
+    businessDaySettings: { "A店__2026-08": { holidayCount: 5 } }, // 従来の数値(古いデータ、勝手に変換されない)
+    storeHolidays: { "A店__2026-08": ["2026-08-01", "2026-08-08"] }, // カレンダーで2日だけ設定
+  };
+  const result = getBusinessDaySummary(state, "A店", "2026-08");
+  // 31日 - カレンダー店休日2日 = 29日(従来のholidayCount=5は無視される)
+  assert.equal(result.businessDayCount, 29);
+});
+
+test("getBusinessDaySummary: カレンダー日付が未設定の店舗は、既存の休業日「数」にそのままフォールバックする(後方互換・自動変換なし)", () => {
+  const state = {
+    ...createInitialAppState(),
+    businessDaySettings: { "A店__2026-08": { holidayCount: 5 } },
+    storeHolidays: {}, // カレンダー未設定
+  };
+  const result = getBusinessDaySummary(state, "A店", "2026-08");
+  assert.equal(result.businessDayCount, 26); // 31 - 5(従来どおり)
+});
+
+test("getBusinessDaySummary: 店休日は日締め済みであっても営業完了数に含めない", () => {
+  const state = {
+    ...createInitialAppState(),
+    dailyResults: { "A店__2026-08": [{ date: "2026-08-08", totalSales: 10000 }, { date: "2026-08-09", totalSales: 20000 }] },
+    dayClosingStates: { "A店__2026-08": { "2026-08-08": true, "2026-08-09": true } },
+    storeHolidays: { "A店__2026-08": ["2026-08-08"] }, // 8/8は締めているが店休日に設定されている
+  };
+  const result = getBusinessDaySummary(state, "A店", "2026-08");
+  assert.deepEqual(result.closedDates, ["2026-08-09"]);
+  assert.equal(result.completedDays, 1);
+});
+
+test("getAllStoresBusinessDaySummary: 全店舗の店休日は、その日の全店舗の日締めが揃っていても営業完了数に含めない", () => {
+  const state = {
+    ...createInitialAppState(),
+    dayClosingStates: {
+      "A店__2026-08": { "2026-08-08": true },
+      "B店__2026-08": { "2026-08-08": true },
+    },
+    dailyResults: {
+      "A店__2026-08": [{ date: "2026-08-08", totalSales: 1000 }],
+      "B店__2026-08": [{ date: "2026-08-08", totalSales: 1000 }],
+    },
+    allStoresHolidays: { "company-1__2026-08": ["2026-08-08"] },
+  };
+  const result = getAllStoresBusinessDaySummary(state, "company-1", ["A店", "B店"], "2026-08");
+  assert.deepEqual(result.closedDates, []);
+  assert.equal(result.completedDays, 0);
+});
+
+test("getAllStoresBusinessDaySummary: 開店日(openingDate)より前の日は、その店舗を「未締め」として扱わない(新規店舗追加で過去の営業完了数が壊れない)", () => {
+  const state = {
+    ...createInitialAppState(),
+    dayClosingStates: {
+      "A店__2026-08": { "2026-08-01": true, "2026-08-02": true },
+      "B店__2026-08": { "2026-08-01": true, "2026-08-02": true },
+      // C店は8/2に開店したので8/1のデータは存在しない(未締め)
+      "C店__2026-08": { "2026-08-02": true },
+    },
+    dailyResults: {
+      "A店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }, { date: "2026-08-02", totalSales: 1000 }],
+      "B店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }, { date: "2026-08-02", totalSales: 1000 }],
+      "C店__2026-08": [{ date: "2026-08-02", totalSales: 1000 }],
+    },
+  };
+  const stores = [
+    { name: "A店", openingDate: "" },
+    { name: "B店", openingDate: "" },
+    { name: "C店", openingDate: "2026-08-02" },
+  ];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", stores, "2026-08");
+  // 8/1はC店がまだ開店していないのでA店・B店だけが対象 → 両方締めているので完了扱い。
+  // 8/2はC店も開店済みで全店舗締めているので完了扱い。
+  assert.deepEqual(result.closedDates, ["2026-08-01", "2026-08-02"]);
+  assert.equal(result.completedDays, 2);
+});
+
+test("getStoreHolidayDates / getAllStoresHolidayDates / isHolidayDate basic behavior", () => {
+  const state = {
+    ...createInitialAppState(),
+    storeHolidays: { "A店__2026-08": ["2026-08-08"] },
+    allStoresHolidays: { "company-1__2026-08": ["2026-08-09"] },
+  };
+  assert.deepEqual(getStoreHolidayDates(state, "A店", "2026-08"), ["2026-08-08"]);
+  assert.deepEqual(getAllStoresHolidayDates(state, "company-1", "2026-08"), ["2026-08-09"]);
+  assert.equal(isHolidayDate(getStoreHolidayDates(state, "A店", "2026-08"), "2026-08-08"), true);
+  assert.equal(isHolidayDate(getStoreHolidayDates(state, "A店", "2026-08"), "2026-08-09"), false);
 });

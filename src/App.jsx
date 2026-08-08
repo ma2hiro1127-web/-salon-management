@@ -49,6 +49,11 @@ import {
   calculateAllStoresMonthSummary,
   buildAllStoresTargetStateFromRows,
   buildCompanyMonthKey,
+  getStoreHolidayDates,
+  getAllStoresHolidayDates,
+  isHolidayDate,
+  buildStoreHolidaysStateFromRows,
+  buildAllStoresHolidaysStateFromRows,
   mergeRemoteAppState,
   money,
   moneyDiff,
@@ -94,6 +99,12 @@ import {
   loadAllStoresTargetsForCompany,
   loadAllStoresTargetFromSupabase,
   upsertAllStoresTargetToSupabase,
+  loadStoreHolidaysForCompanyRange,
+  upsertStoreHolidayToSupabase,
+  deleteStoreHolidayFromSupabase,
+  loadAllStoresHolidaysForCompanyRange,
+  upsertAllStoresHolidayToSupabase,
+  deleteAllStoresHolidayFromSupabase,
   loadFixedCostsForCompany,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
@@ -615,6 +626,9 @@ function App() {
   // typed directly, so both are always safe to read as-is here.
   const dailyEffectiveTotalSales = parseNumber(dailyForm.totalSales);
   const dailyEffectiveCustomers = parseNumber(dailyForm.customers);
+  // 対象日が店休日かどうか(要件18)。dailyForm.dateの月から店休日一覧を取るので、月をまたいで
+  // 選択しても正しく判定できる。
+  const isDailyFormDateHoliday = Boolean(dailyForm.date) && isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date);
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -805,7 +819,7 @@ function App() {
   );
   const businessDaySummary = useMemo(
     () => (isAllStoresView
-      ? getAllStoresBusinessDaySummary(appState, appState.currentCompanyId, currentCompanyStores.map((store) => store.name), selectedMonth)
+      ? getAllStoresBusinessDaySummary(appState, appState.currentCompanyId, currentCompanyStores, selectedMonth)
       : getBusinessDaySummary(appState, selectedStore, selectedMonth)),
     [appState, currentCompanyStores, isAllStoresView, selectedStore, selectedMonth]
   );
@@ -861,28 +875,36 @@ function App() {
     const previousMonth = getMonthOffset(selectedMonth, -1);
     const previousPreviousMonth = getMonthOffset(selectedMonth, -2);
 
+    // ランキングの売上は各店舗の日締め済み確定データ(closedSales)を基準にする(要件21) —
+    // 個々の店舗自身の売上ページ(summary.sales)は入力中の当日分も含めたリアルタイム値のまま
+    // 変更しない。達成率もclosedSales基準で揃えることで、ランキング内の数字同士の整合性を保つ。
     const rows = currentCompanyStores.map((store) => {
       const storeSummary = calculateMonthSummary(appState, store.name, selectedMonth);
       const previousSummary = calculateMonthSummary(appState, store.name, previousMonth);
       const previousPreviousSummary = calculateMonthSummary(appState, store.name, previousPreviousMonth);
-      const currentChangeRate = previousSummary.sales > 0 ? ((storeSummary.sales - previousSummary.sales) / previousSummary.sales) * 100 : 0;
-      const previousChangeRate = previousPreviousSummary.sales > 0 ? ((previousSummary.sales - previousPreviousSummary.sales) / previousPreviousSummary.sales) * 100 : 0;
+      const closedSales = storeSummary.closedSales;
+      const previousClosedSales = previousSummary.closedSales;
+      const previousPreviousClosedSales = previousPreviousSummary.closedSales;
+      const closedAchievement = storeSummary.target.targetSales ? (closedSales / storeSummary.target.targetSales) * 100 : 0;
+      const previousClosedAchievement = previousSummary.target.targetSales ? (previousClosedSales / previousSummary.target.targetSales) * 100 : 0;
+      const currentChangeRate = previousClosedSales > 0 ? ((closedSales - previousClosedSales) / previousClosedSales) * 100 : 0;
+      const previousChangeRate = previousPreviousClosedSales > 0 ? ((previousClosedSales - previousPreviousClosedSales) / previousPreviousClosedSales) * 100 : 0;
 
       return {
         storeId: store.id,
         storeName: store.name,
-        sales: storeSummary.sales,
+        sales: closedSales,
         targetSales: storeSummary.target.targetSales,
-        achievement: storeSummary.targetAchievement,
+        achievement: closedAchievement,
         operatingProfit: storeSummary.operatingProfit,
-        previousSales: previousSummary.sales,
-        previousAchievement: previousSummary.targetAchievement,
+        previousSales: previousClosedSales,
+        previousAchievement: previousClosedAchievement,
         previousOperatingProfit: previousSummary.operatingProfit,
         previousChangeRate,
         currentChangeRate,
         forecast: storeSummary.forecast,
-        tone: getRankTone(storeSummary.targetAchievement),
-        achievementLabel: storeSummary.targetAchievement >= 100 ? "順調" : storeSummary.targetAchievement >= 95 ? "要確認" : "要改善",
+        tone: getRankTone(closedAchievement),
+        achievementLabel: closedAchievement >= 100 ? "順調" : closedAchievement >= 95 ? "要確認" : "要改善",
       };
     });
 
@@ -1305,6 +1327,20 @@ function App() {
       }
       const allStoresTargetStateOverlay = buildAllStoresTargetStateFromRows(allStoresTargetsResult.data);
 
+      // 店休日(カレンダーの具体的な日付)。daily_salesと同じ日付レンジ(過去2か月+対象月)で
+      // 取得する — 営業進捗/KPIが参照する期間と一致させるため。
+      const storeHolidaysResult = await loadStoreHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate });
+      if (!storeHolidaysResult.ok) {
+        throw storeHolidaysResult.error || new Error("店休日データの取得に失敗しました");
+      }
+      const storeHolidaysOverlay = buildStoreHolidaysStateFromRows(storeHolidaysResult.data, storeIdToName);
+
+      const allStoresHolidaysResult = await loadAllStoresHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate });
+      if (!allStoresHolidaysResult.ok) {
+        throw allStoresHolidaysResult.error || new Error("全店舗店休日データの取得に失敗しました");
+      }
+      const allStoresHolidaysOverlay = buildAllStoresHolidaysStateFromRows(allStoresHolidaysResult.data);
+
       // fixed_costs (see 20260808000000_create_fixed_costs.sql): a "翌月以降も継続" item is
       // computed by looking backwards across every earlier month's entries for the store (see
       // getFixedCostsForStoreMonth), so — unlike monthly_targets/monthly_closings above — this
@@ -1412,6 +1448,8 @@ function App() {
           targets: targetStateOverlay.targets,
           allStoresTargets: allStoresTargetStateOverlay.allStoresTargets,
           allStoresBusinessDaySettings: allStoresTargetStateOverlay.allStoresBusinessDaySettings,
+          storeHolidays: storeHolidaysOverlay.storeHolidays,
+          allStoresHolidays: allStoresHolidaysOverlay.allStoresHolidays,
           fixedCosts: fixedCostsOverlay.fixedCosts,
           variableCosts: variableCostsOverlay.variableCosts,
           monthClosing: monthlyClosingItemsOverlay.monthClosing,
@@ -1463,6 +1501,8 @@ function App() {
           targets: pruneStaleKeys(merged.targets, windowedExpectedKeys, targetStateOverlay.targets),
           allStoresTargets: pruneStaleKeys(merged.allStoresTargets, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresTargets),
           allStoresBusinessDaySettings: pruneStaleKeys(merged.allStoresBusinessDaySettings, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresBusinessDaySettings),
+          storeHolidays: pruneStaleKeys(merged.storeHolidays, windowedExpectedKeys, storeHolidaysOverlay.storeHolidays),
+          allStoresHolidays: pruneStaleKeys(merged.allStoresHolidays, companyMonthExpectedKeys, allStoresHolidaysOverlay.allStoresHolidays),
           fixedCosts: pruneStaleKeys(merged.fixedCosts, unboundedExpectedKeysFor(merged.fixedCosts), fixedCostsOverlay.fixedCosts),
           variableCosts: pruneStaleKeys(merged.variableCosts, windowedExpectedKeys, variableCostsOverlay.variableCosts),
           monthClosing: pruneStaleKeys(merged.monthClosing, windowedExpectedKeys, monthlyClosingItemsOverlay.monthClosing),
@@ -2598,6 +2638,16 @@ function App() {
       return { ok: false, skipped: true };
     }
 
+    // 店休日は日次入力・保存不可(要件18)。UI側でも入力欄自体を隠すが、こちらは
+    // オートセーブ等どの経路から呼ばれても確実にブロックするための最終防御。
+    if (isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date)) {
+      if (!silent) {
+        setNotice("この日は店休日のため保存できません");
+        persistSaveStatus("error", "この日は店休日のため保存できません", true);
+      }
+      return { ok: false, skipped: true };
+    }
+
     if (dailyMode === "view") {
       return { ok: true, skipped: true };
     }
@@ -3292,6 +3342,75 @@ function App() {
     setNotice("営業日数を自動計算に戻しました");
   };
 
+  // カレンダーで店休日をトグルする(要件17)。数値ベースの店休日数(saveHolidayCount)とは
+  // 別の、日付ベースの新しい管理方式 — store_business_holidaysへ永続保存し、営業日数は
+  // getBusinessDaySummaryが自動的に日付数から再計算する。
+  const toggleStoreHolidayDate = async (dateIso) => {
+    if (!selectedStore) {
+      setNotice("店舗を選択してください");
+      return;
+    }
+    const targetMonth = dateIso.slice(0, 7);
+    const currentHolidays = getStoreHolidayDates(appState, selectedStore, targetMonth);
+    const isCurrentlyHoliday = currentHolidays.includes(dateIso);
+    if (!isCurrentlyHoliday) {
+      const hasExistingEntry = getDailyResultsForStoreMonth(appState, selectedStore, targetMonth).some((entry) => entry.date === dateIso);
+      if (hasExistingEntry && !window.confirm(`${dateIso}には既存の日次データがあります。店休日に設定しますか？（データは削除されません）`)) {
+        return;
+      }
+    }
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured) {
+      if (!store?.id || !company?.id) {
+        setNotice("店舗情報を確認できませんでした");
+        return;
+      }
+      const result = isCurrentlyHoliday
+        ? await deleteStoreHolidayFromSupabase({ storeId: store.id, holidayDate: dateIso })
+        : await upsertStoreHolidayToSupabase({ companyId: company.id, storeId: store.id, holidayDate: dateIso, userId: appState.currentUserId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    const key = buildMonthKey(selectedStore, targetMonth);
+    setAppState((prev) => {
+      const list = prev.storeHolidays?.[key] || [];
+      const nextList = isCurrentlyHoliday ? list.filter((date) => date !== dateIso) : [...list, dateIso];
+      return { ...prev, storeHolidays: { ...prev.storeHolidays, [key]: nextList } };
+    });
+    setNotice(isCurrentlyHoliday ? `${dateIso}の店休日を解除しました` : `${dateIso}を店休日に設定しました`);
+  };
+
+  // 「全店舗」専用の店休日カレンダー(要件7・9)。各実店舗の店休日設定とは完全に別管理で、
+  // company_all_stores_holidaysへ保存する。トグルしても各店舗の店休日設定は一切変更しない。
+  const toggleAllStoresHolidayDate = async (dateIso) => {
+    const companyId = appState.currentCompanyId;
+    const targetMonth = dateIso.slice(0, 7);
+    const currentHolidays = getAllStoresHolidayDates(appState, companyId, targetMonth);
+    const isCurrentlyHoliday = currentHolidays.includes(dateIso);
+    if (isSupabaseConfigured) {
+      if (!companyId) {
+        setNotice("会社情報を確認できませんでした");
+        return;
+      }
+      const result = isCurrentlyHoliday
+        ? await deleteAllStoresHolidayFromSupabase({ companyId, holidayDate: dateIso })
+        : await upsertAllStoresHolidayToSupabase({ companyId, holidayDate: dateIso, userId: appState.currentUserId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    const key = buildCompanyMonthKey(companyId, targetMonth);
+    setAppState((prev) => {
+      const list = prev.allStoresHolidays?.[key] || [];
+      const nextList = isCurrentlyHoliday ? list.filter((date) => date !== dateIso) : [...list, dateIso];
+      return { ...prev, allStoresHolidays: { ...prev.allStoresHolidays, [key]: nextList } };
+    });
+    setNotice(isCurrentlyHoliday ? `${dateIso}の全店舗店休日を解除しました` : `${dateIso}を全店舗店休日に設定しました`);
+  };
+
   const toggleMonthClosing = async () => {
     if (!selectedStore) {
       setNotice("店舗を選択してください");
@@ -3345,6 +3464,10 @@ function App() {
   const toggleDayClosing = async () => {
     if (!selectedStore || !dailyForm.date) {
       setNotice("締め対象の日付を入力してください");
+      return;
+    }
+    if (isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date)) {
+      setNotice("この日は店休日のため日締めできません");
       return;
     }
     const todayIso = new Date().toISOString().slice(0, 10);
@@ -3781,6 +3904,23 @@ function App() {
                   </div>
                 </div>
               ) : null}
+              {isAllStoresView ? (
+                <div className="calendar-card">
+                  <div className="panel-heading compact">
+                    <div>
+                      <p className="eyebrow">CALENDAR</p>
+                      <h3>全店舗 月カレンダー</h3>
+                    </div>
+                  </div>
+                  <p className="helper-text">緑=登録店舗すべての日締めが完了した日／赤=全店舗の店休日／通常色=まだ全店舗の日締めが揃っていない営業日。会社全体の営業状況確認用です。</p>
+                  <BusinessCalendarGrid
+                    monthValue={selectedMonth}
+                    closedDates={businessDaySummary.closedDates}
+                    holidayDates={businessDaySummary.holidayDates}
+                    todayIso={formatLocalDate(new Date())}
+                  />
+                </div>
+              ) : null}
             </section>
 
             <div className="dashboard-right-column">
@@ -3900,6 +4040,20 @@ function App() {
                   </div>
                   {isBusinessDayEditing ? (
                     <div className="daily-settings-card">
+                      <h4>カレンダーで店休日を設定</h4>
+                      <p className="helper-text">日付をクリックすると店休日として設定・解除できます（複数選択可）。営業日数は自動計算されます。</p>
+                      <BusinessCalendarGrid
+                        monthValue={selectedMonth}
+                        closedDates={businessDaySummary.closedDates}
+                        holidayDates={getStoreHolidayDates(appState, selectedStore, selectedMonth)}
+                        onDayClick={toggleStoreHolidayDate}
+                      />
+                      <div className="summary-card compact" style={{ marginTop: 10 }}>
+                        <span>今月営業日数（自動計算）</span>
+                        <strong>{businessDaySummary.businessDayCount}日</strong>
+                      </div>
+                      <h4 style={{ marginTop: 16 }}>従来の店休日数設定（数値のみ・任意）</h4>
+                      <p className="helper-text">上のカレンダーで日付を設定している場合、こちらの数値は使われません。</p>
                       <div className="inline-form">
                         <label className="field">
                           <span>店休日</span>
@@ -3921,8 +4075,14 @@ function App() {
                     <button className="secondary-button" type="button" onClick={startNewDailyEntry}>新規入力</button>
                     <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit"}>編集</button>
                     <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={toggleDayClosing}>日締め</button>
+                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday}>日締め</button>
                   </div>
+
+                  {isDailyFormDateHoliday ? (
+                    <div className="notice-box">
+                      この日（{dailyForm.date}）は店休日です。日次入力・保存・日締めはできません。
+                    </div>
+                  ) : null}
 
                   <form id="daily-form" className="daily-form-grid" onSubmit={submitDailyEntry}>
                     <div className="daily-section-card">
@@ -3943,6 +4103,8 @@ function App() {
                       </div>
                     </div>
 
+                    {isDailyFormDateHoliday ? null : (
+                    <>
                     <div className="daily-section-card">
                       <h3>売上入力</h3>
                       {/* value={x || ""}, not value={x}: an untouched field is "" or a loaded
@@ -3996,6 +4158,8 @@ function App() {
                         </label>
                       </div>
                     ) : null}
+                    </>
+                    )}
                   </form>
 
                   <div className="helper-text">必要な数字だけ入力すれば、客単価・店販率・新規率・再来率は自動計算されます。</div>
@@ -4025,19 +4189,14 @@ function App() {
                         <h3>月カレンダー</h3>
                       </div>
                     </div>
-                    <div className="calendar-grid">
-                      {Array.from({ length: 35 }, (_, index) => {
-                        const day = index + 1;
-                        const monthInfo = new Date(`${selectedMonth}-01`);
-                        const isInMonth = day <= new Date(monthInfo.getFullYear(), monthInfo.getMonth() + 1, 0).getDate();
-                        if (!isInMonth) return <div key={index} className="calendar-day muted" />;
-                        const iso = `${selectedMonth}-${String(day).padStart(2, "0")}`;
-                        const entry = dailyEntries.find((item) => item.date === iso);
-                        const closed = appState.dayClosingStates?.[buildMonthKey(selectedStore, selectedMonth)]?.[iso];
-                        const className = entry ? "calendar-day filled" : closed ? "calendar-day closed" : "calendar-day empty";
-                        return <div key={index} className={className}>{day}</div>;
-                      })}
-                    </div>
+                    <p className="helper-text">緑=日締め完了／赤=店休日／通常色=未締めの営業日。日付をクリックすると対象日を選択できます。</p>
+                    <BusinessCalendarGrid
+                      monthValue={selectedMonth}
+                      closedDates={businessDaySummary.closedDates}
+                      holidayDates={businessDaySummary.holidayDates}
+                      todayIso={formatLocalDate(new Date())}
+                      onDayClick={(iso) => handleDailyDateChange(iso)}
+                    />
                   </div>
                 </section>
 
@@ -4113,7 +4272,7 @@ function App() {
                       <>
                         <div className="input-grid">
                           {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" type="number" /> : null}
+                          {!isAllStoresView && activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" type="number" /> : null}
@@ -4122,6 +4281,22 @@ function App() {
                           {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" /> : null}
                           {effectiveShowReviewCountField ? <Field label="口コミ数目標" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" type="number" /> : null}
                         </div>
+                        {isAllStoresView ? (
+                          <div className="daily-settings-card">
+                            <h4>全店舗共通の店休日設定</h4>
+                            <p className="helper-text">日付をクリックすると全店舗共通の店休日として設定・解除できます（複数選択可）。各店舗個別の店休日設定とは別管理で、店舗ごとの設定は変更されません。営業日数はここで選択した日付から自動計算されます。</p>
+                            <BusinessCalendarGrid
+                              monthValue={targetSelectedMonth}
+                              closedDates={[]}
+                              holidayDates={getAllStoresHolidayDates(appState, appState.currentCompanyId, targetSelectedMonth)}
+                              onDayClick={toggleAllStoresHolidayDate}
+                            />
+                            <div className="summary-card compact" style={{ marginTop: 10 }}>
+                              <span>全店舗の今月営業日数（自動計算）</span>
+                              <strong>{getAllStoresBusinessDaySummary(appState, appState.currentCompanyId, currentCompanyStores, targetSelectedMonth).businessDayCount}日</strong>
+                            </div>
+                          </div>
+                        ) : null}
                         <div className="toggle-panel">
                           <div>
                             {targetSaveStatus.status === "error" ? (
@@ -4893,6 +5068,42 @@ function TargetMissingCard({ label, onGoToTarget, emphasize = false }) {
       <span>{label}</span>
       <strong className="metric-missing-label">月間目標未登録</strong>
       <button type="button" className="metric-missing-link" onClick={onGoToTarget}>月間目標設定</button>
+    </div>
+  );
+}
+
+// 月カレンダーの共通表示: 日締め完了=緑、店休日=赤、それ以外(未締めの営業日)=通常色。
+// onDayClickを渡すとクリックで日付をトグル/選択できる(店休日設定・対象日選択の両方で使う)。
+function BusinessCalendarGrid({ monthValue, closedDates = [], holidayDates = [], onDayClick = null, todayIso = "" }) {
+  const closedSet = new Set(closedDates);
+  const holidaySet = new Set(holidayDates);
+  const [yearStr, monthStr] = monthValue.split("-");
+  const daysInMonth = new Date(Number(yearStr), Number(monthStr), 0).getDate();
+  return (
+    <div className="calendar-grid">
+      {Array.from({ length: 42 }, (_, index) => {
+        const day = index + 1;
+        if (day > daysInMonth) return <div key={index} className="calendar-day muted" />;
+        const iso = `${monthValue}-${String(day).padStart(2, "0")}`;
+        const isHoliday = holidaySet.has(iso);
+        const isClosed = closedSet.has(iso);
+        const stateClass = isHoliday ? "holiday" : isClosed ? "closed" : "";
+        const isToday = todayIso === iso;
+        const className = `calendar-day ${stateClass} ${onDayClick ? "clickable" : ""} ${isToday ? "today" : ""}`.trim();
+        return (
+          <div
+            key={index}
+            className={className}
+            onClick={onDayClick ? () => onDayClick(iso) : undefined}
+            role={onDayClick ? "button" : undefined}
+            tabIndex={onDayClick ? 0 : undefined}
+            onKeyDown={onDayClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onDayClick(iso); } } : undefined}
+            title={isHoliday ? "店休日" : isClosed ? "日締め済み" : ""}
+          >
+            {day}
+          </div>
+        );
+      })}
     </div>
   );
 }

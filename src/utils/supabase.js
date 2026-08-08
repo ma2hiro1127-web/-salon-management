@@ -997,6 +997,109 @@ export const upsertAllStoresTargetToSupabase = async ({ companyId, targetMonth, 
   }
 };
 
+// store_business_holidays / company_all_stores_holidays — 店休日を「日数」ではなく具体的な
+// 日付で管理する。1日=1行(company_id/store_id/holiday_dateで一意)。トグル操作は呼び出し側
+// (App.jsx)が既存行の有無を見てupsert/deleteを使い分ける。
+export const loadStoreHolidaysForCompanyRange = async ({ companyId, startDate, endDate }) => {
+  if (!isSupabaseConfigured || !companyId || !startDate || !endDate) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("store_business_holidays")
+      .select("*")
+      .eq("company_id", companyId)
+      .gte("holiday_date", startDate)
+      .lte("holiday_date", endDate);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreHolidaysForCompanyRange", table: "store_business_holidays", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const upsertStoreHolidayToSupabase = async ({ companyId, storeId, holidayDate, userId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertStoreHolidayToSupabase", table: "store_business_holidays", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase
+      .from("store_business_holidays")
+      .upsert({ company_id: companyId, store_id: storeId, holiday_date: holidayDate, created_by: userId }, { onConflict: "store_id,holiday_date" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertStoreHolidayToSupabase", table: "store_business_holidays", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const deleteStoreHolidayFromSupabase = async ({ storeId, holidayDate }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  try {
+    const { error } = await supabase.from("store_business_holidays").delete().eq("store_id", storeId).eq("holiday_date", holidayDate);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteStoreHolidayFromSupabase", table: "store_business_holidays", storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const loadAllStoresHolidaysForCompanyRange = async ({ companyId, startDate, endDate }) => {
+  if (!isSupabaseConfigured || !companyId || !startDate || !endDate) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("company_all_stores_holidays")
+      .select("*")
+      .eq("company_id", companyId)
+      .gte("holiday_date", startDate)
+      .lte("holiday_date", endDate);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadAllStoresHolidaysForCompanyRange", table: "company_all_stores_holidays", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+export const upsertAllStoresHolidayToSupabase = async ({ companyId, holidayDate, userId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertAllStoresHolidayToSupabase", table: "company_all_stores_holidays", userId, companyId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase
+      .from("company_all_stores_holidays")
+      .upsert({ company_id: companyId, holiday_date: holidayDate, created_by: userId }, { onConflict: "company_id,holiday_date" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertAllStoresHolidayToSupabase", table: "company_all_stores_holidays", userId, companyId, error });
+    return { ok: false, error };
+  }
+};
+
+export const deleteAllStoresHolidayFromSupabase = async ({ companyId, holidayDate }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  try {
+    const { error } = await supabase.from("company_all_stores_holidays").delete().eq("company_id", companyId).eq("holiday_date", holidayDate);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteAllStoresHolidayFromSupabase", table: "company_all_stores_holidays", companyId, error });
+    return { ok: false, error };
+  }
+};
+
 // Fetches every store's monthly_targets rows across the given months in one call, mirroring
 // loadMonthlyClosingsForCompany/loadDailySalesForCompanyRange. Without this, appState.targets
 // was only ever populated by the 月間目標設定 panel's own per-visit fetch (for whichever
