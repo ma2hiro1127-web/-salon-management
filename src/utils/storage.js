@@ -753,30 +753,48 @@ export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
   return entries;
 };
 
+// 「費用入力」(旧・固定費/販管費を統合した単一の費用マスター)。単月/期間指定/毎月継続を
+// ユーザーに選ばせず、startMonth(必須)・endMonth(任意)だけで自動判定する:
+//   - endMonthが空          → startMonth以降ずっと反映(毎月継続)
+//   - startMonth === endMonth → その月だけ反映(単月)
+//   - startMonth < endMonth   → その期間だけ毎月反映(期間指定、終了月を含む)
+// 月ごとにレコードを複製せず、1件のマスターから対象月かどうかをその都度判定する設計。
 export const getFixedCostsForStoreMonth = (state, storeName, monthValue) => {
-  const targetKey = buildMonthKey(storeName, monthValue);
   const itemsByKey = Object.entries(state.fixedCosts || {})
     .filter(([key]) => key.startsWith(`${storeName}__`))
     .flatMap(([key, items]) => (Array.isArray(items) ? items.map((item) => ({ ...item, _sourceKey: key })) : []));
 
-  return itemsByKey.filter((item) => {
-    if (item._sourceKey === targetKey) {
-      return true;
-    }
-
-    const startMonth = item.startMonth || "";
+  const matched = itemsByKey.filter((item) => {
+    // entry_month (the month a row is filed/stored under locally) is NOT NULL in fixed_costs,
+    // so this fallback is really just "startMonth defaults to entry_month" — it only matters
+    // for a row saved without an explicit startMonth, which then behaves as if it started the
+    // month it was entered. A missing endMonth on top of that means "still ongoing" (see below),
+    // matching the same rule a row with an explicit startMonth follows.
+    const startMonth = item.startMonth || item._sourceKey?.split("__")?.[1] || "";
+    if (!startMonth) return item._sourceKey === buildMonthKey(storeName, monthValue);
     const endMonth = item.endMonth || "";
-    const sourceMonth = item._sourceKey?.split("__")?.[1] || "";
-    const withinRange = (!startMonth || monthValue >= startMonth) && (!endMonth || monthValue <= endMonth);
-    const fromEarlierMonth = sourceMonth ? monthValue >= sourceMonth : false;
-    const applyMode = item.applyMode || "this-month";
-
-    if (applyMode === "this-month-onward") {
-      return fromEarlierMonth && (!startMonth || monthValue >= startMonth) && (!endMonth || monthValue <= endMonth);
-    }
-
-    return Boolean(startMonth || endMonth) && withinRange;
+    return monthValue >= startMonth && (!endMonth || monthValue <= endMonth);
   });
+
+  // Editing an item can move it between local month-key buckets (see submitFixedCost); dedupe
+  // by id defensively so a transient double-write never shows the same cost twice.
+  const byId = new Map();
+  const withoutId = [];
+  matched.forEach((item) => {
+    if (item.id) byId.set(item.id, item);
+    else withoutId.push(item);
+  });
+  return [...byId.values(), ...withoutId];
+};
+
+// single | period | ongoing — purely for display (e.g. "継続中" vs a fixed date range); the
+// filtering logic above never needs this label, it's derived fresh from the same two fields.
+export const getCostPatternLabel = (item) => {
+  const startMonth = item?.startMonth || "";
+  const endMonth = item?.endMonth || "";
+  if (!endMonth) return "ongoing";
+  if (startMonth && startMonth === endMonth) return "single";
+  return "period";
 };
 
 export const getVariableCostsForStoreMonth = (state, storeName, monthValue) => {
@@ -821,6 +839,13 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const temporaryCost = variableCosts.filter((item) => item.type === "temporary").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const variableCost = regularVariableCost + temporaryCost + closingItems.filter((item) => item.category === "販管費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const otherCost = closingItems.filter((item) => item.category === "その他").reduce((sum, item) => sum + parseNumber(item.amount), 0);
+  // 経営指標の広告費率用。費用全体ではなく「広告費」カテゴリのみを集計する。旧「定額広告費」
+  // (販管費が分かれていた頃のfixedCostCategories)で保存された既存データも壊さず引き続き
+  // 広告費として集計できるよう、両方の名称を対象にする。fixedCosts/variableCosts/closingItems
+  // すべてから拾うことで、統合前の既存データ(あれば)も取りこぼさない。
+  const adCost = [...fixedCosts, ...variableCosts, ...closingItems]
+    .filter((item) => item.category === "広告費" || item.category === "定額広告費")
+    .reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const expenseTotal = laborCost + materialCost + orderCost + fixedCost + variableCost + equipmentInvestmentCost + otherCost;
   const grossProfit = sales - materialCost - orderCost - laborCost;
   const operatingProfit = sales - expenseTotal;
@@ -850,6 +875,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
   const materialRate = sales ? (materialCost / sales) * 100 : 0;
   const fixedRate = sales ? (fixedCost / sales) * 100 : 0;
   const variableRate = sales ? (variableCost / sales) * 100 : 0;
+  const adRate = sales ? (adCost / sales) * 100 : 0;
   const operatingMargin = sales ? (operatingProfit / sales) * 100 : 0;
   const adjustedOperatingMargin = sales ? (adjustedOperatingProfit / sales) * 100 : 0;
   const averageCustomersPerDay = businessDaySummary.businessDayCount ? customers / businessDaySummary.businessDayCount : 0;
@@ -891,6 +917,8 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
     regularVariableCost,
     temporaryCost,
     otherCost,
+    adCost,
+    adRate,
     expenseTotal,
     grossProfit,
     operatingProfit,

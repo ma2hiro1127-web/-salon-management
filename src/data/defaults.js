@@ -1,6 +1,14 @@
 export const initialStores = [];
 
 export const expenseCategories = ["人件費", "材料費", "固定費", "販管費", "設備投資", "その他"];
+// 月締めは人件費・材料費の実績確定に役割を絞る(費用入力と役割が被る固定費/販管費カテゴリは
+// 選ばせない) — 損益表の固定費/販管費合計は費用入力(fixedCosts)から計算される。
+export const closingCategories = ["人件費", "材料費", "その他"];
+// 旧「固定費」「販管費」の区分をユーザーに選ばせず一本化した「費用入力」用カテゴリ。
+// 「広告費」は経営指標の広告費率計算で使う識別子なので、必ずこの文字列そのものを含める。
+export const costCategories = ["家賃", "リース代", "システム利用料", "通信費", "顧問料", "保険料", "広告費", "求人費", "交通費", "消耗品費", "会議費", "研修費", "外注費", "修繕費", "設備投資", "その他"];
+// 後方互換のためexportは残すが、費用入力フォームはcostCategoriesを使う(fixedCostCategories/
+// variableCostCategoriesの旧カテゴリ名は既存データの表示のみに使われ、新規入力では選ばせない)。
 export const fixedCostCategories = ["家賃", "リース代", "システム利用料", "通信費", "顧問料", "保険料", "定額広告費", "その他"];
 export const variableCostCategories = ["広告費", "求人費", "交通費", "消耗品費", "会議費", "研修費", "外注費", "修繕費", "設備投資", "その他経費", "その他"];
 
@@ -52,16 +60,25 @@ export const defaultDailyFieldSettings = () => ({
 // defaultTarget's own keys above; holidayCount is the separate 休業日 input alongside them.
 // company_id/store_id/target_month aren't here at all — those identify *which* target row is
 // being edited, not a value on it, so there's nothing to toggle.
+//
+// targetLaborRate/targetMaterialRate/targetAdRate/targetOperatingMargin deliberately removed:
+// these are cost *ratios*, not something you set a goal for ahead of time — they're now shown
+// as actual, computed-from-real-data 経営指標 (management KPIs) on the P&L page instead (see
+// calculateMonthSummary's laborRate/materialRate/adRate/operatingMargin). The monthly_targets
+// columns and any already-saved values are untouched; this only stops the target-setting form
+// and its per-store field-visibility toggle from offering them.
 export const monthlyTargetFieldKeys = [
   "targetSales", "targetTechnicalSales", "targetRetailSales", "targetCustomers",
-  "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers",
-  "targetLaborRate", "targetMaterialRate", "targetAdRate", "targetOperatingMargin", "holidayCount",
+  "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers", "holidayCount",
 ];
 
 export const defaultMonthlyTargetFieldSettings = () => ({
   fields: Object.fromEntries(monthlyTargetFieldKeys.map((key) => [key, true])),
 });
 
+// 「費用入力」の1件。applyModeはユーザーが選ぶ項目ではなくなり、startMonth/endMonthから
+// 自動的に決まる(終了月なし=毎月継続、終了月あり=単月/期間指定)。保存時に自動計算して
+// Supabaseへは引き続き書き込む(既存カラムはそのまま使う。表示・入力から外すだけ)。
 export const defaultFixedCostItem = {
   id: "",
   name: "",
@@ -70,7 +87,6 @@ export const defaultFixedCostItem = {
   memo: "",
   startMonth: "",
   endMonth: "",
-  applyMode: "this-month",
 };
 
 export const defaultVariableCostItem = {

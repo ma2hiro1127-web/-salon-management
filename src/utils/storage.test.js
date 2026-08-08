@@ -63,6 +63,42 @@ test("calculateMonthSummary returns sales and cost ratios from new monthly struc
   assert.equal(summary.materialCost, 40000);
 });
 
+test("calculateMonthSummary: adCost/adRate only count the 広告費 category (and legacy 定額広告費), never the whole cost total", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
+  state.fixedCosts[key] = [
+    { id: "fc-ad", name: "ホットペッパー掲載費", amount: 60000, category: "広告費", startMonth: month, endMonth: month },
+    { id: "fc-rent", name: "家賃", amount: 200000, category: "家賃", startMonth: month, endMonth: month },
+    { id: "fc-legacy-ad", name: "旧広告費", amount: 15000, category: "定額広告費", startMonth: month, endMonth: month },
+  ];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.adCost, 75000); // 60000 + 15000, rent excluded
+  assert.equal(summary.adRate, 7.5); // 75000 / 1000000 * 100
+});
+
+test("calculateMonthSummary: rates are 0 (not NaN/Infinity) when sales is 0", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.fixedCosts[key] = [{ id: "fc-ad", name: "広告", amount: 10000, category: "広告費", startMonth: month, endMonth: month }];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.sales, 0);
+  assert.equal(summary.adRate, 0);
+  assert.equal(summary.laborRate, 0);
+  assert.equal(summary.materialRate, 0);
+  assert.equal(summary.operatingMargin, 0);
+  assert.equal(Number.isFinite(summary.adRate), true);
+});
+
 test("fixed costs with this-month-onward apply mode appear in later months", () => {
   const state = createInitialAppState();
   const store = "横浜店";
@@ -753,16 +789,44 @@ test("buildFixedCostsStateFromRows: a this-month-onward item entered in an earli
   assert.equal(mayItems.length, 0);
 });
 
-test("buildFixedCostsStateFromRows: a this-month item (not onward) never carries into later months", () => {
+test("getFixedCostsForStoreMonth: a single-month item (start_month === end_month) never carries into later months", () => {
   const storeIdToName = { "store-honten": "本店" };
   const rows = [
-    { id: "fc-onetime", store_id: "store-honten", entry_month: "2026-06", name: "修繕費", amount: 50000, category: "その他", memo: "", start_month: "", end_month: "", apply_mode: "this-month" },
+    { id: "fc-onetime", store_id: "store-honten", entry_month: "2026-06", name: "修繕費", amount: 50000, category: "その他", memo: "", start_month: "2026-06", end_month: "2026-06", apply_mode: "this-month" },
   ];
   const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
   const state = { ...createInitialAppState(), fixedCosts };
 
   assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-06").length, 1);
   assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 0);
+});
+
+test("getFixedCostsForStoreMonth: a period item (start_month < end_month) reflects every month in range, inclusive, and stops the month after", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "fc-period", store_id: "store-honten", entry_month: "2026-08", name: "求人広告", amount: 50000, category: "求人費", memo: "", start_month: "2026-08", end_month: "2026-10" },
+  ];
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const state = { ...createInitialAppState(), fixedCosts };
+
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-08").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-09").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-10").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-11").length, 0);
+});
+
+test("getFixedCostsForStoreMonth: a row with no explicit start_month falls back to entry_month as its start (entry_month is NOT NULL, so this is always available) and, with no end_month either, is treated as ongoing", () => {
+  const storeIdToName = { "store-honten": "本店" };
+  const rows = [
+    { id: "fc-legacy", store_id: "store-honten", entry_month: "2026-06", name: "旧データ", amount: 10000, category: "その他", memo: "", start_month: "", end_month: "" },
+  ];
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const state = { ...createInitialAppState(), fixedCosts };
+
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-06").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-05").length, 0);
 });
 
 test("buildVariableCostsStateFromRows: direct month lookup, no carry-forward to a later month", () => {
