@@ -3516,6 +3516,7 @@ function App() {
                   <div><span>顧客数</span><strong>{number(summary.customers)}名</strong></div>
                 </div>
               </div>
+              <div className="kpi-sales-section">
               <div className="panel-heading">
                 <div>
                   <p className="eyebrow">KPI</p>
@@ -3587,6 +3588,7 @@ function App() {
               </div>
               <div className="kpi-grid">
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
+              </div>
               </div>
               <div className={`ai-comment-card ${aiCommentTone}`}>
                 <div className="panel-heading compact">

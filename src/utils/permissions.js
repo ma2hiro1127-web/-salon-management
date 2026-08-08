@@ -69,9 +69,10 @@ export const getAllowedStoreIdsForRole = ({ role, companyStoreIds = [], currentU
   return allowed.length ? allowed : [];
 };
 
+// ログイン成功時・セッション復元時(ページ更新/再ログイン)の初期表示ページ。どの権限でも
+// NAV_ITEMS_BY_ROLEの先頭は"dashboard"(売上)なので、素直にそれを使う。管理画面("monthly")
+// は権限に関わらずナビゲーションからこれまで通り開けるので、ここでは初期遷移先だけを扱う。
 export const resolveDefaultPage = (role) => {
   const normalizedRole = normalizeRole(role);
-  if (normalizedRole === "staff") return "dashboard";
-  if (normalizedRole === "system_admin" || normalizedRole === "company_admin") return "monthly";
   return NAV_ITEMS_BY_ROLE[normalizedRole]?.[0] || "dashboard";
 };

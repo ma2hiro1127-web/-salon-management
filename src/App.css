@@ -236,6 +236,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .metric-card.good strong { color: var(--success); }
 .metric-card.warning strong { color: #b45309; }
 .metric-card.danger strong { color: var(--danger); }
+/* KPI「売上」エリアの数値は達成/未達で色を変えず、常に通常のテキスト色で統一する
+   (営業進捗や他ページのMetricCard/status-chipには影響させない、このエリア限定の上書き)。 */
+.kpi-sales-section .metric-card.good strong,
+.kpi-sales-section .metric-card.warning strong,
+.kpi-sales-section .metric-card.danger strong { color: var(--text); }
 .metric-card.clickable { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
 .metric-card.clickable:hover, .metric-card.clickable:focus-visible { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); outline: none; }
 .kpi-hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
