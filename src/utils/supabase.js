@@ -148,26 +148,6 @@ const ensureInitialCompanyAndStore = async ({ companyId = null, preferredCompany
   return { companyId: resolvedCompanyId, storeId: resolvedStoreId, created };
 };
 
-export const initializeFirstTenantForUser = async ({ authUserId, email, role = null }) => {
-  if (!authUserId || !email) return null;
-
-  const normalizedEmail = normalizeEmail(email);
-  const resolvedRole = normalizeRole(role || resolveDefaultRole(normalizedEmail));
-  const tenant = await ensureInitialCompanyAndStore({ preferredCompanyName: "サロン本社", preferredStoreName: "本店" });
-
-  const profile = await createUserProfileRecord({
-    name: normalizedEmail.split("@")[0],
-    email: normalizedEmail,
-    role: resolvedRole,
-    companyId: tenant.companyId,
-    storeIds: tenant.storeId ? [tenant.storeId] : [],
-    primaryStoreId: tenant.storeId || "",
-    authUserId,
-  });
-
-  return { profile, companyId: tenant.companyId, storeId: tenant.storeId };
-};
-
 const createDefaultCompanySettings = () => ({
   currency: "JPY",
   fiscalYearStartMonth: "1",
@@ -616,6 +596,31 @@ export const updateStoreRecord = async ({ storeId, name }) => {
   }
 };
 
+// Toggle/archive/restore/delete in the UI all ultimately just flip stores.is_active — the real
+// schema has no separate archived/paused/deleted status column (that "status" field only ever
+// existed in local React state). This used to only call setAppState/persistTenantState, so a
+// store's active state silently reverted to whatever Supabase actually had on the very next
+// hydrate (login, reload, another device). "Delete" intentionally maps to the same is_active =
+// false as archive rather than a real row delete: stores.id cascades onto daily_sales/
+// monthly_targets/monthly_closings/etc, so an actual DELETE would destroy that store's historical
+// business data, which existing data must never be destroyed to fix a display bug.
+export const updateStoreActiveState = async ({ storeId, isActive }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ storeId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateStoreActiveState", table: "stores", storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase.from("stores").update({ is_active: isActive, updated_at: new Date().toISOString() }).eq("id", storeId).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateStoreActiveState", table: "stores", storeId, error });
+    return { ok: false, error };
+  }
+};
+
 export const updateStoreDailyFieldSettings = async ({ storeId, settings }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ storeId });
@@ -698,14 +703,6 @@ export const refreshInviteState = async ({ profileId, inviteToken, inviteExpires
     logSupabaseError({ operation: "refreshInviteState", table: "profiles", userId: profileId, error });
     return { ok: false, error };
   }
-};
-
-export const getProfileByEmail = async (email) => {
-  const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail) return null;
-  const { data, error } = await supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").eq("email", normalizedEmail).maybeSingle();
-  if (error) throw error;
-  return data || null;
 };
 
 export const getProfilesForDebug = async () => {
@@ -978,24 +975,6 @@ export const upsertMonthlyClosingState = async ({ companyId, storeId, yearMonth,
   } catch (error) {
     logSupabaseError({ operation: "upsertMonthlyClosingState", table: "monthly_closings", userId, companyId, storeId, targetMonth: yearMonth, error });
     return { ok: false, error };
-  }
-};
-
-export const loadMonthlyClosingState = async ({ companyId, storeId, yearMonth }) => {
-  if (!isSupabaseConfigured || !companyId || !storeId || !yearMonth) return { ok: true, skipped: true, data: null };
-  try {
-    const { data, error } = await supabase
-      .from("monthly_closings")
-      .select("*")
-      .eq("company_id", companyId)
-      .eq("store_id", storeId)
-      .eq("year_month", yearMonth)
-      .maybeSingle();
-    if (error) throw error;
-    return { ok: true, data: data || null };
-  } catch (error) {
-    logSupabaseError({ operation: "loadMonthlyClosingState", table: "monthly_closings", companyId, storeId, targetMonth: yearMonth, error });
-    return { ok: false, error, data: null };
   }
 };
 
@@ -1375,50 +1354,6 @@ export const loadVariableCostsForCompany = async ({ companyId, yearMonths = [] }
   } catch (error) {
     logSupabaseError({ operation: "loadVariableCostsForCompany", table: "variable_costs", companyId, error });
     return { ok: false, error, data: [] };
-  }
-};
-
-export const upsertVariableCostToSupabase = async ({ id, companyId, storeId, targetMonth, userId, item }) => {
-  if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  const validationError = validateRequiredKeys({ id, companyId, storeId, targetMonth, userId });
-  if (validationError) {
-    const detail = logSupabaseError({ operation: "upsertVariableCostToSupabase", table: "variable_costs", userId, companyId, storeId, error: new Error(validationError) });
-    return { ok: false, error: new Error(detail.message) };
-  }
-  const payload = {
-    id,
-    company_id: companyId,
-    store_id: storeId,
-    target_month: targetMonth,
-    name: String(item?.name || ""),
-    amount: Number(item?.amount || 0),
-    category: String(item?.category || ""),
-    memo: String(item?.memo || ""),
-    incurred_date: String(item?.incurredDate || ""),
-    type: String(item?.type || "regular"),
-    updated_by: userId,
-    updated_at: new Date().toISOString(),
-  };
-  try {
-    const { data, error } = await supabase.from("variable_costs").upsert(payload, { onConflict: "id" }).select().single();
-    if (error) throw error;
-    return { ok: true, data };
-  } catch (error) {
-    logSupabaseError({ operation: "upsertVariableCostToSupabase", table: "variable_costs", userId, companyId, storeId, error });
-    return { ok: false, error };
-  }
-};
-
-export const deleteVariableCostFromSupabase = async ({ id }) => {
-  if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  if (!id) return { ok: true, skipped: true };
-  try {
-    const { error } = await supabase.from("variable_costs").delete().eq("id", id);
-    if (error) throw error;
-    return { ok: true };
-  } catch (error) {
-    logSupabaseError({ operation: "deleteVariableCostFromSupabase", table: "variable_costs", id, error });
-    return { ok: false, error };
   }
 };
 

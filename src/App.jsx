@@ -82,6 +82,7 @@ import {
   createCompanyRecord,
   createStoreRecord,
   updateStoreRecord,
+  updateStoreActiveState,
   normalizeDailyFieldSettings,
   normalizeMonthlyTargetFieldSettings,
   loadStoreInputSettingsForCompany,
@@ -1066,11 +1067,13 @@ function App() {
 
     const rankedRows = [...rows].sort(compareRows).map((row, index) => ({ ...row, currentRank: index + 1 }));
     const previousRankedRows = [...rows].sort(previousCompareRows).map((row, index) => ({ ...row, previousRank: index + 1 }));
-    const previousRankMap = new Map(previousRankedRows.map((row) => [row.storeName, row.previousRank]));
+    // Keyed by storeId, not storeName — two stores sharing a display name would otherwise get
+    // each other's previous-rank/trend arrow.
+    const previousRankMap = new Map(previousRankedRows.map((row) => [row.storeId, row.previousRank]));
 
     return rankedRows.map((row) => ({
       ...row,
-      previousRank: previousRankMap.get(row.storeName) || 0,
+      previousRank: previousRankMap.get(row.storeId) || 0,
       trend: row.previousRank ? (row.currentRank < row.previousRank ? "↑" : row.currentRank > row.previousRank ? "↓" : "→") : "→",
     }));
   }, [appState, rankingSort, selectedMonth, currentCompanyStores]);
@@ -1405,6 +1408,10 @@ function App() {
     } finally {
       window.localStorage.removeItem("salon-user");
       window.localStorage.removeItem("salon-role");
+      // salon-goal-app-v2 is a single global (non-user-scoped) key — on a shared browser, a
+      // subsequent different user's hydrate could otherwise read this account's cached appState
+      // via readAppState()'s same-company fallback before their own fresh Supabase fetch lands.
+      window.localStorage.removeItem(STORAGE_KEYS.appState);
       setCurrentUser(null);
       setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
       setCurrentRole("staff");
@@ -1604,12 +1611,14 @@ function App() {
           dayClosingStates: dailySalesState.dayClosingStates,
           dayClosingUpdatedAt: dailySalesState.dayClosingUpdatedAt,
           monthClosingStatus: monthClosingStatusOverlay,
-          // Only targets, deliberately not businessDaySettings here: saveHolidayCount/
-          // saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定 quick-edit on the
-          // daily entry page) only ever update businessDaySettings locally — they don't persist
-          // to monthly_targets at all (a separate, pre-existing gap outside this change's scope,
-          // tracked as a known remaining risk).
+          // saveHolidayCount/saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定
+          // quick-edit on the daily entry page) now persist to monthly_targets via
+          // persistBusinessDaySetting, the same columns buildTargetStateFromRows already parses
+          // into businessDaySettings here — so this overlay must include it too, or a fresh
+          // hydrate (login/reload) would silently revert to the auto-calculated default even
+          // though the quick-edit value was genuinely saved.
           targets: targetStateOverlay.targets,
+          businessDaySettings: targetStateOverlay.businessDaySettings,
           allStoresTargets: allStoresTargetStateOverlay.allStoresTargets,
           allStoresBusinessDaySettings: allStoresTargetStateOverlay.allStoresBusinessDaySettings,
           storeHolidays: storeHolidaysOverlay.storeHolidays,
@@ -1730,14 +1739,16 @@ function App() {
       // snapshot may be the freshest one in the company but tagged for a different store
       // (its payload still carries every store's data), and we don't want a background
       // sync to yank the UI over to a store the user didn't select.
-      const resolvedSelectedStore = tenantState?.selectedStore || selectedStoreName || remoteState.selectedStore || "";
-      // Keep selectedStoreId locked to the same store as resolvedSelectedStore above rather than
-      // letting it fall through from remoteState (the snapshot payload's embedded id, which can
-      // belong to a different store than whichever name won out here) — a mismatched pair is
-      // exactly what let the display silently drift onto the wrong store's data before.
-      const resolvedSelectedStoreId = (store?.name === resolvedSelectedStore && store?.id)
-        || company?.stores?.find((item) => item.name === resolvedSelectedStore)?.id
-        || tenantState?.selectedStoreId
+      // id-first, reusing storeId/selectedStoreName (resolved id-first above, same reasoning as
+      // their own comment there) rather than re-deriving from the raw tenantState/remoteState
+      // *name* here — two stores sharing a display name would otherwise let this fall through
+      // to a name lookup and silently resolve to the wrong store's id.
+      const resolvedSelectedStoreId = storeId
+        || company?.stores?.find((item) => item.name === (tenantState?.selectedStore || remoteState.selectedStore || ""))?.id
+        || "";
+      const resolvedSelectedStore = company?.stores?.find((item) => item.id === resolvedSelectedStoreId)?.name
+        || selectedStoreName
+        || remoteState.selectedStore
         || "";
       const resolvedSelectedMonth = tenantState?.selectedMonth || targetMonth || remoteState.selectedMonth || new Date().toISOString().slice(0, 7);
       const nextRemoteState = {
@@ -2353,79 +2364,116 @@ function App() {
     setNotice(company.isActive ? `${company.name} を停止しました` : `${company.name} を再開しました`);
   };
 
-  const handleToggleStoreStatus = (store) => {
+  // These four used to only call persistTenantState (local state + the legacy tenant_snapshots
+  // blob) — never the real stores.is_active column. Any user-visible "停止しました"/
+  // "アーカイブしました" silently reverted on the very next hydrate (login, reload, another
+  // device), since a fresh fetch from Supabase always wins over the stale local copy. Fixed to
+  // persist through updateStoreActiveState first, only touching local state after the write
+  // actually succeeds, with an honest failure message otherwise — same pattern as the rest of
+  // this app's write paths. "削除" intentionally maps to the same is_active = false as "アーカ
+  // イブ" (see updateStoreActiveState's own comment: a real row delete would cascade-destroy
+  // that store's historical daily_sales/monthly_targets/etc, which must never happen).
+  const applyStoreActiveStateLocally = (storeId, isActive) => {
+    const nextCompany = {
+      ...currentCompany,
+      stores: (currentCompany?.stores || []).map((item) => (item.id === storeId ? { ...item, isActive, status: isActive ? "active" : "archived" } : item)),
+    };
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+  };
+
+  const handleToggleStoreStatus = async (store) => {
     if (!window.confirm(`${store.name} を${store.isActive ? "利用停止" : "再開"}しますか？`)) return;
-    const nextCompany = {
-      ...currentCompany,
-      stores: (currentCompany?.stores || []).map((item) => item.id === store.id ? { ...item, isActive: !item.isActive, status: item.isActive ? "paused" : "active" } : item),
-    };
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
-    };
-    persistTenantState(nextState);
-    setNotice(store.isActive ? `${store.name} を停止しました` : `${store.name} を再開しました`);
+    const nextActive = !store.isActive;
+    if (isSupabaseConfigured) {
+      const result = await updateStoreActiveState({ storeId: store.id, isActive: nextActive });
+      if (!result.ok) {
+        setNotice(`店舗状態の更新に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+        return;
+      }
+    }
+    applyStoreActiveStateLocally(store.id, nextActive);
+    setNotice(nextActive ? `${store.name} を再開しました` : `${store.name} を停止しました`);
   };
 
-  const handleDuplicateStore = (store) => {
+  // handleSaveStore keeps companySnapshots[companyId].stores (the legacy display-name array —
+  // still the empty-state guard / option source / normalizeAppState fallback in a few places)
+  // in sync whenever it adds a store; this mirrors that same sync for a newly duplicated store,
+  // which previously only updated the real id-keyed company.stores list and left the legacy
+  // name array to silently drift.
+  const syncLegacyStoreNamesSnapshot = (nextState, companyId, nextCompanyStores) => ({
+    ...nextState,
+    companySnapshots: {
+      ...(nextState.companySnapshots || {}),
+      [companyId]: {
+        ...(nextState.companySnapshots?.[companyId] || createInitialAppState()),
+        stores: nextCompanyStores.map((store) => store.name),
+      },
+    },
+  });
+
+  const handleDuplicateStore = async (store) => {
     const duplicateName = `${store.name} コピー`;
-    const nextCompany = {
-      ...currentCompany,
-      stores: [...(currentCompany?.stores || []), {
-        ...store,
-        id: `${store.id}-copy-${Date.now()}`,
-        name: duplicateName,
-        code: crypto.randomUUID(),
-        isActive: true,
-        status: "active",
-      }],
-    };
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
-    };
-    persistTenantState(nextState);
-    setNotice(`${duplicateName} を複製しました`);
+    if (!isSupabaseConfigured) {
+      const nextCompany = {
+        ...currentCompany,
+        stores: [...(currentCompany?.stores || []), { ...store, id: `${store.id}-copy-${Date.now()}`, name: duplicateName, code: crypto.randomUUID(), isActive: true, status: "active" }],
+      };
+      persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
+      setNotice(`${duplicateName} を複製しました（ローカル）`);
+      return;
+    }
+    try {
+      // A locally-fabricated id here would never exist in the real stores table — every
+      // subsequent daily_sales/monthly_targets write for it would fail FK/RLS. Create a real row.
+      const createdStore = await createStoreRecord({ companyId: currentCompany?.id, name: duplicateName, code: crypto.randomUUID() });
+      const nextStore = { ...store, id: createdStore.id, name: duplicateName, code: createdStore.code, isActive: true, status: "active" };
+      const nextCompany = { ...currentCompany, stores: [...(currentCompany?.stores || []), nextStore] };
+      persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
+      setNotice(`${duplicateName} を複製しました`);
+    } catch (error) {
+      setNotice(`店舗の複製に失敗しました: ${getSupabaseErrorMessage(error)}`);
+    }
   };
 
-  const handleArchiveStore = (store) => {
+  const handleArchiveStore = async (store) => {
     if (!window.confirm(`${store.name} をアーカイブしますか？`)) return;
-    const nextCompany = {
-      ...currentCompany,
-      stores: (currentCompany?.stores || []).map((item) => item.id === store.id ? { ...item, isActive: false, status: "archived" } : item),
-    };
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
-    };
-    persistTenantState(nextState);
+    if (isSupabaseConfigured) {
+      const result = await updateStoreActiveState({ storeId: store.id, isActive: false });
+      if (!result.ok) {
+        setNotice(`店舗のアーカイブに失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+        return;
+      }
+    }
+    applyStoreActiveStateLocally(store.id, false);
     setNotice(`${store.name} をアーカイブしました`);
   };
 
-  const handleRestoreStore = (store) => {
-    const nextCompany = {
-      ...currentCompany,
-      stores: (currentCompany?.stores || []).map((item) => item.id === store.id ? { ...item, isActive: true, status: "active" } : item),
-    };
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
-    };
-    persistTenantState(nextState);
+  const handleRestoreStore = async (store) => {
+    if (isSupabaseConfigured) {
+      const result = await updateStoreActiveState({ storeId: store.id, isActive: true });
+      if (!result.ok) {
+        setNotice(`店舗の復元に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+        return;
+      }
+    }
+    applyStoreActiveStateLocally(store.id, true);
     setNotice(`${store.name} を復元しました`);
   };
 
-  const handleDeleteStore = (store) => {
-    if (!window.confirm(`${store.name} を削除しますか？`)) return;
-    const nextCompany = {
-      ...currentCompany,
-      stores: (currentCompany?.stores || []).filter((item) => item.id !== store.id),
-    };
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
-    };
-    persistTenantState(nextState);
+  const handleDeleteStore = async (store) => {
+    if (!window.confirm(`${store.name} を削除しますか？（過去の売上・目標等のデータは保持されます）`)) return;
+    if (isSupabaseConfigured) {
+      const result = await updateStoreActiveState({ storeId: store.id, isActive: false });
+      if (!result.ok) {
+        setNotice(`店舗の削除に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+        return;
+      }
+    }
+    applyStoreActiveStateLocally(store.id, false);
     setNotice(`${store.name} を削除しました`);
   };
 
@@ -3535,7 +3583,35 @@ function App() {
     setNotice("月締め項目を削除しました");
   };
 
-  const saveHolidayCount = (event) => {
+  // saveHolidayCount/saveManualBusinessDayCount/resetBusinessDaySetting used to only call
+  // setAppState — they showed "保存しました" but never wrote to Supabase, so the value only
+  // survived via the legacy tenant_snapshots autosave (if its race happened to win) or
+  // localStorage. A fresh device/browser, a true logout+relogin, or a lost autosave race would
+  // silently revert the store's 営業進捗 day-count to the auto-calculated default even though
+  // the user was told it was saved. Fixed to persist through the same
+  // upsertMonthlyTargetToSupabase call (monthly_targets.holiday_count/business_day_count/
+  // business_day_mode) the 月間目標設定 panel already uses for these exact columns, merged with
+  // this store+month's current target values so we never blow away unrelated target numbers.
+  const persistBusinessDaySetting = async (nextSetting) => {
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (!isSupabaseConfigured || !company?.id || !store?.id) return { ok: true, skipped: true };
+    const baseTarget = getTargetForStoreMonth(appState, selectedStoreId, selectedMonth);
+    const result = await upsertMonthlyTargetToSupabase({
+      companyId: company.id,
+      storeId: store.id,
+      targetMonth: selectedMonth,
+      userId: appState.currentUserId,
+      target: {
+        ...baseTarget,
+        businessDayMode: nextSetting.mode,
+        businessDayCount: nextSetting.businessDayCount || 0,
+        holidayCount: nextSetting.holidayCount || 0,
+      },
+    });
+    return result;
+  };
+
+  const saveHolidayCount = async (event) => {
     event?.preventDefault();
     const parsed = parseNumber(businessDayInput);
     if (!selectedStore) {
@@ -3550,16 +3626,22 @@ function App() {
       return;
     }
     const key = buildMonthKey(selectedStoreId, selectedMonth);
+    const nextSetting = {
+      ...appState.businessDaySettings?.[key],
+      holidayCount: parsed,
+      mode: appState.businessDaySettings?.[key]?.mode === "manual" ? "manual" : "auto",
+    };
+    persistSaveStatus("saving", "店休日数を保存中…");
+    const result = await persistBusinessDaySetting(nextSetting);
+    if (!result?.ok) {
+      const message = `店休日数の保存に失敗しました: ${getSupabaseErrorMessage(result?.error)}`;
+      persistSaveStatus("error", message, true);
+      setNotice(message);
+      return;
+    }
     setAppState((prev) => ({
       ...prev,
-      businessDaySettings: {
-        ...prev.businessDaySettings,
-        [key]: {
-          ...prev.businessDaySettings?.[key],
-          holidayCount: parsed,
-          mode: prev.businessDaySettings?.[key]?.mode === "manual" ? "manual" : "auto",
-        },
-      },
+      businessDaySettings: { ...prev.businessDaySettings, [key]: nextSetting },
     }));
     persistSaveStatus("saved", "店休日数を保存しました");
     setNotice("店休日数を保存しました");
@@ -3574,7 +3656,7 @@ function App() {
     setIsBusinessDayEditing((prev) => !prev);
   };
 
-  const saveManualBusinessDayCount = () => {
+  const saveManualBusinessDayCount = async () => {
     if (!selectedStore) {
       setNotice("店舗を選択してください");
       return;
@@ -3588,23 +3670,29 @@ function App() {
       return;
     }
     const key = buildMonthKey(selectedStoreId, selectedMonth);
+    const nextSetting = {
+      ...appState.businessDaySettings?.[key],
+      mode: "manual",
+      businessDayCount: parsed,
+    };
+    persistSaveStatus("saving", "営業日数を保存中…");
+    const result = await persistBusinessDaySetting(nextSetting);
+    if (!result?.ok) {
+      const message = `営業日数の保存に失敗しました: ${getSupabaseErrorMessage(result?.error)}`;
+      persistSaveStatus("error", message, true);
+      setNotice(message);
+      return;
+    }
     setAppState((prev) => ({
       ...prev,
-      businessDaySettings: {
-        ...prev.businessDaySettings,
-        [key]: {
-          ...prev.businessDaySettings?.[key],
-          mode: "manual",
-          businessDayCount: parsed,
-        },
-      },
+      businessDaySettings: { ...prev.businessDaySettings, [key]: nextSetting },
     }));
     setIsBusinessDayEditing(false);
     persistSaveStatus("saved", "営業日数を手動設定しました");
     setNotice("営業日数を手動設定しました");
   };
 
-  const resetBusinessDaySetting = () => {
+  const resetBusinessDaySetting = async () => {
     if (!selectedStore) {
       setNotice("店舗を選択してください");
       return;
@@ -3613,16 +3701,22 @@ function App() {
       return;
     }
     const key = buildMonthKey(selectedStoreId, selectedMonth);
+    const nextSetting = {
+      ...appState.businessDaySettings?.[key],
+      mode: "auto",
+      businessDayCount: 0,
+    };
+    persistSaveStatus("saving", "営業日数を保存中…");
+    const result = await persistBusinessDaySetting(nextSetting);
+    if (!result?.ok) {
+      const message = `営業日数のリセットに失敗しました: ${getSupabaseErrorMessage(result?.error)}`;
+      persistSaveStatus("error", message, true);
+      setNotice(message);
+      return;
+    }
     setAppState((prev) => ({
       ...prev,
-      businessDaySettings: {
-        ...prev.businessDaySettings,
-        [key]: {
-          ...prev.businessDaySettings?.[key],
-          mode: "auto",
-          businessDayCount: undefined,
-        },
-      },
+      businessDaySettings: { ...prev.businessDaySettings, [key]: { ...nextSetting, businessDayCount: undefined } },
     }));
     setIsBusinessDayEditing(false);
     persistSaveStatus("saved", "営業日数を自動計算に戻しました");
@@ -4228,9 +4322,9 @@ function App() {
               ) : (
                 <div className="ranking-accordion">
                   {rankingRows.map((row) => {
-                    const isExpanded = expandedRankingStore === row.storeName;
+                    const isExpanded = expandedRankingStore === row.storeId;
                     return (
-                      <button key={row.storeName} type="button" className={`ranking-card-accordion ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedRankingStore((current) => (current === row.storeName ? "" : row.storeName))}>
+                      <button key={row.storeId} type="button" className={`ranking-card-accordion ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedRankingStore((current) => (current === row.storeId ? "" : row.storeId))}>
                         <div className="ranking-card-summary">
                           <div className="ranking-card-main">
                             <div className="ranking-card-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
@@ -4382,7 +4476,7 @@ function App() {
                         <span>店舗</span>
                         <select value={selectedStore} onChange={(event) => handleStoreSwitch(event.target.value)}>
                           {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
-                          {stores.length ? stores.map((storeName) => <option key={storeName} value={storeName}>{storeName}</option>) : <option value="">未登録</option>}
+                          {visibleStores.length ? visibleStores.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
                         </select>
                       </label>
                       <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} disabled={dailyMode === "view"} />
