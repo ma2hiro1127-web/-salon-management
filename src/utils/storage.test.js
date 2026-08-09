@@ -666,6 +666,36 @@ test("buildDailyEntryPayload: 新規客数・再来客数を表示する場合�
   assert.equal(entry.customers, 10);
 });
 
+// その他売上は以前は会社単位のpreferences.showOtherSalesという別の仕組みで、総売上にも
+// 一切加算されない「表示専用」の値だった。今回、他の日次入力項目と同じ店舗ごとのON/OFFに
+// 統一し、ONの場合は正式に総売上へ加算されるようにした。
+test("buildDailyEntryPayload: その他売上がONの場合、画面側(updateDailyField)が技術売上+店販売上+その他売上に同期させたtotalSalesをそのまま保存する", () => {
+  const otherSalesFieldSettings = { mode: "detailed", fields: { technicalSales: true, retailSales: true, otherSales: true } };
+  const entry = buildDailyEntryPayload({
+    // updateDailyFieldが 800000+100000+100000=1000000 に同期済みという想定
+    form: { date: "2026-08-01", technicalSales: "800000", retailSales: "100000", otherSales: "100000", totalSales: "1000000" },
+    existingEntry: null,
+    fieldSettings: otherSalesFieldSettings,
+    entryId: "e1",
+  });
+
+  assert.equal(entry.otherSales, 100000);
+  assert.equal(entry.totalSales, 1000000);
+});
+
+test("buildDailyEntryPayload: その他売上がOFF(非表示)の場合は既存のその他売上データを保持し、0で上書きしない", () => {
+  const existingEntry = { technicalSales: 800000, retailSales: 100000, otherSales: 50000, totalSales: 950000 };
+  const withoutOtherSalesFieldSettings = { mode: "detailed", fields: { technicalSales: true, retailSales: true, otherSales: false } };
+  const entry = buildDailyEntryPayload({
+    form: { date: "2026-08-01", technicalSales: "800000", retailSales: "100000", otherSales: "", totalSales: "900000" },
+    existingEntry,
+    fieldSettings: withoutOtherSalesFieldSettings,
+    entryId: "e1",
+  });
+
+  assert.equal(entry.otherSales, 50000, "その他売上が非表示の間は既存値を保持する");
+});
+
 test("buildDailyEntryPayload: 来店客数のみ表示(新規・再来は非表示)の設定でも保存できる", () => {
   const fieldSettings = { mode: "custom", fields: { ...detailedFieldSettings.fields, newCustomers: false, repeatCustomers: false } };
   const entry = buildDailyEntryPayload({

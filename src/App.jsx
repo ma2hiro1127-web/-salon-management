@@ -277,6 +277,7 @@ const dailyFieldLabels = {
   repeatCustomers: "再来客数",
   memo: "メモ",
   reviewCount: "口コミ数",
+  otherSales: "その他売上",
 };
 
 const monthlyTargetFieldLabels = {
@@ -527,8 +528,15 @@ function App() {
   const updateDailyField = (field, value) => {
     setDailyForm((prev) => {
       const next = { ...prev, [field]: value };
-      if (totalSalesIsAutoCalculated && (field === "technicalSales" || field === "retailSales")) {
-        next.totalSales = parseNumber(field === "technicalSales" ? value : prev.technicalSales) + parseNumber(field === "retailSales" ? value : prev.retailSales);
+      // 総売上の自動計算(技術売上+店販売上が両方表示されている「詳細入力」の時だけ)。
+      // その他売上がONの場合はここに加算する — OFF/未入力の場合は0円として扱われ、
+      // 総売上=技術売上+店販売上のまま(要件4)。「かんたん入力」(技術/店販いずれか非表示)
+      // では総売上は引き続き手入力のままで、この自動計算の対象外(既存仕様と矛盾させない)。
+      if (totalSalesIsAutoCalculated && (field === "technicalSales" || field === "retailSales" || field === "otherSales")) {
+        const technical = parseNumber(field === "technicalSales" ? value : prev.technicalSales);
+        const retail = parseNumber(field === "retailSales" ? value : prev.retailSales);
+        const other = showOtherSalesField ? parseNumber(field === "otherSales" ? value : prev.otherSales) : 0;
+        next.totalSales = technical + retail + other;
       }
       if (customersIsAutoCalculated && (field === "newCustomers" || field === "repeatCustomers")) {
         next.customers = parseNumber(field === "newCustomers" ? value : prev.newCustomers) + parseNumber(field === "repeatCustomers" ? value : prev.repeatCustomers);
@@ -613,12 +621,16 @@ function App() {
   const showRepeatCustomersField = showCustomersField && Boolean(activeDailyFieldSettings.fields.repeatCustomers);
   const showMemoField = Boolean(activeDailyFieldSettings.fields.memo);
   const showReviewCountField = Boolean(activeDailyFieldSettings.fields.reviewCount);
+  // その他売上は以前は会社単位のpreferences.showOtherSalesで制御していたが、他の日次入力
+  // 項目と同じ「日次入力項目の設定」内で店舗ごとにON/OFFする方式に統一した。
+  const showOtherSalesField = Boolean(activeDailyFieldSettings.fields.otherSales);
   // 全店舗ビュー専用: 個々の店舗のON/OFFではなく「会社内のどれか1店舗でもONにしていれば
   // 表示する」という考え方(項目自体を会社として使っているかどうかの判定)。
   const companyHasDailyFieldEnabled = (fieldKey) => currentCompanyStores.some((store) => Boolean(store.settings?.dailyFieldSettings?.fields?.[fieldKey]));
   const effectiveShowTechnicalSalesField = isAllStoresView ? companyHasDailyFieldEnabled("technicalSales") : showTechnicalSalesField;
   const effectiveShowRetailSalesField = isAllStoresView ? companyHasDailyFieldEnabled("retailSales") : showRetailSalesField;
   const effectiveShowReviewCountField = isAllStoresView ? companyHasDailyFieldEnabled("reviewCount") : showReviewCountField;
+  const effectiveShowOtherSalesField = isAllStoresView ? companyHasDailyFieldEnabled("otherSales") : showOtherSalesField;
   const totalSalesIsAutoCalculated = showTechnicalSalesField && showRetailSalesField;
   const customersIsAutoCalculated = showNewCustomersField && showRepeatCustomersField;
   // updateDailyField keeps dailyForm.totalSales/dailyForm.customers correctly synced whether
@@ -975,12 +987,12 @@ function App() {
     const items = [];
     if (effectiveShowTechnicalSalesField) items.push({ key: "technicalSales", label: "技術売上", amount: summary.technicalSales });
     if (effectiveShowRetailSalesField) items.push({ key: "retailSales", label: "店販売上", amount: summary.retailSales });
-    if (appState.preferences?.showOtherSales) items.push({ key: "otherSales", label: "その他", amount: summary.otherSales });
+    if (effectiveShowOtherSalesField) items.push({ key: "otherSales", label: "その他", amount: summary.otherSales });
     const total = items.reduce((sum, item) => sum + Math.max(item.amount, 0), 0);
     return items
       .filter((item) => item.amount > 0)
       .map((item) => ({ ...item, ratio: total > 0 ? item.amount / total : 0 }));
-  }, [effectiveShowTechnicalSalesField, effectiveShowRetailSalesField, appState.preferences?.showOtherSales, summary.technicalSales, summary.retailSales, summary.otherSales]);
+  }, [effectiveShowTechnicalSalesField, effectiveShowRetailSalesField, effectiveShowOtherSalesField, summary.technicalSales, summary.retailSales, summary.otherSales]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.theme, JSON.stringify(theme));
@@ -1965,24 +1977,6 @@ function App() {
   // localStorage synchronously instead.
   const handleMonthSwitch = (monthValue) => {
     persistTenantState({ ...appState, selectedMonth: monthValue });
-  };
-
-  const handleToggleShowOtherSales = async () => {
-    const nextShowOtherSales = !Boolean(appState.preferences?.showOtherSales);
-    if (isSupabaseConfigured && currentCompany?.id) {
-      const result = await upsertCompanySettings({
-        companyId: currentCompany.id,
-        userId: appState.currentUserId,
-        settings: currentCompany.settings || createCompanySettingsDefaults(),
-        taxSettings: appState.taxSettings,
-        showOtherSales: nextShowOtherSales,
-      });
-      if (!result.ok) {
-        setNotice(getSupabaseErrorMessage(result.error));
-        return;
-      }
-    }
-    setAppState((prev) => ({ ...prev, preferences: { ...prev.preferences, showOtherSales: nextShowOtherSales } }));
   };
 
   const handleEditCompany = (company) => {
@@ -4115,7 +4109,7 @@ function App() {
                           display-only. */}
                       {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
                       {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
-                      {appState.preferences?.showOtherSales ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => setDailyForm((prev) => ({ ...prev, otherSales: value }))} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
+                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => updateDailyField("otherSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
                       {totalSalesIsAutoCalculated ? (
                         <div className="summary-card compact">
                           <span>総売上（税込）</span>
@@ -4951,15 +4945,6 @@ function App() {
                 {theme === "dark" ? "ライトに切替" : "ダークに切替"}
               </button>
             </div>
-            <div className="toggle-panel">
-              <div>
-                <strong>その他売上を使用する</strong>
-                <small>{appState.preferences?.showOtherSales ? "オン" : "オフ"}</small>
-              </div>
-              <button className="secondary-button" type="button" onClick={handleToggleShowOtherSales}>
-                {appState.preferences?.showOtherSales ? "オフにする" : "オンにする"}
-              </button>
-            </div>
             <div className="setup-card">
               <div className="panel-heading compact">
                 <div>
@@ -5017,25 +5002,6 @@ function App() {
               </div>
             </div>
             <div className="empty-card">初期設定が完了すると、各権限ごとの画面がそのまま使えます。</div>
-
-            {normalizeRole(currentRole) === "system_admin" && (
-              <div className="setup-card">
-                <div className="panel-heading compact">
-                  <div>
-                    <p className="eyebrow">DEBUG (system_admin only)</p>
-                    <h3>デバッグ情報</h3>
-                  </div>
-                </div>
-                <div className="input-grid">
-                  <label className="field"><span>auth user id</span><input value={debugInfo.userId || ""} readOnly /></label>
-                  <label className="field"><span>email</span><input value={debugInfo.email || ""} readOnly /></label>
-                  <label className="field"><span>role</span><input value={debugInfo.role || ""} readOnly /></label>
-                  <label className="field"><span>session</span><input value={debugInfo.hasSession ? "active" : "none"} readOnly /></label>
-                  <label className="field"><span>company_id</span><input value={appState.currentCompanyId || ""} readOnly /></label>
-                  <label className="field"><span>profile_id (currentUserId)</span><input value={appState.currentUserId || ""} readOnly /></label>
-                </div>
-              </div>
-            )}
           </section>
         )}
       </main>

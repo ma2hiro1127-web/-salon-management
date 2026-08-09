@@ -171,12 +171,14 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
   const showRepeatCustomers = showCustomers && Boolean(fields.repeatCustomers);
   const showMemo = Boolean(fields.memo);
   const showReviewCount = Boolean(fields.reviewCount);
+  const showOtherSales = Boolean(fields.otherSales);
 
   const preserveNumber = (existingValue) => parseNumber(existingValue ?? 0);
   const preserveText = (existingValue) => existingValue ?? "";
 
   const technicalSales = showTechnical ? parseNumber(form.technicalSales) : preserveNumber(existingEntry?.technicalSales);
   const retailSales = showRetail ? parseNumber(form.retailSales) : preserveNumber(existingEntry?.retailSales);
+  const otherSales = showOtherSales ? parseNumber(form.otherSales) : preserveNumber(existingEntry?.otherSales);
   const totalSales = parseNumber(form.totalSales || 0);
 
   const newCustomers = showNewCustomers ? parseNumber(form.newCustomers) : preserveNumber(existingEntry?.newCustomers);
@@ -193,7 +195,7 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
     totalSales,
     technicalSales,
     retailSales,
-    otherSales: parseNumber(form.otherSales || 0),
+    otherSales,
     customers,
     newCustomers,
     repeatCustomers,
