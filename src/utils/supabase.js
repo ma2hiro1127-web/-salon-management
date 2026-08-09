@@ -274,6 +274,44 @@ export const signOutFromSupabase = async () => {
   return { error };
 };
 
+// Anonymous-callable (get_invite_info is SECURITY DEFINER — see
+// 20260809000000_invite_flow_hardening.sql): lets the signup page validate an invite token
+// *before* the invitee has any session, which a plain RLS-protected profiles select could never
+// do. Returns null for an unknown/already-claimed-and-cleared token.
+export const getInviteInfo = async (token) => {
+  if (!token) return null;
+  const { data, error } = await supabase.rpc("get_invite_info", { p_token: token });
+  if (error) throw error;
+  return Array.isArray(data) && data.length ? data[0] : null;
+};
+
+// Completes an invite via the accept-invite Edge Function (service-role, never exposed to the
+// browser) — see supabase/functions/accept-invite. Needed because this project requires email
+// confirmation, so a plain client-side signUp() never returns a session; the Edge Function
+// creates the invitee's account pre-confirmed with the password they just chose, and links it
+// to the profile row the inviting admin already created.
+export const acceptInvite = async ({ token, email, password }) => {
+  const { data, error } = await supabase.functions.invoke("accept-invite", {
+    body: { token, email, password },
+  });
+  if (error) {
+    // FunctionsHttpError wraps the actual JSON error body in error.context — surface that
+    // message (e.g. "この招待リンクは期限切れです") instead of the generic HTTP failure text.
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
 export const getSupabaseSession = async () => {
   const { data, error } = await supabase.auth.getSession();
   return { data, error };
@@ -547,24 +585,31 @@ export const updateStoreDailyFieldSettings = async ({ storeId, settings }) => {
   return { ok: true, data };
 };
 
-export const createUserProfileRecord = async ({ name, email, role, companyId, storeIds = [], primaryStoreId = "", authUserId = null }) => {
+export const createUserProfileRecord = async ({ name, email, role, companyId, storeIds = [], primaryStoreId = "", authUserId = null, invitationStatus = "active", inviteToken = null, inviteExpiresAt = null }) => {
   const normalizedEmail = normalizeEmail(email);
   const resolvedRole = normalizeRole(role || resolveDefaultRole(normalizedEmail));
-  const { data: profile, error: profileError } = await supabase
-    .from("profiles")
-    .insert({
-      auth_user_id: authUserId,
-      company_id: companyId,
-      name,
-      email: normalizedEmail,
-      role: resolvedRole,
-      is_active: true,
-      invitation_status: "active",
-    })
-    .select()
-    .single();
-
+  // The id is generated client-side (instead of relying on the column's gen_random_uuid()
+  // default + reading it back via .select().single()) because a store_manager inviting staff
+  // can insert this row (profiles_insert_company_scoped allows it) but can't yet SELECT it back
+  // — profiles_select_company_scoped only grants a store_manager visibility into a staff
+  // profile via its user_stores row, which doesn't exist until the second insert below runs.
+  // Knowing the id upfront sidesteps that ordering problem entirely instead of racing it.
+  const profileId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const insertPayload = {
+    id: profileId,
+    auth_user_id: authUserId,
+    company_id: companyId,
+    name,
+    email: normalizedEmail,
+    role: resolvedRole,
+    is_active: true,
+    invitation_status: invitationStatus,
+    invite_token: inviteToken,
+    invite_expires_at: inviteExpiresAt,
+  };
+  const { error: profileError } = await supabase.from("profiles").insert(insertPayload);
   if (profileError) throw profileError;
+  const profile = { ...insertPayload, id: profileId };
 
   if (storeIds.length || primaryStoreId) {
     const storeList = (storeIds.length ? storeIds : [primaryStoreId]).filter(Boolean);
@@ -579,6 +624,27 @@ export const createUserProfileRecord = async ({ name, email, role, companyId, st
   }
 
   return profile;
+};
+
+// Used by the "再送" (resend invite) action to push a refreshed expiry (and, for a brand-new
+// token, the new token) to the real profiles row — without this the copy-able invite link and
+// Supabase's own invite_token/invite_expires_at would drift apart, and the "resent" link would
+// still fail get_invite_info's expiry check.
+export const refreshInviteState = async ({ profileId, inviteToken, inviteExpiresAt }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ invite_token: inviteToken, invite_expires_at: inviteExpiresAt, invitation_status: "invited" })
+      .eq("id", profileId)
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "refreshInviteState", table: "profiles", userId: profileId, error });
+    return { ok: false, error };
+  }
 };
 
 export const getProfileByEmail = async (email) => {

@@ -66,7 +66,7 @@ import {
   rekeyStoreNamedMaps,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -122,6 +122,9 @@ import {
   resolveRoleForEmail,
   updateProfileRole,
   updateProfileStoreAssignments,
+  getInviteInfo,
+  acceptInvite,
+  refreshInviteState,
 } from "./utils/supabase.js";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
@@ -641,6 +644,10 @@ function App() {
   // 対象日が店休日かどうか(要件18)。dailyForm.dateの月から店休日一覧を取るので、月をまたいで
   // 選択しても正しく判定できる。
   const isDailyFormDateHoliday = Boolean(dailyForm.date) && isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date);
+  // staffは日締め済みのデータを自分では編集・削除できない(店長以上のみ修正可能) — バックエンド
+  // はdaily_sales_update/delete_company_scoped RLS(is_day_closed=falseを要求)で強制しているが、
+  // ここでも操作前にUIで気づけるようにする。店長以上はこの制限を受けない。
+  const isDailyEntryLockedForStaff = normalizeRole(currentRole) === "staff" && Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStore, selectedMonth)]?.[dailyForm.date]);
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -666,13 +673,21 @@ function App() {
   const storeNamePlaceholder = getBusinessTypeDefaultStoreName(activeBusinessType);
 
   useEffect(() => {
+    // A brand-new invitee opening /signup?invite=TOKEN has no Supabase session yet — this whole
+    // effect's job on that first load is exactly to notice that and fall through to the
+    // "no session" branches below. Those branches used to hardcode setAuthMode("login"),
+    // silently overwriting the "signup" mode the ?invite= param had already set at initial
+    // useState — so every invite link bounced straight to the login screen instead of
+    // registration. Preserving "signup" here (and only here) whenever the URL still carries an
+    // invite token is the fix; an authenticated session always still wins and goes to "app".
+    const hasInviteIntent = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("invite"));
     const initializeAuth = async () => {
       try {
         if (!isSupabaseConfigured) {
           setCurrentUser(null);
           setCurrentRole("staff");
           setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
-          setAuthMode("login");
+          setAuthMode(hasInviteIntent ? "signup" : "login");
           setActivePage("dashboard");
           setAppState(initialAppStateValue);
           return;
@@ -756,14 +771,14 @@ function App() {
         setCurrentUser(null);
         setCurrentRole("staff");
         setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
-        setAuthMode("login");
+        setAuthMode(hasInviteIntent ? "signup" : "login");
         setActivePage("dashboard");
         setAppState(initialAppStateValue);
       } catch (error) {
         setCurrentUser(null);
         setCurrentRole("staff");
         setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
-        setAuthMode("login");
+        setAuthMode(hasInviteIntent ? "signup" : "login");
         setActivePage("dashboard");
         setAuthError(getLocalizedSupabaseErrorMessage(error));
       } finally {
@@ -1097,26 +1112,99 @@ function App() {
     setAuthSuccess("");
 
     const normalizedEmail = normalizeEmail(email);
-    const invitedUser = inviteToken
-      ? (appState.users || []).find((user) => String(user.inviteToken || "").trim() === inviteToken) || null
-      : null;
 
-    if (invitedUser) {
-      if (!invitedUser.isActive || invitedUser.invitationStatus === "suspended") {
+    // The invite lookup used to be a purely local `appState.users.find(...)` check — which is
+    // always empty on a brand-new device/browser (a fresh visitor has no hydrated state, and
+    // RLS blocks anonymous profile reads outright), so a genuine invitee's link could never
+    // actually resolve. get_invite_info is a SECURITY DEFINER RPC that works before any session
+    // exists, so this now works from a truly fresh browser — see
+    // 20260809000000_invite_flow_hardening.sql.
+    if (inviteToken) {
+      let inviteInfo;
+      try {
+        inviteInfo = await getInviteInfo(inviteToken);
+      } catch (error) {
+        setAuthError(getLocalizedSupabaseErrorMessage(error));
+        setAuthLoading(false);
+        return;
+      }
+
+      if (!inviteInfo) {
+        setAuthError("招待リンクが無効です。管理者に再招待を依頼してください。");
+        setAuthLoading(false);
+        return;
+      }
+      if (!inviteInfo.is_active || inviteInfo.invitation_status === "suspended" || inviteInfo.invitation_status === "disabled") {
         setAuthError("この招待は無効です。管理者にお問い合わせください。");
         setAuthLoading(false);
         return;
       }
-      if (isInviteExpired(invitedUser.inviteExpiresAt)) {
+      if (isInviteExpired(inviteInfo.invite_expires_at)) {
         setAuthError("この招待リンクは期限切れです。管理者にお問い合わせください。");
         setAuthLoading(false);
         return;
       }
-      if (String(invitedUser.email || "").trim().toLowerCase() && normalizedEmail !== String(invitedUser.email || "").trim().toLowerCase()) {
+      if (String(inviteInfo.email || "").trim().toLowerCase() && normalizedEmail !== String(inviteInfo.email || "").trim().toLowerCase()) {
         setAuthError("招待メールアドレスと一致するメールアドレスで登録してください。");
         setAuthLoading(false);
         return;
       }
+
+      // Delegates account creation to the accept-invite Edge Function (service-role, never
+      // exposed to the browser): this project requires email confirmation, so a plain
+      // signUpWithEmail() here would never return a session and the invitee would be stuck.
+      // The function creates their account pre-confirmed with the password they just chose and
+      // links it to the profile row the inviting admin already created (role/company/store all
+      // already set there — nothing to re-apply client-side).
+      const acceptResult = await acceptInvite({ token: inviteToken, email: normalizedEmail, password });
+      if (!acceptResult.ok) {
+        setAuthError(getSupabaseErrorMessage(acceptResult.error));
+        setAuthLoading(false);
+        return;
+      }
+
+      try {
+        const { data, error } = await signInWithEmail(normalizedEmail, password);
+        if (error) throw error;
+        const authUser = data?.user;
+        if (!authUser) throw new Error("認証ユーザーを取得できませんでした");
+
+        const profile = await ensureProfileForAuthUser({ authUserId: authUser.id, email: authUser.email, role: resolveRoleForEmail(authUser.email) });
+        const tenantState = await loadTenantStateFromSupabase({ authUserId: authUser.id, email: authUser.email, currentProfile: profile });
+        const nextUser = buildAuthenticatedUser({ profile, authUser, role: normalizeRole(profile?.role) });
+        const nextRole = normalizeRole(profile?.role || "staff");
+        setCurrentUser(nextUser);
+        setCurrentRole(nextRole);
+        const inviteCompanyId = profile?.company_id || tenantState.currentCompanyId || "";
+        const inviteLocalRecoveredState = normalizeAppState(readAppState());
+        const { selectedStore: invitePreferredSelectedStore, selectedStoreId: invitePreferredSelectedStoreId } = resolvePreferredStoreSelection({
+          tenantState,
+          localRecoveredState: inviteLocalRecoveredState,
+          currentCompanyId: inviteCompanyId,
+          role: nextRole,
+        });
+        setAppState({
+          ...tenantState,
+          currentCompanyId: inviteCompanyId,
+          currentUserId: nextUser.profileId,
+          currentAuthUserId: nextUser.authUserId,
+          selectedStore: invitePreferredSelectedStore,
+          selectedStoreId: invitePreferredSelectedStoreId,
+          selectedMonth: inviteLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+        });
+        await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
+        window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+        window.localStorage.setItem("salon-role", nextRole);
+        setAuthMode("app");
+        setActivePage(resolveDefaultPage(nextRole));
+        setInviteToken("");
+        setAuthSuccess("招待登録が完了しました。管理画面へ移動します。");
+      } catch (error) {
+        setAuthError(getLocalizedSupabaseErrorMessage(error));
+      } finally {
+        setAuthLoading(false);
+      }
+      return;
     }
 
     try {
@@ -1127,58 +1215,6 @@ function App() {
         authUser = data?.user || null;
       } catch (error) {
         console.warn("Supabase sign-up skipped for invite flow", error);
-      }
-
-      if (invitedUser) {
-        const nextCompanyId = invitedUser.companyId || appState.currentCompanyId || currentCompany?.id || "";
-        const nextRole = normalizeRole(invitedUser.role || "store_manager");
-        const profile = authUser
-          ? await ensureProfileForAuthUser({ authUserId: authUser.id, email: normalizedEmail, role: nextRole, companyId: nextCompanyId })
-          : null;
-        const nextUser = buildAuthenticatedUser({
-          profile,
-          authUser,
-          fallback: {
-            ...invitedUser,
-            company_id: nextCompanyId,
-            store_id: invitedUser.primaryStoreId || invitedUser.storeIds?.[0] || "",
-          },
-          role: nextRole,
-          companyId: nextCompanyId,
-          storeId: invitedUser.primaryStoreId || invitedUser.storeIds?.[0] || "",
-        });
-        const nextUserId = nextUser.profileId;
-        const nextState = {
-          ...appState,
-          currentUserId: nextUserId,
-          currentAuthUserId: nextUser.authUserId,
-          currentCompanyId: nextCompanyId,
-          users: (appState.users || []).map((user) => user.id === nextUserId ? {
-            ...user,
-            name: user.name || invitedUser.name || normalizedEmail.split("@")[0],
-            email: normalizedEmail,
-            role: nextRole,
-            companyId: nextCompanyId,
-            storeIds: invitedUser.storeIds?.length ? invitedUser.storeIds : user.storeIds || [],
-            primaryStoreId: invitedUser.primaryStoreId || user.primaryStoreId || "",
-            isActive: user.isActive !== false,
-            invitationStatus: "registered",
-            inviteRegisteredAt: new Date().toISOString(),
-            lastLoginAt: new Date().toISOString(),
-            loginCount: (user.loginCount || 0) + 1,
-            authUserId: authUser?.id || user.authUserId || "",
-          } : user),
-        };
-        persistTenantState(nextState);
-        setCurrentUser(nextUser);
-        setCurrentRole(nextRole);
-        window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
-        window.localStorage.setItem("salon-role", nextRole);
-        setAuthMode("app");
-        setActivePage(resolveDefaultPage(nextRole));
-        setInviteToken("");
-        setAuthSuccess("招待登録が完了しました。管理画面へ移動します。" );
-        return;
       }
 
       const signInResult = await signInWithEmail(normalizedEmail, password);
@@ -1605,8 +1641,17 @@ function App() {
         users: tenantState?.users?.length ? tenantState.users : (remoteState.users || []),
         companySnapshots: remoteState.companySnapshots || (tenantState?.companySnapshots || {}),
         currentCompanyId: remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
-        currentUserId: remoteState.currentUserId || tenantState?.currentUserId || profile.id || "",
-        currentAuthUserId: remoteState.currentAuthUserId || tenantState?.currentAuthUserId || profile.auth_user_id || authUser.id || "",
+        // currentUserId/currentAuthUserId must ALWAYS be this session's own identity — never the
+        // snapshot's. tenant_snapshots is a company-wide blob that whichever user last saved
+        // wrote, embedding *their* currentUserId; preferring remoteState.currentUserId here (as
+        // this used to) silently hijacked every other user's session onto the last-saver's
+        // identity on the next hydrate (which runs on focus/visibility/realtime-change — i.e.
+        // constantly), corrupting created_by/updated_by attribution and, for staff, causing
+        // every subsequent daily_sales write to be rejected by RLS since created_by no longer
+        // matched their own auth session. Confirmed live via a store_manager session whose
+        // currentUserId flipped to a different admin's profile id after one hydrate cycle.
+        currentUserId: profile.id || tenantState?.currentUserId || remoteState.currentUserId || "",
+        currentAuthUserId: profile.auth_user_id || authUser.id || tenantState?.currentAuthUserId || remoteState.currentAuthUserId || "",
         selectedStore: resolvedSelectedStore,
         selectedStoreId: resolvedSelectedStoreId,
         selectedMonth: resolvedSelectedMonth,
@@ -1883,7 +1928,7 @@ function App() {
 
   const handleSaveUser = async () => {
     if (!canManageUsers(currentRole)) {
-      setNotice("ユーザー作成はシステム管理者または会社管理者が実行できます");
+      setNotice("ユーザー招待はシステム管理者・会社管理者・店長が実行できます");
       return;
     }
     if (!userForm.name.trim() || !userForm.email.trim()) return;
@@ -1894,54 +1939,72 @@ function App() {
       return;
     }
     const normalizedCurrentRole = normalizeRole(currentRole);
-    const companyId = normalizedCurrentRole === "company_admin" ? appState.currentCompanyId : (userForm.companyId || appState.currentCompanyId);
-    const role = normalizedCurrentRole === "company_admin" ? (userForm.role === "system_admin" ? "store_manager" : userForm.role) : userForm.role;
+    // Both the assignable role set and the assignable store set are clamped here to exactly
+    // what this inviter is allowed to hand out — system_admin/company_admin/store_manager each
+    // get progressively narrower — mirroring (and defense-in-depth alongside) the
+    // profiles_insert_company_scoped / user_stores_insert_company_scoped RLS policies, which are
+    // the actual enforcement (see 20260809000000_invite_flow_hardening.sql). A store_manager can
+    // only ever invite staff into a store they themselves are assigned to; company_admin can
+    // invite within their own company but never system_admin.
+    const invitableRoles = getInvitableRoles(normalizedCurrentRole);
+    const role = invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "staff");
+    const companyId = normalizedCurrentRole === "system_admin" ? (userForm.companyId || appState.currentCompanyId) : appState.currentCompanyId;
+    const inviterStoreIds = normalizedCurrentRole === "store_manager" ? allowedStoreIds : currentCompanyStores.map((store) => store.id);
     const existingUser = (appState.users || []).find((user) => user.id === userEditId) || null;
     const inviteTokenValue = existingUser?.inviteToken || createInviteToken();
     const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
     const inviteExpiresAt = existingUser?.inviteExpiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const requestedStoreIds = (userForm.storeIds.length ? userForm.storeIds : (inviterStoreIds[0] ? [inviterStoreIds[0]] : [])).filter((storeId) => inviterStoreIds.includes(storeId));
+    const requestedPrimaryStoreId = inviterStoreIds.includes(userForm.primaryStoreId) ? userForm.primaryStoreId : (requestedStoreIds[0] || "");
 
     try {
       let createdProfile = null;
-      let authUserId = existingUser?.authUserId || "";
+      // Account creation is deliberately NOT done here: this used to call signUpWithEmail with a
+      // hardcoded "password123" the moment an admin clicked 招待する, which (a) left every
+      // not-yet-registered invite reachable by anyone who guessed that password, and (b) meant
+      // the invitee's *real* signup later silently failed ("already registered") and they ended
+      // up "logged in" only in local React state with no actual Supabase session, so nothing
+      // they entered ever saved. The profile row (role/company/store already fully set here) is
+      // all that's created now; the real auth account is created only when the invitee
+      // themselves completes registration via accept-invite (see handleSignUp).
       if (!existingUser) {
-        const signupResult = await signUpWithEmail(normalizedEmail, "password123");
-        authUserId = signupResult?.data?.user?.id || "";
         createdProfile = await createUserProfileRecord({
           name: userForm.name.trim(),
           email: normalizedEmail,
           role,
           companyId,
-          storeIds: userForm.storeIds.length ? userForm.storeIds : (currentCompanyStores[0]?.id ? [currentCompanyStores[0].id] : []),
-          primaryStoreId: userForm.primaryStoreId || userForm.storeIds[0] || currentCompanyStores[0]?.id || "",
-          authUserId,
+          storeIds: requestedStoreIds,
+          primaryStoreId: requestedPrimaryStoreId,
+          authUserId: null,
+          invitationStatus: "invited",
+          inviteToken: inviteTokenValue,
+          inviteExpiresAt,
         });
       }
 
-      const selectedStores = userForm.storeIds.length ? userForm.storeIds : (currentCompanyStores[0]?.id ? [currentCompanyStores[0].id] : []);
       const nextUser = {
         id: existingUser?.id || createdProfile?.id || `user-${Date.now()}`,
         name: userForm.name.trim(),
         email: normalizedEmail,
         role,
         companyId,
-        storeIds: selectedStores,
-        primaryStoreId: userForm.primaryStoreId || userForm.storeIds[0] || currentCompanyStores[0]?.id || "",
+        storeIds: existingUser ? requestedStoreIds : requestedStoreIds,
+        primaryStoreId: requestedPrimaryStoreId,
         isActive: userForm.isActive !== false,
-        invitationStatus: existingUser?.invitationStatus || userForm.invitationStatus || "invited",
+        invitationStatus: existingUser?.invitationStatus || "invited",
         lastLoginAt: existingUser?.lastLoginAt || userForm.lastLoginAt || "",
         loginCount: existingUser?.loginCount || userForm.loginCount || 0,
-        inviteExpiresAt: userForm.invitationStatus === "invited" ? inviteExpiresAt : "",
+        inviteExpiresAt: existingUser?.invitationStatus === "invited" || !existingUser ? inviteExpiresAt : "",
         inviteToken: existingUser?.inviteToken || inviteTokenValue,
         inviteLink: existingUser?.inviteLink || inviteLink,
-        authUserId: existingUser?.authUserId || createdProfile?.auth_user_id || authUserId || "",
+        authUserId: existingUser?.authUserId || createdProfile?.auth_user_id || "",
       };
       const nextState = {
         ...appState,
         users: existingUser ? (appState.users || []).map((user) => (user.id === nextUser.id ? nextUser : user)) : [...(appState.users || []), nextUser],
       };
       persistTenantState(nextState);
-      setUserForm({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
+      setUserForm({ name: "", email: "", role: invitableRoles[invitableRoles.length - 1] || "staff", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
       setUserEditId("");
       setNotice(existingUser ? `${nextUser.name} を更新しました` : `${nextUser.name} を招待しました。招待リンクを共有してください。`);
     } catch (error) {
@@ -2148,33 +2211,6 @@ function App() {
     setNotice(`${user.name} の所属店舗を更新しました`);
   };
 
-  const handleMarkInvitationSent = (user) => {
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), lastLoginAt: item.lastLoginAt || "", loginCount: item.loginCount || 0 } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(`${user.name} に招待メールを送信しました（7日間有効）`);
-  };
-
-  const handleMarkRegistered = (user) => {
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "registered", loginCount: item.loginCount || 0 } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(`${user.name} を登録済みに更新しました`);
-  };
-
-  const handleSimulateLogin = (user) => {
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "registered", lastLoginAt: new Date().toISOString(), loginCount: (item.loginCount || 0) + 1 } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(`${user.name} のログイン回数を更新しました`);
-  };
-
   const toggleUserStoreSelection = (storeId) => {
     setUserForm((prev) => {
       const nextStoreIds = prev.storeIds.includes(storeId) ? prev.storeIds.filter((currentId) => currentId !== storeId) : [...prev.storeIds, storeId];
@@ -2349,15 +2385,27 @@ function App() {
     }
   };
 
-  const handleInviteEmail = (user) => {
+  const handleInviteEmail = async (user) => {
+    if (user.authUserId) {
+      setNotice(`${user.name} はすでに登録済みです`);
+      return;
+    }
     const inviteTokenValue = user.inviteToken || createInviteToken();
     const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
+    const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    if (isSupabaseConfigured) {
+      const result = await refreshInviteState({ profileId: user.id, inviteToken: inviteTokenValue, inviteExpiresAt });
+      if (!result?.ok && !result?.skipped) {
+        setNotice(`招待リンクの更新に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
+        return;
+      }
+    }
     const nextState = {
       ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString() } : item),
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt } : item),
     };
     persistTenantState(nextState);
-    setNotice(`${user.name} に招待リンクを更新しました`);
+    setNotice(`${user.name} の招待リンクを更新しました（7日間有効）`);
   };
 
   const handleCopyInviteLink = async (user) => {
@@ -2372,15 +2420,6 @@ function App() {
       console.warn("Clipboard write failed", error);
     }
     window.prompt("招待リンク", inviteLink);
-  };
-
-  const handlePasswordReset = (user) => {
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited" } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(`${user.name} にパスワード設定メールを送信しました（デモ）`);
   };
 
   useEffect(() => {
@@ -4067,14 +4106,19 @@ function App() {
 
                   <div className="button-row">
                     <button className="secondary-button" type="button" onClick={startNewDailyEntry}>新規入力</button>
-                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit"}>編集</button>
+                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff}>編集</button>
                     <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday}>日締め</button>
+                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff}>日締め</button>
                   </div>
 
                   {isDailyFormDateHoliday ? (
                     <div className="notice-box">
                       この日（{dailyForm.date}）は店休日です。日次入力・保存・日締めはできません。
+                    </div>
+                  ) : null}
+                  {isDailyEntryLockedForStaff ? (
+                    <div className="notice-box">
+                      この日は日締め済みのため編集・削除できません。修正が必要な場合は店長以上にご連絡ください。
                     </div>
                   ) : null}
 
@@ -4843,16 +4887,34 @@ function App() {
             <p className="management-help">ユーザーは役割・所属店舗・招待状態を管理画面から一括で設定できます。招待後は7日間有効で、期限切れ時は再送できます。</p>
             {!canViewUserManagement(currentRole) ? (
               <div className="empty-card">この権限ではユーザー管理を操作できません。</div>
-            ) : (
+            ) : (() => {
+              const normalizedCurrentRole = normalizeRole(currentRole);
+              // A store_manager can only ever hand out access to stores they themselves manage,
+              // and only as "staff" — invitableRoles/inviteScopedStores are what actually clamp
+              // what appears in the form below (RLS enforces the same limits server-side, see
+              // 20260809000000_invite_flow_hardening.sql, so this is UI-hiding on top of real
+              // enforcement, not instead of it).
+              const invitableRoles = getInvitableRoles(normalizedCurrentRole);
+              const inviteScopedStores = normalizedCurrentRole === "store_manager"
+                ? (currentCompanyStores || []).filter((store) => allowedStoreIds.includes(store.id))
+                : (currentCompanyStores || []);
+              // store_manager only ever sees/manages the staff assigned to their own store(s) —
+              // never other store_managers, admins, or other stores' staff.
+              const manageableUsers = (appState.users || []).filter((user) => {
+                if (normalizedCurrentRole === "system_admin") return true;
+                if (user.companyId !== currentCompany?.id) return false;
+                if (normalizedCurrentRole === "store_manager") {
+                  return user.role === "staff" && (user.storeIds || []).some((storeId) => allowedStoreIds.includes(storeId));
+                }
+                return true;
+              });
+              return (
               <>
                 <div className="inline-form">
                   <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="氏名" />
                   <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="メールアドレス" />
-                  <select value={userForm.role} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
-                    <option value="system_admin">system_admin</option>
-                    <option value="company_admin">company_admin</option>
-                    <option value="store_manager">store_manager</option>
-                    <option value="staff">staff</option>
+                  <select value={invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "")} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
+                    {invitableRoles.map((roleOption) => <option key={roleOption} value={roleOption}>{roleOption}</option>)}
                   </select>
                   <button className="primary-button" type="button" onClick={handleSaveUser}>{userEditId ? "ユーザー情報を更新" : "招待する"}</button>
                 </div>
@@ -4861,7 +4923,7 @@ function App() {
                     <span>主要所属店舗</span>
                     <select value={userForm.primaryStoreId || ""} onChange={(event) => setUserForm((prev) => ({ ...prev, primaryStoreId: event.target.value, storeIds: event.target.value ? [event.target.value] : prev.storeIds }))}>
                       <option value="">未設定</option>
-                      {(currentCompanyStores || []).map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                      {inviteScopedStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
                     </select>
                   </label>
                 </div>
@@ -4873,7 +4935,7 @@ function App() {
                     </div>
                   </div>
                   <div className="input-grid">
-                    {(currentCompanyStores || []).map((store) => (
+                    {inviteScopedStores.map((store) => (
                       <label key={store.id} className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
                         <input type="checkbox" checked={userForm.storeIds.includes(store.id)} onChange={() => toggleUserStoreSelection(store.id)} />
                         <span>{store.name}</span>
@@ -4881,11 +4943,12 @@ function App() {
                     ))}
                   </div>
                 </div>
-                {(appState.users || []).filter((user) => normalizeRole(currentRole) === "system_admin" || user.companyId === currentCompany?.id).length ? (
+                {manageableUsers.length ? (
                   <div className="card-grid">
-                    {(appState.users || []).filter((user) => normalizeRole(currentRole) === "system_admin" || user.companyId === currentCompany?.id).map((user) => {
+                    {manageableUsers.map((user) => {
                       const storeNames = (user.storeIds || []).map((storeId) => currentCompanyStores.find((store) => store.id === storeId)?.name || storeId).join(", ");
                       const invitationMeta = getUserInvitationMeta(user);
+                      const canChangeThisUsersRole = invitableRoles.includes(user.role);
                       return (
                         <div key={user.id} className="info-card">
                           <div className="info-card-head">
@@ -4904,17 +4967,20 @@ function App() {
                           </div>
                           <div className="row-actions">
                             <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
-                            <button className="text-button" type="button" onClick={() => handleMarkInvitationSent(user)}>招待</button>
-                            <button className="text-button" type="button" onClick={() => handleMarkRegistered(user)}>登録済み</button>
-                            <button className="text-button" type="button" onClick={() => handleSimulateLogin(user)}>ログ記録</button>
                             <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
                           </div>
                           <div className="row-actions">
-                            <button className="text-button" type="button" onClick={() => handleUpdateUserRole(user, user.role === "system_admin" ? "company_admin" : user.role === "company_admin" ? "store_manager" : user.role === "store_manager" ? "staff" : "system_admin")}>権限変更</button>
-                            <button className="text-button" type="button" onClick={() => handleUpdateUserStores(user, (user.storeIds || []).length ? user.storeIds : (currentCompanyStores[0]?.id ? [currentCompanyStores[0].id] : []))}>所属店舗変更</button>
+                            {canChangeThisUsersRole && invitableRoles.length > 1 && (
+                              <select
+                                value={user.role}
+                                onChange={(event) => handleUpdateUserRole(user, event.target.value)}
+                              >
+                                {invitableRoles.map((roleOption) => <option key={roleOption} value={roleOption}>{roleOption}</option>)}
+                              </select>
+                            )}
+                            <button className="text-button" type="button" onClick={() => handleUpdateUserStores(user, (user.storeIds || []).length ? user.storeIds : (inviteScopedStores[0]?.id ? [inviteScopedStores[0].id] : []))}>所属店舗変更</button>
                             <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>リンク</button>
-                            <button className="text-button" type="button" onClick={() => handlePasswordReset(user)}>再設定</button>
-                            <button className="text-button" type="button" onClick={() => handleInviteEmail(user)}>再送</button>
+                            <button className="text-button" type="button" onClick={() => handleInviteEmail(user)}>{user.invitationStatus === "invited" ? "再送" : "招待メール再発行"}</button>
                           </div>
                         </div>
                       );
@@ -4924,7 +4990,8 @@ function App() {
                   <div className="management-empty">まだユーザーが登録されていません。上のフォームから招待してください。</div>
                 )}
               </>
-            )}
+              );
+            })()}
           </section>
         )}
 

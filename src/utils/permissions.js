@@ -13,7 +13,11 @@ export const isAdminRole = (role) => normalizeRole(role) === "system_admin" || n
 export const NAV_ITEMS_BY_ROLE = {
   system_admin: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
   company_admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
-  store_manager: ["dashboard", "daily", "monthly", "stores", "settings"],
+  // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
+  // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
+  // branch in App.jsx. No "companies" (店舗管理会社), and no monthly-target-adjacent company-wide
+  // settings beyond their own store.
+  store_manager: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
   staff: ["dashboard", "daily", "stores"],
   owner: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
   admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
@@ -32,9 +36,29 @@ export const canManageStores = (role) => normalizeRole(role) === "system_admin" 
 // store, but callers must still additionally check the store is in the caller's
 // allowedStoreIds — this only says the *role* is ever allowed to edit a name, not which store.
 export const canEditStoreName = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin" || normalizeRole(role) === "store_manager";
-export const canManageUsers = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
+// store_manager can now reach ユーザー管理 too, but only to invite staff into their own
+// store(s) — see getInvitableRoles, which is what actually gates *which* roles/scope each
+// caller can assign (both in the UI and, authoritatively, in RLS's profiles/user_stores insert
+// policies — this function only gates whether the page/action is reachable at all).
+export const canManageUsers = (role) => {
+  const normalized = normalizeRole(role);
+  return normalized === "system_admin" || normalized === "company_admin" || normalized === "store_manager";
+};
 export const canEditMonthlyData = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin" || normalizeRole(role) === "store_manager";
-export const canViewUserManagement = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
+export const canViewUserManagement = (role) => canManageUsers(role);
+
+// Which roles `role` is allowed to invite/assign to someone else. This is the UI-side mirror of
+// the profiles_insert_company_scoped / profiles_update_company_scoped RLS policies (see
+// 20260805130000_company_scoped_rls.sql + 20260809000000_invite_flow_hardening.sql) — RLS is
+// still the actual enforcement, this just keeps the invite form / role-change control from
+// offering choices the backend would reject anyway.
+export const getInvitableRoles = (role) => {
+  const normalized = normalizeRole(role);
+  if (normalized === "system_admin") return ["system_admin", "company_admin", "store_manager", "staff"];
+  if (normalized === "company_admin") return ["company_admin", "store_manager", "staff"];
+  if (normalized === "store_manager") return ["staff"];
+  return [];
+};
 // 「全店舗」(company_admin/system_admin専用の仮想集計ビュー)を店舗選択欄に表示・選択できる
 // かどうか。一般スタッフ・店舗管理者には表示しない。system_adminは複数会社を横断管理できる
 // ロールだが、「全店舗」はあくまで現在対象にしているcompany_id(currentCompanyId)の店舗を
