@@ -65,7 +65,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -123,12 +123,15 @@ import {
   updateProfileStoreAssignments,
   getInviteInfo,
   acceptInvite,
+  sendInviteEmail,
+  deleteUserAccount,
+  updateProfileDetails,
   refreshInviteState,
 } from "./utils/supabase.js";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
-import { buildInviteLink, createInviteToken, getInvitationStatusMeta, isInviteExpired } from "./utils/invitations.js";
+import { buildInviteLink, createInviteToken, isInviteExpired } from "./utils/invitations.js";
 import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
@@ -320,25 +323,28 @@ const createStoreFormDefaults = () => ({
   status: "active",
 });
 
-const getUserInvitationMeta = (user) => {
-  const invitationStatus = String(user?.invitationStatus || "active").toLowerCase();
-  const meta = getInvitationStatusMeta(invitationStatus);
-  const expireAt = user?.inviteExpiresAt ? new Date(user.inviteExpiresAt) : null;
-  const expired = Boolean(expireAt && isInviteExpired(user.inviteExpiresAt));
+// A single, plain-language status per user instead of the old raw mix of "active"/"未ログイン"/
+// "ログイン回数0"/"有効期限なし" shown all at once. isActive (stopped) always wins regardless
+// of registration state; then it's simply "haven't registered yet" (invited / expired) vs
+// "registered" (never logged in yet / actively using it).
+// Display order for role subgroups within a store group in ユーザー管理 (higher authority
+// first, matching the hierarchy example: 店舗管理者 above 一般スタッフ).
+const ROLE_GROUP_ORDER = ["system_admin", "company_admin", "store_manager", "staff"];
 
-  if (invitationStatus === "invited") {
-    return { ...meta, expiresAt: expireAt, status: expired ? "expired" : "invited" };
+const getUserStatusMeta = (user) => {
+  if (user?.isActive === false) {
+    return { key: "suspended", label: "停止中", tone: "danger", expiresAt: null };
   }
-  if (invitationStatus === "registered") {
-    return { ...meta, expiresAt: null, status: "registered" };
+  if (!user?.authUserId) {
+    if (user?.inviteExpiresAt && isInviteExpired(user.inviteExpiresAt)) {
+      return { key: "invite_expired", label: "招待期限切れ", tone: "warning", expiresAt: new Date(user.inviteExpiresAt) };
+    }
+    return { key: "invited", label: "招待中", tone: "info", expiresAt: user?.inviteExpiresAt ? new Date(user.inviteExpiresAt) : null };
   }
-  if (invitationStatus === "expired") {
-    return { ...meta, expiresAt: null, status: "expired" };
+  if (!user?.lastLoginAt || !user?.loginCount) {
+    return { key: "not_logged_in", label: "未ログイン", tone: "info", expiresAt: null };
   }
-  if (invitationStatus === "suspended") {
-    return { ...meta, expiresAt: null, status: "suspended" };
-  }
-  return { ...meta, expiresAt: null, status: invitationStatus };
+  return { key: "active", label: "利用中", tone: "success", expiresAt: null };
 };
 
 const getCompanySetupProgress = (company) => {
@@ -523,7 +529,23 @@ function App() {
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
-  const [userEditId, setUserEditId] = useState("");
+  // ユーザー編集モーダル用。招待フォーム(userForm)とは完全に独立させている — 編集は
+  // 名前・メール・権限・所属店舗・有効状態をSupabaseへ直接保存する専用フローで、招待フォーム
+  // を流用していた旧実装は実際にはSupabaseへ何も保存していなかった(ローカル状態のみ)。
+  const [editUserTargetId, setEditUserTargetId] = useState("");
+  const [editUserDraft, setEditUserDraft] = useState({ name: "", email: "", role: "staff", storeIds: [], primaryStoreId: "", isActive: true });
+  const [editUserSaving, setEditUserSaving] = useState(false);
+  const [editUserError, setEditUserError] = useState("");
+  // ユーザー削除の2段階確認用。deleteUserTargetIdがセットされるとまず確認ダイアログを表示し、
+  // その中の「削除する」を押した時点でさらにwindow.confirmの最終確認を挟んでから実行する。
+  const [deleteUserTargetId, setDeleteUserTargetId] = useState("");
+  const [deleteUserSaving, setDeleteUserSaving] = useState(false);
+  const [deleteUserError, setDeleteUserError] = useState("");
+  // ユーザー管理画面の絞り込み・階層表示用。
+  const [userFilterStoreId, setUserFilterStoreId] = useState("");
+  const [userFilterRole, setUserFilterRole] = useState("");
+  const [userSearchQuery, setUserSearchQuery] = useState("");
+  const [collapsedUserStoreGroups, setCollapsedUserStoreGroups] = useState(() => new Set());
   const [companySettingsForm, setCompanySettingsForm] = useState(createCompanySettingsDefaults());
   const [storeSettingsForm, setStoreSettingsForm] = useState(createStoreSettingsDefaults());
   const [dailyForm, setDailyForm] = useState({ ...defaultDailyEntry });
@@ -659,6 +681,76 @@ function App() {
     if (!currentCompanyStores.length) return [];
     return currentCompanyStores.filter((store) => allowedStoreIds.includes(store.id));
   }, [allowedStoreIds, currentCompanyStores]);
+
+  // ユーザー管理: どのロールを招待できるか(店長ならstaffのみ等)、招待フォームで選べる店舗
+  // 範囲、そして実際に管理画面に一覧できるユーザーの集合。RLS(profiles_insert/update/
+  // delete_company_scoped)が実際の強制であり、これらはUI側の対応するスコープ制限。
+  const invitableRoles = useMemo(() => getInvitableRoles(currentRole), [currentRole]);
+  const inviteScopedStores = useMemo(
+    () => (normalizeRole(currentRole) === "store_manager" ? currentCompanyStores.filter((store) => allowedStoreIds.includes(store.id)) : currentCompanyStores),
+    [currentRole, currentCompanyStores, allowedStoreIds]
+  );
+  const manageableUsers = useMemo(() => (appState.users || []).filter((user) => {
+    const normalizedCurrentRole = normalizeRole(currentRole);
+    if (normalizedCurrentRole === "system_admin") return true;
+    if (user.companyId !== currentCompany?.id) return false;
+    if (normalizedCurrentRole === "store_manager") {
+      return user.role === "staff" && (user.storeIds || []).some((storeId) => allowedStoreIds.includes(storeId));
+    }
+    return true;
+  }), [appState.users, currentRole, currentCompany?.id, allowedStoreIds]);
+
+  // 店舗 > 権限/役職 > スタッフ の階層で表示するためのグループ化。プライマリ店舗(なければ
+  // 所属店舗の先頭)を基準に1人1グループへ所属させる(複数店舗兼務でも表示が重複しない
+  // シンプルな一覧を優先)。「所属店舗なし」はsystem_admin等、店舗に紐づかない管理者向け。
+  const groupedManageableUsers = useMemo(() => {
+    const searchValue = userSearchQuery.trim().toLowerCase();
+    const filtered = manageableUsers.filter((user) => {
+      if (userFilterRole && user.role !== userFilterRole) return false;
+      const userStoreId = user.primaryStoreId || (user.storeIds || [])[0] || "";
+      if (userFilterStoreId === "__none__" && userStoreId) return false;
+      if (userFilterStoreId && userFilterStoreId !== "__none__" && userStoreId !== userFilterStoreId) return false;
+      if (searchValue && !`${user.name} ${user.email}`.toLowerCase().includes(searchValue)) return false;
+      return true;
+    });
+    const storeGroups = new Map();
+    filtered.forEach((user) => {
+      const storeId = user.primaryStoreId || (user.storeIds || [])[0] || "";
+      const key = storeId || "__none__";
+      if (!storeGroups.has(key)) {
+        storeGroups.set(key, {
+          key,
+          storeId,
+          storeName: storeId ? (currentCompanyStores.find((store) => store.id === storeId)?.name || "不明な店舗") : "所属店舗なし",
+          roleGroups: new Map(),
+        });
+      }
+      const group = storeGroups.get(key);
+      if (!group.roleGroups.has(user.role)) group.roleGroups.set(user.role, []);
+      group.roleGroups.get(user.role).push(user);
+    });
+    const storeOrder = currentCompanyStores.map((store) => store.id);
+    return Array.from(storeGroups.values())
+      .sort((a, b) => {
+        if (!a.storeId) return 1;
+        if (!b.storeId) return -1;
+        return storeOrder.indexOf(a.storeId) - storeOrder.indexOf(b.storeId);
+      })
+      .map((group) => ({
+        ...group,
+        roleGroups: Array.from(group.roleGroups.entries())
+          .sort(([roleA], [roleB]) => ROLE_GROUP_ORDER.indexOf(roleA) - ROLE_GROUP_ORDER.indexOf(roleB))
+          .map(([role, users]) => ({ role, users: users.sort((a, b) => a.name.localeCompare(b.name, "ja")) })),
+      }));
+  }, [manageableUsers, userFilterRole, userFilterStoreId, userSearchQuery, currentCompanyStores]);
+
+  const toggleUserStoreGroupCollapsed = (key) => {
+    setCollapsedUserStoreGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
   const filteredStores = useMemo(() => {
     const searchValue = storeSearch.trim().toLowerCase();
     // company_admin/system_admin manage every store in the company; store_manager/staff only
@@ -700,6 +792,26 @@ function App() {
 
         const { data: { session }, error } = await getSupabaseSession();
         if (error) throw error;
+        if (hasInviteIntent && session?.user) {
+          // Clicking a real invitation email link auto-establishes a Supabase session (Supabase
+          // verifies the invite token at its own /auth/v1/verify endpoint before redirecting
+          // here, and the JS client's detectSessionInUrl picks that session up automatically on
+          // load) — before this invitee has set a password. Same thing can happen if someone
+          // already logged in as a different account opens someone else's invite link. Either
+          // way, signing out here forces the "no session" branch below, so the invitee always
+          // goes through the normal signup/password-set screen (handleSignUp -> accept-invite)
+          // instead of being silently dropped into a password-less session or someone else's.
+          await signOutFromSupabase();
+          setCurrentUser(null);
+          setCurrentRole("staff");
+          setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
+          setAuthMode("signup");
+          setActivePage("dashboard");
+          setAppState(initialAppStateValue);
+          setSyncStatus({ status: "idle", message: "同期待機中", timestamp: "", error: false });
+          setAuthLoading(false);
+          return;
+        }
         if (session?.user) {
           const profile = await ensureProfileForAuthUser({ authUserId: session.user.id, email: session.user.email, role: resolveRoleForEmail(session.user.email) });
           if (!profile) {
@@ -1946,7 +2058,7 @@ function App() {
     }
     if (!userForm.name.trim() || !userForm.email.trim()) return;
     const normalizedEmail = userForm.email.trim().toLowerCase();
-    const duplicateUser = (appState.users || []).find((user) => user.email === normalizedEmail && user.id !== userEditId);
+    const duplicateUser = (appState.users || []).find((user) => user.email === normalizedEmail);
     if (duplicateUser) {
       setNotice("同じメールアドレスのユーザーが既に登録されています");
       return;
@@ -1963,15 +2075,13 @@ function App() {
     const role = invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "staff");
     const companyId = normalizedCurrentRole === "system_admin" ? (userForm.companyId || appState.currentCompanyId) : appState.currentCompanyId;
     const inviterStoreIds = normalizedCurrentRole === "store_manager" ? allowedStoreIds : currentCompanyStores.map((store) => store.id);
-    const existingUser = (appState.users || []).find((user) => user.id === userEditId) || null;
-    const inviteTokenValue = existingUser?.inviteToken || createInviteToken();
+    const inviteTokenValue = createInviteToken();
     const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
-    const inviteExpiresAt = existingUser?.inviteExpiresAt || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const requestedStoreIds = (userForm.storeIds.length ? userForm.storeIds : (inviterStoreIds[0] ? [inviterStoreIds[0]] : [])).filter((storeId) => inviterStoreIds.includes(storeId));
     const requestedPrimaryStoreId = inviterStoreIds.includes(userForm.primaryStoreId) ? userForm.primaryStoreId : (requestedStoreIds[0] || "");
 
     try {
-      let createdProfile = null;
       // Account creation is deliberately NOT done here: this used to call signUpWithEmail with a
       // hardcoded "password123" the moment an admin clicked 招待する, which (a) left every
       // not-yet-registered invite reachable by anyone who guessed that password, and (b) meant
@@ -1980,46 +2090,61 @@ function App() {
       // they entered ever saved. The profile row (role/company/store already fully set here) is
       // all that's created now; the real auth account is created only when the invitee
       // themselves completes registration via accept-invite (see handleSignUp).
-      if (!existingUser) {
-        createdProfile = await createUserProfileRecord({
-          name: userForm.name.trim(),
-          email: normalizedEmail,
-          role,
-          companyId,
-          storeIds: requestedStoreIds,
-          primaryStoreId: requestedPrimaryStoreId,
-          authUserId: null,
-          invitationStatus: "invited",
-          inviteToken: inviteTokenValue,
-          inviteExpiresAt,
-        });
-      }
-
-      const nextUser = {
-        id: existingUser?.id || createdProfile?.id || `user-${Date.now()}`,
+      const createdProfile = await createUserProfileRecord({
         name: userForm.name.trim(),
         email: normalizedEmail,
         role,
         companyId,
-        storeIds: existingUser ? requestedStoreIds : requestedStoreIds,
+        storeIds: requestedStoreIds,
         primaryStoreId: requestedPrimaryStoreId,
-        isActive: userForm.isActive !== false,
-        invitationStatus: existingUser?.invitationStatus || "invited",
-        lastLoginAt: existingUser?.lastLoginAt || userForm.lastLoginAt || "",
-        loginCount: existingUser?.loginCount || userForm.loginCount || 0,
-        inviteExpiresAt: existingUser?.invitationStatus === "invited" || !existingUser ? inviteExpiresAt : "",
-        inviteToken: existingUser?.inviteToken || inviteTokenValue,
-        inviteLink: existingUser?.inviteLink || inviteLink,
-        authUserId: existingUser?.authUserId || createdProfile?.auth_user_id || "",
+        authUserId: null,
+        invitationStatus: "invited",
+        inviteToken: inviteTokenValue,
+        inviteExpiresAt,
+      });
+
+      const nextUser = {
+        id: createdProfile?.id || `user-${Date.now()}`,
+        name: userForm.name.trim(),
+        email: normalizedEmail,
+        role,
+        companyId,
+        storeIds: requestedStoreIds,
+        primaryStoreId: requestedPrimaryStoreId,
+        isActive: true,
+        invitationStatus: "invited",
+        lastLoginAt: "",
+        loginCount: 0,
+        inviteExpiresAt,
+        inviteToken: inviteTokenValue,
+        inviteLink,
+        authUserId: createdProfile?.auth_user_id || "",
       };
       const nextState = {
         ...appState,
-        users: existingUser ? (appState.users || []).map((user) => (user.id === nextUser.id ? nextUser : user)) : [...(appState.users || []), nextUser],
+        users: [...(appState.users || []), nextUser],
       };
       persistTenantState(nextState);
       setUserForm({ name: "", email: "", role: invitableRoles[invitableRoles.length - 1] || "staff", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
-      setUserEditId("");
-      setNotice(existingUser ? `${nextUser.name} を更新しました` : `${nextUser.name} を招待しました。招待リンクを共有してください。`);
+
+      // The profile row (role/company/store) is already fully set up at this point — sending
+      // the actual email is a separate step that can genuinely fail (Supabase mail service
+      // error, rate limit, etc), so its result must not be silently folded into the "招待しま
+      // した" success message above. The invite itself (and the copy-able link, for sharing
+      // through another channel if email delivery is ever unavailable) still exists either way.
+      if (isSupabaseConfigured) {
+        const emailResult = await sendInviteEmail({
+          token: inviteTokenValue,
+          redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
+        });
+        if (!emailResult.ok) {
+          setNotice(`${nextUser.name} を招待しましたが、招待メールの送信に失敗しました: ${getSupabaseErrorMessage(emailResult.error)}（「リンク」からURLをコピーして直接共有することもできます）`);
+          return;
+        }
+        setNotice(`${nextUser.name} を招待し、招待メールを送信しました`);
+        return;
+      }
+      setNotice(`${nextUser.name} を招待しました。招待リンクを共有してください。`);
     } catch (error) {
       setNotice(getSupabaseErrorMessage(error));
     }
@@ -2089,8 +2214,133 @@ function App() {
   };
 
   const handleEditUser = (user) => {
-    setUserEditId(user.id);
-    setUserForm({ name: user.name, email: user.email, role: user.role, companyId: user.companyId || "", storeIds: user.storeIds || [], primaryStoreId: user.primaryStoreId || "", invitationStatus: user.invitationStatus || "invited", loginCount: user.loginCount || 0, lastLoginAt: user.lastLoginAt || "", isActive: user.isActive !== false });
+    setEditUserTargetId(user.id);
+    setEditUserDraft({ name: user.name || "", email: user.email || "", role: user.role || "staff", storeIds: user.storeIds || [], primaryStoreId: user.primaryStoreId || "", isActive: user.isActive !== false });
+    setEditUserError("");
+  };
+
+  const closeEditUserModal = () => {
+    setEditUserTargetId("");
+    setEditUserError("");
+    setEditUserSaving(false);
+  };
+
+  const toggleEditUserStoreSelection = (storeId) => {
+    setEditUserDraft((prev) => {
+      const nextStoreIds = prev.storeIds.includes(storeId) ? prev.storeIds.filter((id) => id !== storeId) : [...prev.storeIds, storeId];
+      return {
+        ...prev,
+        storeIds: nextStoreIds,
+        primaryStoreId: prev.primaryStoreId === storeId && !nextStoreIds.includes(prev.primaryStoreId) ? (nextStoreIds[0] || "") : prev.primaryStoreId,
+      };
+    });
+  };
+
+  // The dedicated edit modal — separate from handleSaveUser's invite-only form above, and
+  // separate from the individual 権限変更/所属店舗変更 row-actions — because those never
+  // actually persisted name/email/isActive changes to Supabase at all (only role and store
+  // assignments had their own working save paths); editing here always writes straight to the
+  // profiles row so a reload always reflects what was actually saved, not a local-only copy.
+  const handleSaveUserEdit = async () => {
+    const targetUser = (appState.users || []).find((user) => user.id === editUserTargetId);
+    if (!targetUser) return;
+    const normalizedEmail = editUserDraft.email.trim().toLowerCase();
+    if (!editUserDraft.name.trim() || !normalizedEmail) {
+      setEditUserError("氏名とメールアドレスは必須です");
+      return;
+    }
+    const duplicateUser = (appState.users || []).find((user) => user.email === normalizedEmail && user.id !== targetUser.id);
+    if (duplicateUser) {
+      setEditUserError("同じメールアドレスの別のユーザーが既に存在します");
+      return;
+    }
+    const normalizedCurrentRole = normalizeRole(currentRole);
+    const invitableRoles = getInvitableRoles(normalizedCurrentRole);
+    const canChangeRole = invitableRoles.includes(targetUser.role) && invitableRoles.includes(editUserDraft.role);
+    const nextRole = canChangeRole ? editUserDraft.role : targetUser.role;
+    const inviterStoreIds = normalizedCurrentRole === "store_manager" ? allowedStoreIds : currentCompanyStores.map((store) => store.id);
+    const nextStoreIds = editUserDraft.storeIds.filter((storeId) => inviterStoreIds.includes(storeId));
+    const nextPrimaryStoreId = nextStoreIds.includes(editUserDraft.primaryStoreId) ? editUserDraft.primaryStoreId : (nextStoreIds[0] || "");
+
+    setEditUserSaving(true);
+    setEditUserError("");
+    try {
+      if (isSupabaseConfigured) {
+        const detailsResult = await updateProfileDetails({ profileId: targetUser.id, name: editUserDraft.name.trim(), email: normalizedEmail, isActive: editUserDraft.isActive });
+        if (!detailsResult?.ok && !detailsResult?.skipped) throw detailsResult.error || new Error("保存に失敗しました");
+        if (nextRole !== targetUser.role) {
+          const roleResult = await updateProfileRole({ profileId: targetUser.id, role: nextRole });
+          if (!roleResult?.ok && !roleResult?.skipped) throw roleResult.error || new Error("権限の更新に失敗しました");
+        }
+        const storesChanged = JSON.stringify([...nextStoreIds].sort()) !== JSON.stringify([...(targetUser.storeIds || [])].sort()) || nextPrimaryStoreId !== (targetUser.primaryStoreId || "");
+        if (storesChanged) {
+          const storesResult = await updateProfileStoreAssignments({ profileId: targetUser.id, companyId: targetUser.companyId, storeIds: nextStoreIds, primaryStoreId: nextPrimaryStoreId });
+          if (!storesResult?.ok && !storesResult?.skipped) throw storesResult.error || new Error("所属店舗の更新に失敗しました");
+        }
+      }
+      const nextState = {
+        ...appState,
+        users: (appState.users || []).map((user) => (user.id === targetUser.id
+          ? { ...user, name: editUserDraft.name.trim(), email: normalizedEmail, role: nextRole, storeIds: nextStoreIds, primaryStoreId: nextPrimaryStoreId, isActive: editUserDraft.isActive }
+          : user)),
+      };
+      persistTenantState(nextState);
+      setNotice(`${editUserDraft.name.trim()} の情報を更新しました`);
+      closeEditUserModal();
+    } catch (error) {
+      setEditUserError(getSupabaseErrorMessage(error));
+    } finally {
+      setEditUserSaving(false);
+    }
+  };
+
+  const requestDeleteUser = (user) => {
+    setDeleteUserTargetId(user.id);
+    setDeleteUserError("");
+  };
+
+  const closeDeleteUserModal = () => {
+    setDeleteUserTargetId("");
+    setDeleteUserError("");
+    setDeleteUserSaving(false);
+  };
+
+  // 誤操作防止の2段階確認: このハンドラ自体が確認ダイアログの「削除する」ボタンから呼ばれ、
+  // ここでさらにwindow.confirmの最終確認を挟んでから実際に削除を実行する。削除対象は
+  // Supabase Auth・profiles・user_stores・招待情報のみで、そのユーザーが過去に入力した
+  // 売上・費用・月締め等の業務データは20260809050000のマイグレーションによりON DELETE
+  // SET NULLで保持される(created_by等が null になるだけでレコード自体は消えない)。
+  const handleConfirmDeleteUser = async () => {
+    const targetUser = (appState.users || []).find((user) => user.id === deleteUserTargetId);
+    if (!targetUser) return;
+    if (targetUser.id === currentUser?.profileId) {
+      setDeleteUserError("自分自身のアカウントは削除できません");
+      return;
+    }
+    if (!window.confirm(`${targetUser.name}（${targetUser.email}）を削除します。この操作は取り消せません。本当によろしいですか？`)) {
+      return;
+    }
+    setDeleteUserSaving(true);
+    setDeleteUserError("");
+    try {
+      if (isSupabaseConfigured) {
+        const result = await deleteUserAccount({ profileId: targetUser.id });
+        if (!result.ok) {
+          throw result.error || new Error("削除に失敗しました");
+        }
+      }
+      const nextState = {
+        ...appState,
+        users: (appState.users || []).filter((user) => user.id !== targetUser.id),
+      };
+      persistTenantState(nextState);
+      setNotice(`${targetUser.name} を削除しました`);
+      closeDeleteUserModal();
+    } catch (error) {
+      setDeleteUserError(getSupabaseErrorMessage(error));
+    } finally {
+      setDeleteUserSaving(false);
+    }
   };
 
   const handleToggleCompanyStatus = (company) => {
@@ -2179,48 +2429,22 @@ function App() {
     setNotice(`${store.name} を削除しました`);
   };
 
-  const handleToggleUserStatus = (user) => {
+  const handleToggleUserStatus = async (user) => {
     if (!window.confirm(`${user.name} を${user.isActive ? "利用停止" : "再開"}しますか？`)) return;
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: !item.isActive } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(user.isActive ? `${user.name} を停止しました` : `${user.name} を再開しました`);
-  };
-
-  const handleUpdateUserRole = async (user, nextRole) => {
+    const nextActive = !user.isActive;
     if (isSupabaseConfigured) {
-      const result = await updateProfileRole({ profileId: user.id, role: nextRole });
+      const result = await updateProfileDetails({ profileId: user.id, name: user.name, email: user.email, isActive: nextActive });
       if (!result?.ok && !result?.skipped) {
-        const reason = getSupabaseErrorMessage(result?.error);
-        setNotice(`権限の変更に失敗しました: ${reason}`);
+        setNotice(`状態の変更に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
         return;
       }
     }
     const nextState = {
       ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, role: nextRole } : item),
+      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: nextActive } : item),
     };
     persistTenantState(nextState);
-    setNotice(`${user.name} の権限を ${nextRole} に変更しました`);
-  };
-
-  const handleUpdateUserStores = async (user, nextStoreIds) => {
-    if (isSupabaseConfigured) {
-      const result = await updateProfileStoreAssignments({ profileId: user.id, companyId: appState.currentCompanyId, storeIds: nextStoreIds, primaryStoreId: nextStoreIds[0] || "" });
-      if (!result?.ok && !result?.skipped) {
-        const reason = getSupabaseErrorMessage(result?.error);
-        setNotice(`所属店舗の変更に失敗しました: ${reason}`);
-        return;
-      }
-    }
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, storeIds: nextStoreIds, primaryStoreId: nextStoreIds[0] || "" } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(`${user.name} の所属店舗を更新しました`);
+    setNotice(nextActive ? `${user.name} を再開しました` : `${user.name} を停止しました`);
   };
 
   const toggleUserStoreSelection = (storeId) => {
@@ -2417,7 +2641,25 @@ function App() {
       users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt } : item),
     };
     persistTenantState(nextState);
-    setNotice(`${user.name} の招待リンクを更新しました（7日間有効）`);
+
+    if (!isSupabaseConfigured) {
+      setNotice(`${user.name} の招待リンクを更新しました（7日間有効）`);
+      return;
+    }
+
+    // This used to stop here and report success even though no email was ever sent — the
+    // token/expiry refresh above only updates the database row. Actually dispatching the email
+    // is a separate, genuinely-fallible step (Supabase mail service error, permission denied,
+    // rate limit) that must be reported honestly rather than assumed to have worked.
+    const emailResult = await sendInviteEmail({
+      token: inviteTokenValue,
+      redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
+    });
+    if (!emailResult.ok) {
+      setNotice(`招待リンクは更新しましたが、招待メールの送信に失敗しました: ${getSupabaseErrorMessage(emailResult.error)}（「リンク」からURLをコピーして直接共有することもできます）`);
+      return;
+    }
+    setNotice(`${user.name} に招待メールを再送しました（7日間有効）`);
   };
 
   const handleCopyInviteLink = async (user) => {
@@ -4890,55 +5132,34 @@ function App() {
                 <h2>ユーザー管理</h2>
               </div>
             </div>
-            <p className="management-help">ユーザーは役割・所属店舗・招待状態を管理画面から一括で設定できます。招待後は7日間有効で、期限切れ時は再送できます。</p>
+            <p className="management-help">店舗ごと・権限ごとにユーザーを確認できます。招待後は7日間有効で、期限切れ時は再送できます。</p>
             {!canViewUserManagement(currentRole) ? (
               <div className="empty-card">この権限ではユーザー管理を操作できません。</div>
-            ) : (() => {
-              const normalizedCurrentRole = normalizeRole(currentRole);
-              // A store_manager can only ever hand out access to stores they themselves manage,
-              // and only as "staff" — invitableRoles/inviteScopedStores are what actually clamp
-              // what appears in the form below (RLS enforces the same limits server-side, see
-              // 20260809000000_invite_flow_hardening.sql, so this is UI-hiding on top of real
-              // enforcement, not instead of it).
-              const invitableRoles = getInvitableRoles(normalizedCurrentRole);
-              const inviteScopedStores = normalizedCurrentRole === "store_manager"
-                ? (currentCompanyStores || []).filter((store) => allowedStoreIds.includes(store.id))
-                : (currentCompanyStores || []);
-              // store_manager only ever sees/manages the staff assigned to their own store(s) —
-              // never other store_managers, admins, or other stores' staff.
-              const manageableUsers = (appState.users || []).filter((user) => {
-                if (normalizedCurrentRole === "system_admin") return true;
-                if (user.companyId !== currentCompany?.id) return false;
-                if (normalizedCurrentRole === "store_manager") {
-                  return user.role === "staff" && (user.storeIds || []).some((storeId) => allowedStoreIds.includes(storeId));
-                }
-                return true;
-              });
-              return (
+            ) : (
               <>
-                <div className="inline-form">
-                  <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="氏名" />
-                  <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="メールアドレス" />
-                  <select value={invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "")} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
-                    {invitableRoles.map((roleOption) => <option key={roleOption} value={roleOption}>{roleOption}</option>)}
-                  </select>
-                  <button className="primary-button" type="button" onClick={handleSaveUser}>{userEditId ? "ユーザー情報を更新" : "招待する"}</button>
-                </div>
-                <div className="inline-form">
-                  <label className="field">
-                    <span>主要所属店舗</span>
-                    <select value={userForm.primaryStoreId || ""} onChange={(event) => setUserForm((prev) => ({ ...prev, primaryStoreId: event.target.value, storeIds: event.target.value ? [event.target.value] : prev.storeIds }))}>
-                      <option value="">未設定</option>
-                      {inviteScopedStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
-                    </select>
-                  </label>
-                </div>
                 <div className="setup-card">
                   <div className="panel-heading compact">
                     <div>
-                      <p className="eyebrow">STORE ACCESS</p>
-                      <h3>所属店舗</h3>
+                      <p className="eyebrow">INVITE</p>
+                      <h3>新しいユーザーを招待</h3>
                     </div>
+                  </div>
+                  <div className="inline-form">
+                    <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="氏名" />
+                    <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="メールアドレス" />
+                    <select value={invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "")} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
+                      {invitableRoles.map((roleOption) => <option key={roleOption} value={roleOption}>{getRoleLabel(roleOption)}</option>)}
+                    </select>
+                    <button className="primary-button" type="button" onClick={handleSaveUser}>招待する</button>
+                  </div>
+                  <div className="inline-form">
+                    <label className="field">
+                      <span>主要所属店舗</span>
+                      <select value={userForm.primaryStoreId || ""} onChange={(event) => setUserForm((prev) => ({ ...prev, primaryStoreId: event.target.value, storeIds: event.target.value ? [event.target.value] : prev.storeIds }))}>
+                        <option value="">未設定</option>
+                        {inviteScopedStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                      </select>
+                    </label>
                   </div>
                   <div className="input-grid">
                     {inviteScopedStores.map((store) => (
@@ -4949,57 +5170,191 @@ function App() {
                     ))}
                   </div>
                 </div>
-                {manageableUsers.length ? (
-                  <div className="card-grid">
-                    {manageableUsers.map((user) => {
-                      const storeNames = (user.storeIds || []).map((storeId) => currentCompanyStores.find((store) => store.id === storeId)?.name || storeId).join(", ");
-                      const invitationMeta = getUserInvitationMeta(user);
-                      const canChangeThisUsersRole = invitableRoles.includes(user.role);
+
+                <div className="filters" style={{ marginTop: 16 }}>
+                  <label>
+                    <span>店舗で絞り込み</span>
+                    <select value={userFilterStoreId} onChange={(event) => setUserFilterStoreId(event.target.value)}>
+                      <option value="">すべての店舗</option>
+                      {currentCompanyStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                      <option value="__none__">所属店舗なし</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>権限で絞り込み</span>
+                    <select value={userFilterRole} onChange={(event) => setUserFilterRole(event.target.value)}>
+                      <option value="">すべての権限</option>
+                      {ROLE_GROUP_ORDER.map((role) => <option key={role} value={role}>{getRoleLabel(role)}</option>)}
+                    </select>
+                  </label>
+                  <label>
+                    <span>名前・メールで検索</span>
+                    <input value={userSearchQuery} onChange={(event) => setUserSearchQuery(event.target.value)} placeholder="検索..." />
+                  </label>
+                </div>
+
+                {groupedManageableUsers.length ? (
+                  <div className="user-store-groups">
+                    {groupedManageableUsers.map((group) => {
+                      const isCollapsed = collapsedUserStoreGroups.has(group.key);
+                      const totalInGroup = group.roleGroups.reduce((sum, roleGroup) => sum + roleGroup.users.length, 0);
                       return (
-                        <div key={user.id} className="info-card">
-                          <div className="info-card-head">
-                            <div>
-                              <strong>{user.name}</strong>
-                              <small>{user.email}</small>
+                        <div key={group.key} className="user-store-group">
+                          <button type="button" className="user-store-group-header" onClick={() => toggleUserStoreGroupCollapsed(group.key)}>
+                            <span className={`chevron ${isCollapsed ? "collapsed" : ""}`}>▾</span>
+                            <strong>{group.storeName}</strong>
+                            <span className="user-store-group-count">{totalInGroup}名</span>
+                          </button>
+                          {!isCollapsed && (
+                            <div className="user-role-groups">
+                              {group.roleGroups.map((roleGroup) => (
+                                <div key={roleGroup.role} className="user-role-group">
+                                  <p className="user-role-group-title">{getRoleLabel(roleGroup.role)}</p>
+                                  <div className="user-staff-list">
+                                    {roleGroup.users.map((user) => {
+                                      const statusMeta = getUserStatusMeta(user);
+                                      const isRegistered = Boolean(user.authUserId);
+                                      return (
+                                        <div key={user.id} className="user-staff-row">
+                                          <div className="user-staff-row-main">
+                                            <div className="user-staff-row-identity">
+                                              <strong>{user.name}</strong>
+                                              <small>{user.email}</small>
+                                            </div>
+                                            <span className={`status-pill ${statusMeta.tone === "success" ? "saved" : statusMeta.tone === "danger" ? "error" : statusMeta.tone === "warning" ? "warning" : "saving"}`}>{statusMeta.label}</span>
+                                          </div>
+                                          <div className="user-staff-row-meta">
+                                            {statusMeta.expiresAt ? <span>招待期限 {statusMeta.expiresAt.toLocaleDateString("ja-JP")}</span> : null}
+                                            {isRegistered && user.lastLoginAt ? <span>最終ログイン {new Date(user.lastLoginAt).toLocaleDateString("ja-JP")}</span> : null}
+                                          </div>
+                                          <div className="row-actions">
+                                            <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
+                                            <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
+                                            {!isRegistered && (
+                                              <>
+                                                <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>招待リンクをコピー</button>
+                                                <button className="text-button" type="button" onClick={() => handleInviteEmail(user)}>招待メール再送</button>
+                                              </>
+                                            )}
+                                            {user.id !== currentUser?.profileId && (
+                                              <button className="text-button danger" type="button" onClick={() => requestDeleteUser(user)}>削除</button>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              ))}
                             </div>
-                            <span className={`status-pill ${invitationMeta.tone === "warning" ? "warning" : invitationMeta.tone === "error" ? "error" : "saved"}`}>{invitationMeta.label}</span>
-                          </div>
-                          <div className="info-card-meta">
-                            <span>{user.role}</span>
-                            <span>{storeNames || "所属店舗なし"}</span>
-                            <span>{user.lastLoginAt ? `最終ログイン ${new Date(user.lastLoginAt).toLocaleString("ja-JP")}` : "未ログイン"}</span>
-                            <span>ログイン回数 {user.loginCount || 0}</span>
-                            <span>{invitationMeta.expiresAt ? `有効期限 ${new Date(invitationMeta.expiresAt).toLocaleDateString("ja-JP")}` : "有効期限なし"}</span>
-                          </div>
-                          <div className="row-actions">
-                            <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
-                            <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
-                          </div>
-                          <div className="row-actions">
-                            {canChangeThisUsersRole && invitableRoles.length > 1 && (
-                              <select
-                                value={user.role}
-                                onChange={(event) => handleUpdateUserRole(user, event.target.value)}
-                              >
-                                {invitableRoles.map((roleOption) => <option key={roleOption} value={roleOption}>{roleOption}</option>)}
-                              </select>
-                            )}
-                            <button className="text-button" type="button" onClick={() => handleUpdateUserStores(user, (user.storeIds || []).length ? user.storeIds : (inviteScopedStores[0]?.id ? [inviteScopedStores[0].id] : []))}>所属店舗変更</button>
-                            <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>リンク</button>
-                            <button className="text-button" type="button" onClick={() => handleInviteEmail(user)}>{user.invitationStatus === "invited" ? "再送" : "招待メール再発行"}</button>
-                          </div>
+                          )}
                         </div>
                       );
                     })}
                   </div>
                 ) : (
-                  <div className="management-empty">まだユーザーが登録されていません。上のフォームから招待してください。</div>
+                  <div className="management-empty">条件に一致するユーザーがいません。</div>
                 )}
               </>
-              );
-            })()}
+            )}
           </section>
         )}
+
+        {editUserTargetId && (
+          <div className="modal-overlay" onClick={closeEditUserModal}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">EDIT USER</p>
+                  <h3>ユーザー情報を編集</h3>
+                </div>
+              </div>
+              {editUserError ? <div className="notice-box">{editUserError}</div> : null}
+              <label className="field">
+                <span>氏名</span>
+                <input value={editUserDraft.name} onChange={(event) => setEditUserDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="氏名" />
+              </label>
+              <label className="field">
+                <span>メールアドレス</span>
+                <input value={editUserDraft.email} onChange={(event) => setEditUserDraft((prev) => ({ ...prev, email: event.target.value }))} placeholder="メールアドレス" />
+              </label>
+              <label className="field">
+                <span>権限</span>
+                <select
+                  value={invitableRoles.includes(editUserDraft.role) ? editUserDraft.role : editUserDraft.role}
+                  onChange={(event) => setEditUserDraft((prev) => ({ ...prev, role: event.target.value }))}
+                  disabled={!invitableRoles.includes(editUserDraft.role) && !invitableRoles.includes((appState.users || []).find((user) => user.id === editUserTargetId)?.role)}
+                >
+                  {(invitableRoles.includes(editUserDraft.role) ? invitableRoles : [editUserDraft.role, ...invitableRoles]).map((roleOption) => (
+                    <option key={roleOption} value={roleOption}>{getRoleLabel(roleOption)}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="field">
+                <span>主要所属店舗</span>
+                <select value={editUserDraft.primaryStoreId} onChange={(event) => setEditUserDraft((prev) => ({ ...prev, primaryStoreId: event.target.value, storeIds: event.target.value && !prev.storeIds.includes(event.target.value) ? [...prev.storeIds, event.target.value] : prev.storeIds }))}>
+                  <option value="">未設定</option>
+                  {inviteScopedStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
+                </select>
+              </label>
+              <div className="setup-card">
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">STORE ACCESS</p>
+                    <h3>所属店舗</h3>
+                  </div>
+                </div>
+                <div className="input-grid">
+                  {inviteScopedStores.map((store) => (
+                    <label key={store.id} className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                      <input type="checkbox" checked={editUserDraft.storeIds.includes(store.id)} onChange={() => toggleEditUserStoreSelection(store.id)} />
+                      <span>{store.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <label className="field">
+                <span>有効/停止</span>
+                <select value={editUserDraft.isActive ? "active" : "suspended"} onChange={(event) => setEditUserDraft((prev) => ({ ...prev, isActive: event.target.value === "active" }))}>
+                  <option value="active">有効</option>
+                  <option value="suspended">停止</option>
+                </select>
+              </label>
+              <div className="row-actions" style={{ marginTop: 12 }}>
+                <button className="secondary-button" type="button" onClick={closeEditUserModal} disabled={editUserSaving}>キャンセル</button>
+                <button className="primary-button" type="button" onClick={handleSaveUserEdit} disabled={editUserSaving}>{editUserSaving ? "保存中..." : "保存する"}</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {deleteUserTargetId && (() => {
+          const deleteTarget = (appState.users || []).find((user) => user.id === deleteUserTargetId);
+          if (!deleteTarget) return null;
+          return (
+            <div className="modal-overlay" onClick={closeDeleteUserModal}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">DELETE USER</p>
+                    <h3>このユーザーを削除しますか？</h3>
+                  </div>
+                </div>
+                {deleteUserError ? <div className="notice-box">{deleteUserError}</div> : null}
+                <p>
+                  <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）を削除します。
+                </p>
+                <p className="helper-text">
+                  Supabaseの認証アカウント・ユーザー情報・所属店舗・招待情報が削除されます。このユーザーが過去に入力した売上・費用・月締め等の業務データは削除されず、履歴として保持されます。この操作は取り消せません。
+                </p>
+                <div className="row-actions" style={{ marginTop: 12 }}>
+                  <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>キャンセル</button>
+                  <button className="primary-button danger-button" type="button" onClick={handleConfirmDeleteUser} disabled={deleteUserSaving}>{deleteUserSaving ? "削除中..." : "削除する"}</button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
 
         {activePage === "settings" && (
           <section className="panel">

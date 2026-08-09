@@ -402,3 +402,43 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .brand strong { font-size: 0.92rem; }
   .brand small { font-size: 0.74rem; }
 }
+
+/* ユーザー管理: 店舗 > 権限 > スタッフ の階層表示 */
+.user-store-groups { display: flex; flex-direction: column; gap: 12px; margin-top: 16px; }
+.user-store-group { border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); overflow: hidden; }
+.user-store-group-header {
+  width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px;
+  background: transparent; border: 0; text-align: left; cursor: pointer; font-size: 0.95rem; color: var(--text);
+}
+.user-store-group-header:hover { background: rgba(37, 99, 235, 0.05); }
+.user-store-group-header .chevron { display: inline-block; transition: transform 160ms ease; color: var(--muted); }
+.user-store-group-header .chevron.collapsed { transform: rotate(-90deg); }
+.user-store-group-count { margin-left: auto; color: var(--muted); font-size: 0.8rem; background: rgba(148, 163, 184, 0.14); padding: 3px 10px; border-radius: 999px; }
+.user-role-groups { display: flex; flex-direction: column; gap: 14px; padding: 0 16px 16px; }
+.user-role-group-title { margin: 0 0 8px; font-weight: 700; font-size: 0.85rem; color: var(--muted); padding-left: 2px; }
+.user-staff-list { display: flex; flex-direction: column; gap: 8px; }
+.user-staff-row { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); }
+.user-staff-row-main { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.user-staff-row-identity { display: flex; flex-direction: column; }
+.user-staff-row-identity small { color: var(--muted); }
+.user-staff-row-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 0.78rem; }
+
+/* モーダル(編集・削除確認) */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: flex; align-items: center;
+  justify-content: center; padding: 20px; z-index: 100;
+}
+.modal-card {
+  width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; background: var(--surface-strong);
+  border-radius: 20px; padding: 20px; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28); display: flex; flex-direction: column; gap: 12px;
+}
+.danger-button { background: linear-gradient(135deg, #f16565, var(--danger)); color: #fff; box-shadow: 0 10px 24px rgba(227, 87, 87, 0.24); }
+.danger-button:hover { transform: translateY(-1px); }
+
+@media (max-width: 640px) {
+  .user-store-group-header { padding: 12px; font-size: 0.88rem; }
+  .user-role-groups { padding: 0 10px 12px; }
+  .user-staff-row-main { flex-direction: column; align-items: flex-start; }
+  .user-staff-row .row-actions { flex-wrap: wrap; }
+  .modal-card { padding: 14px; max-width: 100%; }
+}

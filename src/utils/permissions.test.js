@@ -28,11 +28,14 @@ test("role-based management permissions are scoped correctly", () => {
   assert.equal(canManageStores("store_manager"), false);
   assert.equal(canManageUsers("system_admin"), true);
   assert.equal(canManageUsers("company_admin"), true);
-  assert.equal(canManageUsers("store_manager"), false);
+  // store_manager can manage (invite/edit/delete) staff within their own store — see the
+  // delete-user and send-invite-email Edge Functions, which scope this to staff-role targets
+  // sharing a store with the caller.
+  assert.equal(canManageUsers("store_manager"), true);
   assert.equal(canEditMonthlyData("system_admin"), true);
   assert.equal(canEditMonthlyData("store_manager"), true);
   assert.equal(canEditMonthlyData("staff"), false);
   assert.equal(canViewUserManagement("system_admin"), true);
   assert.equal(canViewUserManagement("company_admin"), true);
-  assert.equal(canViewUserManagement("store_manager"), false);
+  assert.equal(canViewUserManagement("store_manager"), true);
 });

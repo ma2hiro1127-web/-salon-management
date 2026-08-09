@@ -107,9 +107,11 @@ Deno.serve(async (req) => {
       );
       if (!lookupResp.ok) throw new Error("既存アカウントの確認に失敗しました");
       const lookupJson = await lookupResp.json();
-      const existingAuthUser = Array.isArray(lookupJson?.users)
-        ? lookupJson.users[0]
-        : (Array.isArray(lookupJson) ? lookupJson[0] : null);
+      // The admin ?email= filter matches loosely (e.g. substring), not exact — it can return
+      // multiple users, so pick the exact match explicitly. Using the wrong user here would
+      // overwrite an unrelated account's password.
+      const candidates = Array.isArray(lookupJson?.users) ? lookupJson.users : (Array.isArray(lookupJson) ? lookupJson : []);
+      const existingAuthUser = candidates.find((u: { email?: string }) => String(u?.email || "").toLowerCase() === email.toLowerCase());
       if (!existingAuthUser?.id) throw new Error("既存アカウントが見つかりませんでした");
 
       const { error: updateAuthError } = await admin.auth.admin.updateUserById(existingAuthUser.id, {

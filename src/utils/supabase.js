@@ -312,6 +312,57 @@ export const acceptInvite = async ({ token, email, password }) => {
   return { ok: true, data };
 };
 
+// Actually sends the invitation email via the send-invite-email Edge Function (service-role,
+// calls supabase.auth.admin.inviteUserByEmail) — see that function for why this has to run
+// server-side. Unlike the old client-only "招待メール再発行" button, this can genuinely fail
+// (permission denied, already registered, Supabase mail service error) and the caller must
+// surface that instead of assuming success.
+export const sendInviteEmail = async ({ token, redirectOrigin }) => {
+  const { data, error } = await supabase.functions.invoke("send-invite-email", {
+    body: { token, redirectOrigin },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
+// Deletes a user (Supabase Auth account + profiles + user_stores) via the delete-user Edge
+// Function (service-role) — see that function for why: deleting the auth account needs the
+// admin API, and the "last admin in this company" guard needs to see across the whole company,
+// which a normal RLS-scoped client call from the browser can't safely do itself. Historical
+// business data the user created is untouched (see 20260809050000_profile_delete_preserves_
+// history.sql) — only their account and store assignments are removed.
+export const deleteUserAccount = async ({ profileId }) => {
+  const { data, error } = await supabase.functions.invoke("delete-user", {
+    body: { profileId },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
 export const getSupabaseSession = async () => {
   const { data, error } = await supabase.auth.getSession();
   return { data, error };
@@ -668,6 +719,33 @@ export const getProfilesForDebug = async () => {
 // RLS and every other read path actually check. That made a role "change" pure UI theater: the
 // promoted user's next login would still see their old role, since ensureProfileForAuthUser
 // reads straight from profiles.role.
+// Covers the fields the previous edit flow silently dropped: it reused the invite-creation form
+// for edits too, but that form only ever wrote to local appState — name/email/active-status
+// changes never reached Supabase at all, so they reverted on the next hydrate. This is the
+// dedicated edit save path; role and store assignments still go through updateProfileRole /
+// updateProfileStoreAssignments (called alongside this one from the same edit-save handler).
+export const updateProfileDetails = async ({ profileId, name, email, isActive }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ userId: profileId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateProfileDetails", table: "profiles", userId: profileId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .update({ name, email: normalizeEmail(email), is_active: isActive !== false })
+      .eq("id", profileId)
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateProfileDetails", table: "profiles", userId: profileId, error });
+    return { ok: false, error };
+  }
+};
+
 export const updateProfileRole = async ({ profileId, role }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ userId: profileId });

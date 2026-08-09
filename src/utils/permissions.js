@@ -10,6 +10,16 @@ export const normalizeRole = (role) => {
 
 export const isAdminRole = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
 
+// Display-only Japanese labels for the 4 canonical roles — the underlying stored value
+// (profiles.role, currentRole, etc.) is never touched, this is purely what's shown on screen.
+const ROLE_LABELS_JA = {
+  system_admin: "システム管理者",
+  company_admin: "会社管理者",
+  store_manager: "店舗管理者",
+  staff: "一般スタッフ",
+};
+export const getRoleLabel = (role) => ROLE_LABELS_JA[normalizeRole(role)] || role || "";
+
 export const NAV_ITEMS_BY_ROLE = {
   system_admin: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
   company_admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
