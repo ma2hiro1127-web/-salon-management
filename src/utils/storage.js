@@ -52,41 +52,83 @@ export const getMonthInfo = (monthValue) => {
 
 export const buildMonthKey = (store, month) => `${store}__${month}`;
 
-// Every per-store/month map in appState is keyed "storeName__month", not by store_id — a
-// pragmatic tradeoff kept from the original design rather than a full id-keyed rewrite (out of
-// scope for a rename fix). Renaming a store must never look like that store's data vanished:
-// this atomically moves every "oldName__*" key in every one of these maps to "newName__*" in
-// the same appState update the rename applies, so nothing is ever dropped or duplicated. The
-// real source of truth (daily_sales/monthly_targets/monthly_closings) is keyed by store_id and
-// is unaffected either way — this only keeps the in-memory/local view consistent immediately,
-// without waiting for the next hydrate to re-derive it from the store_id-keyed tables.
-const STORE_NAME_KEYED_MAPS = [
+// Every per-store/month map in appState is keyed "storeId__month" (buildMonthKey's first
+// argument is always a store's stable Supabase id now, never its display name) — a store rename
+// changes nothing about these keys, since the id never changes. That wasn't always true: this
+// used to be name-keyed, which meant a rename had to atomically rewrite every "oldName__*" key
+// to "newName__*" (see git history for the old rekeyStoreNamedMaps) to avoid looking like the
+// store's data had vanished. Any data written to localStorage or a Supabase tenant_snapshots row
+// under that old scheme still has old-format "storeName__month" keys sitting in it — those rows
+// predate this migration and won't rewrite themselves. migrateNameKeyedMapsToStoreId (below)
+// is what makes reading that old data safe: it runs unconditionally on every normalizeAppState
+// call and rewrites any surviving name-keyed entries to id-keyed ones in place, using whichever
+// companies/stores list happens to be embedded in that same state blob to resolve name -> id.
+const STORE_KEYED_MAPS = [
   "dailyResults", "dayClosingStates", "dayClosingUpdatedAt", "targets", "businessDaySettings",
   "monthClosingStatus", "fixedCosts", "variableCosts", "monthClosing", "dailyResultBackups",
+  "storeHolidays",
 ];
 
-export const rekeyStoreNamedMaps = (state, oldName, newName) => {
-  if (!oldName || !newName || oldName === newName) return state;
-  const oldPrefix = `${oldName}__`;
-  const newPrefix = `${newName}__`;
-  const next = { ...state };
-  STORE_NAME_KEYED_MAPS.forEach((mapKey) => {
-    const source = state[mapKey];
-    if (!source || typeof source !== "object") return;
-    const rekeyed = {};
-    let changed = false;
-    Object.entries(source).forEach(([key, value]) => {
-      if (key.startsWith(oldPrefix)) {
-        rekeyed[newPrefix + key.slice(oldPrefix.length)] = value;
-        changed = true;
-      } else {
-        rekeyed[key] = value;
+// Combines an old (name-keyed) and new (id-keyed) entry that both ended up mapping to the same
+// target key — should be rare (only possible if a partial migration or a merge already produced
+// an id-keyed entry alongside a not-yet-migrated name-keyed one for the same store/month) but
+// must never silently drop one side. Arrays (dailyResults/fixedCosts/variableCosts/monthClosing/
+// storeHolidays/dailyResultBackups) concatenate and dedupe (`id` field if present, else exact
+// value); plain objects (dayClosingStates/dayClosingUpdatedAt/targets/businessDaySettings/
+// monthClosingStatus) shallow-merge.
+const mergeMigratedEntry = (existing, incoming) => {
+  if (existing === undefined) return incoming;
+  if (Array.isArray(existing) && Array.isArray(incoming)) {
+    const seen = new Set();
+    const merged = [];
+    [...existing, ...incoming].forEach((item) => {
+      const dedupeKey = item && typeof item === "object" ? (item.id ?? JSON.stringify(item)) : item;
+      if (seen.has(dedupeKey)) return;
+      seen.add(dedupeKey);
+      merged.push(item);
+    });
+    return merged;
+  }
+  if (existing && incoming && typeof existing === "object" && typeof incoming === "object") {
+    return { ...existing, ...incoming };
+  }
+  return incoming ?? existing;
+};
+
+export const migrateNameKeyedMapsToStoreId = (state) => {
+  if (!state || typeof state !== "object") return state;
+  const companies = Array.isArray(state.companies) ? state.companies : [];
+  const nameToId = new Map();
+  companies.forEach((company) => {
+    (company?.stores || []).forEach((store) => {
+      if (store?.name && store?.id && !nameToId.has(store.name)) {
+        nameToId.set(store.name, store.id);
       }
     });
-    if (changed) next[mapKey] = rekeyed;
   });
-  if (state.selectedStore === oldName) next.selectedStore = newName;
-  return next;
+  if (!nameToId.size) return state;
+
+  let anyChanged = false;
+  const next = { ...state };
+  STORE_KEYED_MAPS.forEach((mapKey) => {
+    const source = state[mapKey];
+    if (!source || typeof source !== "object") return;
+    let mapChanged = false;
+    const rekeyed = {};
+    Object.entries(source).forEach(([key, value]) => {
+      const separatorIndex = key.indexOf("__");
+      const prefix = separatorIndex === -1 ? key : key.slice(0, separatorIndex);
+      const mappedId = nameToId.get(prefix);
+      const targetKey = mappedId && separatorIndex !== -1 ? `${mappedId}${key.slice(separatorIndex)}` : key;
+      if (targetKey !== key) mapChanged = true;
+      rekeyed[targetKey] = mergeMigratedEntry(rekeyed[targetKey], value);
+    });
+    if (mapChanged) {
+      next[mapKey] = rekeyed;
+      anyChanged = true;
+    }
+  });
+  return anyChanged ? next : state;
 };
 
 // "2026-08" -> "2026年8月". Storage always stays in the "YYYY-MM" form; this is display-only.
@@ -98,8 +140,8 @@ export const formatMonthLabel = (monthValue) => {
   return `${yearNumber}年${monthNumber}月`;
 };
 
-export const getBusinessDaySettings = (state, storeName, monthValue) => {
-  const key = buildMonthKey(storeName, monthValue);
+export const getBusinessDaySettings = (state, storeId, monthValue) => {
+  const key = buildMonthKey(storeId, monthValue);
   return state.businessDaySettings?.[key] || {};
 };
 
@@ -226,16 +268,15 @@ export const dailySalesRowToEntry = (row = {}) => ({
   updatedAt: row.updated_at || "",
 });
 
-export const buildDailyStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildDailyStateFromRows = (rows = []) => {
   const dailyResults = {};
   const dayClosingStates = {};
   const dayClosingUpdatedAt = {};
 
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.business_date) return;
+    if (!row.store_id || !row.business_date) return;
     const month = String(row.business_date).slice(0, 7);
-    const key = buildMonthKey(storeName, month);
+    const key = buildMonthKey(row.store_id, month);
     const entry = dailySalesRowToEntry(row);
 
     dailyResults[key] = [...(dailyResults[key] || []), entry];
@@ -247,12 +288,11 @@ export const buildDailyStateFromRows = (rows = [], storeIdToName = {}) => {
 };
 
 // Same idea as buildDailyStateFromRows but for monthly_closings rows -> monthClosingStatus.
-export const buildMonthClosingStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildMonthClosingStateFromRows = (rows = []) => {
   const monthClosingStatus = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.year_month) return;
-    const key = buildMonthKey(storeName, row.year_month);
+    if (!row.store_id || !row.year_month) return;
+    const key = buildMonthKey(row.store_id, row.year_month);
     monthClosingStatus[key] = {
       closed: Boolean(row.is_closed),
       lockedAt: row.closed_at || "",
@@ -264,13 +304,12 @@ export const buildMonthClosingStateFromRows = (rows = [], storeIdToName = {}) =>
 
 // Same idea as buildMonthClosingStateFromRows but for monthly_targets rows -> the targets/
 // businessDaySettings maps calculateMonthSummary/getBusinessDaySummary actually read.
-export const buildTargetStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildTargetStateFromRows = (rows = []) => {
   const targets = {};
   const businessDaySettings = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.target_month) return;
-    const key = buildMonthKey(storeName, row.target_month);
+    if (!row.store_id || !row.target_month) return;
+    const key = buildMonthKey(row.store_id, row.target_month);
     targets[key] = {
       targetSales: row.target_sales,
       targetTechnicalSales: row.target_technical_sales,
@@ -299,12 +338,11 @@ export const buildTargetStateFromRows = (rows = [], storeIdToName = {}) => {
 // Rebuilds the fixedCosts map (storeName__entryMonth -> item[]) from fixed_costs rows, in the
 // exact shape getFixedCostsForStoreMonth already expects — entry_month is the month the item
 // was originally filed under, which is what that function's "翌月以降も継続" lookback keys on.
-export const buildFixedCostsStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildFixedCostsStateFromRows = (rows = []) => {
   const fixedCosts = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.entry_month) return;
-    const key = buildMonthKey(storeName, row.entry_month);
+    if (!row.store_id || !row.entry_month) return;
+    const key = buildMonthKey(row.store_id, row.entry_month);
     const item = {
       id: row.id,
       name: row.name || "",
@@ -321,12 +359,11 @@ export const buildFixedCostsStateFromRows = (rows = [], storeIdToName = {}) => {
 };
 
 // variable_costs (販管費) — direct month lookup (target_month), no carry-forward.
-export const buildVariableCostsStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildVariableCostsStateFromRows = (rows = []) => {
   const variableCosts = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.target_month) return;
-    const key = buildMonthKey(storeName, row.target_month);
+    if (!row.store_id || !row.target_month) return;
+    const key = buildMonthKey(row.store_id, row.target_month);
     const item = {
       id: row.id,
       name: row.name || "",
@@ -342,12 +379,11 @@ export const buildVariableCostsStateFromRows = (rows = [], storeIdToName = {}) =
 };
 
 // monthly_closing_items (月締め項目) — same shape of fix as variable_costs above.
-export const buildMonthlyClosingItemsStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildMonthlyClosingItemsStateFromRows = (rows = []) => {
   const monthClosing = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.target_month) return;
-    const key = buildMonthKey(storeName, row.target_month);
+    if (!row.store_id || !row.target_month) return;
+    const key = buildMonthKey(row.store_id, row.target_month);
     const item = {
       id: row.id,
       name: row.name || "",
@@ -555,11 +591,11 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
 // 営業日の日付数。dayClosingStates が唯一の正となる情報源で、その日付に実際の日次データが
 // あるものだけを数える(日締めは常に saveDailyEntry を経てから立つため、通常は1:1で対応する)。
 // 保存しただけ(日締め未実施)や、日締めを解除した日はここに含まれない。
-export const getBusinessDaySummary = (state, storeName, monthValue) => {
-  const key = buildMonthKey(storeName, monthValue);
-  const settings = getBusinessDaySettings(state, storeName, monthValue);
+export const getBusinessDaySummary = (state, storeId, monthValue) => {
+  const key = buildMonthKey(storeId, monthValue);
+  const settings = getBusinessDaySettings(state, storeId, monthValue);
   const monthInfo = getMonthInfo(monthValue);
-  const holidayDates = getStoreHolidayDates(state, storeName, monthValue);
+  const holidayDates = getStoreHolidayDates(state, storeId, monthValue);
   const holidayDateSet = new Set(holidayDates);
   const holidayCount = Math.max(parseNumber(settings.holidayCount), 0);
   const manualBusinessDayCount = parseNumber(settings.businessDayCount);
@@ -599,14 +635,13 @@ export const getBusinessDaySummary = (state, storeName, monthValue) => {
 // 「営業完了」の判定も店舗横断の特別ルール: ある日付が「全店舗として営業完了」になるのは、
 // 登録されている全ての実店舗がその日の日締めを終えている時だけ(店舗ごとのclosedDatesの積集合)。
 // 1店舗でも未締めなら、他の店舗が締めていてもその日はまだカウントしない。
-// storeNamesOrStores: 文字列(店舗名)の配列でも{name, openingDate}オブジェクトの配列でも
-// どちらでも受け付ける(openingDateが分かれば要件26の「新規店舗追加時に過去日を未締め扱いに
-// しない」判定に使う。文字列だけ渡された場合はopeningDateなし=常に開店済み扱いとなり、
-// 従来どおりの挙動を維持する)。
-export const getAllStoresBusinessDaySummary = (state, companyId, storeNamesOrStores, monthValue) => {
-  const stores = (storeNamesOrStores || [])
-    .map((item) => (typeof item === "string" ? { name: item, openingDate: "" } : item))
-    .filter((item) => item && item.name);
+// storesInput: {id, openingDate}形式の店舗オブジェクトの配列(openingDateが分かれば要件26の
+// 「新規店舗追加時に過去日を未締め扱いにしない」判定に使う)。文字列(id)だけの配列も後方
+// 互換として受け付ける(openingDateなし=常に開店済み扱い)。
+export const getAllStoresBusinessDaySummary = (state, companyId, storesInput, monthValue) => {
+  const stores = (storesInput || [])
+    .map((item) => (typeof item === "string" ? { id: item, openingDate: "" } : item))
+    .filter((item) => item && item.id);
 
   const settings = getAllStoresBusinessDaySettings(state, companyId, monthValue);
   const monthInfo = getMonthInfo(monthValue);
@@ -625,7 +660,7 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storeNamesOrSto
     return { businessDayCount, completedDays: 0, remainingBusinessDays: Math.max(businessDayCount, 0), progressRate: businessDayCount ? 0 : null, closedDates: [], holidayDates };
   }
 
-  const perStoreClosedDateSets = stores.map((store) => new Set(getBusinessDaySummary(state, store.name, monthValue).closedDates || []));
+  const perStoreClosedDateSets = stores.map((store) => new Set(getBusinessDaySummary(state, store.id, monthValue).closedDates || []));
 
   // 日付ごとに判定する(要件10・26): 全店舗の店休日は対象外、かつその日にまだ開店していない
   // 店舗(openingDateが未来)は「未締め店舗」として扱わない — 新店舗を追加しても過去日の
@@ -723,7 +758,7 @@ export const normalizeAppState = (value) => {
     ? source.currentAuthUserId.trim()
     : matchedCurrentUser?.authUserId || "";
 
-  return {
+  const normalized = {
     ...seeded,
     ...source,
     users,
@@ -746,6 +781,7 @@ export const normalizeAppState = (value) => {
     businessDaySettings: normalizeObjectMap(source.businessDaySettings),
     dayClosingStates: normalizeObjectMap(source.dayClosingStates),
     dayClosingUpdatedAt: normalizeObjectMap(source.dayClosingUpdatedAt),
+    storeHolidays: normalizeObjectMap(source.storeHolidays),
     saveStatus: {
       status: source.saveStatus?.status || "saved",
       message: source.saveStatus?.message || "自動保存済み",
@@ -753,6 +789,12 @@ export const normalizeAppState = (value) => {
       error: Boolean(source.saveStatus?.error),
     },
   };
+
+  // Self-healing: rewrites any surviving "storeName__month" keys (from data saved before the
+  // store_id-keyed migration) to "storeId__month", using this same blob's own companies/stores
+  // list. Safe to run unconditionally on every normalize — a no-op once everything's already
+  // id-keyed, since no stored key's prefix will ever match a store's *name* at that point.
+  return migrateNameKeyedMapsToStoreId(normalized);
 };
 
 export const readAppState = () => {
@@ -828,9 +870,9 @@ export const calculateTaxSummary = (input = {}) => {
   };
 };
 
-export const getTargetForStoreMonth = (state, storeName, monthValue) => ({
+export const getTargetForStoreMonth = (state, storeId, monthValue) => ({
   ...defaultTarget,
-  ...(state.targets?.[buildMonthKey(storeName, monthValue)] || {}),
+  ...(state.targets?.[buildMonthKey(storeId, monthValue)] || {}),
 });
 
 // 「全店舗」(company_admin専用の仮想集計ビュー)専用のキー。実店舗のbuildMonthKeyとは別の
@@ -878,21 +920,20 @@ export const buildAllStoresTargetStateFromRows = (rows = []) => {
 // 店休日(カレンダーの具体的な日付)。実店舗はbuildMonthKey、全店舗はbuildCompanyMonthKeyで
 // キー化し、値はその月のISO日付文字列の配列("2026-08-08"等)。設定されていなければ空配列
 // (=カレンダーでは未設定。既存のholidayCount数値のほうにフォールバックする)。
-export const getStoreHolidayDates = (state, storeName, monthValue) =>
-  state.storeHolidays?.[buildMonthKey(storeName, monthValue)] || [];
+export const getStoreHolidayDates = (state, storeId, monthValue) =>
+  state.storeHolidays?.[buildMonthKey(storeId, monthValue)] || [];
 
 export const getAllStoresHolidayDates = (state, companyId, monthValue) =>
   state.allStoresHolidays?.[buildCompanyMonthKey(companyId, monthValue)] || [];
 
 export const isHolidayDate = (holidayDates, dateIso) => (holidayDates || []).includes(dateIso);
 
-export const buildStoreHolidaysStateFromRows = (rows = [], storeIdToName = {}) => {
+export const buildStoreHolidaysStateFromRows = (rows = []) => {
   const storeHolidays = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
-    const storeName = storeIdToName[row.store_id];
-    if (!storeName || !row.holiday_date) return;
+    if (!row.store_id || !row.holiday_date) return;
     const month = String(row.holiday_date).slice(0, 7);
-    const key = buildMonthKey(storeName, month);
+    const key = buildMonthKey(row.store_id, month);
     storeHolidays[key] = [...(storeHolidays[key] || []), String(row.holiday_date)];
   });
   return { storeHolidays };
@@ -909,8 +950,8 @@ export const buildAllStoresHolidaysStateFromRows = (rows = []) => {
   return { allStoresHolidays };
 };
 
-export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
-  const items = state.dailyResults?.[buildMonthKey(storeName, monthValue)] || [];
+export const getDailyResultsForStoreMonth = (state, storeId, monthValue) => {
+  const items = state.dailyResults?.[buildMonthKey(storeId, monthValue)] || [];
   const { entries } = deduplicateDailyEntries(items);
   return entries;
 };
@@ -921,9 +962,9 @@ export const getDailyResultsForStoreMonth = (state, storeName, monthValue) => {
 //   - startMonth === endMonth → その月だけ反映(単月)
 //   - startMonth < endMonth   → その期間だけ毎月反映(期間指定、終了月を含む)
 // 月ごとにレコードを複製せず、1件のマスターから対象月かどうかをその都度判定する設計。
-export const getFixedCostsForStoreMonth = (state, storeName, monthValue) => {
+export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
   const itemsByKey = Object.entries(state.fixedCosts || {})
-    .filter(([key]) => key.startsWith(`${storeName}__`))
+    .filter(([key]) => key.startsWith(`${storeId}__`))
     .flatMap(([key, items]) => (Array.isArray(items) ? items.map((item) => ({ ...item, _sourceKey: key })) : []));
 
   const matched = itemsByKey.filter((item) => {
@@ -933,7 +974,7 @@ export const getFixedCostsForStoreMonth = (state, storeName, monthValue) => {
     // month it was entered. A missing endMonth on top of that means "still ongoing" (see below),
     // matching the same rule a row with an explicit startMonth follows.
     const startMonth = item.startMonth || item._sourceKey?.split("__")?.[1] || "";
-    if (!startMonth) return item._sourceKey === buildMonthKey(storeName, monthValue);
+    if (!startMonth) return item._sourceKey === buildMonthKey(storeId, monthValue);
     const endMonth = item.endMonth || "";
     return monthValue >= startMonth && (!endMonth || monthValue <= endMonth);
   });
@@ -959,24 +1000,24 @@ export const getCostPatternLabel = (item) => {
   return "period";
 };
 
-export const getVariableCostsForStoreMonth = (state, storeName, monthValue) => {
-  const items = state.variableCosts?.[buildMonthKey(storeName, monthValue)] || [];
+export const getVariableCostsForStoreMonth = (state, storeId, monthValue) => {
+  const items = state.variableCosts?.[buildMonthKey(storeId, monthValue)] || [];
   return [...items];
 };
 
-export const getClosingItemsForStoreMonth = (state, storeName, monthValue) => {
-  const items = state.monthClosing?.[buildMonthKey(storeName, monthValue)] || [];
+export const getClosingItemsForStoreMonth = (state, storeId, monthValue) => {
+  const items = state.monthClosing?.[buildMonthKey(storeId, monthValue)] || [];
   return [...items];
 };
 
-export const calculateMonthSummary = (state, storeName, monthValue) => {
-  const target = getTargetForStoreMonth(state, storeName, monthValue);
-  const entries = getDailyResultsForStoreMonth(state, storeName, monthValue);
-  const fixedCosts = getFixedCostsForStoreMonth(state, storeName, monthValue);
-  const variableCosts = getVariableCostsForStoreMonth(state, storeName, monthValue);
-  const closingItems = getClosingItemsForStoreMonth(state, storeName, monthValue);
+export const calculateMonthSummary = (state, storeId, monthValue) => {
+  const target = getTargetForStoreMonth(state, storeId, monthValue);
+  const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
+  const fixedCosts = getFixedCostsForStoreMonth(state, storeId, monthValue);
+  const variableCosts = getVariableCostsForStoreMonth(state, storeId, monthValue);
+  const closingItems = getClosingItemsForStoreMonth(state, storeId, monthValue);
   const businessDates = getBusinessDayDates(monthValue);
-  const businessDaySummary = getBusinessDaySummary(state, storeName, monthValue);
+  const businessDaySummary = getBusinessDaySummary(state, storeId, monthValue);
   const taxRate = Number(state.taxSettings?.rate ?? 0.1);
   const roundingMode = state.taxSettings?.roundingMode || "half-up";
   const now = new Date();
@@ -1142,8 +1183,7 @@ export const calculateMonthSummary = (state, storeName, monthValue) => {
 // KPI/営業進捗のみが対象で、損益表・費用入力・月締めは店舗ごとの機能のまま(要件範囲外)。
 export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   const companyId = company?.id || "";
-  const stores = (company?.stores || []).filter((store) => store?.name);
-  const storeNames = stores.map((store) => store.name);
+  const stores = (company?.stores || []).filter((store) => store?.id);
   const target = getAllStoresTargetForCompanyMonth(state, companyId, monthValue);
   const businessDaySummary = getAllStoresBusinessDaySummary(state, companyId, stores, monthValue);
 
@@ -1156,10 +1196,10 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   let repeatCustomers = 0;
   let reviewCount = 0;
 
-  storeNames.forEach((storeName) => {
-    const entries = getDailyResultsForStoreMonth(state, storeName, monthValue);
+  stores.forEach((store) => {
+    const entries = getDailyResultsForStoreMonth(state, store.id, monthValue);
     // 日締め済みの日だけを合算対象にする(未締めのB店の当日実績はまだ全店舗に反映しない)。
-    const closedDateSet = new Set(getBusinessDaySummary(state, storeName, monthValue).closedDates || []);
+    const closedDateSet = new Set(getBusinessDaySummary(state, store.id, monthValue).closedDates || []);
     entries.forEach((entry) => {
       if (!closedDateSet.has(String(entry?.date || ""))) return;
       sales += parseNumber(entry.totalSales || entry.technicalSales || 0);

@@ -63,7 +63,6 @@ import {
   readAppState,
   readStorage,
   normalizeAppState,
-  rekeyStoreNamedMaps,
   writeAppState,
 } from "./utils/storage.js";
 import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, normalizeRole, isAdminRole } from "./utils/permissions.js";
@@ -291,6 +290,7 @@ const monthlyTargetFieldLabels = {
   targetAverageSpend: "目標客単価",
   targetNewCustomers: "目標新規数",
   targetRepeatCustomers: "目標再来数",
+  targetReviewCount: "目標口コミ数",
   targetLaborRate: "人件費率",
   targetMaterialRate: "材料費率",
   targetAdRate: "広告費率",
@@ -300,7 +300,6 @@ const monthlyTargetFieldLabels = {
 
 const createStoreFormDefaults = () => ({
   name: "",
-  code: "",
   postalCode: "",
   address: "",
   phone: "",
@@ -439,7 +438,7 @@ const buildTenantState = (legacyState = {}) => {
   ];
   const companySnapshots = seeded.companySnapshots && typeof seeded.companySnapshots === "object" ? seeded.companySnapshots : {};
   if (!companySnapshots[defaultCompanyId]) {
-    companySnapshots[defaultCompanyId] = { ...createInitialAppState(), ...seeded, stores: defaultCompany.stores.map((store) => store.name), selectedStore: defaultCompany.stores[0]?.name || "", selectedMonth: seeded.selectedMonth || createInitialAppState().selectedMonth };
+    companySnapshots[defaultCompanyId] = { ...createInitialAppState(), ...seeded, stores: defaultCompany.stores.map((store) => store.name), selectedStore: defaultCompany.stores[0]?.name || "", selectedStoreId: defaultCompany.stores[0]?.id || "", selectedMonth: seeded.selectedMonth || createInitialAppState().selectedMonth };
   }
   return {
     ...companySnapshots[defaultCompanyId],
@@ -617,6 +616,13 @@ function App() {
   );
   const activeDailyFieldSettings = useMemo(() => normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings), [selectedStoreEntity]);
   const activeMonthlyTargetFieldSettings = useMemo(() => normalizeMonthlyTargetFieldSettings(selectedStoreEntity?.settings?.monthlyTargetFields), [selectedStoreEntity]);
+  // 目標口コミ数の表示/非表示は「月間目標設定の項目設定」(店舗ごとのmonthlyTargetFields)
+  // だけで決める — 日次入力側の口コミ数トグル(showReviewCountField、日次入力画面用)とは独立。
+  // 全店舗ビューでは、会社内のどれか1店舗でもONにしていれば表示する(他の全店舗向け
+  // effectiveShow*と同じ考え方)。
+  const showReviewCountTargetField = isAllStoresView
+    ? currentCompanyStores.some((store) => Boolean(store.settings?.monthlyTargetFields?.fields?.targetReviewCount))
+    : Boolean(activeMonthlyTargetFieldSettings.fields.targetReviewCount);
   const showTechnicalSalesField = Boolean(activeDailyFieldSettings.fields.technicalSales);
   const showRetailSalesField = Boolean(activeDailyFieldSettings.fields.retailSales);
   const showCustomersField = Boolean(activeDailyFieldSettings.fields.customers);
@@ -632,7 +638,6 @@ function App() {
   const companyHasDailyFieldEnabled = (fieldKey) => currentCompanyStores.some((store) => Boolean(store.settings?.dailyFieldSettings?.fields?.[fieldKey]));
   const effectiveShowTechnicalSalesField = isAllStoresView ? companyHasDailyFieldEnabled("technicalSales") : showTechnicalSalesField;
   const effectiveShowRetailSalesField = isAllStoresView ? companyHasDailyFieldEnabled("retailSales") : showRetailSalesField;
-  const effectiveShowReviewCountField = isAllStoresView ? companyHasDailyFieldEnabled("reviewCount") : showReviewCountField;
   const effectiveShowOtherSalesField = isAllStoresView ? companyHasDailyFieldEnabled("otherSales") : showOtherSalesField;
   const totalSalesIsAutoCalculated = showTechnicalSalesField && showRetailSalesField;
   const customersIsAutoCalculated = showNewCustomersField && showRepeatCustomersField;
@@ -643,11 +648,11 @@ function App() {
   const dailyEffectiveCustomers = parseNumber(dailyForm.customers);
   // 対象日が店休日かどうか(要件18)。dailyForm.dateの月から店休日一覧を取るので、月をまたいで
   // 選択しても正しく判定できる。
-  const isDailyFormDateHoliday = Boolean(dailyForm.date) && isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date);
+  const isDailyFormDateHoliday = Boolean(dailyForm.date) && isHolidayDate(getStoreHolidayDates(appState, selectedStoreId, dailyForm.date.slice(0, 7)), dailyForm.date);
   // staffは日締め済みのデータを自分では編集・削除できない(店長以上のみ修正可能) — バックエンド
   // はdaily_sales_update/delete_company_scoped RLS(is_day_closed=falseを要求)で強制しているが、
   // ここでも操作前にUIで気づけるようにする。店長以上はこの制限を受けない。
-  const isDailyEntryLockedForStaff = normalizeRole(currentRole) === "staff" && Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStore, selectedMonth)]?.[dailyForm.date]);
+  const isDailyEntryLockedForStaff = normalizeRole(currentRole) === "staff" && Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date]);
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -664,7 +669,7 @@ function App() {
       : (currentCompany?.stores || []).filter((store) => allowedStoreIds.includes(store.id));
     const source = roleScoped.filter((store) => {
       if (!searchValue) return true;
-      const haystack = [store.name, store.code, store.address, store.phone, store.managerName, (store.serviceTypes || []).join(" ")].filter(Boolean).join(" ").toLowerCase();
+      const haystack = [store.name, store.address, store.phone, store.managerName, (store.serviceTypes || []).join(" ")].filter(Boolean).join(" ").toLowerCase();
       return haystack.includes(searchValue);
     });
     return sortStoresForManagement(source, storeSort);
@@ -834,21 +839,21 @@ function App() {
   // 分岐させない(全店舗選択時はどのみち空/未使用になる)。
   const target = isAllStoresView
     ? getAllStoresTargetForCompanyMonth(appState, appState.currentCompanyId, selectedMonth)
-    : getTargetForStoreMonth(appState, selectedStore, selectedMonth);
-  const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
-  const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
-  const closingItems = useMemo(() => getClosingItemsForStoreMonth(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
+    : getTargetForStoreMonth(appState, selectedStoreId, selectedMonth);
+  const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  const closingItems = useMemo(() => getClosingItemsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const summary = useMemo(
     () => (isAllStoresView
       ? calculateAllStoresMonthSummary(appState, currentCompany, selectedMonth)
-      : calculateMonthSummary(appState, selectedStore, selectedMonth)),
-    [appState, currentCompany, isAllStoresView, selectedStore, selectedMonth]
+      : calculateMonthSummary(appState, selectedStoreId, selectedMonth)),
+    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth]
   );
   const businessDaySummary = useMemo(
     () => (isAllStoresView
       ? getAllStoresBusinessDaySummary(appState, appState.currentCompanyId, currentCompanyStores, selectedMonth)
-      : getBusinessDaySummary(appState, selectedStore, selectedMonth)),
-    [appState, currentCompanyStores, isAllStoresView, selectedStore, selectedMonth]
+      : getBusinessDaySummary(appState, selectedStoreId, selectedMonth)),
+    [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
   const taxSummary = useMemo(() => calculateTaxSummary({ sales: summary.sales, totalExpenses: summary.expenseTotal, taxRate: appState.taxSettings?.rate ?? 0.1, roundingMode: appState.taxSettings?.roundingMode || "half-up" }), [appState.taxSettings?.rate, appState.taxSettings?.roundingMode, summary.expenseTotal, summary.sales]);
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
@@ -866,11 +871,11 @@ function App() {
     // instead of repeating verbatim (see pickVariant) — stable within a single day/store/month.
     seed: `${selectedStore}-${selectedMonth}-${new Date().toISOString().slice(0, 10)}`,
   }), [target.targetSales, target.targetAverageSpend, summary.closedSales, summary.businessDays, summary.completedDays, summary.remainingBusinessDays, summary.customerTarget, summary.customers, summary.averageSpend, selectedStore, selectedMonth]);
-  const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStore, selectedMonth), [appState, selectedStore, selectedMonth]);
+  const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const monthClosingStatus = useMemo(() => {
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     return appState.monthClosingStatus?.[key] || { closed: false, lockedAt: "", note: "" };
-  }, [appState.monthClosingStatus, selectedStore, selectedMonth]);
+  }, [appState.monthClosingStatus, selectedStoreId, selectedMonth]);
   const todayEntry = useMemo(() => {
     const todayIso = new Date().toISOString().slice(0, 10);
     return dailyEntries.find((entry) => entry.date === todayIso) || null;
@@ -906,9 +911,9 @@ function App() {
     // 個々の店舗自身の売上ページ(summary.sales)は入力中の当日分も含めたリアルタイム値のまま
     // 変更しない。達成率もclosedSales基準で揃えることで、ランキング内の数字同士の整合性を保つ。
     const rows = currentCompanyStores.map((store) => {
-      const storeSummary = calculateMonthSummary(appState, store.name, selectedMonth);
-      const previousSummary = calculateMonthSummary(appState, store.name, previousMonth);
-      const previousPreviousSummary = calculateMonthSummary(appState, store.name, previousPreviousMonth);
+      const storeSummary = calculateMonthSummary(appState, store.id, selectedMonth);
+      const previousSummary = calculateMonthSummary(appState, store.id, previousMonth);
+      const previousPreviousSummary = calculateMonthSummary(appState, store.id, previousPreviousMonth);
       const closedSales = storeSummary.closedSales;
       const previousClosedSales = previousSummary.closedSales;
       const previousPreviousClosedSales = previousPreviousSummary.closedSales;
@@ -1340,8 +1345,7 @@ function App() {
       if (!dailySalesResult.ok) {
         throw dailySalesResult.error || new Error("日次売上データの取得に失敗しました");
       }
-      const storeIdToName = Object.fromEntries((company?.stores || []).map((item) => [item.id, item.name]));
-      const dailySalesState = buildDailyStateFromRows(dailySalesResult.data, storeIdToName);
+      const dailySalesState = buildDailyStateFromRows(dailySalesResult.data);
 
       // Same reasoning for monthly_closings: it's the authoritative table now (see
       // upsertMonthlyClosingState), so a fresh device/session needs this fetched directly
@@ -1351,7 +1355,7 @@ function App() {
       if (!monthlyClosingsResult.ok) {
         throw monthlyClosingsResult.error || new Error("月締めデータの取得に失敗しました");
       }
-      const monthClosingStatusOverlay = buildMonthClosingStateFromRows(monthlyClosingsResult.data, storeIdToName);
+      const monthClosingStatusOverlay = buildMonthClosingStateFromRows(monthlyClosingsResult.data);
 
       // Same reasoning again for monthly_targets: without this, appState.targets was only ever
       // populated by the 月間目標設定 panel's own per-visit fetch for whichever store+month
@@ -1364,7 +1368,7 @@ function App() {
       if (!monthlyTargetsResult.ok) {
         throw monthlyTargetsResult.error || new Error("月間目標データの取得に失敗しました");
       }
-      const targetStateOverlay = buildTargetStateFromRows(monthlyTargetsResult.data, storeIdToName);
+      const targetStateOverlay = buildTargetStateFromRows(monthlyTargetsResult.data);
 
       // company_all_stores_targets (「全店舗」company_admin専用ビューの目標+営業日設定)。
       // store_idを持たず company_id 単位なので storeIdToName は不要。同じ3か月ウィンドウを
@@ -1381,7 +1385,7 @@ function App() {
       if (!storeHolidaysResult.ok) {
         throw storeHolidaysResult.error || new Error("店休日データの取得に失敗しました");
       }
-      const storeHolidaysOverlay = buildStoreHolidaysStateFromRows(storeHolidaysResult.data, storeIdToName);
+      const storeHolidaysOverlay = buildStoreHolidaysStateFromRows(storeHolidaysResult.data);
 
       const allStoresHolidaysResult = await loadAllStoresHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate });
       if (!allStoresHolidaysResult.ok) {
@@ -1397,7 +1401,7 @@ function App() {
       if (!fixedCostsResult.ok) {
         throw fixedCostsResult.error || new Error("固定費データの取得に失敗しました");
       }
-      const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data, storeIdToName);
+      const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data);
 
       // variable_costs (販管費) and monthly_closing_items (月締め項目) — direct month lookup,
       // no carry-forward, so windowed the same as monthly_targets/monthly_closings above.
@@ -1405,13 +1409,13 @@ function App() {
       if (!variableCostsResult.ok) {
         throw variableCostsResult.error || new Error("販管費データの取得に失敗しました");
       }
-      const variableCostsOverlay = buildVariableCostsStateFromRows(variableCostsResult.data, storeIdToName);
+      const variableCostsOverlay = buildVariableCostsStateFromRows(variableCostsResult.data);
 
       const monthlyClosingItemsResult = await loadMonthlyClosingItemsForCompany({ companyId, yearMonths: closingMonths });
       if (!monthlyClosingItemsResult.ok) {
         throw monthlyClosingItemsResult.error || new Error("月締め項目データの取得に失敗しました");
       }
-      const monthlyClosingItemsOverlay = buildMonthlyClosingItemsStateFromRows(monthlyClosingItemsResult.data, storeIdToName);
+      const monthlyClosingItemsOverlay = buildMonthlyClosingItemsStateFromRows(monthlyClosingItemsResult.data);
 
       // company_settings (business type/currency/display prefs/tax settings/showOtherSales) —
       // a single row for the whole company. null when no row exists yet (brand-new company);
@@ -1470,7 +1474,7 @@ function App() {
       // domain added the same way automatically gets the same protection.
       const windowedExpectedKeys = new Set();
       (company?.stores || []).forEach((store) => {
-        closingMonths.forEach((month) => windowedExpectedKeys.add(buildMonthKey(store.name, month)));
+        closingMonths.forEach((month) => windowedExpectedKeys.add(buildMonthKey(store.id, month)));
       });
       // 「全店舗」目標/営業日設定は店舗ではなくcompany_id単位のキー。system_adminが会社を
       // 切り替えても前の会社の全店舗目標がローカルに残留しない(≒他社データ混在)よう、
@@ -1478,9 +1482,9 @@ function App() {
       const companyMonthExpectedKeys = new Set(closingMonths.map((month) => buildCompanyMonthKey(companyId, month)));
       // fixed_costs has no month window (see above) — every key belonging to one of this
       // company's stores is inside the just-fetched, fully authoritative set.
-      const companyStoreNamePrefixes = (company?.stores || []).map((store) => `${store.name}__`);
+      const companyStoreIdPrefixes = (company?.stores || []).map((store) => `${store.id}__`);
       const unboundedExpectedKeysFor = (mergedMap) => new Set(
-        Object.keys(mergedMap || {}).filter((key) => companyStoreNamePrefixes.some((prefix) => key.startsWith(prefix)))
+        Object.keys(mergedMap || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)))
       );
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
@@ -1518,7 +1522,7 @@ function App() {
         const prunedDayClosingStates = { ...merged.dayClosingStates };
         const prunedDayClosingUpdatedAt = { ...merged.dayClosingUpdatedAt };
         Object.keys(prunedDailyResults).forEach((key) => {
-          if (!companyStoreNamePrefixes.some((prefix) => key.startsWith(prefix))) return;
+          if (!companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix))) return;
           const freshDates = new Set((dailySalesState.dailyResults[key] || []).map((entry) => entry.date));
           prunedDailyResults[key] = (prunedDailyResults[key] || []).filter((entry) => {
             const withinFetchedWindow = entry.date >= dailySalesRange.startDate && entry.date <= dailySalesRange.endDate;
@@ -1804,6 +1808,7 @@ function App() {
             ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
             stores: nextCompany.stores.map((store) => store.name),
             selectedStore: nextCompany.stores[0]?.name || "",
+            selectedStoreId: nextCompany.stores[0]?.id || "",
             selectedMonth: new Date().toISOString().slice(0, 7),
           },
         },
@@ -1836,7 +1841,12 @@ function App() {
     try {
       let createdStore = null;
       if (!existingStore) {
-        createdStore = await createStoreRecord({ companyId, name: storeForm.name.trim(), code: (storeForm.code || storeForm.name).trim().toLowerCase() });
+        // code is a legacy NOT NULL UNIQUE column with no functional role anymore — every
+        // actual lookup/data-linking goes through the store's id (see buildMonthKey and the
+        // rest of this file). Auto-generating it here means the user never has to see or type
+        // it, and — critically — two stores sharing the same display name (even across
+        // companies) can never collide on it the way deriving it from the name used to risk.
+        createdStore = await createStoreRecord({ companyId, name: storeForm.name.trim(), code: crypto.randomUUID() });
       } else {
         const nextName = storeForm.name.trim();
         if (nextName !== existingStore.name) {
@@ -1863,7 +1873,7 @@ function App() {
       const nextStore = {
         id: storeId,
         name: storeForm.name.trim(),
-        code: (storeForm.code || storeForm.name).trim().toLowerCase(),
+        code: existingStore?.code || createdStore?.code || "",
         companyId,
         postalCode: storeForm.postalCode,
         address: storeForm.address,
@@ -1902,18 +1912,21 @@ function App() {
           : [...(currentCompany?.stores || []), nextStore],
         setup: { ...(currentCompany?.setup || {}), store: true },
       };
-      const renamedState = existingStore && existingStore.name !== nextStore.name
-        ? rekeyStoreNamedMaps(appState, existingStore.name, nextStore.name)
-        : appState;
+      // Renaming a store no longer needs to rekey anything: every per-store/month map is keyed
+      // by the store's stable id (buildMonthKey), which a rename never changes. Only the display
+      // name embedded in companySnapshots needs updating, alongside its paired selectedStoreId
+      // (which was already correct and doesn't change either, but must stay explicitly set here
+      // — see applyCompanySnapshot, which restores this pair verbatim on the next company switch).
       const nextState = {
-        ...renamedState,
-        companies: (renamedState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+        ...appState,
+        companies: (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
         companySnapshots: {
-          ...(renamedState.companySnapshots || {}),
+          ...(appState.companySnapshots || {}),
           [companyId]: {
-            ...(renamedState.companySnapshots?.[companyId] || createInitialAppState()),
+            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
             stores: nextCompany.stores.map((store) => store.name),
             selectedStore: nextStore.name,
+            selectedStoreId: nextStore.id,
           },
         },
       };
@@ -2028,7 +2041,7 @@ function App() {
       ...appState,
       selectedStore: storeName,
       selectedStoreId: matchedStoreId,
-      companySnapshots: { ...(appState.companySnapshots || {}), [appState.currentCompanyId]: { ...(appState.companySnapshots?.[appState.currentCompanyId] || createInitialAppState()), selectedStore: storeName } },
+      companySnapshots: { ...(appState.companySnapshots || {}), [appState.currentCompanyId]: { ...(appState.companySnapshots?.[appState.currentCompanyId] || createInitialAppState()), selectedStore: storeName, selectedStoreId: matchedStoreId } },
     };
     persistTenantState(nextState);
   };
@@ -2053,7 +2066,6 @@ function App() {
     setStoreEditId(store.id);
     setStoreForm({
       name: store.name || "",
-      code: store.code || "",
       postalCode: store.postalCode || "",
       address: store.address || "",
       phone: store.phone || "",
@@ -2113,7 +2125,7 @@ function App() {
         ...store,
         id: `${store.id}-copy-${Date.now()}`,
         name: duplicateName,
-        code: `${(store.code || duplicateName).replace(/\s+/g, "-").toLowerCase()}-copy`,
+        code: crypto.randomUUID(),
         isActive: true,
         status: "active",
       }],
@@ -2673,7 +2685,7 @@ function App() {
 
     // 店休日は日次入力・保存不可(要件18)。UI側でも入力欄自体を隠すが、こちらは
     // オートセーブ等どの経路から呼ばれても確実にブロックするための最終防御。
-    if (isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date)) {
+    if (isHolidayDate(getStoreHolidayDates(appState, selectedStoreId, dailyForm.date.slice(0, 7)), dailyForm.date)) {
       if (!silent) {
         setNotice("この日は店休日のため保存できません");
         persistSaveStatus("error", "この日は店休日のため保存できません", true);
@@ -2725,7 +2737,7 @@ function App() {
         throw remoteResult.error || new Error("Supabase への保存に失敗しました");
       }
 
-      const key = buildMonthKey(selectedStore, selectedMonth);
+      const key = buildMonthKey(selectedStoreId, selectedMonth);
       setAppState((prev) => {
         const currentList = prev.dailyResults?.[key] || [];
         const currentMergedEntries = [...currentList.filter((item) => item.id !== entry.id && String(item.date) !== String(entry.date)), entry];
@@ -2870,8 +2882,8 @@ function App() {
       if (!loadedTarget) {
         // No Supabase row yet for this store+month (or Supabase unavailable): fall back to
         // whatever is cached locally so the form isn't blank for no reason.
-        loadedTarget = getTargetForStoreMonth(appState, selectedStore, targetSelectedMonth);
-        loadedHolidayCount = getBusinessDaySettings(appState, selectedStore, targetSelectedMonth).holidayCount;
+        loadedTarget = getTargetForStoreMonth(appState, selectedStoreId, targetSelectedMonth);
+        loadedHolidayCount = getBusinessDaySettings(appState, selectedStoreId, targetSelectedMonth).holidayCount;
       }
       }
 
@@ -2970,7 +2982,7 @@ function App() {
     if (!isSupabaseConfigured) {
       // Local-only/dev mode: mirror straight into appState (still explicit-save, not
       // per-keystroke) so the rest of the app reflects it.
-      const key = buildMonthKey(selectedStore, targetSelectedMonth);
+      const key = buildMonthKey(selectedStoreId, targetSelectedMonth);
       setAppState((prev) => ({
         ...prev,
         targets: { ...prev.targets, [key]: { ...targetDraft } },
@@ -3001,7 +3013,7 @@ function App() {
         throw new Error(result?.error?.message || (result?.skipped ? "ユーザー情報を確認できませんでした" : "保存に失敗しました"));
       }
 
-      const key = buildMonthKey(selectedStore, targetSelectedMonth);
+      const key = buildMonthKey(selectedStoreId, targetSelectedMonth);
       setAppState((prev) => ({
         ...prev,
         targets: { ...prev.targets, [key]: { ...targetDraft } },
@@ -3120,7 +3132,7 @@ function App() {
       return;
     }
 
-    const key = buildMonthKey(selectedStore, startMonth);
+    const key = buildMonthKey(selectedStoreId, startMonth);
     const itemId = fixedForm.id || crypto.randomUUID();
     // apply_mode is no longer a user choice — kept only for any code/tooling that still reads
     // the column, always derived fresh from whether an end month was set.
@@ -3154,7 +3166,7 @@ function App() {
       const nextFixedCosts = { ...prev.fixedCosts };
       if (fixedForm.id) {
         Object.keys(nextFixedCosts).forEach((existingKey) => {
-          if (existingKey.startsWith(`${prev.selectedStore}__`)) {
+          if (existingKey.startsWith(`${prev.selectedStoreId}__`)) {
             nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).filter((item) => item.id !== itemId);
           }
         });
@@ -3193,7 +3205,7 @@ function App() {
       // continuing cost carried forward from an earlier startMonth).
       const nextFixedCosts = { ...prev.fixedCosts };
       Object.keys(nextFixedCosts).forEach((existingKey) => {
-        if (existingKey.startsWith(`${prev.selectedStore}__`)) {
+        if (existingKey.startsWith(`${prev.selectedStoreId}__`)) {
           nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).filter((item) => item.id !== itemId);
         }
       });
@@ -3209,7 +3221,7 @@ function App() {
       return;
     }
 
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     const itemId = closingForm.id || crypto.randomUUID();
     const nextItem = { ...closingForm, id: itemId, amount: parseNumber(closingForm.amount) };
 
@@ -3268,7 +3280,7 @@ function App() {
       }
     }
     setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStore, prev.selectedMonth);
+      const key = buildMonthKey(prev.selectedStoreId, prev.selectedMonth);
       const list = prev.monthClosing?.[key] || [];
       return {
         ...prev,
@@ -3295,7 +3307,7 @@ function App() {
     if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数設定を変更しますか？")) {
       return;
     }
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     setAppState((prev) => ({
       ...prev,
       businessDaySettings: {
@@ -3333,7 +3345,7 @@ function App() {
     if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数を変更しますか？")) {
       return;
     }
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     setAppState((prev) => ({
       ...prev,
       businessDaySettings: {
@@ -3358,7 +3370,7 @@ function App() {
     if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数を自動計算に戻しますか？")) {
       return;
     }
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     setAppState((prev) => ({
       ...prev,
       businessDaySettings: {
@@ -3384,10 +3396,10 @@ function App() {
       return;
     }
     const targetMonth = dateIso.slice(0, 7);
-    const currentHolidays = getStoreHolidayDates(appState, selectedStore, targetMonth);
+    const currentHolidays = getStoreHolidayDates(appState, selectedStoreId, targetMonth);
     const isCurrentlyHoliday = currentHolidays.includes(dateIso);
     if (!isCurrentlyHoliday) {
-      const hasExistingEntry = getDailyResultsForStoreMonth(appState, selectedStore, targetMonth).some((entry) => entry.date === dateIso);
+      const hasExistingEntry = getDailyResultsForStoreMonth(appState, selectedStoreId, targetMonth).some((entry) => entry.date === dateIso);
       if (hasExistingEntry && !window.confirm(`${dateIso}には既存の日次データがあります。店休日に設定しますか？（データは削除されません）`)) {
         return;
       }
@@ -3406,7 +3418,7 @@ function App() {
         return;
       }
     }
-    const key = buildMonthKey(selectedStore, targetMonth);
+    const key = buildMonthKey(selectedStoreId, targetMonth);
     setAppState((prev) => {
       const list = prev.storeHolidays?.[key] || [];
       const nextList = isCurrentlyHoliday ? list.filter((date) => date !== dateIso) : [...list, dateIso];
@@ -3450,7 +3462,7 @@ function App() {
       return;
     }
 
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     const nextClosed = !Boolean(monthClosingStatus.closed);
     const { store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured && !store?.id) {
@@ -3499,7 +3511,7 @@ function App() {
       setNotice("締め対象の日付を入力してください");
       return;
     }
-    if (isHolidayDate(getStoreHolidayDates(appState, selectedStore, dailyForm.date.slice(0, 7)), dailyForm.date)) {
+    if (isHolidayDate(getStoreHolidayDates(appState, selectedStoreId, dailyForm.date.slice(0, 7)), dailyForm.date)) {
       setNotice("この日は店休日のため日締めできません");
       return;
     }
@@ -3519,7 +3531,7 @@ function App() {
     // already-saved entry, which is exactly when a user goes to close it).
     await saveDailyEntry({ silent: true, force: true });
 
-    const key = buildMonthKey(selectedStore, selectedMonth);
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
     const current = appState.dayClosingStates?.[key] || {};
     const nextClosed = !Boolean(current[dailyForm.date]);
 
@@ -3586,8 +3598,8 @@ function App() {
   // 実績を入力する性質上、前月の内訳をコピーして書き換える運用が引き続き便利なため残す。
   const copyPreviousMonthData = async () => {
     const previousMonth = getMonthOffset(selectedMonth, -1);
-    const sourceKey = buildMonthKey(selectedStore, previousMonth);
-    const targetKey = buildMonthKey(selectedStore, selectedMonth);
+    const sourceKey = buildMonthKey(selectedStoreId, previousMonth);
+    const targetKey = buildMonthKey(selectedStoreId, selectedMonth);
     const sourceItems = appState.monthClosing?.[sourceKey] || [];
     if (!sourceItems.length) {
       setNotice("前月のデータがありません");
@@ -3700,7 +3712,6 @@ function App() {
                 </div>
                 <div className="inline-form">
                   <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder={storeNamePlaceholder} />
-                  <input value={storeForm.code} onChange={(event) => setStoreForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="店舗コード" />
                   <button className="primary-button" type="button" onClick={handleSaveStore}>店舗を追加</button>
                 </div>
               </div>
@@ -3897,7 +3908,7 @@ function App() {
                 ) : (
                   <TargetMissingCard label="客数達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
                 )}
-                {effectiveShowReviewCountField ? (
+                {showReviewCountTargetField ? (
                   hasReviewCountTarget ? (
                     <MetricCard
                       label="口コミ数達成率"
@@ -4078,7 +4089,7 @@ function App() {
                       <BusinessCalendarGrid
                         monthValue={selectedMonth}
                         closedDates={businessDaySummary.closedDates}
-                        holidayDates={getStoreHolidayDates(appState, selectedStore, selectedMonth)}
+                        holidayDates={getStoreHolidayDates(appState, selectedStoreId, selectedMonth)}
                         onDayClick={toggleStoreHolidayDate}
                       />
                       <div className="summary-card compact" style={{ marginTop: 10 }}>
@@ -4135,8 +4146,8 @@ function App() {
                       <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} disabled={dailyMode === "view"} />
                       <div className="field">
                         <span>日締め状態</span>
-                        <div className={`value-pill ${appState.dayClosingStates?.[buildMonthKey(selectedStore, selectedMonth)]?.[dailyForm.date] ? "active" : "inactive"}`}>
-                          {appState.dayClosingStates?.[buildMonthKey(selectedStore, selectedMonth)]?.[dailyForm.date] ? "締め済み" : "未締め"}
+                        <div className={`value-pill ${appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date] ? "active" : "inactive"}`}>
+                          {appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date] ? "締め済み" : "未締め"}
                         </div>
                       </div>
                     </div>
@@ -4317,7 +4328,7 @@ function App() {
                           {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" type="number" /> : null}
                           {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" /> : null}
-                          {effectiveShowReviewCountField ? <Field label="口コミ数目標" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" type="number" /> : null}
+                          {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" type="number" /> : null}
                         </div>
                         {isAllStoresView ? (
                           <div className="daily-settings-card">
@@ -4632,10 +4643,6 @@ function App() {
                   <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
                 </label>
                 <label className="field">
-                  <span>店舗コード</span>
-                  <input value={storeForm.code} onChange={(event) => setStoreForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="店舗コード" />
-                </label>
-                <label className="field">
                   <span>郵便番号</span>
                   <input value={storeForm.postalCode} onChange={(event) => setStoreForm((prev) => ({ ...prev, postalCode: event.target.value }))} placeholder="郵便番号" />
                 </label>
@@ -4822,7 +4829,6 @@ function App() {
                       <div className="info-card-head">
                         <div>
                           <strong>{store.name}</strong>
-                          <small>{store.code}</small>
                         </div>
                         <span className={`status-pill ${store.isActive === false || store.status === "archived" ? "error" : "saved"}`}>{statusLabel}</span>
                       </div>

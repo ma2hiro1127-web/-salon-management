@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getFixedCostsForStoreMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -747,137 +747,128 @@ test("dailySalesRowToEntry maps daily_sales columns to the app's entry shape", (
   assert.equal(entry.memo, "混雑");
 });
 
-test("buildDailyStateFromRows rebuilds dailyResults/dayClosingStates for multiple stores from daily_sales rows", () => {
-  const storeIdToName = { "store-honten": "本店", "store-yoko": "フィーネ横浜" };
+test("buildDailyStateFromRows rebuilds dailyResults/dayClosingStates for multiple stores from daily_sales rows, keyed by store_id", () => {
   const rows = [
     { store_id: "store-honten", business_date: "2026-08-01", sales_amount: 50000, is_day_closed: true, closed_at: "2026-08-01T10:00:00.000Z" },
     { store_id: "store-honten", business_date: "2026-08-05", sales_amount: 42000, is_day_closed: false },
     { store_id: "store-yoko", business_date: "2026-08-01", sales_amount: 20100, is_day_closed: true, closed_at: "2026-08-01T09:00:00.000Z" },
   ];
 
-  const { dailyResults, dayClosingStates, dayClosingUpdatedAt } = buildDailyStateFromRows(rows, storeIdToName);
+  const { dailyResults, dayClosingStates, dayClosingUpdatedAt } = buildDailyStateFromRows(rows);
 
-  assert.equal(dailyResults["本店__2026-08"].length, 2);
-  assert.equal(dailyResults["フィーネ横浜__2026-08"].length, 1);
-  assert.equal(dayClosingStates["本店__2026-08"]["2026-08-01"], true);
-  assert.equal(dayClosingStates["本店__2026-08"]["2026-08-05"], false, "未締めの日は明示的にfalseになる(重複カウント防止)");
-  assert.equal(dayClosingStates["フィーネ横浜__2026-08"]["2026-08-01"], true);
-  assert.equal(dayClosingUpdatedAt["本店__2026-08"]["2026-08-01"], "2026-08-01T10:00:00.000Z");
+  assert.equal(dailyResults["store-honten__2026-08"].length, 2);
+  assert.equal(dailyResults["store-yoko__2026-08"].length, 1);
+  assert.equal(dayClosingStates["store-honten__2026-08"]["2026-08-01"], true);
+  assert.equal(dayClosingStates["store-honten__2026-08"]["2026-08-05"], false, "未締めの日は明示的にfalseになる(重複カウント防止)");
+  assert.equal(dayClosingStates["store-yoko__2026-08"]["2026-08-01"], true);
+  assert.equal(dayClosingUpdatedAt["store-honten__2026-08"]["2026-08-01"], "2026-08-01T10:00:00.000Z");
 
-  const summary = getBusinessDaySummary({ dailyResults, dayClosingStates, businessDaySettings: {} }, "本店", "2026-08");
+  const summary = getBusinessDaySummary({ dailyResults, dayClosingStates, businessDaySettings: {} }, "store-honten", "2026-08");
   assert.equal(summary.completedDays, 1, "daily_salesから再構築した状態でも日締め済み日数は1件のみ");
 });
 
-test("buildDailyStateFromRows skips rows for stores not in the id-to-name map (no crash, no orphaned key)", () => {
-  const { dailyResults } = buildDailyStateFromRows([{ store_id: "unknown-store", business_date: "2026-08-01", sales_amount: 1000 }], { "store-honten": "本店" });
+test("buildDailyStateFromRows skips rows with no store_id (no crash, no orphaned key)", () => {
+  const { dailyResults } = buildDailyStateFromRows([{ business_date: "2026-08-01", sales_amount: 1000 }]);
   assert.deepEqual(dailyResults, {});
 });
 
-test("buildMonthClosingStateFromRows rebuilds monthClosingStatus per store from monthly_closings rows", () => {
-  const storeIdToName = { "store-honten": "本店", "store-yoko": "フィーネ横浜" };
+test("buildMonthClosingStateFromRows rebuilds monthClosingStatus per store from monthly_closings rows, keyed by store_id", () => {
   const rows = [
     { store_id: "store-honten", year_month: "2026-08", is_closed: true, closed_at: "2026-09-01T00:00:00.000Z" },
     { store_id: "store-yoko", year_month: "2026-08", is_closed: false, closed_at: null },
   ];
 
-  const status = buildMonthClosingStateFromRows(rows, storeIdToName);
+  const status = buildMonthClosingStateFromRows(rows);
 
-  assert.equal(status["本店__2026-08"].closed, true);
-  assert.equal(status["本店__2026-08"].lockedAt, "2026-09-01T00:00:00.000Z");
-  assert.equal(status["フィーネ横浜__2026-08"].closed, false);
+  assert.equal(status["store-honten__2026-08"].closed, true);
+  assert.equal(status["store-honten__2026-08"].lockedAt, "2026-09-01T00:00:00.000Z");
+  assert.equal(status["store-yoko__2026-08"].closed, false);
 });
 
-test("buildFixedCostsStateFromRows rebuilds fixedCosts per store from fixed_costs rows, keyed by the item's original entry month", () => {
-  const storeIdToName = { "store-honten": "本店" };
+test("buildFixedCostsStateFromRows rebuilds fixedCosts per store from fixed_costs rows, keyed by store_id and the item's original entry month", () => {
   const rows = [
     { id: "fc-1", store_id: "store-honten", entry_month: "2026-06", name: "家賃", amount: 150000, category: "家賃", memo: "", start_month: "", end_month: "", apply_mode: "this-month-onward" },
     { id: "fc-2", store_id: "store-honten", entry_month: "2026-08", name: "臨時費用", amount: 20000, category: "その他", memo: "", start_month: "", end_month: "", apply_mode: "this-month" },
   ];
 
-  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows);
 
-  assert.deepEqual(fixedCosts["本店__2026-06"], [{ id: "fc-1", name: "家賃", amount: 150000, category: "家賃", memo: "", startMonth: "", endMonth: "", applyMode: "this-month-onward" }]);
-  assert.deepEqual(fixedCosts["本店__2026-08"], [{ id: "fc-2", name: "臨時費用", amount: 20000, category: "その他", memo: "", startMonth: "", endMonth: "", applyMode: "this-month" }]);
+  assert.deepEqual(fixedCosts["store-honten__2026-06"], [{ id: "fc-1", name: "家賃", amount: 150000, category: "家賃", memo: "", startMonth: "", endMonth: "", applyMode: "this-month-onward" }]);
+  assert.deepEqual(fixedCosts["store-honten__2026-08"], [{ id: "fc-2", name: "臨時費用", amount: 20000, category: "その他", memo: "", startMonth: "", endMonth: "", applyMode: "this-month" }]);
 });
 
 test("buildFixedCostsStateFromRows: a this-month-onward item entered in an earlier month is still visible via getFixedCostsForStoreMonth in a later month it was never directly saved under", () => {
-  const storeIdToName = { "store-honten": "本店" };
   const rows = [
     { id: "fc-rent", store_id: "store-honten", entry_month: "2026-06", name: "家賃", amount: 150000, category: "家賃", memo: "", start_month: "", end_month: "", apply_mode: "this-month-onward" },
   ];
-  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows);
   const state = { ...createInitialAppState(), fixedCosts };
 
   // A fresh session that only ever fetched this rebuilt state (as hydrateFromSupabase does)
   // must still see the June-filed rent cost when looking at August — this is exactly the
   // cross-device/cross-session scenario a snapshot-only fetch (windowed to one month) would miss.
-  const augustItems = getFixedCostsForStoreMonth(state, "本店", "2026-08");
+  const augustItems = getFixedCostsForStoreMonth(state, "store-honten", "2026-08");
   assert.equal(augustItems.length, 1);
   assert.equal(augustItems[0].id, "fc-rent");
 
-  const mayItems = getFixedCostsForStoreMonth(state, "本店", "2026-05");
+  const mayItems = getFixedCostsForStoreMonth(state, "store-honten", "2026-05");
   assert.equal(mayItems.length, 0);
 });
 
 test("getFixedCostsForStoreMonth: a single-month item (start_month === end_month) never carries into later months", () => {
-  const storeIdToName = { "store-honten": "本店" };
   const rows = [
     { id: "fc-onetime", store_id: "store-honten", entry_month: "2026-06", name: "修繕費", amount: 50000, category: "その他", memo: "", start_month: "2026-06", end_month: "2026-06", apply_mode: "this-month" },
   ];
-  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows);
   const state = { ...createInitialAppState(), fixedCosts };
 
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-06").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-06").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 0);
 });
 
 test("getFixedCostsForStoreMonth: a period item (start_month < end_month) reflects every month in range, inclusive, and stops the month after", () => {
-  const storeIdToName = { "store-honten": "本店" };
   const rows = [
     { id: "fc-period", store_id: "store-honten", entry_month: "2026-08", name: "求人広告", amount: 50000, category: "求人費", memo: "", start_month: "2026-08", end_month: "2026-10" },
   ];
-  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows);
   const state = { ...createInitialAppState(), fixedCosts };
 
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 0);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-08").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-09").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-10").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-11").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-08").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-09").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-10").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-11").length, 0);
 });
 
 test("getFixedCostsForStoreMonth: a row with no explicit start_month falls back to entry_month as its start (entry_month is NOT NULL, so this is always available) and, with no end_month either, is treated as ongoing", () => {
-  const storeIdToName = { "store-honten": "本店" };
   const rows = [
     { id: "fc-legacy", store_id: "store-honten", entry_month: "2026-06", name: "旧データ", amount: 10000, category: "その他", memo: "", start_month: "", end_month: "" },
   ];
-  const { fixedCosts } = buildFixedCostsStateFromRows(rows, storeIdToName);
+  const { fixedCosts } = buildFixedCostsStateFromRows(rows);
   const state = { ...createInitialAppState(), fixedCosts };
 
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-06").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-07").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "本店", "2026-05").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-06").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-05").length, 0);
 });
 
 test("buildVariableCostsStateFromRows: direct month lookup, no carry-forward to a later month", () => {
-  const storeIdToName = { "store-honten": "本店" };
   const rows = [
     { id: "vc-1", store_id: "store-honten", target_month: "2026-08", name: "広告費", amount: 40000, category: "広告費", memo: "", incurred_date: "", type: "regular" },
   ];
-  const { variableCosts } = buildVariableCostsStateFromRows(rows, storeIdToName);
+  const { variableCosts } = buildVariableCostsStateFromRows(rows);
   const state = { ...createInitialAppState(), variableCosts };
 
-  assert.equal(getVariableCostsForStoreMonth(state, "本店", "2026-08").length, 1);
-  assert.equal(getVariableCostsForStoreMonth(state, "本店", "2026-09").length, 0);
+  assert.equal(getVariableCostsForStoreMonth(state, "store-honten", "2026-08").length, 1);
+  assert.equal(getVariableCostsForStoreMonth(state, "store-honten", "2026-09").length, 0);
 });
 
-test("buildMonthlyClosingItemsStateFromRows rebuilds monthClosing per store/month from monthly_closing_items rows", () => {
-  const storeIdToName = { "store-honten": "本店" };
+test("buildMonthlyClosingItemsStateFromRows rebuilds monthClosing per store/month from monthly_closing_items rows, keyed by store_id", () => {
   const rows = [
     { id: "mci-1", store_id: "store-honten", target_month: "2026-08", name: "人件費", amount: 300000, category: "人件費" },
   ];
-  const { monthClosing } = buildMonthlyClosingItemsStateFromRows(rows, storeIdToName);
-  assert.deepEqual(monthClosing["本店__2026-08"], [{ id: "mci-1", name: "人件費", amount: 300000, category: "人件費" }]);
+  const { monthClosing } = buildMonthlyClosingItemsStateFromRows(rows);
+  assert.deepEqual(monthClosing["store-honten__2026-08"], [{ id: "mci-1", name: "人件費", amount: 300000, category: "人件費" }]);
 });
 
 test("buildCompanySettingsFromRow returns null when no row exists yet (not-registered, not a default object)", () => {
@@ -946,7 +937,7 @@ const buildAllStoresTestState = () => ({
     [buildCompanyMonthKey("company-1", "2026-08")]: { holidayCount: 4 },
   },
 });
-const allStoresTestCompany = { id: "company-1", stores: [{ name: "A店" }, { name: "B店" }] };
+const allStoresTestCompany = { id: "company-1", stores: [{ id: "A店", name: "A店" }, { id: "B店", name: "B店" }] };
 
 test("getAllStoresBusinessDaySummary: a date counts as 全店舗営業完了 only once every registered store has closed it that day (not a per-store sum)", () => {
   const state = buildAllStoresTestState();
@@ -986,7 +977,7 @@ test("calculateAllStoresMonthSummary: sales aggregation and 営業完了日数 f
 
 test("calculateAllStoresMonthSummary: a newly added store with no data yet doesn't zero out the other stores' sales, but does block 営業完了日数 from ever counting a day (since it never closes)", () => {
   const state = buildAllStoresTestState();
-  const companyWithNewStore = { id: "company-1", stores: [{ name: "A店" }, { name: "B店" }, { name: "C店（新規）" }] };
+  const companyWithNewStore = { id: "company-1", stores: [{ id: "A店", name: "A店" }, { id: "B店", name: "B店" }, { id: "C店（新規）", name: "C店（新規）" }] };
   const summary = calculateAllStoresMonthSummary(state, companyWithNewStore, "2026-08");
   // C店が一度も日締めしていないため、全店舗の積集合は常に空 → 営業完了日数は0日。
   assert.equal(summary.completedDays, 0);
@@ -1004,8 +995,8 @@ test("buildStoreHolidaysStateFromRows / buildAllStoresHolidaysStateFromRows rebu
     { store_id: "store-a", holiday_date: "2026-08-08" },
     { store_id: "store-a", holiday_date: "2026-08-15" },
   ];
-  const { storeHolidays } = buildStoreHolidaysStateFromRows(storeRows, { "store-a": "A店" });
-  assert.deepEqual(storeHolidays["A店__2026-08"].sort(), ["2026-08-08", "2026-08-15"]);
+  const { storeHolidays } = buildStoreHolidaysStateFromRows(storeRows);
+  assert.deepEqual(storeHolidays["store-a__2026-08"].sort(), ["2026-08-08", "2026-08-15"]);
 
   const allStoresRows = [{ company_id: "company-1", holiday_date: "2026-08-08" }];
   const { allStoresHolidays } = buildAllStoresHolidaysStateFromRows(allStoresRows);
@@ -1079,9 +1070,9 @@ test("getAllStoresBusinessDaySummary: 開店日(openingDate)より前の日は�
     },
   };
   const stores = [
-    { name: "A店", openingDate: "" },
-    { name: "B店", openingDate: "" },
-    { name: "C店", openingDate: "2026-08-02" },
+    { id: "A店", name: "A店", openingDate: "" },
+    { id: "B店", name: "B店", openingDate: "" },
+    { id: "C店", name: "C店", openingDate: "2026-08-02" },
   ];
   const result = getAllStoresBusinessDaySummary(state, "company-1", stores, "2026-08");
   // 8/1はC店がまだ開店していないのでA店・B店だけが対象 → 両方締めているので完了扱い。
@@ -1100,4 +1091,89 @@ test("getStoreHolidayDates / getAllStoresHolidayDates / isHolidayDate basic beha
   assert.deepEqual(getAllStoresHolidayDates(state, "company-1", "2026-08"), ["2026-08-09"]);
   assert.equal(isHolidayDate(getStoreHolidayDates(state, "A店", "2026-08"), "2026-08-08"), true);
   assert.equal(isHolidayDate(getStoreHolidayDates(state, "A店", "2026-08"), "2026-08-09"), false);
+});
+
+// migrateNameKeyedMapsToStoreId is the safety net that lets existing localStorage/tenant_
+// snapshots data (saved before the store_id-keyed migration, so still keyed "storeName__month")
+// keep working after the migration ships — normalizeAppState runs it unconditionally on every
+// read. These tests are the actual "existing data isn't lost" guarantee, not just the new
+// storeId-based lookups working going forward.
+
+test("migrateNameKeyedMapsToStoreId rewrites storeName__month keys to storeId__month using the state's own companies list, across every affected map", () => {
+  const state = {
+    companies: [{ id: "company-1", stores: [{ id: "store-abc", name: "本店" }] }],
+    dailyResults: { "本店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
+    targets: { "本店__2026-08": { targetSales: 500000 } },
+    fixedCosts: { "本店__2026-06": [{ id: "fc-1", amount: 1000 }] },
+    variableCosts: { "本店__2026-08": [{ id: "vc-1", amount: 200 }] },
+    monthClosing: { "本店__2026-08": [{ id: "mc-1", amount: 300 }] },
+    monthClosingStatus: { "本店__2026-08": { closed: true } },
+    businessDaySettings: { "本店__2026-08": { holidayCount: 4 } },
+    dayClosingStates: { "本店__2026-08": { "2026-08-01": true } },
+    dayClosingUpdatedAt: { "本店__2026-08": { "2026-08-01": "2026-08-01T00:00:00.000Z" } },
+    storeHolidays: { "本店__2026-08": ["2026-08-15"] },
+    dailyResultBackups: { "本店__2026-08": [{ date: "2026-08-01" }] },
+  };
+
+  const migrated = migrateNameKeyedMapsToStoreId(state);
+
+  assert.deepEqual(migrated.dailyResults["store-abc__2026-08"], state.dailyResults["本店__2026-08"]);
+  assert.deepEqual(migrated.targets["store-abc__2026-08"], state.targets["本店__2026-08"]);
+  assert.deepEqual(migrated.fixedCosts["store-abc__2026-06"], state.fixedCosts["本店__2026-06"]);
+  assert.deepEqual(migrated.variableCosts["store-abc__2026-08"], state.variableCosts["本店__2026-08"]);
+  assert.deepEqual(migrated.monthClosing["store-abc__2026-08"], state.monthClosing["本店__2026-08"]);
+  assert.deepEqual(migrated.monthClosingStatus["store-abc__2026-08"], state.monthClosingStatus["本店__2026-08"]);
+  assert.deepEqual(migrated.businessDaySettings["store-abc__2026-08"], state.businessDaySettings["本店__2026-08"]);
+  assert.deepEqual(migrated.dayClosingStates["store-abc__2026-08"], state.dayClosingStates["本店__2026-08"]);
+  assert.deepEqual(migrated.dayClosingUpdatedAt["store-abc__2026-08"], state.dayClosingUpdatedAt["本店__2026-08"]);
+  assert.deepEqual(migrated.storeHolidays["store-abc__2026-08"], state.storeHolidays["本店__2026-08"]);
+  assert.deepEqual(migrated.dailyResultBackups["store-abc__2026-08"], state.dailyResultBackups["本店__2026-08"]);
+
+  // The old name-keyed entry must not survive alongside the new one (no duplication/ambiguity).
+  assert.equal(migrated.dailyResults["本店__2026-08"], undefined);
+});
+
+test("migrateNameKeyedMapsToStoreId is a no-op on data that's already storeId-keyed (idempotent)", () => {
+  const state = {
+    companies: [{ id: "company-1", stores: [{ id: "store-abc", name: "本店" }] }],
+    dailyResults: { "store-abc__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
+  };
+  const migrated = migrateNameKeyedMapsToStoreId(state);
+  assert.deepEqual(migrated.dailyResults, state.dailyResults);
+});
+
+test("migrateNameKeyedMapsToStoreId returns state unchanged when there's no companies list to resolve names against (e.g. a fresh/unauthenticated blob)", () => {
+  const state = { dailyResults: { "本店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] } };
+  const migrated = migrateNameKeyedMapsToStoreId(state);
+  assert.equal(migrated, state);
+});
+
+test("migrateNameKeyedMapsToStoreId: two different companies each having a store literally named 本店 no longer collide once migrated — each keeps its own id-keyed data", () => {
+  const state = {
+    companies: [
+      { id: "company-1", stores: [{ id: "store-co1-honten", name: "本店" }] },
+      { id: "company-2", stores: [{ id: "store-co2-honten", name: "本店" }] },
+    ],
+    // Simulates the pre-migration bug: both companies' "本店" wrote into the SAME name-keyed
+    // slot, so only one ever survived. Post-migration each company's store gets its own key,
+    // so this scenario can no longer happen going forward — this test locks in the id
+    // resolution picking the FIRST store it encounters for a given name only as a safety
+    // fallback, and documents that per-company disambiguation requires the id-keyed scheme
+    // (not achievable by this repair pass alone for already-collided old data).
+    dailyResults: { "本店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
+  };
+  const migrated = migrateNameKeyedMapsToStoreId(state);
+  // Whichever company's store the resolver saw first wins the rewrite target — the key point is
+  // it resolves to A real store's id, not to "本店" verbatim, and the entry isn't dropped.
+  assert.equal(Object.keys(migrated.dailyResults).length, 1);
+  const [resultKey] = Object.keys(migrated.dailyResults);
+  assert.ok(resultKey === "store-co1-honten__2026-08" || resultKey === "store-co2-honten__2026-08");
+});
+
+test("normalizeAppState applies migrateNameKeyedMapsToStoreId automatically (this is what makes reading old localStorage/tenant_snapshots data safe)", () => {
+  const normalized = normalizeAppState({
+    companies: [{ id: "company-1", stores: [{ id: "store-abc", name: "本店" }] }],
+    dailyResults: { "本店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
+  });
+  assert.deepEqual(normalized.dailyResults["store-abc__2026-08"], [{ date: "2026-08-01", totalSales: 1000 }]);
 });

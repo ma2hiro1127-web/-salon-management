@@ -76,13 +76,22 @@ export const defaultDailyFieldSettings = () => ({
 // calculateMonthSummary's laborRate/materialRate/adRate/operatingMargin). The monthly_targets
 // columns and any already-saved values are untouched; this only stops the target-setting form
 // and its per-store field-visibility toggle from offering them.
+// targetReviewCount was previously shown/hidden automatically based on the store's daily-input
+// 口コミ数 field toggle (日次入力項目設定) rather than this per-field monthly-target toggle list.
+// Moved here so it's controlled the same way as every other monthly target field, positioned
+// right after targetRepeatCustomers. Unlike the others (which all default visible), it defaults
+// OFF — same reasoning as dailyFieldPresets' reviewCount/otherSales: most stores don't track it,
+// so it shouldn't suddenly appear on every existing store's target-setting screen.
 export const monthlyTargetFieldKeys = [
   "targetSales", "targetTechnicalSales", "targetRetailSales", "targetCustomers",
-  "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers", "holidayCount",
+  "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers", "targetReviewCount", "holidayCount",
 ];
 
 export const defaultMonthlyTargetFieldSettings = () => ({
-  fields: Object.fromEntries(monthlyTargetFieldKeys.map((key) => [key, true])),
+  fields: {
+    ...Object.fromEntries(monthlyTargetFieldKeys.map((key) => [key, true])),
+    targetReviewCount: false,
+  },
 });
 
 // 「費用入力」の1件。applyModeはユーザーが選ぶ項目ではなくなり、startMonth/endMonthから

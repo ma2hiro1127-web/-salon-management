@@ -488,6 +488,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       ...seedState,
       stores: company.stores.map((store) => store.name),
       selectedStore: company.stores[0]?.name || "",
+      selectedStoreId: company.stores[0]?.id || "",
       selectedMonth: seedState.selectedMonth,
     };
     return accumulator;
@@ -502,6 +503,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     companySnapshots: companiesWithSnapshots,
     stores: selectedCompany?.stores?.map((store) => store.name) || [],
     selectedStore: selectedStore?.name || "",
+    selectedStoreId: selectedStore?.id || "",
   };
 };
 
