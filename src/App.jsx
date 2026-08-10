@@ -530,6 +530,18 @@ function App() {
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
+  // 店舗プロフィールフォームはモーダルではなく常時表示のインラインフォーム(店舗一覧より
+  // 前に描画される)なので、「店舗を追加」/「編集」ボタンを押しても画面内に変化が見えず、
+  // 「ボタンが反応しない」ように見えていた — フォームへスクロール+フォーカスして明示的に
+  // 開いたことが分かるようにする。
+  const storeFormSectionRef = useRef(null);
+  const storeFormNameInputRef = useRef(null);
+  const focusStoreForm = () => {
+    window.requestAnimationFrame(() => {
+      storeFormSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      storeFormNameInputRef.current?.focus();
+    });
+  };
   // ユーザー編集モーダル用。招待フォーム(userForm)とは完全に独立させている — 編集は
   // 名前・メール・権限・所属店舗・有効状態をSupabaseへ直接保存する専用フローで、招待フォーム
   // を流用していた旧実装は実際にはSupabaseへ何も保存していなかった(ローカル状態のみ)。
@@ -2222,6 +2234,7 @@ function App() {
       status: store.status || "active",
     });
     setStoreSettingsForm({ ...createStoreSettingsDefaults(), ...(store.settings || {}) });
+    focusStoreForm();
   };
 
   const handleEditUser = (user) => {
@@ -4945,6 +4958,7 @@ function App() {
                 <button className="primary-button" type="button" onClick={() => {
                   setStoreEditId("");
                   setStoreForm(createStoreFormDefaults());
+                  focusStoreForm();
                 }}>店舗を追加</button>
               )}
             </div>
@@ -4966,7 +4980,7 @@ function App() {
               </label>
             </div>
             {canEditStoreName(currentRole) && (
-            <div className="setup-card">
+            <div className="setup-card" ref={storeFormSectionRef}>
               <div className="panel-heading compact">
                 <div>
                   <p className="eyebrow">STORE PROFILE</p>
@@ -4976,7 +4990,7 @@ function App() {
               <div className="store-form-grid">
                 <label className="field">
                   <span>店舗名</span>
-                  <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
+                  <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
                 </label>
                 <label className="field">
                   <span>郵便番号</span>
