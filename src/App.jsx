@@ -524,8 +524,16 @@ function App() {
   const [expandedRankingStore, setExpandedRankingStore] = useState("");
   const [companyForm, setCompanyForm] = useState({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
   const [storeForm, setStoreForm] = useState(createStoreFormDefaults());
-  const [storeSearch, setStoreSearch] = useState("");
-  const [storeSort, setStoreSort] = useState("achievement");
+  // 検索・並び替えUIは撤去したが、filteredStoresの絞り込み/並び替えロジック自体は変更せず
+  // 維持している(空検索=絞り込みなし、achievement=既存のデフォルト順)。setterは今は使わ
+  // ないため取得しない。
+  const [storeSearch] = useState("");
+  const [storeSort] = useState("achievement");
+  // Inline feedback right next to the 店舗追加 button — the shared top-of-page `notice` can be
+  // scrolled out of view once the store form is scrolled into view (via focusStoreForm), making
+  // a real success/failure result look like nothing happened. This always renders in the same
+  // spot the user is already looking at.
+  const [storeFormStatus, setStoreFormStatus] = useState({ status: "idle", message: "" });
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
@@ -1967,11 +1975,17 @@ function App() {
       ? canEditStoreName(currentRole) && (canManageStore(currentRole) || allowedStoreIds.includes(existingStore.id))
       : canManageStore(currentRole);
     if (!canEditThisStore) {
-      setNotice(existingStore ? "この店舗の編集権限がありません" : "店舗作成はシステム管理者または会社管理者が実行できます");
+      const message = existingStore ? "この店舗の編集権限がありません" : "店舗作成はシステム管理者または会社管理者が実行できます";
+      setNotice(message);
+      setStoreFormStatus({ status: "error", message });
       return;
     }
-    if (!storeForm.name.trim()) return;
+    if (!storeForm.name.trim()) {
+      setStoreFormStatus({ status: "error", message: "店舗名を入力してください" });
+      return;
+    }
 
+    setStoreFormStatus({ status: "saving", message: "" });
     try {
       let createdStore = null;
       if (!existingStore) {
@@ -2068,9 +2082,18 @@ function App() {
       persistTenantState(nextState);
       setStoreForm(createStoreFormDefaults());
       setStoreEditId("");
-      setNotice(existingStore ? `${nextStore.name} を更新しました` : `${nextStore.name} を追加しました`);
+      const successMessage = existingStore ? `${nextStore.name} を更新しました` : `${nextStore.name} を追加しました`;
+      setNotice(successMessage);
+      setStoreFormStatus({ status: "saved", message: successMessage });
     } catch (error) {
-      setNotice(getSupabaseErrorMessage(error));
+      // console.error here (not just the UI notice) so the real cause is visible in devtools
+      // even if a future UI change makes the notice easy to miss — this exact failure mode
+      // (an error that fired but gave no visible sign anything went wrong) is what prompted
+      // adding storeFormStatus in the first place.
+      console.error("handleSaveStore failed", error);
+      const message = getSupabaseErrorMessage(error);
+      setNotice(message);
+      setStoreFormStatus({ status: "error", message });
     }
   };
 
@@ -4954,31 +4977,8 @@ function App() {
                 <p className="eyebrow">STORE</p>
                 <h2>店舗管理</h2>
               </div>
-              {canManageStores(currentRole) && (
-                <button className="primary-button" type="button" onClick={() => {
-                  setStoreEditId("");
-                  setStoreForm(createStoreFormDefaults());
-                  focusStoreForm();
-                }}>店舗を追加</button>
-              )}
             </div>
             <p className="management-help">店舗名を登録するだけで、日次売上・月間目標・費用・月締め・スタッフ所属・権限・店舗ランキング等を店舗ごとに紐づけて管理できます。</p>
-            <div className="inline-form">
-              <label className="field">
-                <span>検索</span>
-                <input value={storeSearch} onChange={(event) => setStoreSearch(event.target.value)} placeholder="店舗名で検索" />
-              </label>
-              <label className="field">
-                <span>並び替え</span>
-                <select value={storeSort} onChange={(event) => setStoreSort(event.target.value)}>
-                  <option value="achievement">達成率順</option>
-                  <option value="sales">売上順</option>
-                  <option value="profit">粗利順</option>
-                  <option value="staff">スタッフ順</option>
-                  <option value="name">店舗名順</option>
-                </select>
-              </label>
-            </div>
             {canEditStoreName(currentRole) && (
             <div className="setup-card" ref={storeFormSectionRef}>
               <div className="panel-heading compact">
@@ -4990,16 +4990,22 @@ function App() {
               {/* 店舗登録・編集で入力するのは店舗名のみ — store_idは自動発行、company_idは
                   ログイン中の会社へ自動で紐づく。以前あった住所・電話番号・営業時間・URL等の
                   詳細プロフィール項目は、店舗を経営データに紐づけるための識別画面としては
-                  不要なため画面から外した(Supabase側のカラム・既存データはそのまま)。 */}
+                  不要なため画面から外した(Supabase側のカラム・既存データはそのまま)。
+                  「店舗を追加」ボタンは以前ここと右上の2箇所にあり、右上側は入力欄をリセット
+                  するだけで実際には何も登録しないため紛らわしかった — このフォーム内の1つに
+                  統一した。 */}
               <div className="store-form-grid">
                 <label className="field">
                   <span>店舗名</span>
                   <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
                 </label>
               </div>
+              {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}
               <div className="button-row">
-                <button className="primary-button" type="button" onClick={handleSaveStore}>{storeEditId ? "店舗名を更新" : "店舗追加"}</button>
-                <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreForm(createStoreFormDefaults()); }}>クリア</button>
+                <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>
+                  {storeFormStatus.status === "saving" ? "追加中…" : storeEditId ? "店舗名を更新" : "店舗追加"}
+                </button>
+                <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreForm(createStoreFormDefaults()); setStoreFormStatus({ status: "idle", message: "" }); }}>クリア</button>
               </div>
             </div>
             )}
