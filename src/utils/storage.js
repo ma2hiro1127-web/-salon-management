@@ -37,6 +37,12 @@ export const formatLocalDate = (date) => {
   return `${year}-${month}-${day}`;
 };
 
+export const getMonthOffset = (monthValue, offset) => {
+  const [year, month] = monthValue.split("-").map(Number);
+  const nextDate = new Date(year, month - 1 + offset, 1);
+  return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
+};
+
 export const getMonthInfo = (monthValue) => {
   const [year, month] = monthValue.split("-").map(Number);
   const yearNumber = Number(year);
@@ -338,6 +344,9 @@ export const buildTargetStateFromRows = (rows = []) => {
 // Rebuilds the fixedCosts map (storeName__entryMonth -> item[]) from fixed_costs rows, in the
 // exact shape getFixedCostsForStoreMonth already expects — entry_month is the month the item
 // was originally filed under, which is what that function's "翌月以降も継続" lookback keys on.
+// The row's own `amount` is legacy (pre-per-month-amount) data and is intentionally not carried
+// into the item — the effective amount for a given month now always comes from
+// costMonthlyAmounts (see getCostMonthlyAmount), never from this master row.
 export const buildFixedCostsStateFromRows = (rows = []) => {
   const fixedCosts = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
@@ -346,16 +355,33 @@ export const buildFixedCostsStateFromRows = (rows = []) => {
     const item = {
       id: row.id,
       name: row.name || "",
-      amount: row.amount,
       category: row.category || "",
       memo: row.memo || "",
+      // period_type is the explicit "継続/期間限定" choice. Rows saved before this column
+      // existed have no value here, so fall back to the old implicit rule (no end_month = 継続)
+      // for backward compatibility with data entered under the previous UI.
+      periodType: row.period_type || (row.end_month ? "limited" : "ongoing"),
       startMonth: row.start_month || "",
       endMonth: row.end_month || "",
-      applyMode: row.apply_mode || "this-month",
     };
     fixedCosts[key] = [...(fixedCosts[key] || []), item];
   });
   return { fixedCosts };
+};
+
+// cost_monthly_amounts — the per-month amount for a given cost item, keyed by
+// `${cost_item_id}__${target_month}` for O(1) lookup from getCostMonthlyAmount below. A cost
+// item with no entry for a given month has simply never had its amount entered/confirmed for
+// that month (see getFixedCostsForStoreMonth's header comment) — it contributes 0, not a
+// carried-forward guess, matching the "ユーザーがコピーして確認" requirement.
+export const buildCostMonthlyAmountsStateFromRows = (rows = []) => {
+  const costMonthlyAmounts = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.cost_item_id || !row.target_month) return;
+    const key = `${row.cost_item_id}__${row.target_month}`;
+    costMonthlyAmounts[key] = { id: row.id, amount: row.amount, updatedAt: row.updated_at || "" };
+  });
+  return { costMonthlyAmounts };
 };
 
 // variable_costs (販管費) — direct month lookup (target_month), no carry-forward.
@@ -576,6 +602,7 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   dayClosingUpdatedAt: mergeDayClosingUpdatedAtMap(localState.dayClosingUpdatedAt, remoteState.dayClosingUpdatedAt),
   dailyResultBackups: mergeItemArrayMap(localState.dailyResultBackups, remoteState.dailyResultBackups),
   fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
+  costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
   targets: mergeShallowMap(localState.targets, remoteState.targets),
@@ -770,6 +797,7 @@ export const normalizeAppState = (value) => {
     targets: normalizeObjectMap(source.targets),
     dailyResults: normalizeObjectMap(source.dailyResults),
     fixedCosts: normalizeObjectMap(source.fixedCosts),
+    costMonthlyAmounts: normalizeObjectMap(source.costMonthlyAmounts),
     variableCosts: normalizeObjectMap(source.variableCosts),
     monthClosing: normalizeObjectMap(source.monthClosing),
     monthClosingStatus: normalizeObjectMap(source.monthClosingStatus),
@@ -956,12 +984,12 @@ export const getDailyResultsForStoreMonth = (state, storeId, monthValue) => {
   return entries;
 };
 
-// 「費用入力」(旧・固定費/販管費を統合した単一の費用マスター)。単月/期間指定/毎月継続を
-// ユーザーに選ばせず、startMonth(必須)・endMonth(任意)だけで自動判定する:
-//   - endMonthが空          → startMonth以降ずっと反映(毎月継続)
-//   - startMonth === endMonth → その月だけ反映(単月)
-//   - startMonth < endMonth   → その期間だけ毎月反映(期間指定、終了月を含む)
-// 月ごとにレコードを複製せず、1件のマスターから対象月かどうかをその都度判定する設計。
+// 「費用入力」(継続/期間限定の2択を明示的に持つ費用マスター、金額は含まない)。periodTypeで
+// 適用可否を判定する:
+//   - "ongoing" (継続)       → startMonth以降ずっと対象月として表示され続ける(endMonthは無視)
+//   - "limited" (期間限定)   → startMonth〜endMonthの範囲内(両端含む)だけ対象
+// 金額はここでは解決しない(呼び出し側でgetCostMonthlyAmountを使う) — 月ごとにレコードを複製
+// せず、1件のマスターから対象月かどうかをその都度判定する設計は従来通り。
 export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
   const itemsByKey = Object.entries(state.fixedCosts || {})
     .filter(([key]) => key.startsWith(`${storeId}__`))
@@ -971,12 +999,16 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
     // entry_month (the month a row is filed/stored under locally) is NOT NULL in fixed_costs,
     // so this fallback is really just "startMonth defaults to entry_month" — it only matters
     // for a row saved without an explicit startMonth, which then behaves as if it started the
-    // month it was entered. A missing endMonth on top of that means "still ongoing" (see below),
-    // matching the same rule a row with an explicit startMonth follows.
+    // month it was entered.
     const startMonth = item.startMonth || item._sourceKey?.split("__")?.[1] || "";
     if (!startMonth) return item._sourceKey === buildMonthKey(storeId, monthValue);
-    const endMonth = item.endMonth || "";
-    return monthValue >= startMonth && (!endMonth || monthValue <= endMonth);
+    if (item.periodType === "limited") {
+      const endMonth = item.endMonth || "";
+      return monthValue >= startMonth && (!endMonth || monthValue <= endMonth);
+    }
+    // "ongoing" (or any legacy row without a recognized periodType) always carries forward from
+    // startMonth, regardless of whatever endMonth may still be sitting on the row.
+    return monthValue >= startMonth;
   });
 
   // Editing an item can move it between local month-key buckets (see submitFixedCost); dedupe
@@ -990,15 +1022,22 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
   return [...byId.values(), ...withoutId];
 };
 
-// single | period | ongoing — purely for display (e.g. "継続中" vs a fixed date range); the
-// filtering logic above never needs this label, it's derived fresh from the same two fields.
-export const getCostPatternLabel = (item) => {
-  const startMonth = item?.startMonth || "";
-  const endMonth = item?.endMonth || "";
-  if (!endMonth) return "ongoing";
-  if (startMonth && startMonth === endMonth) return "single";
-  return "period";
+// ongoing | limited — purely for display; the filtering logic above reads item.periodType
+// directly, this is just a stable accessor with the same legacy fallback buildFixedCostsStateFromRows
+// uses (no periodType recorded + no end_month = 継続として扱う).
+export const getCostPatternLabel = (item) => item?.periodType || (item?.endMonth ? "limited" : "ongoing");
+
+// 対象月ごとの金額(cost_monthly_amounts)。その月にまだ入力/コピー保存されていない費用は
+// undefined(=未入力)を返す — 0円ではなく「未確定」であることを呼び出し側が区別できるように
+// する。損益集計ではこれを0として扱う(getCostMonthlyAmount(...) ?? 0)。
+export const getCostMonthlyAmount = (state, costItemId, monthValue) => {
+  if (!costItemId) return undefined;
+  return state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`]?.amount;
 };
+
+// 「前月の金額をコピー」用。前月に金額が保存されていなければundefined。
+export const getPreviousMonthCostAmount = (state, costItemId, monthValue) =>
+  getCostMonthlyAmount(state, costItemId, getMonthOffset(monthValue, -1));
 
 export const getVariableCostsForStoreMonth = (state, storeId, monthValue) => {
   const items = state.variableCosts?.[buildMonthKey(storeId, monthValue)] || [];
@@ -1013,7 +1052,11 @@ export const getClosingItemsForStoreMonth = (state, storeId, monthValue) => {
 export const calculateMonthSummary = (state, storeId, monthValue) => {
   const target = getTargetForStoreMonth(state, storeId, monthValue);
   const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
-  const fixedCosts = getFixedCostsForStoreMonth(state, storeId, monthValue);
+  // fixedCosts items no longer carry their own amount (see getFixedCostsForStoreMonth) — resolve
+  // each item's amount for this specific month from costMonthlyAmounts, defaulting to 0 for a
+  // month nobody has entered/copied an amount for yet.
+  const fixedCosts = getFixedCostsForStoreMonth(state, storeId, monthValue)
+    .map((item) => ({ ...item, amount: getCostMonthlyAmount(state, item.id, monthValue) ?? 0 }));
   const variableCosts = getVariableCostsForStoreMonth(state, storeId, monthValue);
   const closingItems = getClosingItemsForStoreMonth(state, storeId, monthValue);
   const businessDates = getBusinessDayDates(monthValue);

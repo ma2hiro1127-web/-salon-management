@@ -94,15 +94,17 @@ export const defaultMonthlyTargetFieldSettings = () => ({
   },
 });
 
-// 「費用入力」の1件。applyModeはユーザーが選ぶ項目ではなくなり、startMonth/endMonthから
-// 自動的に決まる(終了月なし=毎月継続、終了月あり=単月/期間指定)。保存時に自動計算して
-// Supabaseへは引き続き書き込む(既存カラムはそのまま使う。表示・入力から外すだけ)。
+// 「費用入力」の1件(項目の定義のみ。金額は対象月ごとにcostMonthlyAmountsへ別保存する)。
+// periodTypeは「継続」「期間限定」の2択をユーザーに直接選ばせる明示フィールド。継続の場合、
+// startMonthは登録した月を内部的に自動セットするだけで画面には出さず、endMonthは常に空。
+// 期間限定の場合のみstartMonth/endMonthを年月ピッカーで入力させる。
 export const defaultFixedCostItem = {
   id: "",
   name: "",
   amount: "",
-  category: "家賃",
+  category: "",
   memo: "",
+  periodType: "ongoing",
   startMonth: "",
   endMonth: "",
 };
@@ -148,6 +150,10 @@ export const createInitialAppState = () => {
     allStoresHolidays: {},
     dailyResults: {},
     fixedCosts: {},
+    // cost_monthly_amounts — 対象月ごとの費用金額。fixedCosts(項目定義)とは別に
+    // `${costItemId}__${targetMonth}`でキー化する(storeId__monthではないためSTORE_KEYED_MAPS
+    // の対象外、variableCostsと同じ3か月ウィンドウでフェッチする)。
+    costMonthlyAmounts: {},
     variableCosts: {},
     monthClosing: {},
     monthClosingStatus: {},

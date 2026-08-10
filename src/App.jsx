@@ -39,9 +39,12 @@ import {
   getSalesStatusComment,
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
-  getCostPatternLabel,
+  getCostMonthlyAmount,
+  getPreviousMonthCostAmount,
+  buildCostMonthlyAmountsStateFromRows,
   formatLocalDate,
   getMonthInfo,
+  getMonthOffset,
   getTargetForStoreMonth,
   getAllStoresTargetForCompanyMonth,
   getAllStoresBusinessDaySettings,
@@ -108,6 +111,8 @@ import {
   loadFixedCostsForCompany,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
+  loadCostMonthlyAmountsForCompany,
+  upsertCostMonthlyAmountToSupabase,
   loadVariableCostsForCompany,
   loadMonthlyClosingItemsForCompany,
   upsertMonthlyClosingItemToSupabase,
@@ -190,12 +195,6 @@ const getMetricTone = (value, warningThreshold = 80, successThreshold = 100) => 
   if (value >= successThreshold) return "good";
   if (value >= warningThreshold) return "warning";
   return "danger";
-};
-
-const getMonthOffset = (monthValue, offset) => {
-  const [year, month] = monthValue.split("-").map(Number);
-  const nextDate = new Date(year, month - 1 + offset, 1);
-  return `${nextDate.getFullYear()}-${String(nextDate.getMonth() + 1).padStart(2, "0")}`;
 };
 
 // Covers the current month plus the two prior months the dashboard/ranking view compares
@@ -1541,6 +1540,14 @@ function App() {
       }
       const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data);
 
+      // cost_monthly_amounts (費用の対象月ごとの金額) — direct month lookup, no carry-forward
+      // (see getCostMonthlyAmount), so windowed the same as variable_costs/monthly_closings below.
+      const costMonthlyAmountsResult = await loadCostMonthlyAmountsForCompany({ companyId, yearMonths: closingMonths });
+      if (!costMonthlyAmountsResult.ok) {
+        throw costMonthlyAmountsResult.error || new Error("費用の月次金額データの取得に失敗しました");
+      }
+      const costMonthlyAmountsOverlay = buildCostMonthlyAmountsStateFromRows(costMonthlyAmountsResult.data);
+
       // variable_costs (販管費) and monthly_closing_items (月締め項目) — direct month lookup,
       // no carry-forward, so windowed the same as monthly_targets/monthly_closings above.
       const variableCostsResult = await loadVariableCostsForCompany({ companyId, yearMonths: closingMonths });
@@ -1624,6 +1631,24 @@ function App() {
       const unboundedExpectedKeysFor = (mergedMap) => new Set(
         Object.keys(mergedMap || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)))
       );
+      // cost_monthly_amounts is fetched windowed by target_month (like variable_costs), but keyed
+      // by cost item id rather than store id — so its expected-key set has to be built from
+      // whichever cost item ids belong to this company (from the just-merged fixedCosts map)
+      // crossed with the fetched month window, not from companyStoreIdPrefixes/windowedExpectedKeys.
+      const costMonthlyAmountsExpectedKeysFor = (mergedFixedCosts) => {
+        const costItemIds = new Set();
+        Object.entries(mergedFixedCosts || {}).forEach(([key, items]) => {
+          if (!companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix))) return;
+          (Array.isArray(items) ? items : []).forEach((item) => {
+            if (item.id) costItemIds.add(item.id);
+          });
+        });
+        const expected = new Set();
+        costItemIds.forEach((itemId) => {
+          closingMonths.forEach((month) => expected.add(`${itemId}__${month}`));
+        });
+        return expected;
+      };
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
           dailyResults: dailySalesState.dailyResults,
@@ -1643,6 +1668,7 @@ function App() {
           storeHolidays: storeHolidaysOverlay.storeHolidays,
           allStoresHolidays: allStoresHolidaysOverlay.allStoresHolidays,
           fixedCosts: fixedCostsOverlay.fixedCosts,
+          costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           variableCosts: variableCostsOverlay.variableCosts,
           monthClosing: monthlyClosingItemsOverlay.monthClosing,
           // company_settings also carries the global showOtherSales toggle and taxSettings —
@@ -1696,6 +1722,11 @@ function App() {
           storeHolidays: pruneStaleKeys(merged.storeHolidays, windowedExpectedKeys, storeHolidaysOverlay.storeHolidays),
           allStoresHolidays: pruneStaleKeys(merged.allStoresHolidays, companyMonthExpectedKeys, allStoresHolidaysOverlay.allStoresHolidays),
           fixedCosts: pruneStaleKeys(merged.fixedCosts, unboundedExpectedKeysFor(merged.fixedCosts), fixedCostsOverlay.fixedCosts),
+          // costMonthlyAmounts keys are `${costItemId}__${targetMonth}`, not `${storeId}__${month}`,
+          // so windowedExpectedKeys (built from store ids) can't be reused here — build the
+          // expected set from this company's own cost item ids (just resolved via the fixedCosts
+          // merge above) crossed with the fetched month window instead.
+          costMonthlyAmounts: pruneStaleKeys(merged.costMonthlyAmounts, costMonthlyAmountsExpectedKeysFor(merged.fixedCosts), costMonthlyAmountsOverlay.costMonthlyAmounts),
           variableCosts: pruneStaleKeys(merged.variableCosts, windowedExpectedKeys, variableCostsOverlay.variableCosts),
           monthClosing: pruneStaleKeys(merged.monthClosing, windowedExpectedKeys, monthlyClosingItemsOverlay.monthClosing),
         };
@@ -3442,28 +3473,40 @@ function App() {
     setNotice("入力をキャンセルしました");
   };
 
-  // 「費用入力」(旧・固定費/販管費の統合)。ユーザーには単月/期間指定/継続を選ばせず、開始月
-  // (必須)・終了月(任意)だけで自動判定する(終了月なし=継続、開始月===終了月=単月、それ以外=
-  // 期間指定 — 判定自体はgetFixedCostsForStoreMonth/getCostPatternLabelが行う)。
+  // 「費用入力」の項目定義(名前・カテゴリ・備考・継続/期間限定)。金額はここでは扱わず、
+  // persistCostMonthlyAmount経由でcostMonthlyAmountsに対象月ごと別保存する(下記参照)。
+  // 継続の場合、開始月は画面には出さず対象月(selectedMonth追従、942行目のeffect参照)を
+  // そのまま使い、終了月は常に空にする。期間限定の場合だけ開始月・終了月を必須にする。
   const submitFixedCost = async (event) => {
     event.preventDefault();
-    if (!fixedForm.name || !fixedForm.amount || !fixedForm.startMonth) {
-      setNotice("項目名・金額・開始月は必須です");
+    const isEditing = Boolean(fixedForm.id);
+    if (!fixedForm.name) {
+      setNotice("費用名は必須です");
       return;
     }
-    const startMonth = fixedForm.startMonth;
-    const endMonth = fixedForm.endMonth || "";
-    if (endMonth && endMonth < startMonth) {
-      setNotice("終了月は開始月以降にしてください");
+    if (!isEditing && !fixedForm.amount) {
+      setNotice("金額は必須です");
       return;
+    }
+    const periodType = fixedForm.periodType === "limited" ? "limited" : "ongoing";
+    let startMonth = fixedForm.startMonth || selectedMonth;
+    let endMonth = "";
+    if (periodType === "limited") {
+      if (!fixedForm.startMonth || !fixedForm.endMonth) {
+        setNotice("期間限定の場合は開始月・終了月が必須です");
+        return;
+      }
+      startMonth = fixedForm.startMonth;
+      endMonth = fixedForm.endMonth;
+      if (endMonth < startMonth) {
+        setNotice("終了月は開始月以降にしてください");
+        return;
+      }
     }
 
     const key = buildMonthKey(selectedStoreId, startMonth);
     const itemId = fixedForm.id || crypto.randomUUID();
-    // apply_mode is no longer a user choice — kept only for any code/tooling that still reads
-    // the column, always derived fresh from whether an end month was set.
-    const applyMode = endMonth ? "this-month" : "this-month-onward";
-    const nextItem = { ...fixedForm, id: itemId, amount: parseNumber(fixedForm.amount), startMonth, endMonth, applyMode };
+    const nextItem = { id: itemId, name: fixedForm.name, category: fixedForm.category || "", memo: fixedForm.memo || "", periodType, startMonth, endMonth };
 
     const { company, store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured) {
@@ -3501,12 +3544,18 @@ function App() {
       return { ...prev, fixedCosts: nextFixedCosts };
     });
 
+    // 新規登録時だけ、入力された金額をこの項目の対象月(selectedMonth)の初回金額として保存する。
+    // 編集時はこのフォームに金額欄自体を出していない(月次一覧側でのみ金額を編集する)ので触らない。
+    if (!isEditing && fixedForm.amount) {
+      await persistCostMonthlyAmount({ costItemId: itemId, targetMonth: selectedMonth, amount: fixedForm.amount });
+    }
+
     setNotice(fixedForm.id ? "費用を更新しました" : "費用を追加しました");
     setFixedForm({ ...defaultFixedCostItem, startMonth: selectedMonth });
   };
 
   const editFixedCost = (item) => {
-    setFixedForm(item);
+    setFixedForm({ ...defaultFixedCostItem, ...item, amount: "" });
     setNotice("編集モードです。内容を確認して更新してください。");
   };
 
@@ -3535,9 +3584,89 @@ function App() {
           nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).filter((item) => item.id !== itemId);
         }
       });
-      return { ...prev, fixedCosts: nextFixedCosts };
+      // Its cost_monthly_amounts rows cascade-delete in Supabase (FK on delete cascade); drop the
+      // matching local entries too so a deleted item's old amounts don't linger in memory.
+      const nextCostMonthlyAmounts = { ...prev.costMonthlyAmounts };
+      Object.keys(nextCostMonthlyAmounts).forEach((existingKey) => {
+        if (existingKey.startsWith(`${itemId}__`)) delete nextCostMonthlyAmounts[existingKey];
+      });
+      return { ...prev, fixedCosts: nextFixedCosts, costMonthlyAmounts: nextCostMonthlyAmounts };
     });
     setNotice("費用を削除しました");
+  };
+
+  // 対象月ごとの費用金額(cost_monthly_amounts)を1件upsertする。新規登録時の初回金額保存と、
+  // 月次一覧のインライン保存(saveCostAmountFor)の両方から共通で呼ぶ。
+  const persistCostMonthlyAmount = async ({ costItemId, targetMonth, amount }) => {
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured) {
+      if (!company?.id || !store?.id) {
+        setNotice("店舗情報を確認できませんでした");
+        return false;
+      }
+      const result = await upsertCostMonthlyAmountToSupabase({
+        costItemId,
+        companyId: company.id,
+        storeId: store.id,
+        targetMonth,
+        amount: parseNumber(amount),
+        userId: appState.currentUserId,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return false;
+      }
+    }
+    setAppState((prev) => ({
+      ...prev,
+      costMonthlyAmounts: {
+        ...prev.costMonthlyAmounts,
+        [`${costItemId}__${targetMonth}`]: { id: prev.costMonthlyAmounts?.[`${costItemId}__${targetMonth}`]?.id || "", amount: parseNumber(amount), updatedAt: new Date().toISOString() },
+      },
+    }));
+    return true;
+  };
+
+  // 月次一覧の金額欄はappStateのcostMonthlyAmountsをそのまま表示するのではなく、保存前の
+  // 未確定な入力をローカルのdraftとして持つ(選択中の月を切り替えたらリセットする、下のeffect
+  // 参照)。前月コピーはこのdraftに値を入れるだけで、保存ボタンを押すまで確定しない
+  // (「勝手に前月金額を確定させない」という要件のため)。
+  const [costAmountDrafts, setCostAmountDrafts] = useState({});
+  useEffect(() => {
+    setCostAmountDrafts({});
+  }, [selectedMonth, selectedStoreId]);
+
+  const getCostAmountDraft = (item) => {
+    if (Object.prototype.hasOwnProperty.call(costAmountDrafts, item.id)) return costAmountDrafts[item.id];
+    const saved = getCostMonthlyAmount(appState, item.id, selectedMonth);
+    return saved === undefined ? "" : String(saved);
+  };
+
+  const setCostAmountDraft = (itemId, value) => {
+    setCostAmountDrafts((prev) => ({ ...prev, [itemId]: value }));
+  };
+
+  const copyPreviousMonthAmountFor = (item) => {
+    const previous = getPreviousMonthCostAmount(appState, item.id, selectedMonth);
+    if (previous === undefined) return;
+    setCostAmountDraft(item.id, String(previous));
+  };
+
+  const saveCostAmountFor = async (item) => {
+    const draft = getCostAmountDraft(item);
+    if (draft === "") {
+      setNotice("金額を入力してください");
+      return;
+    }
+    const ok = await persistCostMonthlyAmount({ costItemId: item.id, targetMonth: selectedMonth, amount: draft });
+    if (ok) {
+      setCostAmountDrafts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+      setNotice("金額を保存しました");
+    }
   };
 
   const submitClosingItem = async (event) => {
@@ -4747,36 +4876,80 @@ function App() {
                         <h2>費用入力</h2>
                       </div>
                     </div>
-                    <form className="inline-form" onSubmit={submitFixedCost}>
-                      <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="項目名（例: 家賃、求人広告）" />
-                      <select value={fixedForm.category} onChange={(event) => setFixedForm((prev) => ({ ...prev, category: event.target.value }))}>
-                        {costCategories.map((category) => <option key={category} value={category}>{category}</option>)}
-                      </select>
-                      <input value={fixedForm.amount} onChange={(event) => setFixedForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="金額" type="number" />
-                      <label className="field">
-                        <span>開始月</span>
-                        <input type="month" value={fixedForm.startMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value }))} required />
-                      </label>
-                      <label className="field">
-                        <span>終了月（空欄=継続）</span>
-                        <input type="month" value={fixedForm.endMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, endMonth: event.target.value }))} />
-                      </label>
-                      <input value={fixedForm.memo || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, memo: event.target.value }))} placeholder="備考（任意）" />
+                    <form className="inline-form cost-item-form" onSubmit={submitFixedCost}>
+                      <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="費用名（例: 家賃、求人広告）" />
+                      {!fixedForm.id ? (
+                        <input value={fixedForm.amount} onChange={(event) => setFixedForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="今月の金額" type="number" />
+                      ) : null}
+                      <div className="segmented-control" role="group" aria-label="適用期間">
+                        <button
+                          type="button"
+                          className={fixedForm.periodType === "limited" ? "segmented-button" : "segmented-button active"}
+                          onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "ongoing", endMonth: "" }))}
+                        >
+                          継続
+                        </button>
+                        <button
+                          type="button"
+                          className={fixedForm.periodType === "limited" ? "segmented-button active" : "segmented-button"}
+                          onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "limited" }))}
+                        >
+                          期間限定
+                        </button>
+                      </div>
+                      {fixedForm.periodType === "limited" ? (
+                        <>
+                          <label className="field">
+                            <span>開始月</span>
+                            <input type="month" value={fixedForm.startMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value }))} required />
+                          </label>
+                          <label className="field">
+                            <span>終了月</span>
+                            <input type="month" value={fixedForm.endMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, endMonth: event.target.value }))} required />
+                          </label>
+                        </>
+                      ) : null}
                       <button className="primary-button" type="submit">{fixedForm.id ? "更新" : "追加"}</button>
                       {fixedForm.id ? <button className="secondary-button" type="button" onClick={cancelEditFixedCost}>キャンセル</button> : null}
+                      <details className="advanced-fields">
+                        <summary>詳細設定（任意）</summary>
+                        <div className="advanced-fields-body">
+                          <select value={fixedForm.category || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, category: event.target.value }))}>
+                            <option value="">カテゴリ未設定</option>
+                            {costCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+                          </select>
+                          <input value={fixedForm.memo || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, memo: event.target.value }))} placeholder="備考（任意）" />
+                        </div>
+                      </details>
                     </form>
                     <div className="list-card">
                       {fixedCosts.map((item) => {
-                        const pattern = getCostPatternLabel(item);
-                        const periodLabel = pattern === "ongoing" ? `${item.startMonth}〜継続中` : pattern === "single" ? `${item.startMonth}のみ` : `${item.startMonth}〜${item.endMonth}`;
+                        const periodLabel = item.periodType === "limited"
+                          ? (item.startMonth && item.startMonth === item.endMonth ? `${item.startMonth}のみ` : `${item.startMonth}〜${item.endMonth}`)
+                          : "継続";
+                        const previousAmount = getPreviousMonthCostAmount(appState, item.id, selectedMonth);
+                        const savedAmount = getCostMonthlyAmount(appState, item.id, selectedMonth);
+                        const draftAmount = getCostAmountDraft(item);
                         return (
-                          <div key={item.id} className="list-row">
+                          <div key={item.id} className="list-row cost-row">
                             <div>
                               <strong>{item.name}</strong>
-                              <small>{money(item.amount)} ／ {item.category} ／ {periodLabel}{item.memo ? ` ／ ${item.memo}` : ""}</small>
+                              <small>{item.periodType === "limited" ? "期間限定" : "継続"} ／ {periodLabel}{item.category ? ` ／ ${item.category}` : ""}{item.memo ? ` ／ ${item.memo}` : ""}</small>
+                            </div>
+                            <div className="cost-row-amount">
+                              <input
+                                type="number"
+                                value={draftAmount}
+                                placeholder={savedAmount === undefined ? "未入力" : ""}
+                                onChange={(event) => setCostAmountDraft(item.id, event.target.value)}
+                              />
+                              {previousAmount !== undefined ? (
+                                <button className="text-button" type="button" onClick={() => copyPreviousMonthAmountFor(item)}>前月をコピー（{money(previousAmount)}）</button>
+                              ) : null}
+                              <button className="secondary-button" type="button" onClick={() => saveCostAmountFor(item)}>保存</button>
                             </div>
                             <div className="row-actions">
-                              <button className="text-button" type="button" onClick={() => editFixedCost(item)}>編集</button>
+                              <button className="text-button" type="button" onClick={() => editFixedCost(item)}>項目編集</button>
                               <button className="text-button danger" type="button" onClick={() => removeFixedCost(item.id)}>削除</button>
                             </div>
                           </div>

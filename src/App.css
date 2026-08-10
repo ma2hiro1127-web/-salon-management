@@ -206,6 +206,28 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .list-row strong { display: block; }
 .list-row small { color: var(--muted); }
 .row-actions { display: flex; gap: 6px; }
+
+/* 費用入力: 継続/期間限定の2択トグル */
+.segmented-control { display: inline-flex; flex: 0 0 auto !important; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; align-self: center; }
+.segmented-button { border: 0; background: var(--surface-strong); color: var(--muted); padding: 0 16px; min-height: 44px; font-weight: 700; font-size: 0.86rem; cursor: pointer; transition: background 160ms ease, color 160ms ease; }
+.segmented-button + .segmented-button { border-left: 1px solid var(--border); }
+.segmented-button:hover:not(.active) { background: rgba(37, 99, 235, 0.06); }
+.segmented-button.active { background: var(--accent-soft); color: var(--accent); }
+
+/* 費用入力: カテゴリ・備考をまとめた任意項目の折りたたみ */
+.advanced-fields { flex: 1 1 100%; }
+.advanced-fields summary { cursor: pointer; color: var(--muted); font-size: 0.85rem; font-weight: 700; padding: 6px 0; list-style: none; }
+.advanced-fields summary::-webkit-details-marker { display: none; }
+.advanced-fields summary::before { content: "▸ "; }
+.advanced-fields[open] summary::before { content: "▾ "; }
+.advanced-fields-body { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.advanced-fields-body select, .advanced-fields-body input { flex: 1 1 160px; }
+
+/* 費用入力: 月次一覧の各行(金額のインライン入力+前月コピー+保存) */
+.cost-row { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+.cost-row-amount { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cost-row-amount input { width: 130px; min-height: 40px; }
+
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
 th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: left; }

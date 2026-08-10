@@ -65,6 +65,7 @@ export const validateRequiredKeys = (keys = {}) => {
     userId: "ユーザーID",
     targetMonth: "対象年月",
     businessDate: "日付",
+    costItemId: "費用項目ID",
   };
   const missing = Object.entries(keys)
     .filter(([, value]) => value === undefined || value === null || value === "")
@@ -1301,12 +1302,11 @@ export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryM
     store_id: storeId,
     entry_month: entryMonth,
     name: String(item?.name || ""),
-    amount: Number(item?.amount || 0),
     category: String(item?.category || ""),
     memo: String(item?.memo || ""),
+    period_type: item?.periodType === "limited" ? "limited" : "ongoing",
     start_month: String(item?.startMonth || ""),
     end_month: String(item?.endMonth || ""),
-    apply_mode: String(item?.applyMode || "this-month"),
     updated_by: userId,
     updated_at: new Date().toISOString(),
   };
@@ -1335,6 +1335,61 @@ export const deleteFixedCostFromSupabase = async ({ id }) => {
   } catch (error) {
     logSupabaseError({ operation: "deleteFixedCostFromSupabase", table: "fixed_costs", id, error });
     return { ok: false, error };
+  }
+};
+
+// cost_monthly_amounts — the per-month amount for a fixed_costs item, entered explicitly (no
+// automatic carry-forward from a prior month, see storage.js's getCostMonthlyAmount). Windowed
+// the same way variable_costs/monthly_closings are below (current + recent months), since the
+// monthly cost-entry screen and P&L only ever need a small recent window, not full history.
+// No `id` param: the (cost_item_id, target_month) unique constraint is what upsert conflicts on,
+// so the row's own id is irrelevant here — letting Postgres assign/keep it avoids any risk of a
+// stale locally-cached id mismatching the actual row.
+export const upsertCostMonthlyAmountToSupabase = async ({ costItemId, companyId, storeId, targetMonth, amount, userId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ costItemId, companyId, storeId, targetMonth, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertCostMonthlyAmountToSupabase", table: "cost_monthly_amounts", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
+    cost_item_id: costItemId,
+    company_id: companyId,
+    store_id: storeId,
+    target_month: targetMonth,
+    amount: Number(amount || 0),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("cost_monthly_amounts")
+      .upsert(payload, { onConflict: "cost_item_id,target_month" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertCostMonthlyAmountToSupabase", table: "cost_monthly_amounts", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const loadCostMonthlyAmountsForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("cost_monthly_amounts")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("target_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadCostMonthlyAmountsForCompany", table: "cost_monthly_amounts", companyId, error });
+    return { ok: false, error, data: [] };
   }
 };
 
