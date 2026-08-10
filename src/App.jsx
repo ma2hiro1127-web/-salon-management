@@ -774,8 +774,7 @@ function App() {
       : (currentCompany?.stores || []).filter((store) => allowedStoreIds.includes(store.id));
     const source = roleScoped.filter((store) => {
       if (!searchValue) return true;
-      const haystack = [store.name, store.address, store.phone, store.managerName, (store.serviceTypes || []).join(" ")].filter(Boolean).join(" ").toLowerCase();
-      return haystack.includes(searchValue);
+      return (store.name || "").toLowerCase().includes(searchValue);
     });
     return sortStoresForManagement(source, storeSort);
   }, [currentCompany?.stores, storeSearch, storeSort, currentRole, allowedStoreIds]);
@@ -2000,34 +1999,35 @@ function App() {
       if (!storeId) {
         throw new Error("店舗IDを取得できませんでした");
       }
-      const normalizedUrls = normalizeStoreUrls(storeForm.urls || []);
-      const serviceTypes = (storeForm.serviceTypes || "")
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean);
+      // The store management screen only ever collects 店舗名 now (see the STORE PROFILE →
+      // simple STORE section above) — storeForm no longer has real values for any of these
+      // other fields. Sourcing them from existingStore instead of storeForm means renaming a
+      // store never clobbers whatever profile data it already had in Supabase; a brand-new
+      // store simply has no existingStore to read from, so these stay blank defaults, which is
+      // correct (nothing was ever entered for it).
       const nextStore = {
         id: storeId,
         name: storeForm.name.trim(),
         code: existingStore?.code || createdStore?.code || "",
         companyId,
-        postalCode: storeForm.postalCode,
-        address: storeForm.address,
-        phone: storeForm.phone,
-        managerName: storeForm.managerName,
-        representativeName: storeForm.representativeName,
-        openingDate: storeForm.openingDate,
-        openingHour: storeForm.openingHour,
-        closingHour: storeForm.closingHour,
-        closedDays: storeForm.closedDays,
-        businessHours: storeForm.businessHours,
-        description: storeForm.description,
-        website: storeForm.website,
-        instagram: storeForm.instagram,
-        googleMapUrl: storeForm.googleMapUrl,
-        serviceTypes,
-        urls: normalizedUrls,
-        status: existingStore?.status || storeForm.status || "active",
-        isActive: storeForm.isActive !== false,
+        postalCode: existingStore?.postalCode || "",
+        address: existingStore?.address || "",
+        phone: existingStore?.phone || "",
+        managerName: existingStore?.managerName || "",
+        representativeName: existingStore?.representativeName || "",
+        openingDate: existingStore?.openingDate || "",
+        openingHour: existingStore?.openingHour || "09:00",
+        closingHour: existingStore?.closingHour || "20:00",
+        closedDays: existingStore?.closedDays || "月",
+        businessHours: existingStore?.businessHours || "09:00-20:00",
+        description: existingStore?.description || "",
+        website: existingStore?.website || "",
+        instagram: existingStore?.instagram || "",
+        googleMapUrl: existingStore?.googleMapUrl || "",
+        serviceTypes: existingStore?.serviceTypes || [],
+        urls: existingStore?.urls || [],
+        status: existingStore?.status || "active",
+        isActive: existingStore?.isActive !== false,
         settings: { ...createStoreSettingsDefaults(), ...(existingStore?.settings || {}), ...(storeSettingsForm || {}) },
       };
       if (isSupabaseConfigured) {
@@ -4962,11 +4962,11 @@ function App() {
                 }}>店舗を追加</button>
               )}
             </div>
-            <p className="management-help">店舗ごとに基本情報・売上目標・問い合わせ先・URLをまとめて管理できるように整理しました。検索・並替え・複製・アーカイブもすぐに利用できます。</p>
+            <p className="management-help">店舗名を登録するだけで、日次売上・月間目標・費用・月締め・スタッフ所属・権限・店舗ランキング等を店舗ごとに紐づけて管理できます。</p>
             <div className="inline-form">
               <label className="field">
                 <span>検索</span>
-                <input value={storeSearch} onChange={(event) => setStoreSearch(event.target.value)} placeholder="店舗名・住所・担当名" />
+                <input value={storeSearch} onChange={(event) => setStoreSearch(event.target.value)} placeholder="店舗名で検索" />
               </label>
               <label className="field">
                 <span>並び替え</span>
@@ -4983,88 +4983,22 @@ function App() {
             <div className="setup-card" ref={storeFormSectionRef}>
               <div className="panel-heading compact">
                 <div>
-                  <p className="eyebrow">STORE PROFILE</p>
-                  <h3>店舗プロフィール</h3>
+                  <p className="eyebrow">STORE</p>
+                  <h3>{storeEditId ? "店舗名を編集" : "店舗を登録"}</h3>
                 </div>
               </div>
+              {/* 店舗登録・編集で入力するのは店舗名のみ — store_idは自動発行、company_idは
+                  ログイン中の会社へ自動で紐づく。以前あった住所・電話番号・営業時間・URL等の
+                  詳細プロフィール項目は、店舗を経営データに紐づけるための識別画面としては
+                  不要なため画面から外した(Supabase側のカラム・既存データはそのまま)。 */}
               <div className="store-form-grid">
                 <label className="field">
                   <span>店舗名</span>
                   <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
                 </label>
-                <label className="field">
-                  <span>郵便番号</span>
-                  <input value={storeForm.postalCode} onChange={(event) => setStoreForm((prev) => ({ ...prev, postalCode: event.target.value }))} placeholder="郵便番号" />
-                </label>
-                <label className="field">
-                  <span>住所</span>
-                  <input value={storeForm.address} onChange={(event) => setStoreForm((prev) => ({ ...prev, address: event.target.value }))} placeholder="住所" />
-                </label>
-                <label className="field">
-                  <span>電話番号</span>
-                  <input value={storeForm.phone} onChange={(event) => setStoreForm((prev) => ({ ...prev, phone: event.target.value }))} placeholder="電話番号" />
-                </label>
-                <label className="field">
-                  <span>店長名</span>
-                  <input value={storeForm.managerName} onChange={(event) => setStoreForm((prev) => ({ ...prev, managerName: event.target.value }))} placeholder="店長名" />
-                </label>
-                <label className="field">
-                  <span>担当者名</span>
-                  <input value={storeForm.representativeName} onChange={(event) => setStoreForm((prev) => ({ ...prev, representativeName: event.target.value }))} placeholder="担当者名" />
-                </label>
-                <label className="field">
-                  <span>開店日</span>
-                  <input type="date" value={storeForm.openingDate} onChange={(event) => setStoreForm((prev) => ({ ...prev, openingDate: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>営業時間</span>
-                  <input value={storeForm.businessHours} onChange={(event) => setStoreForm((prev) => ({ ...prev, businessHours: event.target.value }))} placeholder="09:00-20:00" />
-                </label>
-                <label className="field">
-                  <span>開店時間</span>
-                  <input type="time" value={storeForm.openingHour} onChange={(event) => setStoreForm((prev) => ({ ...prev, openingHour: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>閉店時間</span>
-                  <input type="time" value={storeForm.closingHour} onChange={(event) => setStoreForm((prev) => ({ ...prev, closingHour: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>定休日</span>
-                  <input value={storeForm.closedDays} onChange={(event) => setStoreForm((prev) => ({ ...prev, closedDays: event.target.value }))} placeholder="定休日" />
-                </label>
-                <label className="field">
-                  <span>サービス内容</span>
-                  <input value={storeForm.serviceTypes} onChange={(event) => setStoreForm((prev) => ({ ...prev, serviceTypes: event.target.value }))} placeholder="カット,カラー" />
-                </label>
-                <label className="field">
-                  <span>公式サイト</span>
-                  <input value={storeForm.website} onChange={(event) => setStoreForm((prev) => ({ ...prev, website: event.target.value }))} placeholder="https://" />
-                </label>
-                <label className="field">
-                  <span>Instagram</span>
-                  <input value={storeForm.instagram} onChange={(event) => setStoreForm((prev) => ({ ...prev, instagram: event.target.value }))} placeholder="https://" />
-                </label>
-                <label className="field">
-                  <span>Google Map</span>
-                  <input value={storeForm.googleMapUrl} onChange={(event) => setStoreForm((prev) => ({ ...prev, googleMapUrl: event.target.value }))} placeholder="https://" />
-                </label>
-              </div>
-              <label className="field">
-                <span>店舗メモ</span>
-                <textarea value={storeForm.description} onChange={(event) => setStoreForm((prev) => ({ ...prev, description: event.target.value }))} placeholder="営業時間・スタッフ体制・備考" rows={4} />
-              </label>
-              <div className="store-url-list">
-                {(storeForm.urls || []).map((entry, index) => (
-                  <div key={`${entry.label || "url"}-${index}`} className="store-url-row">
-                    <input value={entry.label || "URL"} onChange={(event) => setStoreForm((prev) => ({ ...prev, urls: prev.urls.map((item, itemIndex) => itemIndex === index ? { ...item, label: event.target.value } : item) }))} placeholder="ラベル" />
-                    <input value={entry.value || ""} onChange={(event) => setStoreForm((prev) => ({ ...prev, urls: prev.urls.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) }))} placeholder="https://" />
-                    <button className="text-button danger" type="button" onClick={() => setStoreForm((prev) => ({ ...prev, urls: prev.urls.filter((_, itemIndex) => itemIndex !== index) }))}>削除</button>
-                  </div>
-                ))}
-                <button className="secondary-button" type="button" onClick={() => setStoreForm((prev) => ({ ...prev, urls: [...(prev.urls || []), { label: "URL", value: "" }] }))}>URLを追加</button>
               </div>
               <div className="button-row">
-                <button className="primary-button" type="button" onClick={handleSaveStore}>{storeEditId ? "店舗情報を更新" : "店舗追加"}</button>
+                <button className="primary-button" type="button" onClick={handleSaveStore}>{storeEditId ? "店舗名を更新" : "店舗追加"}</button>
                 <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreForm(createStoreFormDefaults()); }}>クリア</button>
               </div>
             </div>
@@ -5182,11 +5116,6 @@ function App() {
                         </div>
                         <span className={`status-pill ${store.isActive === false || store.status === "archived" ? "error" : "saved"}`}>{statusLabel}</span>
                       </div>
-                      <div className="info-card-meta">
-                        <span>{store.address || "住所未設定"}</span>
-                        <span>{store.phone || "電話未設定"}</span>
-                        <span>{store.managerName || "店長未設定"}</span>
-                      </div>
                       <div className="store-metrics">
                         <div>
                           <span>達成率</span>
@@ -5200,9 +5129,6 @@ function App() {
                           <span>スタッフ</span>
                           <strong>{summary.staffCount}人</strong>
                         </div>
-                      </div>
-                      <div className="store-chip-row">
-                        {(store.serviceTypes || []).slice(0, 3).map((serviceType) => <span key={serviceType} className="status-chip neutral">{serviceType}</span>)}
                       </div>
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleStoreSwitch(store.name)}>選択</button>
