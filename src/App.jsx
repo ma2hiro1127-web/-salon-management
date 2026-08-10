@@ -2655,16 +2655,12 @@ function App() {
 
   // 「消費税を考慮する」+ 引当率専用の保存(company_settings.taxSettings列)。companySettingsForm
   // /handleSaveCompanySettingsとは独立して保存できるよう分けている(settings列を巻き込まない)。
-  const handleSaveTaxSettings = async () => {
+  // 会社設定画面・損益表内のどちらからでも呼べる共通保存(company_settings.taxSettings列)。
+  const persistTaxSettings = async (nextTaxSettings) => {
     if (!currentCompany?.id) {
       setNotice("会社情報を確認できませんでした");
-      return;
+      return false;
     }
-    const nextTaxSettings = {
-      ...appState.taxSettings,
-      considerConsumptionTax: Boolean(taxSettingsForm.considerConsumptionTax),
-      consumptionTaxReserveRate: parseNumber(taxSettingsForm.consumptionTaxReserveRate),
-    };
     if (isSupabaseConfigured) {
       const result = await upsertCompanySettings({
         companyId: currentCompany.id,
@@ -2675,11 +2671,30 @@ function App() {
       });
       if (!result.ok) {
         setNotice(getSupabaseErrorMessage(result.error));
-        return;
+        return false;
       }
     }
     setAppState((prev) => ({ ...prev, taxSettings: nextTaxSettings }));
-    setNotice("消費税の設定を保存しました");
+    return true;
+  };
+
+  const handleSaveTaxSettings = async () => {
+    const ok = await persistTaxSettings({
+      ...appState.taxSettings,
+      considerConsumptionTax: Boolean(taxSettingsForm.considerConsumptionTax),
+      consumptionTaxReserveRate: parseNumber(taxSettingsForm.consumptionTaxReserveRate),
+    });
+    if (ok) setNotice("消費税の設定を保存しました");
+  };
+
+  // 損益表の「消費税考慮」セクションのON/OFFトグル用。在庫管理トグルと同様、単一のON/OFFなので
+  // 切り替え次第すぐ保存する(引当率は別途、既存のtaxSettingsForm+保存ボタンで確定させる)。
+  const handleToggleConsiderConsumptionTax = async (checked) => {
+    const ok = await persistTaxSettings({ ...appState.taxSettings, considerConsumptionTax: checked });
+    if (ok) {
+      setTaxSettingsForm((prev) => ({ ...prev, considerConsumptionTax: checked }));
+      setNotice(checked ? "消費税考慮をONにしました" : "消費税考慮をOFFにしました");
+    }
   };
 
   const applyDailyFieldPreset = (presetKey) => {
@@ -5226,7 +5241,11 @@ function App() {
                       </div>
                     </div>
                     <div className="summary-grid">
-                      <div className="summary-card"><span>仕入・発注額</span><strong>{money(summary.purchaseAmount)}</strong></div>
+                      {/* 在庫管理OFFの店舗は仕入・発注額=材料・仕入原価がそのまま同額になるため、
+                          重複を避けて原価の内訳(仕入・発注額)は在庫管理ONの店舗だけ表示する。 */}
+                      {useInventoryTracking ? (
+                        <div className="summary-card"><span>仕入・発注額</span><strong>{money(summary.purchaseAmount)}</strong></div>
+                      ) : null}
                       <div className="summary-card"><span>材料・仕入原価</span><strong>{money(summary.costOfGoodsSold)}</strong></div>
                       <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
                     </div>
@@ -5241,7 +5260,6 @@ function App() {
                       <div className="summary-card"><span>人件費</span><strong>{money(summary.laborCost)}</strong></div>
                       <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
                       <div className="summary-card"><span>経費合計</span><strong>{money(summary.expenseCost)}</strong></div>
-                      <div className="summary-card"><span>費用合計</span><strong>{money(summary.expenseTotal)}</strong></div>
                     </div>
 
                     <div className="panel-heading compact">
@@ -5252,17 +5270,40 @@ function App() {
                     </div>
                     <div className="summary-grid">
                       <div className="summary-card"><span>粗利益</span><strong>{money(summary.grossProfit)}</strong></div>
-                      <div className="summary-card"><span>営業利益</span><strong>{money(summary.operatingProfit)}</strong></div>
-                      <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
+                      <div className="summary-card emphasize"><span>営業利益</span><strong>{money(summary.operatingProfit)}</strong></div>
+                      <div className="summary-card emphasize"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
                     </div>
 
+                    {/* 経営指標(KPI)セクションは廃止し、同じ位置に「消費税考慮」を配置する。損益表の
+                        主役はあくまで営業利益/営業利益率(上の利益グループ)で、消費税関連は別枠の
+                        参考情報として混同しないよう分けている。 */}
+                    <div className="panel-heading compact">
+                      <div>
+                        <p className="eyebrow">TAX</p>
+                        <h3>消費税考慮</h3>
+                      </div>
+                    </div>
+                    <div className="toggle-panel">
+                      <div>
+                        <strong>消費税を考慮する</strong>
+                        <small>{appState.taxSettings?.considerConsumptionTax ? "ON" : "OFF"}</small>
+                      </div>
+                      <button
+                        className={appState.taxSettings?.considerConsumptionTax ? "secondary-button" : "primary-button"}
+                        type="button"
+                        onClick={() => handleToggleConsiderConsumptionTax(!appState.taxSettings?.considerConsumptionTax)}
+                      >
+                        {appState.taxSettings?.considerConsumptionTax ? "OFFにする" : "ONにする"}
+                      </button>
+                    </div>
                     {appState.taxSettings?.considerConsumptionTax ? (
                       <>
-                        <div className="panel-heading compact">
-                          <div>
-                            <p className="eyebrow">TAX</p>
-                            <h3>消費税を考慮する</h3>
-                          </div>
+                        <div className="inline-form">
+                          <label className="field">
+                            <span>消費税引当率（%）</span>
+                            <input type="number" value={taxSettingsForm.consumptionTaxReserveRate} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: event.target.value }))} placeholder="例: 5" />
+                          </label>
+                          <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>引当率を保存</button>
                         </div>
                         <div className="summary-grid">
                           <div className="summary-card"><span>消費税引当額（概算）</span><strong>{money(summary.consumptionTaxReserveAmount)}</strong></div>
@@ -5271,18 +5312,6 @@ function App() {
                         <div className="helper-text">消費税引当額は店舗経営・資金管理用の概算です。実際の納税額は税務処理・課税方式等により異なります。</div>
                       </>
                     ) : null}
-
-                    {/* 客数目標・AIコメントはダッシュボードで既に確認できるため、ここでは重複表示せず、
-                        損益表でしか見られない「実績ベースの経営指標」だけを表示する。 */}
-                    <div className="panel-heading compact">
-                      <div>
-                        <p className="eyebrow">KPI</p>
-                        <h3>経営指標</h3>
-                      </div>
-                    </div>
-                    <div className="summary-grid">
-                      <div className="summary-card"><span>広告費率</span><strong>{percent(summary.adRate)}</strong></div>
-                    </div>
                   </section>
                 )}
               </>

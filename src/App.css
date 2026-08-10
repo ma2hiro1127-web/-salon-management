@@ -180,6 +180,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .summary-card, .ratio-card { padding: 14px; display: flex; flex-direction: column; gap: 6px; }
 .summary-card.compact { padding: 12px 14px; }
+/* 損益表: 営業利益/営業利益率カードを他のカードより目立たせ、消費税考慮後の数字と混同しないようにする */
+.summary-card.emphasize { background: linear-gradient(135deg, rgba(47, 125, 246, 0.14), rgba(255, 255, 255, 0.98)); border-color: rgba(47, 125, 246, 0.16); }
+.summary-card.emphasize strong { color: var(--accent); }
 .daily-progress-card { padding: 14px; border-radius: 18px; border: 1px solid var(--border); background: linear-gradient(135deg, var(--accent-soft), rgba(255,255,255,0.88)); display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .daily-progress-main { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 .daily-progress-value { font-size: 1.35rem; font-weight: 800; color: var(--text); }
