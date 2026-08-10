@@ -61,7 +61,8 @@ test("calculateMonthSummary returns sales and cost ratios from new monthly struc
   assert.equal(summary.fixedCost, 120000);
   assert.equal(summary.variableCost, 80000);
   assert.equal(summary.laborCost, 150000);
-  assert.equal(summary.materialCost, 40000);
+  assert.equal(summary.purchaseAmount, 40000);
+  assert.equal(summary.costOfGoodsSold, 40000);
 });
 
 test("calculateMonthSummary: adCost/adRate only count the 広告費 category (and legacy 定額広告費), never the whole cost total", () => {
@@ -101,7 +102,7 @@ test("calculateMonthSummary: rates are 0 (not NaN/Infinity) when sales is 0", ()
   assert.equal(summary.sales, 0);
   assert.equal(summary.adRate, 0);
   assert.equal(summary.laborRate, 0);
-  assert.equal(summary.materialRate, 0);
+  assert.equal(summary.costOfGoodsSoldRate, 0);
   assert.equal(summary.operatingMargin, 0);
   assert.equal(Number.isFinite(summary.adRate), true);
 });
@@ -152,8 +153,111 @@ test("month summary separates fixed and variable costs from closing items", () =
 
   assert.equal(summary.fixedCost, 120000);
   assert.equal(summary.variableCost, 80000);
+  // equipmentInvestmentCost is still computed (backward-compat for closingItems already tagged
+  // 設備投資) but no longer subtracted anywhere — 設備投資 has no dedicated P&L card or role
+  // anymore (see calculateMonthSummary's design notes); a store that wants it reflected now
+  // registers it as a plain 費用 item instead.
   assert.equal(summary.equipmentInvestmentCost, 30000);
-  assert.equal(summary.adjustedOperatingProfit, 110000);
+  assert.equal(summary.expenseCost, 200000);
+  assert.equal(summary.operatingProfit, 110000);
+});
+
+test("grossProfit only deducts costOfGoodsSold (not labor or 経費) — 粗利益 = 総売上 - 材料・仕入原価", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [
+    { id: "close-1", name: "人件費", amount: 150000, category: "人件費" },
+    { id: "close-2", name: "仕入・発注額", amount: 40000, category: "仕入・発注額" },
+  ];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.purchaseAmount, 40000);
+  assert.equal(summary.grossProfit, 460000); // 500000 - 40000, labor not deducted here
+  assert.equal(summary.operatingProfit, 310000); // grossProfit - laborCost(150000) - expenseCost(0)
+});
+
+test("costOfGoodsSold: 在庫管理OFF(既定)では仕入・発注額がそのまま原価になる", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額" }];
+  // 在庫金額を登録しても、useInventoryTracking:falseの場合は一切参照されない。
+  state.storeInventoryBalances = { [`${store}__2026-07`]: { amount: 999999 }, [`${store}__2026-08`]: { amount: 1 } };
+
+  const summary = calculateMonthSummary(state, store, month, { useInventoryTracking: false });
+
+  assert.equal(summary.costOfGoodsSold, 80000);
+});
+
+test("costOfGoodsSold: 在庫管理ONでは前月末在庫+当月仕入・発注額-当月末在庫で計算する", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額" }];
+  state.storeInventoryBalances = {
+    [`${store}__2026-07`]: { amount: 100000 }, // 前月末在庫
+    [`${store}__2026-08`]: { amount: 60000 }, // 当月末在庫
+  };
+
+  const summary = calculateMonthSummary(state, store, month, { useInventoryTracking: true });
+
+  assert.equal(summary.costOfGoodsSold, 120000); // 100000 + 80000 - 60000
+  assert.equal(summary.costOfGoodsSoldRate, 24); // 120000 / 500000 * 100
+});
+
+test("costOfGoodsSold: 在庫管理ONで前月末在庫が未登録(初回利用)の場合は0円として計算する(UI側で期首在庫入力を促す)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額" }];
+  state.storeInventoryBalances = { [`${store}__2026-08`]: { amount: 60000 } };
+
+  const summary = calculateMonthSummary(state, store, month, { useInventoryTracking: true });
+
+  assert.equal(summary.costOfGoodsSold, 20000); // 0(前月末在庫未登録) + 80000 - 60000
+});
+
+test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 常に計算されるが、OFFなら引当率未設定=0円のまま", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.consumptionTaxReserveAmount, 0);
+  assert.equal(summary.profitAfterConsumptionTaxReserve, summary.operatingProfit);
+});
+
+test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 引当率が設定されていれば総売上×引当率で計算する", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
+  state.taxSettings = { ...state.taxSettings, considerConsumptionTax: true, consumptionTaxReserveRate: 5 };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.consumptionTaxReserveAmount, 50000); // 1000000 * 5%
+  assert.equal(summary.profitAfterConsumptionTaxReserve, summary.operatingProfit - 50000);
 });
 
 test("customer target summary returns a safe zero value when no business days remain", () => {

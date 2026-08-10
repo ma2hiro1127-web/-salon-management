@@ -216,7 +216,7 @@ export const loadStoreInputSettingsForCompany = async ({ companyId }) => {
 // Partial upserts are safe here: PostgREST's upsert only sets the columns present in the
 // payload, so saving just dailyFields (or just monthlyTargetFields) can never null out the
 // other column on an existing row.
-export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields }) => {
+export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId, storeId });
   if (validationError) {
@@ -226,6 +226,7 @@ export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields
   const payload = { company_id: companyId, store_id: storeId };
   if (dailyFields !== undefined) payload.daily_fields = dailyFields;
   if (monthlyTargetFields !== undefined) payload.monthly_target_fields = monthlyTargetFields;
+  if (useInventoryTracking !== undefined) payload.use_inventory_tracking = Boolean(useInventoryTracking);
   try {
     const { data, error } = await supabase.from("store_input_settings").upsert(payload, { onConflict: "company_id,store_id" }).select().single();
     if (error) throw error;
@@ -1393,6 +1394,57 @@ export const loadCostMonthlyAmountsForCompany = async ({ companyId, yearMonths =
   }
 };
 
+// store_inventory_balances — the 月末在庫 amount for a store, per target month. "期首在庫" is
+// saved the same way, just under the month before tracking started (see storage.js's
+// getPreviousMonthInventoryBalance). No `id` param: (store_id, target_month) is the unique
+// constraint the upsert conflicts on, matching upsertCostMonthlyAmountToSupabase's reasoning.
+export const upsertStoreInventoryBalanceToSupabase = async ({ companyId, storeId, targetMonth, amount, userId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, targetMonth, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertStoreInventoryBalanceToSupabase", table: "store_inventory_balances", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
+    company_id: companyId,
+    store_id: storeId,
+    target_month: targetMonth,
+    closing_amount: Number(amount || 0),
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("store_inventory_balances")
+      .upsert(payload, { onConflict: "store_id,target_month" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertStoreInventoryBalanceToSupabase", table: "store_inventory_balances", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const loadStoreInventoryBalancesForCompany = async ({ companyId, yearMonths = [] }) => {
+  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("store_inventory_balances")
+      .select("*")
+      .eq("company_id", companyId)
+      .in("target_month", yearMonths);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreInventoryBalancesForCompany", table: "store_inventory_balances", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
 // variable_costs (販管費) — direct month lookup, no carry-forward, so unlike fixed_costs this
 // can safely be windowed the same way monthly_targets/monthly_closings are (current + recent
 // months) rather than fetched unbounded for the whole company.
@@ -1509,6 +1561,8 @@ export const upsertCompanySettings = async ({ companyId, userId, settings, taxSe
     tax_rounding_mode: String(taxSettings?.roundingMode || "half-up"),
     tax_sales_input_mode: String(taxSettings?.salesInputMode || "inclusive"),
     tax_expense_input_mode: String(taxSettings?.expenseInputMode || "inclusive"),
+    consider_consumption_tax: Boolean(taxSettings?.considerConsumptionTax),
+    consumption_tax_reserve_rate: Number(taxSettings?.consumptionTaxReserveRate ?? 0),
     updated_by: userId,
     updated_at: new Date().toISOString(),
   };

@@ -384,6 +384,21 @@ export const buildCostMonthlyAmountsStateFromRows = (rows = []) => {
   return { costMonthlyAmounts };
 };
 
+// store_inventory_balances — the closing (月末) inventory amount for a store, per target month,
+// keyed by `${store_id}__${target_month}` for O(1) lookup from getInventoryBalance below. The
+// "期首在庫" (opening inventory, used only the first time a store turns inventory tracking on)
+// is stored under the same shape at target_month = (first tracked month - 1) — see
+// getPreviousMonthInventoryBalance and its caller in calculateMonthSummary.
+export const buildStoreInventoryBalancesStateFromRows = (rows = []) => {
+  const storeInventoryBalances = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.store_id || !row.target_month) return;
+    const key = `${row.store_id}__${row.target_month}`;
+    storeInventoryBalances[key] = { id: row.id, amount: row.closing_amount, updatedAt: row.updated_at || "" };
+  });
+  return { storeInventoryBalances };
+};
+
 // variable_costs (販管費) — direct month lookup (target_month), no carry-forward.
 export const buildVariableCostsStateFromRows = (rows = []) => {
   const variableCosts = {};
@@ -444,6 +459,8 @@ export const buildCompanySettingsFromRow = (row) => {
       roundingMode: row.tax_rounding_mode || "half-up",
       salesInputMode: row.tax_sales_input_mode || "inclusive",
       expenseInputMode: row.tax_expense_input_mode || "inclusive",
+      considerConsumptionTax: Boolean(row.consider_consumption_tax),
+      consumptionTaxReserveRate: row.consumption_tax_reserve_rate ?? 0,
     },
     showOtherSales: Boolean(row.show_other_sales),
   };
@@ -603,6 +620,7 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   dailyResultBackups: mergeItemArrayMap(localState.dailyResultBackups, remoteState.dailyResultBackups),
   fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
+  storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
   targets: mergeShallowMap(localState.targets, remoteState.targets),
@@ -798,6 +816,7 @@ export const normalizeAppState = (value) => {
     dailyResults: normalizeObjectMap(source.dailyResults),
     fixedCosts: normalizeObjectMap(source.fixedCosts),
     costMonthlyAmounts: normalizeObjectMap(source.costMonthlyAmounts),
+    storeInventoryBalances: normalizeObjectMap(source.storeInventoryBalances),
     variableCosts: normalizeObjectMap(source.variableCosts),
     monthClosing: normalizeObjectMap(source.monthClosing),
     monthClosingStatus: normalizeObjectMap(source.monthClosingStatus),
@@ -1039,6 +1058,17 @@ export const getCostMonthlyAmount = (state, costItemId, monthValue) => {
 export const getPreviousMonthCostAmount = (state, costItemId, monthValue) =>
   getCostMonthlyAmount(state, costItemId, getMonthOffset(monthValue, -1));
 
+// 対象月末時点の在庫金額(store_inventory_balances)。未入力の月はundefined。
+export const getInventoryBalance = (state, storeId, monthValue) => {
+  if (!storeId) return undefined;
+  return state.storeInventoryBalances?.[`${storeId}__${monthValue}`]?.amount;
+};
+
+// 「前月末在庫」参照用。初回利用時にこれがundefinedなら、UI側で「期首在庫」入力欄を出し、
+// 入力値をmonthValueの前月分としてこのテーブルに保存する(getPreviousMonthCostAmountと同じ考え方)。
+export const getPreviousMonthInventoryBalance = (state, storeId, monthValue) =>
+  getInventoryBalance(state, storeId, getMonthOffset(monthValue, -1));
+
 export const getVariableCostsForStoreMonth = (state, storeId, monthValue) => {
   const items = state.variableCosts?.[buildMonthKey(storeId, monthValue)] || [];
   return [...items];
@@ -1049,7 +1079,7 @@ export const getClosingItemsForStoreMonth = (state, storeId, monthValue) => {
   return [...items];
 };
 
-export const calculateMonthSummary = (state, storeId, monthValue) => {
+export const calculateMonthSummary = (state, storeId, monthValue, options = {}) => {
   const target = getTargetForStoreMonth(state, storeId, monthValue);
   const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
   // fixedCosts items no longer carry their own amount (see getFixedCostsForStoreMonth) — resolve
@@ -1061,8 +1091,6 @@ export const calculateMonthSummary = (state, storeId, monthValue) => {
   const closingItems = getClosingItemsForStoreMonth(state, storeId, monthValue);
   const businessDates = getBusinessDayDates(monthValue);
   const businessDaySummary = getBusinessDaySummary(state, storeId, monthValue);
-  const taxRate = Number(state.taxSettings?.rate ?? 0.1);
-  const roundingMode = state.taxSettings?.roundingMode || "half-up";
   const now = new Date();
   const todayIso = formatLocalDate(now);
   const selectedCurrentMonth = monthValue === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -1078,14 +1106,22 @@ export const calculateMonthSummary = (state, storeId, monthValue) => {
   const reviewCount = effectiveEntries.reduce((total, item) => total + parseNumber(item.reviewCount || 0), 0);
 
   const laborCost = closingItems.filter((item) => item.category === "人件費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const materialCost = closingItems.filter((item) => item.category === "材料費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const orderCost = closingItems.filter((item) => item.category === "発注費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
+  // 仕入・発注額(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
+  // 入力する)。「材料費」「発注費」は統合前の旧カテゴリ名で、後方互換のため引き続き拾う
+  // (現行UIの新規入力は必ず「仕入・発注額」というカテゴリ名で保存される)。
+  const purchaseAmount = closingItems
+    .filter((item) => item.category === "仕入・発注額" || item.category === "材料費" || item.category === "発注費")
+    .reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const equipmentInvestmentCost = closingItems.filter((item) => item.category === "設備投資").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const fixedCost = fixedCosts.reduce((sum, item) => sum + parseNumber(item.amount), 0) + closingItems.filter((item) => item.category === "固定費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const regularVariableCost = variableCosts.filter((item) => item.type !== "temporary").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const temporaryCost = variableCosts.filter((item) => item.type === "temporary").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const variableCost = regularVariableCost + temporaryCost + closingItems.filter((item) => item.category === "販管費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
   const otherCost = closingItems.filter((item) => item.category === "その他").reduce((sum, item) => sum + parseNumber(item.amount), 0);
+  // 経費合計: 費用入力(継続/期間限定費用、fixedCost)・レガシー販管費(variableCost)・月締めの
+  // 「その他」(otherCost)を1本化した表示用合計。固定費/販管費/その他経費という区分をユーザーに
+  // 判断させない(要件7-8)。個々の内訳計算式自体は変えていない。
+  const expenseCost = fixedCost + variableCost + otherCost;
   // 経営指標の広告費率用。費用全体ではなく「広告費」カテゴリのみを集計する。旧「定額広告費」
   // (販管費が分かれていた頃のfixedCostCategories)で保存された既存データも壊さず引き続き
   // 広告費として集計できるよう、両方の名称を対象にする。fixedCosts/variableCosts/closingItems
@@ -1093,11 +1129,25 @@ export const calculateMonthSummary = (state, storeId, monthValue) => {
   const adCost = [...fixedCosts, ...variableCosts, ...closingItems]
     .filter((item) => item.category === "広告費" || item.category === "定額広告費")
     .reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const expenseTotal = laborCost + materialCost + orderCost + fixedCost + variableCost + equipmentInvestmentCost + otherCost;
-  const grossProfit = sales - materialCost - orderCost - laborCost;
-  const operatingProfit = sales - expenseTotal;
-  const adjustedOperatingProfit = sales - expenseTotal + equipmentInvestmentCost;
-  const taxSummary = calculateTaxSummary({ sales, totalExpenses: expenseTotal, taxRate, roundingMode });
+
+  // 材料・仕入原価: 在庫管理を使わない店舗(既定)は仕入・発注額をそのまま原価とする。使う店舗は
+  // 前月末在庫+当月仕入・発注額-当月末在庫で計算する。前月末在庫が未入力(初回利用)の場合は
+  // 0円として計算する — 「勝手に0円で確定させない」という要件は、この関数ではなくUI側で
+  // 「期首在庫」の入力を促す(未入力であることを可視化する)ことで満たす。
+  const useInventoryTracking = Boolean(options.useInventoryTracking);
+  const openingInventory = useInventoryTracking ? (getPreviousMonthInventoryBalance(state, storeId, monthValue) ?? 0) : 0;
+  const closingInventory = useInventoryTracking ? (getInventoryBalance(state, storeId, monthValue) ?? 0) : 0;
+  const costOfGoodsSold = useInventoryTracking ? (openingInventory + purchaseAmount - closingInventory) : purchaseAmount;
+
+  const expenseTotal = costOfGoodsSold + laborCost + expenseCost;
+  const grossProfit = sales - costOfGoodsSold;
+  const operatingProfit = grossProfit - laborCost - expenseCost;
+  // 消費税引当額(概算): 「消費税を考慮する」がOFFでも計算はしておく(引当率が0なら0円になる
+  // だけ)。表示するかどうかはUI側でstate.taxSettings.considerConsumptionTaxにより出し分ける。
+  // 正式な納税額の自動計算ではなく、資金確保用の概算引当(要件17-18)。
+  const consumptionTaxReserveRate = Number(state.taxSettings?.consumptionTaxReserveRate ?? 0);
+  const consumptionTaxReserveAmount = sales * (consumptionTaxReserveRate / 100);
+  const profitAfterConsumptionTaxReserve = operatingProfit - consumptionTaxReserveAmount;
 
   const targetSales = parseNumber(target.targetSales);
   const targetAchievement = targetSales ? (sales / targetSales) * 100 : 0;
@@ -1123,12 +1173,9 @@ export const calculateMonthSummary = (state, storeId, monthValue) => {
   const todayAchievement = todayTarget ? (todayActual / todayTarget) * 100 : 0;
   const averageSpend = customers ? sales / customers : 0;
   const laborRate = sales ? (laborCost / sales) * 100 : 0;
-  const materialRate = sales ? (materialCost / sales) * 100 : 0;
-  const fixedRate = sales ? (fixedCost / sales) * 100 : 0;
-  const variableRate = sales ? (variableCost / sales) * 100 : 0;
+  const costOfGoodsSoldRate = sales ? (costOfGoodsSold / sales) * 100 : 0;
   const adRate = sales ? (adCost / sales) * 100 : 0;
   const operatingMargin = sales ? (operatingProfit / sales) * 100 : 0;
-  const adjustedOperatingMargin = sales ? (adjustedOperatingProfit / sales) * 100 : 0;
   const averageCustomersPerDay = businessDaySummary.businessDayCount ? customers / businessDaySummary.businessDayCount : 0;
   const repeatRate = customers ? (repeatCustomers / customers) * 100 : 0;
   const averageTicket = customers ? sales / customers : 0;
@@ -1167,26 +1214,25 @@ export const calculateMonthSummary = (state, storeId, monthValue) => {
     retailCustomerCount,
     retailRatio: retailRatioValue,
     laborCost,
-    materialCost,
-    orderCost,
+    purchaseAmount,
+    costOfGoodsSold,
+    costOfGoodsSoldRate,
     equipmentInvestmentCost,
     fixedCost,
     variableCost,
     regularVariableCost,
     temporaryCost,
     otherCost,
+    expenseCost,
     adCost,
     adRate,
     expenseTotal,
     grossProfit,
     operatingProfit,
-    adjustedOperatingProfit,
     operatingMargin,
-    adjustedOperatingMargin,
+    consumptionTaxReserveAmount,
+    profitAfterConsumptionTaxReserve,
     laborRate,
-    materialRate,
-    fixedRate,
-    variableRate,
     targetAchievement,
     remainingSalesTarget,
     targetPerDay,
@@ -1208,7 +1254,6 @@ export const calculateMonthSummary = (state, storeId, monthValue) => {
     remainingCustomersTarget,
     remainingCustomersPerDay,
     forecastCustomers,
-    taxSummary,
     target,
     entries,
     fixedCosts,

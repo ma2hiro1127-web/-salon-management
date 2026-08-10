@@ -1,9 +1,11 @@
 export const initialStores = [];
 
 export const expenseCategories = ["人件費", "材料費", "固定費", "販管費", "設備投資", "その他"];
-// 月締めは人件費・材料費の実績確定に役割を絞る(費用入力と役割が被る固定費/販管費カテゴリは
-// 選ばせない) — 損益表の固定費/販管費合計は費用入力(fixedCosts)から計算される。
-export const closingCategories = ["人件費", "材料費", "その他"];
+// 月締めは人件費・仕入(材料+発注をまとめた「仕入・発注額」)・その他の実績確定に役割を絞る
+// (費用入力と役割が被る固定費/販管費カテゴリは選ばせない) — 損益表の経費合計は費用入力
+// (fixedCosts)から計算される。「材料費」は「仕入・発注額」に改称し、ディーラー請求書の
+// 月間合計(業務材料+店販商品仕入+送料等)をそのまま1つの金額として入力できるようにする。
+export const closingCategories = ["人件費", "仕入・発注額", "その他"];
 // 旧「固定費」「販管費」の区分をユーザーに選ばせず一本化した「費用入力」用カテゴリ。
 // 「広告費」は経営指標の広告費率計算で使う識別子なので、必ずこの文字列そのものを含める。
 export const costCategories = ["家賃", "リース代", "システム利用料", "通信費", "顧問料", "保険料", "広告費", "求人費", "交通費", "消耗品費", "会議費", "研修費", "外注費", "修繕費", "設備投資", "その他"];
@@ -154,6 +156,9 @@ export const createInitialAppState = () => {
     // `${costItemId}__${targetMonth}`でキー化する(storeId__monthではないためSTORE_KEYED_MAPS
     // の対象外、variableCostsと同じ3か月ウィンドウでフェッチする)。
     costMonthlyAmounts: {},
+    // store_inventory_balances — 在庫管理ONの店舗の対象月末在庫金額。`${storeId}__${targetMonth}`
+    // でキー化する(costMonthlyAmountsと同じ3か月ウィンドウでフェッチする)。
+    storeInventoryBalances: {},
     variableCosts: {},
     monthClosing: {},
     monthClosingStatus: {},
@@ -171,6 +176,11 @@ export const createInitialAppState = () => {
       roundingMode: "half-up",
       salesInputMode: "inclusive",
       expenseInputMode: "inclusive",
+      // 「消費税を考慮する」(任意機能、初期値OFF)。ONの場合のみconsumptionTaxReserveRate
+      // (%)を使って、総売上に対する資金確保用の概算引当額を損益表に追加表示する。正式な
+      // 納税額の自動計算ではない(calculateMonthSummaryのconsumptionTaxReserveAmount参照)。
+      considerConsumptionTax: false,
+      consumptionTaxReserveRate: 0,
     },
     businessDaySettings: {},
     dayClosingStates: {},

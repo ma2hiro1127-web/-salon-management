@@ -29,7 +29,6 @@ import {
   pruneStaleKeys,
   buildMonthKey,
   calculateMonthSummary,
-  calculateTaxSummary,
   deduplicateDailyEntries,
   getBusinessDaySettings,
   formatMonthLabel,
@@ -42,6 +41,9 @@ import {
   getCostMonthlyAmount,
   getPreviousMonthCostAmount,
   buildCostMonthlyAmountsStateFromRows,
+  getInventoryBalance,
+  getPreviousMonthInventoryBalance,
+  buildStoreInventoryBalancesStateFromRows,
   formatLocalDate,
   getMonthInfo,
   getMonthOffset,
@@ -113,6 +115,8 @@ import {
   deleteFixedCostFromSupabase,
   loadCostMonthlyAmountsForCompany,
   upsertCostMonthlyAmountToSupabase,
+  loadStoreInventoryBalancesForCompany,
+  upsertStoreInventoryBalanceToSupabase,
   loadVariableCostsForCompany,
   loadMonthlyClosingItemsForCompany,
   upsertMonthlyClosingItemToSupabase,
@@ -272,6 +276,11 @@ const createStoreSettingsDefaults = () => ({
   monthlyTargetFields: defaultMonthlyTargetFieldSettings(),
   managerName: "",
   staffIds: [],
+  // 在庫管理(任意、初期値OFF)。ONの店舗だけ月締め画面で期首在庫/当月末在庫を入力でき、
+  // 材料・仕入原価が「前月末在庫+当月仕入・発注額-当月末在庫」で計算される(store_input_settings
+  // .use_inventory_trackingが実体、hydrateFromSupabaseのapplyStoreInputSettingsToCompaniesで
+  // 上書きされる)。
+  useInventoryTracking: false,
 });
 
 const dailyFieldLabels = {
@@ -567,6 +576,10 @@ function App() {
   const [userSearchQuery, setUserSearchQuery] = useState("");
   const [collapsedUserStoreGroups, setCollapsedUserStoreGroups] = useState(() => new Set());
   const [companySettingsForm, setCompanySettingsForm] = useState(createCompanySettingsDefaults());
+  // 「消費税を考慮する」+ 引当率(会社単位、company_settings.taxSettings)。companySettingsForm
+  // (company_settings.settings列専用)とは別のcompany_settings.taxSettings列を保存するため、
+  // 専用のフォーム状態・保存ハンドラを持つ(下のuseEffect/handleSaveTaxSettings参照)。
+  const [taxSettingsForm, setTaxSettingsForm] = useState({ considerConsumptionTax: false, consumptionTaxReserveRate: "" });
   const [storeSettingsForm, setStoreSettingsForm] = useState(createStoreSettingsDefaults());
   const [dailyForm, setDailyForm] = useState({ ...defaultDailyEntry });
   const updateDailyField = (field, value) => {
@@ -932,6 +945,13 @@ function App() {
   }, [currentCompany?.id, currentCompany?.settings]);
 
   useEffect(() => {
+    setTaxSettingsForm({
+      considerConsumptionTax: Boolean(appState.taxSettings?.considerConsumptionTax),
+      consumptionTaxReserveRate: appState.taxSettings?.consumptionTaxReserveRate ?? "",
+    });
+  }, [appState.taxSettings?.considerConsumptionTax, appState.taxSettings?.consumptionTaxReserveRate]);
+
+  useEffect(() => {
     if (selectedStoreEntity) {
       setStoreSettingsForm(selectedStoreEntity.settings || createStoreSettingsDefaults());
     }
@@ -974,11 +994,12 @@ function App() {
   const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const closingItems = useMemo(() => getClosingItemsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   const summary = useMemo(
     () => (isAllStoresView
       ? calculateAllStoresMonthSummary(appState, currentCompany, selectedMonth)
-      : calculateMonthSummary(appState, selectedStoreId, selectedMonth)),
-    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth]
+      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking })),
+    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth, useInventoryTracking]
   );
   const businessDaySummary = useMemo(
     () => (isAllStoresView
@@ -986,7 +1007,6 @@ function App() {
       : getBusinessDaySummary(appState, selectedStoreId, selectedMonth)),
     [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
-  const taxSummary = useMemo(() => calculateTaxSummary({ sales: summary.sales, totalExpenses: summary.expenseTotal, taxRate: appState.taxSettings?.rate ?? 0.1, roundingMode: appState.taxSettings?.roundingMode || "half-up" }), [appState.taxSettings?.rate, appState.taxSettings?.roundingMode, summary.expenseTotal, summary.sales]);
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
   const salesStatusComment = useMemo(() => getSalesStatusComment({
     targetSales: parseNumber(target.targetSales),
@@ -1548,6 +1568,14 @@ function App() {
       }
       const costMonthlyAmountsOverlay = buildCostMonthlyAmountsStateFromRows(costMonthlyAmountsResult.data);
 
+      // store_inventory_balances (在庫管理ONの店舗の月末在庫/期首在庫) — direct month lookup,
+      // no carry-forward, windowed the same as cost_monthly_amounts above.
+      const storeInventoryBalancesResult = await loadStoreInventoryBalancesForCompany({ companyId, yearMonths: closingMonths });
+      if (!storeInventoryBalancesResult.ok) {
+        throw storeInventoryBalancesResult.error || new Error("在庫データの取得に失敗しました");
+      }
+      const storeInventoryBalancesOverlay = buildStoreInventoryBalancesStateFromRows(storeInventoryBalancesResult.data);
+
       // variable_costs (販管費) and monthly_closing_items (月締め項目) — direct month lookup,
       // no carry-forward, so windowed the same as monthly_targets/monthly_closings above.
       const variableCostsResult = await loadVariableCostsForCompany({ companyId, yearMonths: closingMonths });
@@ -1600,6 +1628,7 @@ function App() {
               ...(inputRow ? {
                 dailyFieldSettings: normalizeDailyFieldSettings(inputRow.daily_fields),
                 monthlyTargetFields: normalizeMonthlyTargetFieldSettings(inputRow.monthly_target_fields),
+                useInventoryTracking: Boolean(inputRow.use_inventory_tracking),
               } : {}),
             },
           };
@@ -1669,6 +1698,7 @@ function App() {
           allStoresHolidays: allStoresHolidaysOverlay.allStoresHolidays,
           fixedCosts: fixedCostsOverlay.fixedCosts,
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
+          storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
           variableCosts: variableCostsOverlay.variableCosts,
           monthClosing: monthlyClosingItemsOverlay.monthClosing,
           // company_settings also carries the global showOtherSales toggle and taxSettings —
@@ -1727,6 +1757,9 @@ function App() {
           // expected set from this company's own cost item ids (just resolved via the fixedCosts
           // merge above) crossed with the fetched month window instead.
           costMonthlyAmounts: pruneStaleKeys(merged.costMonthlyAmounts, costMonthlyAmountsExpectedKeysFor(merged.fixedCosts), costMonthlyAmountsOverlay.costMonthlyAmounts),
+          // storeInventoryBalances keys are `${storeId}__${targetMonth}` — the same shape
+          // windowedExpectedKeys already uses, so it can be reused directly (unlike costMonthlyAmounts).
+          storeInventoryBalances: pruneStaleKeys(merged.storeInventoryBalances, windowedExpectedKeys, storeInventoryBalancesOverlay.storeInventoryBalances),
           variableCosts: pruneStaleKeys(merged.variableCosts, windowedExpectedKeys, variableCostsOverlay.variableCosts),
           monthClosing: pruneStaleKeys(merged.monthClosing, windowedExpectedKeys, monthlyClosingItemsOverlay.monthClosing),
         };
@@ -2620,6 +2653,35 @@ function App() {
     setNotice("会社基本設定を保存しました");
   };
 
+  // 「消費税を考慮する」+ 引当率専用の保存(company_settings.taxSettings列)。companySettingsForm
+  // /handleSaveCompanySettingsとは独立して保存できるよう分けている(settings列を巻き込まない)。
+  const handleSaveTaxSettings = async () => {
+    if (!currentCompany?.id) {
+      setNotice("会社情報を確認できませんでした");
+      return;
+    }
+    const nextTaxSettings = {
+      ...appState.taxSettings,
+      considerConsumptionTax: Boolean(taxSettingsForm.considerConsumptionTax),
+      consumptionTaxReserveRate: parseNumber(taxSettingsForm.consumptionTaxReserveRate),
+    };
+    if (isSupabaseConfigured) {
+      const result = await upsertCompanySettings({
+        companyId: currentCompany.id,
+        userId: appState.currentUserId,
+        settings: currentCompany.settings || createCompanySettingsDefaults(),
+        taxSettings: nextTaxSettings,
+        showOtherSales: appState.preferences?.showOtherSales,
+      });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => ({ ...prev, taxSettings: nextTaxSettings }));
+    setNotice("消費税の設定を保存しました");
+  };
+
   const applyDailyFieldPreset = (presetKey) => {
     setDailyFieldDraft({ mode: presetKey, fields: { ...dailyFieldPresets[presetKey] } });
     setDailyFieldDirty(true);
@@ -2734,6 +2796,35 @@ function App() {
       setMonthlyTargetFieldSaveStatus({ status: "error", message: reason });
       setNotice(`月間目標項目設定の保存に失敗しました: ${reason}`);
     }
+  };
+
+  // 「在庫管理を使う」トグル(店舗単位、store_input_settings.use_inventory_tracking)。単一の
+  // ON/OFFなので他の項目設定のようなdraft/dirty管理は持たず、切り替え次第すぐ保存する。
+  const handleToggleInventoryTracking = async (checked) => {
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+    if (isSupabaseConfigured) {
+      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, useInventoryTracking: checked });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => ({
+      ...prev,
+      companies: (prev.companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((s) => (
+          s.id === store.id
+            ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), useInventoryTracking: checked } }
+            : s
+        )),
+      })),
+    }));
+    setNotice(checked ? "在庫管理をONにしました" : "在庫管理をOFFにしました");
   };
 
   const handleInviteEmail = async (user) => {
@@ -3667,6 +3758,65 @@ function App() {
       });
       setNotice("金額を保存しました");
     }
+  };
+
+  // 在庫管理ONの店舗の月次在庫入力(月締め画面)。store_inventory_balancesへ対象月ごとに
+  // upsertする共通ヘルパー — 「期首在庫」は選択月の前月分として、「当月末在庫」は選択月
+  // そのものとして同じテーブルに保存する(getPreviousMonthInventoryBalanceが前者を読む)。
+  const persistInventoryBalance = async (targetMonth, amount) => {
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (!company?.id || !store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return false;
+    }
+    if (isSupabaseConfigured) {
+      const result = await upsertStoreInventoryBalanceToSupabase({ companyId: company.id, storeId: store.id, targetMonth, amount, userId: appState.currentUserId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return false;
+      }
+    }
+    setAppState((prev) => ({
+      ...prev,
+      storeInventoryBalances: {
+        ...prev.storeInventoryBalances,
+        [`${store.id}__${targetMonth}`]: { amount: parseNumber(amount), updatedAt: new Date().toISOString() },
+      },
+    }));
+    return true;
+  };
+
+  const [openingInventoryDraft, setOpeningInventoryDraft] = useState("");
+  const [closingInventoryDraft, setClosingInventoryDraft] = useState("");
+  const previousInventoryBalance = useMemo(
+    () => getPreviousMonthInventoryBalance(appState, selectedStoreId, selectedMonth),
+    [appState, selectedStoreId, selectedMonth]
+  );
+  const currentInventoryBalance = useMemo(
+    () => getInventoryBalance(appState, selectedStoreId, selectedMonth),
+    [appState, selectedStoreId, selectedMonth]
+  );
+  useEffect(() => {
+    setOpeningInventoryDraft("");
+    setClosingInventoryDraft(currentInventoryBalance === undefined ? "" : String(currentInventoryBalance));
+  }, [selectedStoreId, selectedMonth, currentInventoryBalance]);
+
+  const saveOpeningInventoryBalance = async () => {
+    if (openingInventoryDraft === "") {
+      setNotice("期首在庫の金額を入力してください");
+      return;
+    }
+    const ok = await persistInventoryBalance(getMonthOffset(selectedMonth, -1), openingInventoryDraft);
+    if (ok) setNotice("期首在庫を保存しました");
+  };
+
+  const saveClosingInventoryBalance = async () => {
+    if (closingInventoryDraft === "") {
+      setNotice("当月末在庫の金額を入力してください");
+      return;
+    }
+    const ok = await persistInventoryBalance(selectedMonth, closingInventoryDraft);
+    if (ok) setNotice("当月末在庫を保存しました");
   };
 
   const submitClosingItem = async (event) => {
@@ -4992,9 +5142,7 @@ function App() {
                     <div className="summary-grid">
                       <div className="summary-card"><span>店販比率</span><strong>{percent(summary.retailRatio || 0)}</strong></div>
                       <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
-                      <div className="summary-card"><span>材料費率</span><strong>{percent(summary.materialRate)}</strong></div>
-                      <div className="summary-card"><span>固定費率</span><strong>{percent(summary.fixedRate)}</strong></div>
-                      <div className="summary-card"><span>販管費率</span><strong>{percent(summary.variableRate)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
                       <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
                     </div>
                     <div className="list-card">
@@ -5011,6 +5159,37 @@ function App() {
                         </div>
                       ))}
                     </div>
+                    {useInventoryTracking ? (
+                      <div className="setup-card">
+                        <div className="panel-heading compact">
+                          <div>
+                            <p className="eyebrow">INVENTORY</p>
+                            <h3>在庫</h3>
+                          </div>
+                        </div>
+                        {previousInventoryBalance === undefined ? (
+                          <>
+                            <p className="helper-text">前月末の在庫データがまだありません。初回のみ「期首在庫」（今月が始まった時点の在庫金額）を入力してください。</p>
+                            <div className="inline-form">
+                              <label className="field">
+                                <span>期首在庫</span>
+                                <input type="number" value={openingInventoryDraft} onChange={(event) => setOpeningInventoryDraft(event.target.value)} placeholder="金額" />
+                              </label>
+                              <button className="secondary-button" type="button" onClick={saveOpeningInventoryBalance}>期首在庫を保存</button>
+                            </div>
+                          </>
+                        ) : (
+                          <p className="helper-text">前月末在庫: {money(previousInventoryBalance)}</p>
+                        )}
+                        <div className="inline-form">
+                          <label className="field">
+                            <span>当月末在庫</span>
+                            <input type="number" value={closingInventoryDraft} onChange={(event) => setClosingInventoryDraft(event.target.value)} placeholder="金額" />
+                          </label>
+                          <button className="secondary-button" type="button" onClick={saveClosingInventoryBalance}>当月末在庫を保存</button>
+                        </div>
+                      </div>
+                    ) : null}
                   </section>
                 )}
 
@@ -5026,33 +5205,73 @@ function App() {
                         <h2>月次損益表</h2>
                       </div>
                     </div>
+                    <p className="helper-text">本画面は店舗経営管理用の概算損益です。税務申告上の利益・納税額とは異なる場合があります。</p>
+
+                    <div className="panel-heading compact">
+                      <div>
+                        <p className="eyebrow">SALES</p>
+                        <h3>売上</h3>
+                      </div>
+                    </div>
                     <div className="summary-grid">
                       <div className="summary-card"><span>総売上（税込）</span><strong>{money(summary.sales)}</strong></div>
                       <div className="summary-card"><span>技術売上（税込）</span><strong>{money(summary.technicalSales)}</strong></div>
                       <div className="summary-card"><span>店販売上（税込）</span><strong>{money(summary.retailSales)}</strong></div>
-                      <div className="summary-card"><span>その他売上（税込）</span><strong>{money(summary.otherSales)}</strong></div>
-                      <div className="summary-card"><span>税込売上</span><strong>{money(taxSummary.grossSales)}</strong></div>
-                      <div className="summary-card"><span>税抜売上</span><strong>{money(taxSummary.taxExclusiveSales)}</strong></div>
-                      <div className="summary-card"><span>消費税相当額</span><strong>{money(taxSummary.taxAmount)}</strong></div>
-                      <div className="summary-card"><span>適用税率</span><strong>{percent(taxSummary.rate * 100)}</strong></div>
-                      <div className="summary-card"><span>税込費用</span><strong>{money(summary.expenseTotal)}</strong></div>
-                      <div className="summary-card"><span>税抜費用</span><strong>{money(taxSummary.taxExclusiveExpenses)}</strong></div>
-                      <div className="summary-card"><span>概算納税額</span><strong>{money(taxSummary.estimatedTax)}</strong></div>
+                    </div>
+
+                    <div className="panel-heading compact">
+                      <div>
+                        <p className="eyebrow">COST</p>
+                        <h3>原価</h3>
+                      </div>
+                    </div>
+                    <div className="summary-grid">
+                      <div className="summary-card"><span>仕入・発注額</span><strong>{money(summary.purchaseAmount)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価</span><strong>{money(summary.costOfGoodsSold)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
+                    </div>
+
+                    <div className="panel-heading compact">
+                      <div>
+                        <p className="eyebrow">EXPENSE</p>
+                        <h3>費用</h3>
+                      </div>
+                    </div>
+                    <div className="summary-grid">
                       <div className="summary-card"><span>人件費</span><strong>{money(summary.laborCost)}</strong></div>
-                      <div className="summary-card"><span>材料費</span><strong>{money(summary.materialCost)}</strong></div>
-                      <div className="summary-card"><span>発注費</span><strong>{money(summary.orderCost)}</strong></div>
-                      <div className="summary-card"><span>固定費合計</span><strong>{money(summary.fixedCost)}</strong></div>
-                      <div className="summary-card"><span>販管費合計</span><strong>{money(summary.variableCost)}</strong></div>
-                      <div className="summary-card"><span>設備投資</span><strong>{money(summary.equipmentInvestmentCost)}</strong></div>
-                      <div className="summary-card"><span>その他経費</span><strong>{money(summary.otherCost)}</strong></div>
+                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
+                      <div className="summary-card"><span>経費合計</span><strong>{money(summary.expenseCost)}</strong></div>
                       <div className="summary-card"><span>費用合計</span><strong>{money(summary.expenseTotal)}</strong></div>
+                    </div>
+
+                    <div className="panel-heading compact">
+                      <div>
+                        <p className="eyebrow">PROFIT</p>
+                        <h3>利益</h3>
+                      </div>
+                    </div>
+                    <div className="summary-grid">
                       <div className="summary-card"><span>粗利益</span><strong>{money(summary.grossProfit)}</strong></div>
                       <div className="summary-card"><span>営業利益</span><strong>{money(summary.operatingProfit)}</strong></div>
-                      <div className="summary-card"><span>調整後営業利益</span><strong>{money(summary.adjustedOperatingProfit)}</strong></div>
                       <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
-                      <div className="summary-card"><span>調整後営業利益率</span><strong>{percent(summary.adjustedOperatingMargin)}</strong></div>
                     </div>
-                    <div className="helper-text">消費税額は簡易計算による参考値です。実際の申告額は課税区分、控除対象、免税・簡易課税制度などにより異なります。</div>
+
+                    {appState.taxSettings?.considerConsumptionTax ? (
+                      <>
+                        <div className="panel-heading compact">
+                          <div>
+                            <p className="eyebrow">TAX</p>
+                            <h3>消費税を考慮する</h3>
+                          </div>
+                        </div>
+                        <div className="summary-grid">
+                          <div className="summary-card"><span>消費税引当額（概算）</span><strong>{money(summary.consumptionTaxReserveAmount)}</strong></div>
+                          <div className="summary-card"><span>消費税考慮後利益</span><strong>{money(summary.profitAfterConsumptionTaxReserve)}</strong></div>
+                        </div>
+                        <div className="helper-text">消費税引当額は店舗経営・資金管理用の概算です。実際の納税額は税務処理・課税方式等により異なります。</div>
+                      </>
+                    ) : null}
+
                     {/* 客数目標・AIコメントはダッシュボードで既に確認できるため、ここでは重複表示せず、
                         損益表でしか見られない「実績ベースの経営指標」だけを表示する。 */}
                     <div className="panel-heading compact">
@@ -5062,10 +5281,7 @@ function App() {
                       </div>
                     </div>
                     <div className="summary-grid">
-                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
-                      <div className="summary-card"><span>材料費率</span><strong>{percent(summary.materialRate)}</strong></div>
                       <div className="summary-card"><span>広告費率</span><strong>{percent(summary.adRate)}</strong></div>
-                      <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
                     </div>
                   </section>
                 )}
@@ -5279,6 +5495,30 @@ function App() {
                       {monthlyTargetFieldSaveStatus.status === "saving" ? "保存中…" : "保存"}
                     </button>
                   </div>
+                </>
+              )}
+            </div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">INVENTORY</p>
+                  <h3>在庫管理</h3>
+                </div>
+              </div>
+              {!selectedStore ? (
+                <div className="empty-card">店舗を選択してください。</div>
+              ) : (
+                <>
+                  <p className="helper-text">ONにすると月締め画面で期首在庫・当月末在庫を入力でき、材料・仕入原価が「前月末在庫+当月仕入・発注額-当月末在庫」で自動計算されます。OFFの店舗は仕入・発注額がそのまま原価になります(初期値OFF)。</p>
+                  <label className="field-switch">
+                    <span>在庫管理を使う</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedStoreEntity?.settings?.useInventoryTracking)}
+                      disabled={!canEditStoreName(currentRole)}
+                      onChange={(event) => handleToggleInventoryTracking(event.target.checked)}
+                    />
+                  </label>
                 </>
               )}
             </div>
@@ -5640,6 +5880,33 @@ function App() {
               </div>
               <div className="button-row">
                 <button className="secondary-button" type="button" onClick={handleSaveCompanySettings}>会社基本設定を保存</button>
+              </div>
+            </div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">TAX</p>
+                  <h3>消費税の設定</h3>
+                </div>
+              </div>
+              <p className="helper-text">損益表に消費税引当額(概算)と消費税考慮後利益を追加表示するかどうかを選べます。正式な納税額の自動計算ではなく、資金確保用の概算引当です。</p>
+              <div className="input-grid">
+                <label className="field">
+                  <span>消費税を考慮する</span>
+                  <select value={taxSettingsForm.considerConsumptionTax ? "on" : "off"} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, considerConsumptionTax: event.target.value === "on" }))}>
+                    <option value="off">考慮しない</option>
+                    <option value="on">考慮する</option>
+                  </select>
+                </label>
+                {taxSettingsForm.considerConsumptionTax ? (
+                  <label className="field">
+                    <span>消費税引当率（%）</span>
+                    <input type="number" value={taxSettingsForm.consumptionTaxReserveRate} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: event.target.value }))} placeholder="例: 5" />
+                  </label>
+                ) : null}
+              </div>
+              <div className="button-row">
+                <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>消費税の設定を保存</button>
               </div>
             </div>
             <div className="empty-card">初期設定が完了すると、各権限ごとの画面がそのまま使えます。</div>
