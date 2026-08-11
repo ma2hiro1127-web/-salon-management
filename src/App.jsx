@@ -35,7 +35,6 @@ import {
   getBusinessDaySummary,
   getClosingItemsForStoreMonth,
   getCustomerTargetSummary,
-  getSalesStatusComment,
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
   getCostMonthlyAmount,
@@ -143,6 +142,9 @@ import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/b
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired } from "./utils/invitations.js";
 import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
+import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
+import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
+import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
@@ -644,6 +646,8 @@ function App() {
   const [monthlyTargetFieldDraft, setMonthlyTargetFieldDraft] = useState(() => defaultMonthlyTargetFieldSettings());
   const [monthlyTargetFieldSaveStatus, setMonthlyTargetFieldSaveStatus] = useState({ status: "idle", message: "" });
   const [monthlyTargetFieldDirty, setMonthlyTargetFieldDirty] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [aiChatInitialQuestion, setAiChatInitialQuestion] = useState("");
   const lastPersistedRef = useRef("");
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
@@ -967,8 +971,8 @@ function App() {
   // never triggered once Supabase is configured.
   const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
   // 全店舗ビューではtarget/summary/businessDaySummaryを会社全体の集計版に差し替える。
-  // ここを分岐させるだけで、これらを参照しているダッシュボードのKPI・営業進捗・AIコメント等
-  // (customerTargetSummary/salesStatusComment/dashboardSupportMetrics含む)は追加の変更なしに
+  // ここを分岐させるだけで、これらを参照しているダッシュボードのKPI・営業進捗・AI相談等
+  // (customerTargetSummary/dashboardSupportMetrics/AiChatScreen含む)は追加の変更なしに
   // 全店舗の数値を正しく表示する。日次入力・費用入力・月締め・損益表は店舗ごとの機能のまま
   // (全店舗では別途non-store案内を表示、後述)なので、dailyEntries/fixedCosts/closingItemsは
   // 分岐させない(全店舗選択時はどのみち空/未使用になる)。
@@ -992,20 +996,6 @@ function App() {
     [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
-  const salesStatusComment = useMemo(() => getSalesStatusComment({
-    targetSales: parseNumber(target.targetSales),
-    closedSales: summary.closedSales,
-    businessDayCount: summary.businessDays,
-    completedDays: summary.completedDays,
-    remainingBusinessDays: summary.remainingBusinessDays,
-    targetCustomers: summary.customerTarget,
-    customers: summary.customers,
-    targetAverageSpend: parseNumber(target.targetAverageSpend),
-    averageSpend: summary.averageSpend,
-    // Included so the same underlying situation reads differently across different days
-    // instead of repeating verbatim (see pickVariant) — stable within a single day/store/month.
-    seed: `${selectedStore}-${selectedMonth}-${new Date().toISOString().slice(0, 10)}`,
-  }), [target.targetSales, target.targetAverageSpend, summary.closedSales, summary.businessDays, summary.completedDays, summary.remainingBusinessDays, summary.customerTarget, summary.customers, summary.averageSpend, selectedStore, selectedMonth]);
   const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const monthClosingStatus = useMemo(() => {
     const key = buildMonthKey(selectedStoreId, selectedMonth);
@@ -1109,6 +1099,14 @@ function App() {
     setActivePage("monthly");
     setActiveMonthlyTab("target");
   };
+  const openAiChat = (question = "") => {
+    setAiChatInitialQuestion(question);
+    setAiChatOpen(true);
+  };
+  const closeAiChat = () => {
+    setAiChatOpen(false);
+    setAiChatInitialQuestion("");
+  };
   // Whether a monthly target actually exists in Supabase for the store+month currently on
   // screen — not just "is the target panel showing something", since that panel has its own
   // independent month selector (see targetSelectedMonth) and could be looking at a different
@@ -1127,14 +1125,6 @@ function App() {
     { label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` },
     { label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` },
   ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers]);
-  // One unified AI comment card (順調/注意/要改善), replacing the previous 3-card split
-  // (目標まで/目標ペース/必要な1日平均売上) — see getSalesStatusComment for the tier logic.
-  // getSalesStatusComment already produces a sensible "月間目標を設定すると..." fallback
-  // message when neither a sales nor a customer target is registered (salesState/customerState
-  // both null) — this just decides whether to show the tier badge for that case.
-  const aiComment = salesStatusComment;
-  const aiCommentUnset = !aiComment.salesState && !aiComment.customerState;
-  const aiCommentTone = aiCommentUnset ? "neutral" : ({ "順調": "good", "注意": "warning", "要改善": "danger" }[aiComment.tier] || "neutral");
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -4586,13 +4576,7 @@ function App() {
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
               </div>
               </div>
-              <div className={`ai-comment-card ${aiCommentTone}`}>
-                <div className="panel-heading compact">
-                  <p className="eyebrow">AI COMMENT</p>
-                  {!aiCommentUnset && <span className={`status-chip ${aiCommentTone}`}>{aiComment.tier}</span>}
-                </div>
-                {aiComment.lines.map((line, index) => <p key={index}>{line}</p>)}
-              </div>
+              <AiAssistantCard onOpen={() => openAiChat()} onQuickQuestion={(question) => openAiChat(question)} />
               {todayEntry ? (
                 <div className="today-result-card">
                   <div className="panel-heading compact">
@@ -5936,6 +5920,21 @@ function App() {
           </section>
         )}
       </main>
+      <AiFloatingButton onClick={() => openAiChat()} />
+      {aiChatOpen ? (
+        <AiChatScreen
+          role={currentRole}
+          storeName={selectedStoreEntity?.name || selectedStore}
+          storeId={selectedStoreId}
+          monthValue={selectedMonth}
+          isAllStoresView={isAllStoresView}
+          summary={summary}
+          target={target}
+          businessDaySummary={businessDaySummary}
+          initialQuestion={aiChatInitialQuestion}
+          onClose={closeAiChat}
+        />
+      ) : null}
     </div>
   );
 }
