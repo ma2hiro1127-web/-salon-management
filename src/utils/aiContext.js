@@ -69,6 +69,10 @@ export function buildAiContext({
     averageDailySales: numOrNull(summary.averageDailySales),
     targetAchievementRate: hasSalesTarget ? numOrNull(summary.targetAchievement) : null,
     remainingSalesTarget: hasSalesTarget ? numOrNull(summary.remainingSalesTarget) : null,
+    // 目標ペース(1日あたり目標達成に必要な売上)とペース差額。目標が無ければ意味を持たない値
+    // なので、他の目標由来フィールドと同じく target 未登録時は null にする。
+    targetDailyPace: hasSalesTarget ? numOrNull(summary.targetPerDay) : null,
+    paceDifference: hasSalesTarget ? numOrNull(Number(summary.averageDailySales || 0) - Number(summary.targetPerDay || 0)) : null,
     monthEndForecast: numOrNull(summary.forecast),
   };
 

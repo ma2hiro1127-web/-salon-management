@@ -29,6 +29,7 @@ test("buildAiContext: single-store view includes all required sales/target/custo
       averageDailySales: 273532,
       targetAchievement: 82,
       remainingSalesTarget: 897015,
+      targetPerDay: 5000000 / 26,
       forecast: 5100000,
       customerAchievement: 88,
       laborCost: 900000,
@@ -73,6 +74,8 @@ test("buildAiContext: single-store view includes all required sales/target/custo
   assert.equal(context.target.targetSales, 5000000); // 月間目標売上
   assert.equal(context.sales.technicalSales, 3200000); // 技術売上
   assert.equal(context.sales.retailSales, 902985); // 店販売上
+  assert.equal(context.sales.targetDailyPace, 5000000 / 26); // 目標ペース(1日あたり)
+  assert.ok(Math.abs(context.sales.paceDifference - (273532 - 5000000 / 26)) < 1); // 目標ペースとの差額
   assert.equal(context.customers.totalCustomers, 320); // 客数
   assert.equal(context.customers.averageSpend, 12822); // 客単価
   assert.equal(context.customers.newCustomers, 60); // 新規客数
