@@ -1283,14 +1283,19 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   let newCustomers = 0;
   let repeatCustomers = 0;
   let reviewCount = 0;
+  // 日締め済みの日だけの合計(pace/forecast/averageDailySalesの着地予測専用 — 未確定の当日を
+  // 分母に混ぜて日平均が歪むのを防ぐ)。sales本体とは別に並行して集計する。かつてはsales自体が
+  // ここでフィルタされ、closedSalesはその単なるエイリアスだったため、個別店舗ページの
+  // summary.sales(入力済み全件)と基準が食い違い、ダッシュボードとランキングとで違う数字に
+  // 見える不具合の一因になっていた。
+  let closedSales = 0;
 
   stores.forEach((store) => {
     const entries = getDailyResultsForStoreMonth(state, store.id, monthValue);
-    // 日締め済みの日だけを合算対象にする(未締めのB店の当日実績はまだ全店舗に反映しない)。
     const closedDateSet = new Set(getBusinessDaySummary(state, store.id, monthValue).closedDates || []);
     entries.forEach((entry) => {
-      if (!closedDateSet.has(String(entry?.date || ""))) return;
-      sales += parseNumber(entry.totalSales || entry.technicalSales || 0);
+      const amount = parseNumber(entry.totalSales || entry.technicalSales || 0);
+      sales += amount;
       technicalSales += parseNumber(entry.technicalSales || 0);
       retailSales += parseNumber(entry.retailSales || 0);
       otherSales += parseNumber(entry.otherSales || 0);
@@ -1298,10 +1303,12 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
       newCustomers += parseNumber(entry.newCustomers || 0);
       repeatCustomers += parseNumber(entry.repeatCustomers || 0);
       reviewCount += parseNumber(entry.reviewCount || 0);
+      if (closedDateSet.has(String(entry?.date || ""))) {
+        closedSales += amount;
+      }
     });
   });
 
-  const closedSales = sales;
   const completedDays = businessDaySummary.completedDays;
   const remainingBusinessDays = businessDaySummary.remainingBusinessDays;
   const progressRate = businessDaySummary.progressRate;
@@ -1312,8 +1319,9 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   const dailyNeededSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const pace = completedDays > 0 ? closedSales / completedDays : 0;
   const forecast = completedDays > 0 && businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : 0;
-  // 1日平均売上 = 全店舗の確定済み総売上 ÷ 全店舗として営業完了した日数。
-  const averageDailySales = completedDays > 0 ? sales / completedDays : 0;
+  // 1日平均売上 = 全店舗の確定済み総売上 ÷ 全店舗として営業完了した日数。paceと同じ理由で
+  // 未確定の当日を分母に混ぜないよう、salesではなくclosedSalesを使う。
+  const averageDailySales = completedDays > 0 ? closedSales / completedDays : 0;
   const averageSpend = customers ? sales / customers : 0;
 
   const customerTarget = parseNumber(target.targetCustomers);

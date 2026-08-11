@@ -856,38 +856,18 @@ function App() {
           setCurrentRole(normalizeRole(profile?.role || "staff"));
           const reconciledCompanies = tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [];
           const reconciledCurrentCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
-          const targetCompanyStores = reconciledCompanies.find((company) => company.id === reconciledCurrentCompanyId)?.stores || reconciledCompanies[0]?.stores || [];
-          const availableStoreNames = new Set(targetCompanyStores.map((store) => store.name));
-          // loadTenantStateFromSupabase always defaults selectedStore to the alphabetically-first
-          // store in the company, which previously clobbered whichever store the user actually had
-          // open on this device (e.g. 本店 losing out to フィーネ横浜). Only fall back to that
-          // default when the device's own last-selected store no longer exists.
-          //
-          // Resolve by the durable selectedStoreId FIRST, before ever comparing names: a store
-          // rename invalidates the cached name (localRecoveredState.selectedStore) but not its id,
-          // and without this the name-only check below falls through to the "no longer exists"
-          // branch and silently redirects the session to a different (often empty) store. This
-          // was the confirmed root cause of ranking still showing data while every per-store KPI
-          // read 0/unregistered after a store was renamed.
-          const storeMatchedById = localRecoveredState.selectedStoreId
-            ? targetCompanyStores.find((store) => store.id === localRecoveredState.selectedStoreId)
-            : null;
-          // 「全店舗」は実店舗ではないのでavailableStoreNamesには絶対に含まれない — 通常の
-          // 名前一致チェックだけでは常に「見つからない」扱いになり、セッション復元のたびに
-          // 実店舗へ戻されてしまう。権限がある間はそのまま維持する特別扱いが必要。
-          const wasAllStoresSelected = localRecoveredState.selectedStore === ALL_STORES_VALUE && canViewAllStores(profile?.role || "staff");
-          const preferredSelectedStore = wasAllStoresSelected
-            ? ALL_STORES_VALUE
-            : (storeMatchedById
-              ? storeMatchedById.name
-              : (localRecoveredState.selectedStore && availableStoreNames.has(localRecoveredState.selectedStore)
-                ? localRecoveredState.selectedStore
-                : (tenantState.selectedStore || localRecoveredState.selectedStore || "")));
-          const preferredSelectedStoreId = wasAllStoresSelected
-            ? ""
-            : (storeMatchedById
-              ? storeMatchedById.id
-              : (targetCompanyStores.find((store) => store.name === preferredSelectedStore)?.id || tenantState.selectedStoreId || ""));
+          // Single source of truth for "which store should this session resume on" — see
+          // resolvePreferredStoreSelection's own comments (id-first resolution so a rename never
+          // strands the session, and an explicit ALL_STORES_VALUE guard so "全店舗" survives a
+          // session restore instead of being treated as "no store selected"). Substituting
+          // reconciledCompanies in here preserves this call site's own companies fallback
+          // (tenantState's list, or the locally-cached one if tenantState's hasn't loaded yet).
+          const { selectedStore: preferredSelectedStore, selectedStoreId: preferredSelectedStoreId } = resolvePreferredStoreSelection({
+            tenantState: { ...tenantState, companies: reconciledCompanies },
+            localRecoveredState,
+            currentCompanyId: reconciledCurrentCompanyId,
+            role: profile?.role || "staff",
+          });
           const reconciledState = {
             ...tenantState,
             ...localRecoveredState,
@@ -1058,36 +1038,37 @@ function App() {
     const previousMonth = getMonthOffset(selectedMonth, -1);
     const previousPreviousMonth = getMonthOffset(selectedMonth, -2);
 
-    // ランキングの売上は各店舗の日締め済み確定データ(closedSales)を基準にする(要件21) —
-    // 個々の店舗自身の売上ページ(summary.sales)は入力中の当日分も含めたリアルタイム値のまま
-    // 変更しない。達成率もclosedSales基準で揃えることで、ランキング内の数字同士の整合性を保つ。
+    // ランキングの売上はダッシュボードの総売上(summary.sales、入力済み全件)と同じ基準にする —
+    // 以前はsummary.closedSales(日締め済みの日だけ)を使っており、当日分を入力しただけでは
+    // ランキングに反映されず「ダッシュボードは最新なのにランキングだけ古い」という不具合の
+    // 原因になっていた。日締めを待たず、入力した時点でランキングにも反映される。
     const rows = currentCompanyStores.map((store) => {
       const storeSummary = calculateMonthSummary(appState, store.id, selectedMonth);
       const previousSummary = calculateMonthSummary(appState, store.id, previousMonth);
       const previousPreviousSummary = calculateMonthSummary(appState, store.id, previousPreviousMonth);
-      const closedSales = storeSummary.closedSales;
-      const previousClosedSales = previousSummary.closedSales;
-      const previousPreviousClosedSales = previousPreviousSummary.closedSales;
-      const closedAchievement = storeSummary.target.targetSales ? (closedSales / storeSummary.target.targetSales) * 100 : 0;
-      const previousClosedAchievement = previousSummary.target.targetSales ? (previousClosedSales / previousSummary.target.targetSales) * 100 : 0;
-      const currentChangeRate = previousClosedSales > 0 ? ((closedSales - previousClosedSales) / previousClosedSales) * 100 : 0;
-      const previousChangeRate = previousPreviousClosedSales > 0 ? ((previousClosedSales - previousPreviousClosedSales) / previousPreviousClosedSales) * 100 : 0;
+      const currentSales = storeSummary.sales;
+      const previousSales = previousSummary.sales;
+      const previousPreviousSales = previousPreviousSummary.sales;
+      const achievement = storeSummary.targetAchievement;
+      const previousAchievement = previousSummary.targetAchievement;
+      const currentChangeRate = previousSales > 0 ? ((currentSales - previousSales) / previousSales) * 100 : 0;
+      const previousChangeRate = previousPreviousSales > 0 ? ((previousSales - previousPreviousSales) / previousPreviousSales) * 100 : 0;
 
       return {
         storeId: store.id,
         storeName: store.name,
-        sales: closedSales,
+        sales: currentSales,
         targetSales: storeSummary.target.targetSales,
-        achievement: closedAchievement,
+        achievement,
         operatingProfit: storeSummary.operatingProfit,
-        previousSales: previousClosedSales,
-        previousAchievement: previousClosedAchievement,
+        previousSales,
+        previousAchievement,
         previousOperatingProfit: previousSummary.operatingProfit,
         previousChangeRate,
         currentChangeRate,
         forecast: storeSummary.forecast,
-        tone: getRankTone(closedAchievement),
-        achievementLabel: closedAchievement >= 100 ? "順調" : closedAchievement >= 95 ? "要確認" : "要改善",
+        tone: getRankTone(achievement),
+        achievementLabel: achievement >= 100 ? "順調" : achievement >= 95 ? "要確認" : "要改善",
       };
     });
 
@@ -1478,15 +1459,20 @@ function App() {
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
       const companyId = profile.company_id || tenantState?.currentCompanyId || "";
       const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
-      // Resolve by the durable selectedStoreId first — a stale cached selectedStore *name*
-      // (e.g. left over from before another device renamed this store) must never pick a
-      // different store here, or every table below gets fetched/scoped for the wrong store id.
-      const store = (tenantState?.selectedStoreId && company?.stores?.find((item) => item.id === tenantState.selectedStoreId))
-        || company?.stores?.find((item) => item.name === tenantState?.selectedStore)
-        || company?.stores?.[0]
-        || null;
-      const selectedStoreName = store?.name || tenantState?.selectedStore || "";
-      const storeId = store?.id || null;
+      // Single source of truth for "which store is actually selected right now" — see
+      // resolvePreferredStoreSelection's own comments. tenantState here IS the current appState
+      // at every call site, so it doubles as both the fresh tenant data and the "local" selection
+      // to preserve. Previously this block had its own inline copy of the same resolution logic
+      // that never checked for ALL_STORES_VALUE, so it silently fell back to company.stores[0]
+      // any time a company/system admin had "全店舗" selected — this ran on every hydrate
+      // (store switch, tab/PWA focus regain, realtime change), which is what made "全店舗"
+      // appear to work for a moment and then snap back to whichever store was first in the list.
+      const { selectedStore: selectedStoreName, selectedStoreId: storeId } = resolvePreferredStoreSelection({
+        tenantState,
+        localRecoveredState: tenantState,
+        currentCompanyId: companyId,
+        role: profile?.role || currentRole,
+      });
       const targetMonth = tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
 
       // daily_sales is the authoritative source for daily sales figures + day-closing state

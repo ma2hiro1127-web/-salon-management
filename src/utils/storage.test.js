@@ -1114,21 +1114,24 @@ test("getAllStoresBusinessDaySummary: with no registered stores, completedDays i
   assert.equal(result.businessDayCount, 27);
 });
 
-test("calculateAllStoresMonthSummary: sales aggregation and 営業完了日数 follow two different rules — sales reflect each store's own closed days independently, while completedDays only counts a day once EVERY store has closed it", () => {
+test("calculateAllStoresMonthSummary: sales reflects every entered day immediately (not just closed days), while closedSales/averageDailySales and 営業完了日数 stay confirmed-only", () => {
   const state = buildAllStoresTestState();
   const summary = calculateAllStoresMonthSummary(state, allStoresTestCompany, "2026-08");
-  // sales = A店8/1(100000,締め済み) + B店8/1(200000,締め済み) + B店8/2(300000,締め済み)。
-  // B店は自店が締めた時点で全店舗の実績に反映される — A店が8/2をまだ締めていなくても、
-  // B店自身の確定済み実績(8/2分)は合算対象に含まれる(未締めなのはA店の8/2データだけ)。
-  assert.equal(summary.sales, 600000);
-  assert.equal(summary.customers, 45);
-  // 一方、「営業完了1日」とカウントされるのは全店舗の日締めが揃った8/1だけ(8/2はA店が
+  // sales(ダッシュボード/ランキングが表示する値)は日締め状態に関係なく入力済み全件を含む:
+  // A店8/1(100000)+A店8/2(500000,未締め)+B店8/1(200000)+B店8/2(300000) = 1,100,000。
+  // 未締めのA店8/2をここで除外すると、入力した直後にランキング側だけ反映されない不具合が
+  // 再発するため、意図的にフィルタしない。
+  assert.equal(summary.sales, 1100000);
+  assert.equal(summary.customers, 95);
+  // closedSalesは従来通り日締め済みの日だけ(pace/forecast/averageDailySales専用)。
+  assert.equal(summary.closedSales, 600000);
+  // 「営業完了1日」とカウントされるのは全店舗の日締めが揃った8/1だけ(8/2はA店が
   // 未締めなので、たとえB店が締めていても全店舗としてはまだ営業完了日にならない)。
   assert.equal(summary.completedDays, 1);
-  // targetSales=200000 (全店舗目標) に対して実績600000 → 300%。個々の店舗のtargetは無関係。
-  assert.equal(summary.targetAchievement, 300);
-  assert.equal(summary.customerAchievement, 450);
-  // 1日平均売上 = 全店舗確定済み総売上(600000) ÷ 全店舗として営業完了した日数(1)
+  // targetSales=200000 (全店舗目標) に対して実績1,100,000 → 550%。個々の店舗のtargetは無関係。
+  assert.equal(summary.targetAchievement, 550);
+  assert.equal(summary.customerAchievement, 950);
+  // 1日平均売上 = 全店舗確定済み総売上(closedSales=600000) ÷ 全店舗として営業完了した日数(1)
   assert.equal(summary.averageDailySales, 600000);
 });
 
@@ -1138,9 +1141,9 @@ test("calculateAllStoresMonthSummary: a newly added store with no data yet doesn
   const summary = calculateAllStoresMonthSummary(state, companyWithNewStore, "2026-08");
   // C店が一度も日締めしていないため、全店舗の積集合は常に空 → 営業完了日数は0日。
   assert.equal(summary.completedDays, 0);
-  // それでもA店・B店それぞれの確定済み売上(店舗ごとの集計)はそのまま反映される —
+  // それでもA店・B店それぞれの実績(入力済み全件)はそのまま反映される —
   // 新規店舗の追加が既存店舗の実績集計を壊してはいけない。
-  assert.equal(summary.sales, 600000);
+  assert.equal(summary.sales, 1100000);
 });
 
 // 店休日をカレンダーの具体的な日付で管理する新機能のテスト。既存の「休業日数(数値)」だけを
