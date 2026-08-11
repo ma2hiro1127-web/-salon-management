@@ -143,13 +143,30 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  const anthropicApiKeyRaw = Deno.env.get("ANTHROPIC_API_KEY");
+  const anthropicApiKey = (anthropicApiKeyRaw ?? "").trim();
+
+  // 診断ログ: 値そのものは絶対に出さず、「設定されているか」「空でないか」だけを記録する。
+  // Deno.env.get() は未設定なら undefined、空文字列で登録されていれば "" を返すため、
+  // 単純な if (!anthropicApiKey) だけでは「未登録」と「登録済みだが値が空」を区別できない。
+  // このログで即座に切り分けられるようにする(過去にSecretは登録済みなのに503になる、
+  // という事象があり、原因は値が空文字列で登録されていたことだった)。
+  console.log("ai-assistant: env check", {
+    SUPABASE_URL: supabaseUrl ? "set" : "missing",
+    SUPABASE_ANON_KEY: anonKey ? "set" : "missing",
+    SUPABASE_SERVICE_ROLE_KEY: serviceRoleKey ? "set" : "missing",
+    ANTHROPIC_API_KEY: anthropicApiKeyRaw === undefined
+      ? "missing"
+      : (anthropicApiKey === "" ? "set-but-empty" : `set(length=${anthropicApiKey.length})`),
+  });
+
   if (!supabaseUrl || !anonKey || !serviceRoleKey) {
     return json({ error: "サーバー設定が不足しています" }, 500);
   }
   if (!anthropicApiKey) {
     // まだAI機能を有効化していない状態(=API利用料が一切発生しない状態)。ここで止まる限り
     // Anthropic APIへは一度もリクエストされないため、シークレット未設定のままなら費用は0円。
+    console.error("ai-assistant: ANTHROPIC_API_KEY is not configured (unset or empty) - refusing to call Anthropic API");
     return json({ error: "AIアシスタントはまだ設定されていません。管理者にお問い合わせください。" }, 503);
   }
 
@@ -195,22 +212,54 @@ Deno.serve(async (req) => {
     const systemPrompt = `${SYSTEM_PROMPT_HEADER}\n\n# 現在の分析対象データ(このJSONの数字のみを事実として扱うこと)\n${JSON.stringify(context)}`;
     const safeHistory = sanitizeHistory(history);
 
-    const response = await anthropic.messages.create({
-      model,
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: [...safeHistory, { role: "user", content: message }],
-    });
+    let response;
+    try {
+      response = await anthropic.messages.create({
+        model,
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages: [...safeHistory, { role: "user", content: message }],
+      });
+    } catch (apiError) {
+      // Anthropic APIからのエラーを種別ごとに切り分ける。APIキー本体はログに出さない
+      // (status/typeはエラー分類のためのメタ情報であり、キーの値そのものではない)。
+      const status = (apiError as { status?: number } | null)?.status;
+      const errType = (apiError as { type?: string; error?: { type?: string } } | null)?.type
+        ?? (apiError as { error?: { type?: string } } | null)?.error?.type;
+      const errMessage = apiError instanceof Error ? apiError.message : String(apiError);
+      console.error("ai-assistant: Anthropic API call failed", { status, type: errType, message: errMessage });
+
+      if (status === 401) {
+        // APIキーが無効(存在するが値が間違っている/失効している)。空文字列ならここには
+        // 到達せず上のANTHROPIC_API_KEY未設定チェックで止まる。
+        return json({ error: "AI機能の認証に失敗しました(APIキーが無効です)。管理者にお問い合わせください。" }, 500);
+      }
+      if (status === 403 && errType === "billing_error") {
+        return json({ error: "AI機能の利用上限(クレジット残高)に達しています。管理者にお問い合わせください。" }, 500);
+      }
+      if (status === 403) {
+        return json({ error: "AI機能の利用権限がありません。管理者にお問い合わせください。" }, 500);
+      }
+      if (status === 429) {
+        return json({ error: "AI機能が現在混み合っています。しばらくしてから再度お試しください。" }, 503);
+      }
+      if (status === 404 || status === 400) {
+        // モデル名の誤り(AI_MODEL環境変数)やリクエスト形式の誤りなど。
+        return json({ error: "AI機能の設定に誤りがあります(モデル名など)。管理者にお問い合わせください。" }, 500);
+      }
+      return json({ error: "AIサービスへの問い合わせに失敗しました。時間をおいて再度お試しください。" }, 502);
+    }
 
     const textBlock = response.content.find((block: { type: string }) => block.type === "text") as { text?: string } | undefined;
     const reply = textBlock?.text || "";
     if (!reply) {
+      console.error("ai-assistant: Anthropic response had no text block", { stopReason: response.stop_reason });
       return json({ error: "AIから有効な回答が得られませんでした" }, 502);
     }
 
     return json({ reply });
   } catch (error) {
-    console.error("ai-assistant error", error);
+    console.error("ai-assistant error", error instanceof Error ? error.message : error);
     const message = error instanceof Error ? error.message : "AIアシスタントへの問い合わせに失敗しました";
     return json({ error: message }, 500);
   }
