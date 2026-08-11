@@ -708,6 +708,10 @@ function App() {
   // はdaily_sales_update/delete_company_scoped RLS(is_day_closed=falseを要求)で強制しているが、
   // ここでも操作前にUIで気づけるようにする。店長以上はこの制限を受けない。
   const isDailyEntryLockedForStaff = normalizeRole(currentRole) === "staff" && Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date]);
+  // 対象日の現在の日締め状態。toggleDayClosingのボタン表示・確認ダイアログの文言をこれで
+  // 出し分ける(常に「日締め」という同じラベルのボタンだと、既に締め済みの日をもう一度押した
+  // ときに実際は「解除」される、と気づかず誤って締めを解除してしまう不具合があったため)。
+  const isSelectedDailyEntryClosed = Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date]);
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -4172,7 +4176,13 @@ function App() {
       setNotice("未来日は締めできません");
       return;
     }
-    if (!window.confirm(`この日の締めを${dailyForm.date}で切り替えますか？`)) {
+    // Computed up front (before the confirm dialog) purely so the dialog can say plainly which
+    // direction this click goes — this button's label already reflects isSelectedDailyEntryClosed
+    // (see its own JSX), but a manager editing an already-closed day and clicking it again,
+    // expecting to "re-confirm" the close, was the exact scenario that silently un-closed the day
+    // instead: the vague old confirm text ("切り替えますか？") didn't say which way it would go.
+    const nextClosed = !isSelectedDailyEntryClosed;
+    if (!window.confirm(nextClosed ? `${dailyForm.date}を日締めしますか？` : `${dailyForm.date}の日締めを解除しますか？`)) {
       return;
     }
     // Best-effort: keeps the normal save path (validation, local dailyForm/insight updates)
@@ -4184,8 +4194,6 @@ function App() {
     await saveDailyEntry({ silent: true, force: true });
 
     const key = buildMonthKey(selectedStoreId, selectedMonth);
-    const current = appState.dayClosingStates?.[key] || {};
-    const nextClosed = !Boolean(current[dailyForm.date]);
 
     const { store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured && !store?.id) {
@@ -4771,7 +4779,7 @@ function App() {
                     <button className="secondary-button" type="button" onClick={startNewDailyEntry}>新規入力</button>
                     <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff}>編集</button>
                     <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff}>日締め</button>
+                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
                   </div>
 
                   {isDailyFormDateHoliday ? (
@@ -4798,8 +4806,8 @@ function App() {
                       <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} disabled={dailyMode === "view"} />
                       <div className="field">
                         <span>日締め状態</span>
-                        <div className={`value-pill ${appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date] ? "active" : "inactive"}`}>
-                          {appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date] ? "締め済み" : "未締め"}
+                        <div className={`value-pill ${isSelectedDailyEntryClosed ? "active" : "inactive"}`}>
+                          {isSelectedDailyEntryClosed ? "締め済み" : "未締め"}
                         </div>
                       </div>
                     </div>
