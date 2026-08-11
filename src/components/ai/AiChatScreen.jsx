@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
 import { formatMonthLabel } from "../../utils/storage.js";
 import { buildAiContext } from "../../utils/aiContext.js";
 import { sendAiMessage } from "../../utils/aiClient.js";
@@ -114,7 +116,16 @@ export default function AiChatScreen({
 
           {messages.map((entry, index) => (
             <div key={index} className={`ai-chat-message ${entry.role}`}>
-              {entry.content}
+              {entry.role === "assistant" ? (
+                // AIの回答だけMarkdownとして描画する(見出し・太字・箇条書き等)。
+                // react-markdownはReact要素として描画するためHTMLを直接注入せず安全。
+                // 生のHTMLタグを許可するプラグイン(rehype-raw等)は使用しない。
+                <div className="ai-chat-markdown">
+                  <ReactMarkdown remarkPlugins={[remarkBreaks]}>{entry.content}</ReactMarkdown>
+                </div>
+              ) : (
+                entry.content
+              )}
             </div>
           ))}
           {sending ? <div className="ai-chat-message assistant ai-chat-typing">考えています…</div> : null}

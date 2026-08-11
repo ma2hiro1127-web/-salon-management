@@ -169,3 +169,28 @@ test("buildAiContext: a store with no cost entries sends costs as null, not zero
   assert.equal(context.costs, null);
   assert.equal(context.dataAvailability.hasCostData, false);
 });
+
+// 売上目標だけ設定していて、新規客・再来客の目標を個別には設定していない店舗:
+// 目標セクション自体は(売上目標があるので)存在するが、設定していないサブ項目は
+// 0ではなくnullで送る(目標0=未設定、という前提のため。実績側は0のまま送る)。
+test("buildAiContext: unset target sub-fields are null (not 0), while actuals keep real zeros", () => {
+  const context = buildAiContext({
+    role: "store_manager",
+    storeName: "渋谷店",
+    storeId: "store-shibuya-uuid",
+    monthValue: "2026-08",
+    isAllStoresView: false,
+    summary: { sales: 1000000, customers: 60, newCustomers: 0, otherSales: 0 },
+    target: { targetSales: 3000000, targetCustomers: 0, targetNewCustomers: 0, targetRepeatCustomers: 0 },
+    businessDaySummary: { businessDayCount: 25, completedDays: 12, remainingBusinessDays: 13 },
+  });
+
+  assert.equal(context.dataAvailability.hasTarget, true);
+  assert.equal(context.target.targetSales, 3000000);
+  assert.equal(context.target.targetCustomers, null); // 未設定(0)はnull
+  assert.equal(context.target.targetNewCustomers, null);
+  assert.equal(context.target.targetRepeatCustomers, null);
+  // 実績側は本当に0件/0円ならそのまま0を送る(未入力かどうかはcostsと同様セクション単位で判断)
+  assert.equal(context.customers.newCustomers, 0);
+  assert.equal(context.sales.otherSales, 0);
+});

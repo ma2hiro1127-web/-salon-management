@@ -18,6 +18,15 @@ function numOrNull(value) {
   return Number.isFinite(num) ? num : null;
 }
 
+// 目標値専用: 「目標0」は実運用上ほぼ常に「その項目は目標を設定していない」ことを意味する
+// (新規客数の目標を意図的に0人にする店舗は無い)。売上・客数などの実績値は0が現実にあり得る
+// 値なので numOrNull をそのまま使うが、目標系フィールドだけはここで0もnull扱いにすることで
+// 「目標未設定」と「目標0」をAIが取り違えないようにする(DB側に別途フラグを追加せずに済む)。
+function targetNumOrNull(value) {
+  const num = numOrNull(value);
+  return num === 0 ? null : num;
+}
+
 // 「入力されているが0円」と「まだ入力されていない」をAIが混同しないよう、対象カテゴリの
 // 数値が1つも正の値を持たない場合はセクションごとnullとして送る。
 function hasAnyPositive(values) {
@@ -51,14 +60,14 @@ export function buildAiContext({
   };
 
   const targetSection = hasAnyTarget ? {
-    targetSales: numOrNull(target.targetSales),
-    targetTechnicalSales: numOrNull(target.targetTechnicalSales),
-    targetRetailSales: numOrNull(target.targetRetailSales),
-    targetCustomers: numOrNull(target.targetCustomers),
-    targetAverageSpend: numOrNull(target.targetAverageSpend),
-    targetNewCustomers: numOrNull(target.targetNewCustomers),
-    targetRepeatCustomers: numOrNull(target.targetRepeatCustomers),
-    targetReviewCount: numOrNull(target.targetReviewCount),
+    targetSales: targetNumOrNull(target.targetSales),
+    targetTechnicalSales: targetNumOrNull(target.targetTechnicalSales),
+    targetRetailSales: targetNumOrNull(target.targetRetailSales),
+    targetCustomers: targetNumOrNull(target.targetCustomers),
+    targetAverageSpend: targetNumOrNull(target.targetAverageSpend),
+    targetNewCustomers: targetNumOrNull(target.targetNewCustomers),
+    targetRepeatCustomers: targetNumOrNull(target.targetRepeatCustomers),
+    targetReviewCount: targetNumOrNull(target.targetReviewCount),
   } : null;
 
   const salesSection = {
@@ -81,13 +90,13 @@ export function buildAiContext({
     newCustomers: numOrNull(summary.newCustomers),
     repeatCustomers: numOrNull(summary.repeatCustomers),
     averageSpend: numOrNull(summary.averageSpend),
-    targetCustomers: hasCustomerTarget ? numOrNull(target.targetCustomers) : null,
+    targetCustomers: targetNumOrNull(target.targetCustomers),
     customerAchievementRate: hasCustomerTarget ? numOrNull(summary.customerAchievement) : null,
   };
 
   const reviewsSection = {
     totalReviewCount: numOrNull(summary.reviewCount),
-    targetReviewCount: hasReviewTarget ? numOrNull(target.targetReviewCount) : null,
+    targetReviewCount: targetNumOrNull(target.targetReviewCount),
     reviewCountAchievementRate: hasReviewTarget ? numOrNull(summary.reviewCountAchievement) : null,
   };
 

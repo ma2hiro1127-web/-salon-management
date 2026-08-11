@@ -309,6 +309,20 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-chat-message.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
 .ai-chat-message.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
 .ai-chat-typing { color: var(--muted); font-style: italic; }
+
+/* AIの回答(Markdown)の見た目。react-markdownが生成する通常のブロック要素を装飾するだけで、
+   HTMLを直接注入する実装ではない。white-space:normal でブロック要素自身の余白に任せる。 */
+.ai-chat-markdown { white-space: normal; }
+.ai-chat-markdown > *:first-child { margin-top: 0; }
+.ai-chat-markdown > *:last-child { margin-bottom: 0; }
+.ai-chat-markdown p { margin: 0 0 10px; }
+.ai-chat-markdown h1, .ai-chat-markdown h2, .ai-chat-markdown h3 { margin: 14px 0 8px; font-size: 1rem; line-height: 1.4; }
+.ai-chat-markdown strong { font-weight: 700; }
+.ai-chat-markdown ul, .ai-chat-markdown ol { margin: 0 0 10px; padding-left: 1.3em; }
+.ai-chat-markdown li { margin-bottom: 4px; }
+.ai-chat-markdown li > p { margin: 0; }
+.ai-chat-markdown hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+.ai-chat-markdown code { background: rgba(148, 163, 184, 0.16); border-radius: 4px; padding: 1px 5px; font-size: 0.85em; word-break: break-word; }
 .ai-chat-error { margin: 0; }
 .ai-chat-input-row { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .ai-chat-input-row textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; font: inherit; max-height: 120px; }
