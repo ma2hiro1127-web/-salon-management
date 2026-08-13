@@ -334,6 +334,19 @@ test("getMonthClosingChecklist: 未入力のカテゴリと売上をmissingItems
   assert.equal(checklist.isProvisionalProfit, true);
 });
 
+test("getMonthClosingChecklist: hiddenCategoriesに含めたカテゴリはitems/missingItemsから除外され、hiddenItemsに入る(売上は対象外にできない)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+
+  const checklist = getMonthClosingChecklist(state, store, month, { hiddenCategories: ["labor", "sales"] });
+
+  assert.equal(checklist.items.some((item) => item.key === "labor"), false);
+  assert.equal(checklist.missingItems.some((item) => item.key === "labor"), false);
+  assert.ok(checklist.hiddenItems.some((item) => item.key === "labor"));
+  assert.ok(checklist.items.some((item) => item.key === "sales")); // "sales"はhiddenCategoriesに含めても除外されない
+});
+
 test("needsMonthReconfirmation: 未確定の月・確定日時が無い月はfalse", () => {
   const state = createInitialAppState();
   assert.equal(needsMonthReconfirmation(state, "横浜店", "2026-08"), false);

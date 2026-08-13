@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { createInitialAppState, defaultDailyFieldSettings, defaultMonthlyTargetFieldSettings } from "../data/defaults.js";
+import { createInitialAppState, defaultDailyFieldSettings, defaultMonthlyTargetFieldSettings, costCategoryKeys } from "../data/defaults.js";
 import { normalizeRole } from "./permissions.js";
 
 const getEnvValue = (key) => {
@@ -196,6 +196,15 @@ export const normalizeMonthlyTargetFieldSettings = (value) => {
   };
 };
 
+// 月締めチェックリストで「対象外」にした費用カテゴリkeyの一覧。costCategoryKeysに実在する
+// keyだけを残す(旧データ・手動編集で無効なkeyが紛れ込んでも、フィルタが効かず全項目非表示に
+// なるような事態を防ぐ)。
+export const normalizeHiddenClosingCategories = (value) => {
+  if (!Array.isArray(value)) return [];
+  const validKeys = new Set(costCategoryKeys.map((item) => item.key));
+  return [...new Set(value.filter((key) => validKeys.has(key)))];
+};
+
 // store_input_settings is the authoritative per-store field-visibility source (see
 // 20260807000000_create_store_input_settings.sql). Fetched company-wide in one call — same
 // pattern as loadDailySalesForCompanyRange/loadMonthlyClosingsForCompany — so hydrating any
@@ -216,7 +225,7 @@ export const loadStoreInputSettingsForCompany = async ({ companyId }) => {
 // Partial upserts are safe here: PostgREST's upsert only sets the columns present in the
 // payload, so saving just dailyFields (or just monthlyTargetFields) can never null out the
 // other column on an existing row.
-export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking }) => {
+export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking, hiddenClosingCategories }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId, storeId });
   if (validationError) {
@@ -227,6 +236,7 @@ export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields
   if (dailyFields !== undefined) payload.daily_fields = dailyFields;
   if (monthlyTargetFields !== undefined) payload.monthly_target_fields = monthlyTargetFields;
   if (useInventoryTracking !== undefined) payload.use_inventory_tracking = Boolean(useInventoryTracking);
+  if (hiddenClosingCategories !== undefined) payload.hidden_closing_categories = hiddenClosingCategories;
   try {
     const { data, error } = await supabase.from("store_input_settings").upsert(payload, { onConflict: "company_id,store_id" }).select().single();
     if (error) throw error;

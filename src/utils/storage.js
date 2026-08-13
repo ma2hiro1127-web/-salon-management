@@ -1316,17 +1316,23 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   };
 };
 
-// 月締めチェックリスト: 損益表作成に必要な項目(売上+費用10カテゴリ)ごとの入力済み/未入力を
+// 月締めチェックリスト: 損益表作成に必要な項目(売上+費用10カテゴリ)ごとの入力済み/未確認を
 // 返す。判定は費用名の文字列ではなく、calculateMonthSummaryが算出したcategoryHasEntry
-// (=実際に登録されているデータ)を基準にする。
+// (=実際に登録されているデータ)を基準にする。options.hiddenCategoriesに含まれる費用カテゴリ
+// (店舗ごとの「対象外」設定、store_input_settings.hidden_closing_categories)はitemsから
+// 除外する — 「売上」は対象外にできないため無条件で含める。除外した項目はhiddenItemsとして
+// 別途返す(いつでも再表示できるよう、管理UI側で一覧・復元できるようにするため)。
 export const getMonthClosingChecklist = (state, storeId, monthValue, options = {}) => {
   const summary = calculateMonthSummary(state, storeId, monthValue, options);
+  const hiddenSet = new Set(Array.isArray(options.hiddenCategories) ? options.hiddenCategories : []);
+  const allCostItems = costCategoryKeys.map(({ key, label }) => ({ key, label, entered: Boolean(summary.categoryHasEntry[key]), categoryKey: key }));
   const items = [
     { key: "sales", label: "売上", entered: summary.entries.length > 0, categoryKey: null },
-    ...costCategoryKeys.map(({ key, label }) => ({ key, label, entered: Boolean(summary.categoryHasEntry[key]), categoryKey: key })),
+    ...allCostItems.filter((item) => !hiddenSet.has(item.key)),
   ];
   return {
     items,
+    hiddenItems: allCostItems.filter((item) => hiddenSet.has(item.key)),
     missingItems: items.filter((item) => !item.entered),
     isProvisionalProfit: summary.isProvisionalProfit,
     missingCriticalCategories: summary.missingCriticalCategories,

@@ -93,6 +93,7 @@ import {
   updateStoreActiveState,
   normalizeDailyFieldSettings,
   normalizeMonthlyTargetFieldSettings,
+  normalizeHiddenClosingCategories,
   loadStoreInputSettingsForCompany,
   upsertStoreInputSettings,
   createUserProfileRecord,
@@ -248,6 +249,10 @@ const createStoreSettingsDefaults = () => ({
   // .use_inventory_trackingが実体、hydrateFromSupabaseのapplyStoreInputSettingsToCompaniesで
   // 上書きされる)。
   useInventoryTracking: false,
+  // 月締めチェックリストで「対象外」にした費用カテゴリkeyの一覧(store_input_settings
+  // .hidden_closing_categoriesが実体)。その店舗では基本的に使わない項目を一覧から非表示に
+  // するためのもので、データは消さない・いつでも解除できる(要件に基づく)。
+  hiddenClosingCategories: [],
 });
 
 const dailyFieldLabels = {
@@ -1060,8 +1065,8 @@ function App() {
     return appState.monthClosingStatus?.[key] || { closed: false, lockedAt: "", note: "" };
   }, [appState.monthClosingStatus, selectedStoreId, selectedMonth]);
   const monthClosingChecklist = useMemo(
-    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, { useInventoryTracking }),
-    [appState, selectedStoreId, selectedMonth, useInventoryTracking]
+    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, { useInventoryTracking, hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [] }),
+    [appState, selectedStoreId, selectedMonth, useInventoryTracking, selectedStoreEntity]
   );
   const monthNeedsReconfirmation = useMemo(
     () => needsMonthReconfirmation(appState, selectedStoreId, selectedMonth),
@@ -1660,6 +1665,7 @@ function App() {
                 dailyFieldSettings: normalizeDailyFieldSettings(inputRow.daily_fields),
                 monthlyTargetFields: normalizeMonthlyTargetFieldSettings(inputRow.monthly_target_fields),
                 useInventoryTracking: Boolean(inputRow.use_inventory_tracking),
+                hiddenClosingCategories: normalizeHiddenClosingCategories(inputRow.hidden_closing_categories),
               } : {}),
             },
           };
@@ -2878,6 +2884,41 @@ function App() {
       })),
     }));
     setNotice(checked ? "在庫管理をONにしました" : "在庫管理をOFFにしました");
+  };
+
+  // 月締めチェックリストの費用項目を「対象外(非表示)」にする/表示に戻す(店舗単位、
+  // store_input_settings.hidden_closing_categories)。fixedCosts/costMonthlyAmounts等の
+  // データ自体は一切変更しない — あくまで月締め一覧への表示/非表示を切り替えるだけなので、
+  // useInventoryTrackingトグルと同じくdraft/dirty管理は持たず切り替え次第すぐ保存する。
+  const handleToggleHiddenClosingCategory = async (categoryKey, hidden) => {
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+    const currentHidden = selectedStoreEntity?.settings?.hiddenClosingCategories || [];
+    const nextHidden = hidden
+      ? [...new Set([...currentHidden, categoryKey])]
+      : currentHidden.filter((key) => key !== categoryKey);
+    if (isSupabaseConfigured) {
+      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, hiddenClosingCategories: nextHidden });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => ({
+      ...prev,
+      companies: (prev.companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((s) => (
+          s.id === store.id
+            ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), hiddenClosingCategories: nextHidden } }
+            : s
+        )),
+      })),
+    }));
+    setNotice(hidden ? `${getCostCategoryLabel(categoryKey)}を対象外にしました` : `${getCostCategoryLabel(categoryKey)}を表示に戻しました`);
   };
 
   const handleInviteEmail = async (user) => {
@@ -5076,11 +5117,11 @@ function App() {
                       {monthClosingChecklist.items.map((item) => (
                         <div key={item.key} className="list-row">
                           <div>
-                            <strong>{item.entered ? "✅" : "⚠️"} {item.label}</strong>
-                            <small>{item.entered ? "入力済み" : "未入力"}</small>
+                            <strong>{item.entered ? "✅" : "☐"} {item.label}</strong>
+                            <small>{item.entered ? "入力済み" : "未確認"}</small>
                           </div>
-                          {!item.entered ? (
-                            <div className="row-actions">
+                          <div className="row-actions">
+                            {!item.entered ? (
                               <button
                                 className="text-button"
                                 type="button"
@@ -5095,31 +5136,36 @@ function App() {
                               >
                                 登録する
                               </button>
-                            </div>
-                          ) : null}
+                            ) : null}
+                            {item.categoryKey ? (
+                              <button
+                                className="text-button"
+                                type="button"
+                                onClick={() => handleToggleHiddenClosingCategory(item.categoryKey, true)}
+                              >
+                                対象外にする
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
                       ))}
                     </div>
-                    {monthClosingChecklist.missingItems.length > 0 ? (
-                      <div className="empty-card">損益表に必要な未入力項目があります: {monthClosingChecklist.missingItems.map((item) => item.label).join("、")}</div>
-                    ) : null}
-                    <div className="panel-heading compact">
-                      <div>
-                        <p className="eyebrow">P&L PREVIEW</p>
-                        <h3>現時点の損益表</h3>
-                      </div>
-                    </div>
-                    <div className="summary-grid">
-                      <div className="summary-card"><span>店販比率</span><strong>{percent(summary.retailRatio || 0)}</strong></div>
-                      <div className="summary-card"><span>人件費率</span><strong>{formatPercentOrDash(summary.laborRate, summary.categoryHasEntry.labor)}</strong></div>
-                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{formatPercentOrDash(summary.costOfGoodsSoldRate, summary.categoryHasEntry.materials)}</strong></div>
-                      <div className="summary-card emphasize">
-                        <span>営業利益率</span>
-                        <strong>{formatPercentOrDash(summary.operatingMargin, !summary.isProvisionalProfit)}</strong>
-                      </div>
-                    </div>
-                    {summary.isProvisionalProfit ? (
-                      <p className="helper-text">※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は算出できません。</p>
+                    {monthClosingChecklist.hiddenItems.length > 0 ? (
+                      <details className="advanced-fields">
+                        <summary>対象外項目を管理（{monthClosingChecklist.hiddenItems.length}件）</summary>
+                        <div className="advanced-fields-body">
+                          <div className="list-card">
+                            {monthClosingChecklist.hiddenItems.map((item) => (
+                              <div key={item.key} className="list-row">
+                                <div><strong>{item.label}</strong><small>対象外</small></div>
+                                <div className="row-actions">
+                                  <button className="text-button" type="button" onClick={() => handleToggleHiddenClosingCategory(item.categoryKey, false)}>表示に戻す</button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </details>
                     ) : null}
                     <div className="toggle-panel">
                       <div>
