@@ -1591,6 +1591,11 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
       newCustomerRate: summary.customers > 0 ? (summary.newCustomers / summary.customers) * 100 : 0,
       hasCustomerData: summary.customers > 0,
       averageSpend: summary.averageSpend,
+      // 粗利 = 総売上 - 発注費(材料原価)。損益表(calculateMonthSummary)のgrossProfitと同じ
+      // 値をそのまま使う(ダッシュボード独自の別計算式は作らない)。発注費(materials)が
+      // 未入力の店舗は原価0円で計算されてしまうため、purchaseCostと同じhasDataで「－」にする。
+      grossProfit: summary.grossProfit,
+      hasGrossProfitData: Boolean(summary.categoryHasEntry?.materials),
       laborCost: summary.laborCost,
       laborRate: summary.laborRate,
       hasLaborData: Boolean(summary.categoryHasEntry?.labor),
@@ -1620,6 +1625,8 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
         retailSales: previousSummary.retailSales,
         laborCost: previousSummary.laborCost,
         purchaseCost: previousSummary.costOfGoodsSold,
+        grossProfit: previousSummary.grossProfit,
+        hasGrossProfitData: Boolean(previousSummary.categoryHasEntry?.materials),
         operatingProfit: previousSummary.operatingProfit,
         operatingMargin: previousSummary.operatingMargin,
         hasLaborData: Boolean(previousSummary.categoryHasEntry?.labor),
@@ -1641,6 +1648,7 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
   const sum = (picker) => storeRows.reduce((total, row) => total + parseNumber(picker(row)), 0);
   const totalSales = sum((row) => row.sales);
   const totalOperatingProfit = sum((row) => row.operatingProfit);
+  const totalGrossProfit = sum((row) => row.grossProfit);
   const totalLaborCost = sum((row) => row.laborCost);
   const totalPurchaseCost = sum((row) => row.purchaseCost);
   const totalFixedCost = sum((row) => row.fixedCost);
@@ -1657,6 +1665,7 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
   // 合算されてしまっているため)。
   const hasLaborData = storeRows.some((row) => row.hasLaborData);
   const hasPurchaseData = storeRows.some((row) => row.hasPurchaseData);
+  const hasGrossProfitData = storeRows.some((row) => row.hasGrossProfitData);
   const hasFixedCostData = storeRows.some((row) => row.hasFixedCostData);
   const hasAdData = storeRows.some((row) => row.hasAdData);
   const hasSalesTarget = storeRows.some((row) => row.hasSalesTarget);
@@ -1664,6 +1673,7 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
 
   const previousTotalSales = sum((row) => row.previous.sales);
   const previousTotalOperatingProfit = sum((row) => row.previous.operatingProfit);
+  const previousTotalGrossProfit = sum((row) => row.previous.grossProfit);
   const previousTotalLaborCost = sum((row) => row.previous.laborCost);
   const previousTotalPurchaseCost = sum((row) => row.previous.purchaseCost);
   const previousHasStaffCount = storeRows.some((row) => row.previous.productivity.hasStaffCount);
@@ -1673,15 +1683,20 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
   const hasPrevious = storeRows.some((row) => row.previous.hasPrevious);
   const previousHasLaborData = storeRows.some((row) => row.previous.hasLaborData);
   const previousHasPurchaseData = storeRows.some((row) => row.previous.hasPurchaseData);
+  const previousHasGrossProfitData = storeRows.some((row) => row.previous.hasGrossProfitData);
   const previousIsProvisionalProfit = storeRows.some((row) => row.previous.isProvisionalProfit);
 
   return {
     monthValue,
     isFullyClosed: storeRows.length > 0 && storeRows.every((row) => row.isClosed),
+    storeCount: storeRows.length,
     totalSales,
     totalOperatingProfit,
     operatingMargin: totalSales > 0 ? (totalOperatingProfit / totalSales) * 100 : 0,
     isProvisionalProfit,
+    totalGrossProfit,
+    grossMargin: totalSales > 0 ? (totalGrossProfit / totalSales) * 100 : 0,
+    hasGrossProfitData,
     totalLaborCost,
     laborRate: totalSales > 0 ? (totalLaborCost / totalSales) * 100 : 0,
     hasLaborData,
@@ -1707,6 +1722,9 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
       totalOperatingProfit: previousTotalOperatingProfit,
       operatingMargin: previousTotalSales > 0 ? (previousTotalOperatingProfit / previousTotalSales) * 100 : 0,
       isProvisionalProfit: previousIsProvisionalProfit,
+      totalGrossProfit: previousTotalGrossProfit,
+      grossMargin: previousTotalSales > 0 ? (previousTotalGrossProfit / previousTotalSales) * 100 : 0,
+      hasGrossProfitData: previousHasGrossProfitData,
       totalLaborCost: previousTotalLaborCost,
       laborRate: previousTotalSales > 0 ? (previousTotalLaborCost / previousTotalSales) * 100 : 0,
       hasLaborData: previousHasLaborData,

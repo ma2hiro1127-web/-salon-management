@@ -1502,6 +1502,23 @@ test("getCompanyDashboardSummary: 固定費・広告費・目標達成率の合�
   assert.equal(summary.targetAchievement, 150); // 600000 / 400000 * 100(単純平均ではなく実額の合算)
 });
 
+test("getStoreDashboardRows / getCompanyDashboardSummary: 粗利(売上-発注費)は損益表と同じgrossProfitをそのまま使い、店舗数・全店舗粗利率は実額合算で算出する", () => {
+  const state = buildDashboardTestState();
+  const rows = getStoreDashboardRows(state, dashboardTestCompany, "2026-08");
+  const storeA = rows.find((row) => row.storeId === "store-a");
+  const storeB = rows.find((row) => row.storeId === "store-b");
+
+  assert.equal(storeA.grossProfit, 460000); // 500000 - 40000(発注費)
+  assert.equal(storeA.hasGrossProfitData, true); // 発注費(materials)登録済み
+  assert.equal(storeB.hasGrossProfitData, false); // 発注費未登録 → 「－」表示になるべき
+
+  const summary = getCompanyDashboardSummary(state, dashboardTestCompany, "2026-08");
+  assert.equal(summary.storeCount, 2);
+  assert.equal(summary.totalGrossProfit, 560000); // 460000 + 100000(店Bは原価0円扱いの生値)
+  assert.equal(summary.hasGrossProfitData, true); // 店Aが登録済みなので会社全体としてはtrue
+  assert.ok(Math.abs(summary.grossMargin - (560000 / 600000) * 100) < 0.001); // 実額合算(単純平均ではない)
+});
+
 test("getCompanyDashboardSummary: 会社全体の合計・比率は店舗ごとの比率の平均ではなく実額の合算から算出する", () => {
   const state = buildDashboardTestState();
   const summary = getCompanyDashboardSummary(state, dashboardTestCompany, "2026-08");

@@ -1,17 +1,19 @@
 import { useMemo } from "react";
 import { diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash } from "../../utils/storage.js";
 import StoreBarChartRow from "./StoreBarChartRow.jsx";
+import StoreSalesCompositionCard from "./StoreSalesCompositionCard.jsx";
 import ComparisonTable from "./ComparisonTable.jsx";
 import StoreRankingCard from "./StoreRankingCard.jsx";
 
 // 会社全体サマリーカード1枚分。可能な限り前月比を添える(前月データが無い店舗があっても、
-// 会社全体としてどこか1店舗でも前月データがあればdiffPercentが計算値を返す)。
-function SummaryCard({ label, value, diff, emphasize = false }) {
+// 会社全体としてどこか1店舗でも前月データがあればdiffPercentが計算値を返す)。showDiff:false
+// の場合は前月比較の意味が薄い指標(店舗数など)向けに、下段の小さい行自体を出さない。
+function SummaryCard({ label, value, diff, emphasize = false, showDiff = true }) {
   return (
     <div className={`summary-card${emphasize ? " emphasize" : ""}`}>
       <span>{label}</span>
       <strong>{value}</strong>
-      <small>前月比 {formatDiffOrDash(diff)}</small>
+      {showDiff ? <small>前月比 {formatDiffOrDash(diff)}</small> : null}
     </div>
   );
 }
@@ -49,6 +51,16 @@ export default function CompanyDashboardView({ companySummary }) {
         <div className="summary-grid">
           <SummaryCard label="総売上" value={formatMoneyOrDash(companySummary.totalSales)} diff={diffPercent(companySummary.totalSales, p.totalSales, p.hasPrevious)} emphasize />
           <SummaryCard
+            label="粗利"
+            value={formatMoneyOrDash(companySummary.totalGrossProfit, companySummary.hasGrossProfitData)}
+            diff={diffPercent(companySummary.totalGrossProfit, p.totalGrossProfit, p.hasPrevious && companySummary.hasGrossProfitData && p.hasGrossProfitData)}
+          />
+          <SummaryCard
+            label="粗利率"
+            value={formatPercentOrDash(companySummary.grossMargin, companySummary.hasGrossProfitData)}
+            diff={diffPercent(companySummary.grossMargin, p.grossMargin, p.hasPrevious && companySummary.hasGrossProfitData && p.hasGrossProfitData)}
+          />
+          <SummaryCard
             label="営業利益"
             value={formatMoneyOrDash(companySummary.totalOperatingProfit, !companySummary.isProvisionalProfit)}
             diff={diffPercent(companySummary.totalOperatingProfit, p.totalOperatingProfit, p.hasPrevious && !companySummary.isProvisionalProfit && !p.isProvisionalProfit)}
@@ -69,21 +81,7 @@ export default function CompanyDashboardView({ companySummary }) {
             value={formatPercentOrDash(companySummary.laborRate, companySummary.hasLaborData)}
             diff={diffPercent(companySummary.laborRate, p.laborRate, p.hasPrevious && companySummary.hasLaborData && p.hasLaborData)}
           />
-          <SummaryCard
-            label="発注費"
-            value={formatMoneyOrDash(companySummary.totalPurchaseCost, companySummary.hasPurchaseData)}
-            diff={diffPercent(companySummary.totalPurchaseCost, p.totalPurchaseCost, p.hasPrevious && companySummary.hasPurchaseData && p.hasPurchaseData)}
-          />
-          <SummaryCard
-            label="発注費率"
-            value={formatPercentOrDash(companySummary.purchaseCostRate, companySummary.hasPurchaseData)}
-            diff={diffPercent(companySummary.purchaseCostRate, p.purchaseCostRate, p.hasPrevious && companySummary.hasPurchaseData && p.hasPurchaseData)}
-          />
-          <SummaryCard
-            label="スタッフ1人あたり生産性"
-            value={formatMoneyOrDash(companySummary.staffProductivity.current, companySummary.staffProductivity.hasStaffCount)}
-            diff={diffPercent(companySummary.staffProductivity.current, p.staffProductivity.current, p.hasPrevious && p.staffProductivity.hasStaffCount)}
-          />
+          <SummaryCard label="店舗数" value={`${companySummary.storeCount}店舗`} showDiff={false} />
         </div>
       </section>
 
@@ -128,6 +126,8 @@ export default function CompanyDashboardView({ companySummary }) {
           </div>
         )}
       </section>
+
+      <StoreSalesCompositionCard storeRows={companySummary.storeRows} />
 
       <StoreRankingCard storeRows={companySummary.storeRows} />
 
