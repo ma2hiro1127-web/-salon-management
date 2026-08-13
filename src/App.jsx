@@ -73,7 +73,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, NAV_CATEGORY_LABELS, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -1021,7 +1021,9 @@ function App() {
   useEffect(() => {
     setTaxSettingsForm({
       considerConsumptionTax: Boolean(appState.taxSettings?.considerConsumptionTax),
-      consumptionTaxReserveRate: appState.taxSettings?.consumptionTaxReserveRate ?? "",
+      // 引当率が未設定(未保存=0/空)の間は、日本の標準消費税率に合わせた10%を初期値として
+      // 表示する(保存済みの値があればそちらを優先し、上書きしない)。
+      consumptionTaxReserveRate: appState.taxSettings?.consumptionTaxReserveRate || 10,
     });
   }, [appState.taxSettings?.considerConsumptionTax, appState.taxSettings?.consumptionTaxReserveRate]);
 
@@ -4468,11 +4470,18 @@ function App() {
             </div>
           </div>
           <nav className="nav">
-            {visibleNavItems.map((item) => (
-              <button key={item.id} className={activePage === item.id ? "nav-button active" : "nav-button"} onClick={() => setActivePage(item.id)}>
-                {item.label}
-              </button>
-            ))}
+            {visibleNavItems.map((item, index) => {
+              const previousCategory = index > 0 ? visibleNavItems[index - 1].category : null;
+              const showCategoryHeading = item.category !== previousCategory;
+              return (
+                <div key={item.id} className="nav-item-group">
+                  {showCategoryHeading ? <p className="nav-category-heading">{NAV_CATEGORY_LABELS[item.category] || ""}</p> : null}
+                  <button className={activePage === item.id ? "nav-button active" : "nav-button"} onClick={() => setActivePage(item.id)}>
+                    {item.label}
+                  </button>
+                </div>
+              );
+            })}
           </nav>
         </div>
         <div className="sidebar-footer" />
@@ -5918,64 +5927,29 @@ function App() {
         })()}
 
         {activePage === "settings" && (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">PREFS</p>
+          <div className="stack settings-stack">
+            <section className="panel">
+              <div className="panel-heading">
                 <h2>表示設定</h2>
               </div>
-            </div>
-            <div className="toggle-panel">
-              <div>
-                <strong>ダークモード</strong>
-                <small>{theme === "dark" ? "オン" : "オフ"}</small>
-              </div>
-              <button className="secondary-button" type="button" onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}>
-                {theme === "dark" ? "ライトに切替" : "ダークに切替"}
-              </button>
-            </div>
-            <div className="setup-card">
-              <div className="panel-heading compact">
+              <div className="toggle-panel">
                 <div>
-                  <p className="eyebrow">COMPANY SETTINGS</p>
-                  <h3>会社基本設定</h3>
+                  <strong>ダークモード</strong>
+                  <small>{theme === "dark" ? "オン" : "オフ"}</small>
                 </div>
+                <button className="secondary-button" type="button" onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}>
+                  {theme === "dark" ? "ライトに切替" : "ダークに切替"}
+                </button>
+              </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-heading">
+                <h2>入力・編集設定</h2>
               </div>
               <div className="input-grid">
                 <label className="field">
-                  <span>業種</span>
-                  <select value={companySettingsForm.businessType || "salon"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, businessType: event.target.value }))}>
-                    <option value="salon">サロン</option>
-                    <option value="nail">ネイルサロン</option>
-                    <option value="eyelash">まつげサロン</option>
-                    <option value="esthetic">エステサロン</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>通貨</span>
-                  <input value={companySettingsForm.currency || "JPY"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, currency: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>会計年度開始月</span>
-                  <input value={companySettingsForm.fiscalYearStartMonth || "1"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, fiscalYearStartMonth: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>売上表示</span>
-                  <select value={companySettingsForm.salesDisplayMode || "inclusive"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, salesDisplayMode: event.target.value }))}>
-                    <option value="inclusive">税込</option>
-                    <option value="exclusive">税抜</option>
-                  </select>
-                </label>
-                <label className="field">
-                  <span>店販売上の名称</span>
-                  <input value={companySettingsForm.retailSalesLabel || "店販売上"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, retailSalesLabel: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>月締め日</span>
-                  <input value={companySettingsForm.closingDay || "月末"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, closingDay: event.target.value }))} />
-                </label>
-                <label className="field">
-                  <span>編集期限（日）</span>
+                  <span>過去データの編集期限（日）</span>
                   <input type="number" value={companySettingsForm.editDeadlineDays || 7} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, editDeadlineDays: Number(event.target.value) }))} />
                 </label>
                 <label className="field">
@@ -5987,38 +5961,35 @@ function App() {
                 </label>
               </div>
               <div className="button-row">
-                <button className="secondary-button" type="button" onClick={handleSaveCompanySettings}>会社基本設定を保存</button>
+                <button className="secondary-button" type="button" onClick={handleSaveCompanySettings}>入力・編集設定を保存</button>
               </div>
-            </div>
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">TAX</p>
-                  <h3>消費税の設定</h3>
-                </div>
+            </section>
+
+            <section className="panel">
+              <div className="panel-heading">
+                <h2>損益・税設定</h2>
               </div>
-              <p className="helper-text">損益表に消費税引当額(概算)と消費税考慮後利益を追加表示するかどうかを選べます。正式な納税額の自動計算ではなく、資金確保用の概算引当です。</p>
+              <p className="helper-text">損益表に資金確保用の概算消費税引当額を表示します。正式な納税額の自動計算ではありません。</p>
               <div className="input-grid">
                 <label className="field">
-                  <span>消費税を考慮する</span>
+                  <span>消費税引当を表示する</span>
                   <select value={taxSettingsForm.considerConsumptionTax ? "on" : "off"} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, considerConsumptionTax: event.target.value === "on" }))}>
-                    <option value="off">考慮しない</option>
-                    <option value="on">考慮する</option>
+                    <option value="off">OFF</option>
+                    <option value="on">ON</option>
                   </select>
                 </label>
                 {taxSettingsForm.considerConsumptionTax ? (
                   <label className="field">
                     <span>消費税引当率（%）</span>
-                    <input type="number" value={taxSettingsForm.consumptionTaxReserveRate} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: event.target.value }))} placeholder="例: 5" />
+                    <input type="number" value={taxSettingsForm.consumptionTaxReserveRate} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: event.target.value }))} placeholder="例: 10" />
                   </label>
                 ) : null}
               </div>
               <div className="button-row">
-                <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>消費税の設定を保存</button>
+                <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>損益・税設定を保存</button>
               </div>
-            </div>
-            <div className="empty-card">初期設定が完了すると、各権限ごとの画面がそのまま使えます。</div>
-          </section>
+            </section>
+          </div>
         )}
       </main>
       <AiFloatingButton onClick={() => openAiChat()} />

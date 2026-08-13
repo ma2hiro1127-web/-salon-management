@@ -20,18 +20,20 @@ const ROLE_LABELS_JA = {
 };
 export const getRoleLabel = (role) => ROLE_LABELS_JA[normalizeRole(role)] || role || "";
 
+// 並び順は実際の使用頻度に合わせている: 売上系(毎日使う)→管理系(随時)→その他。
+// 月次ダッシュボードは月末・月次確認が主な用途のため、日次入力・管理画面より後ろに置く。
 export const NAV_ITEMS_BY_ROLE = {
-  system_admin: ["dashboard", "monthlyDashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
-  company_admin: ["dashboard", "monthlyDashboard", "daily", "monthly", "stores", "users", "settings"],
+  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "settings"],
+  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
   // branch in App.jsx. No "companies" (店舗管理会社), and no monthly-target-adjacent company-wide
   // settings beyond their own store.
-  store_manager: ["dashboard", "monthlyDashboard", "daily", "monthly", "stores", "users", "settings"],
+  store_manager: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
   // 月次経営ダッシュボードは店舗横断比較・会社全体集計を含むため、staffには意図的に含めない。
   staff: ["dashboard", "daily", "stores"],
-  owner: ["dashboard", "monthlyDashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
-  admin: ["dashboard", "monthlyDashboard", "daily", "monthly", "stores", "users", "settings"],
+  owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "settings"],
+  admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
 };
 
 export const canAccessPage = (role, page) => {
@@ -77,11 +79,25 @@ export const getInvitableRoles = (role) => {
 // でスコープする — calculateAllStoresMonthSummary/getAllStoresBusinessDaySummary等を参照)。
 export const canViewAllStores = (role) => normalizeRole(role) === "company_admin" || normalizeRole(role) === "system_admin";
 
+// サイドメニューの見出しグループ分け(表示専用、権限ロジックには使わない)。
+const NAV_ITEM_CATEGORY = {
+  dashboard: "sales",
+  daily: "sales",
+  monthly: "sales",
+  monthlyDashboard: "sales",
+  stores: "management",
+  users: "management",
+  companies: "management",
+  settings: "other",
+};
+export const NAV_CATEGORY_LABELS = { sales: "売上", management: "管理", other: "その他" };
+
 export const getVisibleNavItems = (role) => {
   const normalizedRole = normalizeRole(role);
   const pages = NAV_ITEMS_BY_ROLE[normalizedRole] || NAV_ITEMS_BY_ROLE.staff;
   return pages.map((page) => ({
     id: page,
+    category: NAV_ITEM_CATEGORY[page] || "other",
     label: {
       dashboard: "売上",
       monthlyDashboard: "月次ダッシュボード",
