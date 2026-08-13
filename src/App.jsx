@@ -1246,9 +1246,8 @@ function App() {
     if (hasSalesTarget) {
       items.push({ label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
     }
-    if (hasCustomerTarget) {
-      items.push({ label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` });
-    }
+    // 「目標客数まで」はkpi-hero-gridの「客数達成率」カード(secondaryValue)と同じ数字
+    // (remainingCustomersTarget)を表示するだけの重複カードだったため廃止。
     // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない。
     if (!isAllStoresView && selectedStoreEntity) {
       items.push({
@@ -1258,7 +1257,7 @@ function App() {
       });
     }
     return items;
-  }, [summary.averageSpend, hasCustomerTarget, hasSalesTarget, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
+  }, [summary.averageSpend, hasCustomerTarget, hasSalesTarget, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -4573,6 +4572,7 @@ function App() {
                   <MetricCard
                     label="月間達成率"
                     value={percent(summary.targetAchievement)}
+                    progress={summary.targetAchievement}
                     secondaryValue={`目標売上まで ${money(summary.remainingSalesTarget)}`}
                     tone={summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100)}
                     emphasize
@@ -4582,6 +4582,7 @@ function App() {
                 <MetricCard
                   label="月末着地予測"
                   value={money(summary.forecast)}
+                  progress={hasSalesTarget ? (summary.forecast / Number(target.targetSales)) * 100 : null}
                   hint={hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
                     : null}
@@ -4592,7 +4593,8 @@ function App() {
                   <MetricCard
                     label="客数達成率"
                     value={percent(customerTargetSummary.achievementRate)}
-                    hint={`残り ${customerTargetSummary.remainingCustomers}名`}
+                    progress={customerTargetSummary.achievementRate}
+                    secondaryValue={`目標まで ${customerTargetSummary.remainingCustomers}名`}
                     tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
                     emphasize
                   />
@@ -4601,7 +4603,8 @@ function App() {
                   <MetricCard
                     label="口コミ数達成率"
                     value={percent(summary.reviewCountAchievement)}
-                    hint={`現在 ${number(summary.reviewCount)}件 / 目標 ${number(summary.reviewCountTarget)}件・残り ${number(summary.remainingReviewCountTarget)}件`}
+                    progress={summary.reviewCountAchievement}
+                    secondaryValue={`目標まで ${number(summary.remainingReviewCountTarget)}件`}
                     tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
                     emphasize
                   />
@@ -6020,7 +6023,10 @@ function App() {
   );
 }
 
-function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", emphasize = false, onClick = null }) {
+// progress(0-100、任意)を渡すと数値のすぐ下に細い進捗バーを表示する。目標達成率系の
+// カードで「上に内容が寄って下が空白になる」問題を、意味のある情報(進捗バー)で埋めるための
+// 共通の仕組み — 今後増えるカードも同じpropを使うだけで同じ見た目に揃う。
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", progress = null, emphasize = false, onClick = null }) {
   return (
     <div
       className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${onClick ? "clickable" : ""}`}
@@ -6031,6 +6037,11 @@ function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", e
     >
       <span>{label}</span>
       <strong>{value}</strong>
+      {typeof progress === "number" ? (
+        <div className="metric-card-progress">
+          <div className={`metric-card-progress-fill ${tone}`} style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+        </div>
+      ) : null}
       {secondaryValue ? <strong className="metric-card-secondary-value">{secondaryValue}</strong> : null}
       {hint ? <small>{hint}</small> : null}
     </div>
