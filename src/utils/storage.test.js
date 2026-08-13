@@ -58,10 +58,11 @@ test("calculateMonthSummary returns sales and cost ratios from new monthly struc
   assert.equal(summary.remainingSalesTarget, 500000);
   assert.equal(summary.operatingProfit, 110000);
   assert.equal(summary.operatingMargin, 22);
-  // fixedCost/variableCostはcategory_key基準の内部合計に変わった: 家賃(rent)のみfixedCost、
-  // 「固定費」「販管費」という旧カテゴリ名はother(=variableCost)へ、広告費は別枠(adCost)。
-  assert.equal(summary.fixedCost, 100000);
-  assert.equal(summary.variableCost, 50000);
+  // fixedCost/variableCostはcategory_key基準の内部合計に変わった: 家賃(rent)+「固定費」
+  // 「販管費」という旧カテゴリ名が移ったother(その他費用)がfixedCostに合算され、
+  // variableCostは未分類のみ(今回は無いので0)。広告費は別枠(adCost)。
+  assert.equal(summary.fixedCost, 150000); // rent(100000) + other(20000+30000)
+  assert.equal(summary.variableCost, 0);
   assert.equal(summary.adCost, 50000);
   assert.equal(summary.laborCost, 150000);
   assert.equal(summary.purchaseAmount, 40000);
@@ -154,10 +155,10 @@ test("month summary separates fixed and variable costs from closing items", () =
 
   const summary = calculateMonthSummary(state, store, month);
 
-  // fixedCost=家賃(rent)のみ、variableCost=「固定費」「販管費」という旧カテゴリ名がother(その他)
-  // へ移った分、広告費はadCostへ別枠化。
-  assert.equal(summary.fixedCost, 100000);
-  assert.equal(summary.variableCost, 50000);
+  // fixedCost=家賃(rent)+「固定費」「販管費」という旧カテゴリ名が移ったother(その他費用)、
+  // variableCostは未分類のみ(今回は無いので0)、広告費はadCostへ別枠化。
+  assert.equal(summary.fixedCost, 150000); // rent(100000) + other(20000+30000)
+  assert.equal(summary.variableCost, 0);
   // equipmentInvestmentCost is still computed (backward-compat for closingItems already tagged
   // 設備投資) but is explicitly excluded from category-based bucketing (categorizableItems filter)
   // so it never counts toward fixedCost/variableCost/expenseCost — 設備投資 has no dedicated P&L
@@ -327,8 +328,37 @@ test("calculateMonthSummary: hasFixedCostData/hasExpenseCostDataは対象カテ�
   state.fixedCosts[key] = [];
   state.variableCosts[key] = [{ id: "var-1", name: "広告費", categoryKey: "advertising", amount: 30000 }];
   const summaryAdOnly = calculateMonthSummary(state, store, month);
-  assert.equal(summaryAdOnly.hasFixedCostData, false); // 固定費の内訳6カテゴリはどれも未登録
+  assert.equal(summaryAdOnly.hasFixedCostData, false); // 固定費の内訳7カテゴリはどれも未登録
   assert.equal(summaryAdOnly.hasExpenseCostData, true); // 広告費は経費合計の対象なのでtrue
+});
+
+test("calculateMonthSummary: 「その他費用」(経費その他・本社経費・接待交際費など)は固定費に合算され、名称ではなくcategoryKeyで広告費と区別する", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
+  state.fixedCosts[key] = [
+    { id: "fc-rent", name: "家賃", categoryKey: "rent", periodType: "ongoing" },
+    { id: "fc-misc1", name: "本社経費", categoryKey: "other", periodType: "ongoing" },
+    { id: "fc-misc2", name: "接待交際費・雑費", categoryKey: "other", periodType: "ongoing" },
+    // 名称に「広告」を含んでいても、categoryKeyがadvertisingであれば広告費として集計され
+    // 固定費には含まれない(名称ではなくcategoryKeyで判定する)。
+    { id: "fc-hpb", name: "HPB", categoryKey: "advertising", periodType: "ongoing" },
+  ];
+  state.costMonthlyAmounts = {
+    "fc-rent__2026-08": { amount: 401016 },
+    "fc-misc1__2026-08": { amount: 250000 },
+    "fc-misc2__2026-08": { amount: 50000 },
+    "fc-hpb__2026-08": { amount: 60000 },
+  };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.fixedCost, 701016); // 401016(家賃) + 250000 + 50000(その他費用2件)
+  assert.equal(summary.hasFixedCostData, true);
+  assert.equal(summary.adCost, 60000); // HPBはcategoryKeyがadvertisingなので固定費に含まれない
+  assert.equal(summary.otherCost, 300000); // その他費用カテゴリ自体の値は引き続き個別参照できる
 });
 
 test("getMonthClosingChecklist: 未入力のカテゴリと売上をmissingItemsに列挙し、カテゴリ名(文字列)ではなくhasEntryで判定する", () => {

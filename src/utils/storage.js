@@ -1160,15 +1160,23 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // 月締め項目(closingItems)に残っている旧カテゴリ「設備投資」の行だけ、後方互換のため
   // 引き続き集計する(新規入力では発生しない)。
   const equipmentInvestmentCost = closingItems.filter((item) => item.category === "設備投資").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  // 「固定費」(内部合計、損益表では経費合計に統合表示): 家賃・光熱費・通信費・清掃環境費・
-  // システム利用料・税金保険の6カテゴリ。labor/materials/advertisingは別枠で扱うためここには
-  // 含めない。
+  // 「固定費」(内部合計、月次ダッシュボード・全店舗比較表の「固定費」列の実体): 家賃・光熱費・
+  // 通信費・清掃環境費・システム利用料・税金保険の6カテゴリに加え、「その他費用」(経費その他・
+  // 本社経費・接待交際費・雑費など、広告費以外の継続的な費用を費用入力画面でcategoryKey="other"
+  // として個別入力したもの)も合算する。入力自体は費用入力画面で名称ごとに細かく分けたままでき、
+  // ダッシュボード側でのみ大分類にまとめる設計(名称ではなくcategoryKeyで判定するため、
+  // 「HPB」のような名称でもcategoryKeyが広告費ならここには含まれない)。labor/materials/
+  // advertisingは別枠で扱うためここには含めない。
   const fixedCost = costsByCategory.rent + costsByCategory.utilities + costsByCategory.communication
-    + costsByCategory.cleaning + costsByCategory.system + costsByCategory.tax_insurance;
+    + costsByCategory.cleaning + costsByCategory.system + costsByCategory.tax_insurance + costsByCategory.other;
   // 「その他費用」カテゴリそのもの(AIコンテキスト等、個別に参照する箇所があるため独立して残す)。
+  // fixedCostにも合算されているが、二重計上ではない — otherCostは値の参照用、fixedCostは
+  // ダッシュボード表示用の合計、という役割の違い(expenseCostの計算ではvariableCostからは
+  // 除外している、下記参照)。
   const otherCost = costsByCategory.other;
-  // 「変動費」(内部合計): その他費用 + 未分類(移行時に自動判定できなかった費用、要注意)。
-  const variableCost = otherCost + costsByCategory[UNCATEGORIZED_KEY];
+  // 「変動費」(内部合計): 未分類(移行時に自動判定できなかった費用、要注意)のみ。その他費用は
+  // 上でfixedCostに合算したため、ここに含めると二重計上になるので含めない。
+  const variableCost = costsByCategory[UNCATEGORIZED_KEY];
   // 経費合計 = 固定費+変動費+広告費(labor/materialsは別枠のためここに含めない) — 10カテゴリ
   // のうちlabor/materials以外の9カテゴリを漏れなくカバーする。固定費/変動費という区分を
   // ユーザーに判断させない(表示は経費合計に統合、要件7-8)。
@@ -1249,9 +1257,9 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // 表示用の補助フラグ: 「固定費」「経費合計」を構成するカテゴリのうち1つでも登録があるか。
   // 未入力を0として計算した数字を「－」に置き換えるかどうかの判定にのみ使い、isProvisionalProfit
   // (人件費・材料費のみを重要費用として見る既存の設計)には影響しない。
-  const hasFixedCostData = ["rent", "utilities", "communication", "cleaning", "system", "tax_insurance"]
+  const hasFixedCostData = ["rent", "utilities", "communication", "cleaning", "system", "tax_insurance", "other"]
     .some((key) => categoryHasEntry[key]);
-  const hasExpenseCostData = hasFixedCostData || categoryHasEntry.advertising || categoryHasEntry.other || categoryHasEntry[UNCATEGORIZED_KEY];
+  const hasExpenseCostData = hasFixedCostData || categoryHasEntry.advertising || categoryHasEntry[UNCATEGORIZED_KEY];
 
   return {
     sales,

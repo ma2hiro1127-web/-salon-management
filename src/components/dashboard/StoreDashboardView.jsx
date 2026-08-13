@@ -124,7 +124,7 @@ export default function StoreDashboardView({ storeName, summary, previousSummary
                 <td>{formatPercentOrDash(summary.costOfGoodsSoldRate, Boolean(summary.categoryHasEntry?.materials))}</td>
               </tr>
               <tr>
-                <td>固定費(家賃・光熱費・通信費・清掃環境費・システム利用料・税金保険)</td>
+                <td>固定費(家賃・光熱費・通信費・清掃環境費・システム利用料・税金保険・その他費用)</td>
                 <td>{formatMoneyOrDash(summary.fixedCost, summary.hasFixedCostData)}</td>
                 <td>{formatPercentOrDash(summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0, summary.hasFixedCostData && summary.sales > 0)}</td>
               </tr>
@@ -132,11 +132,6 @@ export default function StoreDashboardView({ storeName, summary, previousSummary
                 <td>広告費</td>
                 <td>{formatMoneyOrDash(summary.adCost, Boolean(summary.categoryHasEntry?.advertising))}</td>
                 <td>{formatPercentOrDash(summary.adRate, Boolean(summary.categoryHasEntry?.advertising))}</td>
-              </tr>
-              <tr>
-                <td>その他費用</td>
-                <td>{formatMoneyOrDash(summary.otherCost, Boolean(summary.categoryHasEntry?.other))}</td>
-                <td>{formatPercentOrDash(summary.sales > 0 ? (summary.otherCost / summary.sales) * 100 : 0, Boolean(summary.categoryHasEntry?.other) && summary.sales > 0)}</td>
               </tr>
               {summary.categoryHasEntry?.uncategorized ? (
                 <tr>

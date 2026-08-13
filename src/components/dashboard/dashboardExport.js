@@ -76,20 +76,19 @@ export const buildStoreCsv = ({ storeName, monthValue, summary, previousSummary,
   push("口コミ数", cellOrDash(summary.reviewCount));
   push("目標達成率", cellOrDash(summary.targetAchievement, Boolean(summary.target?.targetSales), 1));
 
-  // 画面(StoreDashboardView)のコスト構成表と同じ内訳(固定費は6カテゴリの内部合計を1行)で
-  // 出力する — CSVは「今表示している内容」の書き出しなので、画面と定義がずれないようにする。
-  const fixedCostSubKeys = ["rent", "utilities", "communication", "cleaning", "system", "tax_insurance"];
-  const hasFixedCostEntry = fixedCostSubKeys.some((key) => summary.categoryHasEntry?.[key]);
+  // 画面(StoreDashboardView)のコスト構成表と同じ内訳(固定費は家賃・光熱費・通信費・清掃環境費・
+  // システム利用料・税金保険・その他費用の7カテゴリの内部合計を1行、summary.hasFixedCostDataも
+  // 同じ7カテゴリ基準)で出力する — CSVは「今表示している内容」の書き出しなので、画面と定義が
+  // ずれないようにする。「その他費用」(経費その他・本社経費・接待交際費など)は個別の行を持たず
+  // 固定費に集約する。
   push("人件費(金額)", cellOrDash(summary.laborCost, Boolean(summary.categoryHasEntry?.labor)));
   push("人件費(売上比率)", cellOrDash(summary.laborRate, Boolean(summary.categoryHasEntry?.labor), 1));
   push("発注費/材料原価(金額)", cellOrDash(summary.costOfGoodsSold, Boolean(summary.categoryHasEntry?.materials)));
   push("発注費/材料原価(売上比率)", cellOrDash(summary.costOfGoodsSoldRate, Boolean(summary.categoryHasEntry?.materials), 1));
-  push("固定費(金額)", cellOrDash(summary.fixedCost, hasFixedCostEntry));
-  push("固定費(売上比率)", cellOrDash(summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0, hasFixedCostEntry && summary.sales > 0, 1));
+  push("固定費(金額)", cellOrDash(summary.fixedCost, summary.hasFixedCostData));
+  push("固定費(売上比率)", cellOrDash(summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0, summary.hasFixedCostData && summary.sales > 0, 1));
   push("広告費(金額)", cellOrDash(summary.adCost, Boolean(summary.categoryHasEntry?.advertising)));
   push("広告費(売上比率)", cellOrDash(summary.adRate, Boolean(summary.categoryHasEntry?.advertising), 1));
-  push("その他費用(金額)", cellOrDash(summary.otherCost, Boolean(summary.categoryHasEntry?.other)));
-  push("その他費用(売上比率)", cellOrDash(summary.sales > 0 ? (summary.otherCost / summary.sales) * 100 : 0, Boolean(summary.categoryHasEntry?.other) && summary.sales > 0, 1));
   if (summary.categoryHasEntry?.uncategorized) {
     const uncategorizedAmount = summary.costsByCategory?.uncategorized ?? 0;
     push("未分類(金額)", cellOrDash(uncategorizedAmount));
