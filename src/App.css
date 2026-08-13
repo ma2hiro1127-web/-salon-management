@@ -328,8 +328,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-chat-input-row { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); flex-shrink: 0; }
 .ai-chat-input-row textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; font: inherit; max-height: 120px; }
 .ai-chat-input-row button { flex-shrink: 0; }
-.daily-save-banner { margin-bottom: 14px; padding: 12px 14px; border-radius: 16px; border: 1px solid rgba(47, 125, 246, 0.18); background: linear-gradient(135deg, rgba(47, 125, 246, 0.12), rgba(255, 255, 255, 0.9)); display: flex; flex-direction: column; gap: 4px; }
-.daily-save-banner small { color: var(--muted); }
 .today-result-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--accent-soft); }
 .ranking-accordion { display: flex; flex-direction: column; gap: 10px; }
 .ranking-card-accordion { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; box-shadow: var(--shadow); cursor: pointer; }
@@ -507,6 +505,54 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 }
 .danger-button { background: linear-gradient(135deg, #f16565, var(--danger)); color: #fff; box-shadow: 0 10px 24px rgba(227, 87, 87, 0.24); }
 .danger-button:hover { transform: translateY(-1px); }
+
+/* 月次経営ダッシュボード */
+.dashboard-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.dashboard-month-nav { display: flex; align-items: center; gap: 10px; }
+.dashboard-month-nav strong { font-size: 1.05rem; min-width: 96px; text-align: center; }
+.dashboard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+.dashboard-bar-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
+.dashboard-bar-group:last-child { margin-bottom: 0; }
+.dashboard-bar-row { display: flex; align-items: center; gap: 10px; }
+.dashboard-bar-label { flex: 0 0 108px; font-size: 0.82rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dashboard-bar-row .progress-track { flex: 1; margin-bottom: 0; }
+.dashboard-bar-row .progress-fill.danger { background: var(--danger); }
+.dashboard-bar-value { flex: 0 0 auto; font-weight: 700; font-size: 0.85rem; min-width: 96px; text-align: right; white-space: nowrap; }
+.dashboard-bar-value.danger { color: var(--danger); }
+
+.dashboard-cost-table td:nth-child(2), .dashboard-cost-table th:nth-child(2),
+.dashboard-cost-table td:nth-child(3), .dashboard-cost-table th:nth-child(3) { text-align: right; }
+.comparison-table td, .comparison-table th { white-space: nowrap; }
+.comparison-table td:first-child, .comparison-table th:first-child { position: sticky; left: 0; background: var(--surface); }
+
+.dashboard-hint { color: var(--muted); font-size: 0.8rem; margin: 4px 0 0; }
+.panel-subheading { margin: 18px 0 8px; font-size: 0.92rem; color: var(--muted); }
+.panel-subheading:first-of-type { margin-top: 4px; }
+
+@media (max-width: 640px) {
+  .dashboard-toolbar { flex-direction: column; align-items: stretch; }
+  .dashboard-bar-label { flex-basis: 80px; font-size: 0.76rem; }
+  .dashboard-bar-value { min-width: 76px; font-size: 0.78rem; }
+}
+
+/* レポート出力(印刷/PDF)。ブラウザ標準の印刷ダイアログ(window.print())を使うための
+   A4向け印刷専用CSS — このコードベース初の@media printブロック。サイドバー・トップバーの
+   操作系(.dashboard-print-hide)は隠し、.dashboard-print-area の中身だけを印刷する。 */
+@media print {
+  .sidebar, .topbar, .dashboard-print-hide, .ai-floating-button { display: none !important; }
+  .app-shell, .main-content { display: block !important; background: #fff !important; padding: 0 !important; }
+  .dashboard-print-area { display: block !important; }
+  .dashboard-print-area .summary-grid,
+  .dashboard-print-area .kpi-grid,
+  .dashboard-print-area .dashboard-layout { grid-template-columns: repeat(2, 1fr) !important; }
+  .dashboard-print-area .panel,
+  .dashboard-print-area .metric-card,
+  .dashboard-print-area .ranking-card-accordion,
+  .dashboard-print-area .summary-card { box-shadow: none !important; border: 1px solid #ccc !important; break-inside: avoid; }
+  .dashboard-print-area .table-wrap { overflow-x: visible !important; }
+  @page { size: A4 portrait; margin: 12mm; }
+}
 
 @media (max-width: 640px) {
   .user-store-group-header { padding: 12px; font-size: 0.88rem; }

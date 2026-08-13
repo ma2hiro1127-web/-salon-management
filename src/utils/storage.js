@@ -1500,6 +1500,156 @@ export const getStaffProductivitySummary = ({ sales, forecast, staffCount, produ
   };
 };
 
+// 月次経営ダッシュボード用: 前月データが「存在しない」(hasPrevious:false)場合と「存在するが
+// 差分が0%」を区別してnullを返す。formatDiffOrDashとセットで使う — 0/NaN/Infinityのいずれも
+// 「前月データなし」の意味には使わない(実際に0%の変化と区別できなくなるため)。
+export const diffPercent = (current, previous, hasPrevious) => {
+  if (!hasPrevious || !Number.isFinite(previous) || previous === 0) return null;
+  return ((parseNumber(current) - previous) / previous) * 100;
+};
+
+export const formatMoneyOrDash = (value, hasData = true) =>
+  hasData && Number.isFinite(Number(value)) ? `¥${Math.round(Number(value)).toLocaleString("ja-JP")}` : "－";
+
+export const formatPercentOrDash = (value, hasData = true, digits = 1) =>
+  hasData && Number.isFinite(Number(value)) ? `${Number(value).toFixed(digits)}%` : "－";
+
+export const formatDiffOrDash = (diff) => {
+  if (diff === null || diff === undefined || !Number.isFinite(diff)) return "－";
+  const sign = diff > 0 ? "+" : diff < 0 ? "−" : "";
+  return `${sign}${Math.abs(diff).toFixed(1)}%`;
+};
+
+// 月次経営ダッシュボード用: 会社(company.stores)配下の1店舗1行の当月・前月データをまとめて
+// 返す。全店舗サマリー・棒グラフ・比較表・ランキング・CSV出力がすべてこの1関数の結果を
+// 再利用し、店舗ごとにcalculateMonthSummaryを重複して呼び出さない。
+// store.settings/staffCount/productivityStaffCountは、Supabaseハイドレート時に既に
+// company.stores[i]へマージ済み(store_profiles/store_input_settingsのオーバーレイ)。
+export const getStoreDashboardRows = (state, company, monthValue) => {
+  const stores = Array.isArray(company?.stores) ? company.stores : [];
+  const previousMonthValue = getMonthOffset(monthValue, -1);
+
+  return stores.map((store) => {
+    const useInventoryTracking = Boolean(store.settings?.useInventoryTracking);
+    const summary = calculateMonthSummary(state, store.id, monthValue, { useInventoryTracking });
+    const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, { useInventoryTracking });
+    const productivity = getStaffProductivitySummary({
+      sales: summary.sales, forecast: summary.forecast,
+      staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
+    });
+    const previousProductivity = getStaffProductivitySummary({
+      sales: previousSummary.sales, forecast: previousSummary.forecast,
+      staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
+    });
+    const effectiveStaffCount = parseNumber(store.productivityStaffCount) > 0
+      ? parseNumber(store.productivityStaffCount) : parseNumber(store.staffCount);
+    const isClosed = Boolean(state.monthClosingStatus?.[buildMonthKey(store.id, monthValue)]?.closed);
+    const hasPrevious = previousSummary.entries.length > 0;
+
+    return {
+      storeId: store.id,
+      storeName: store.name,
+      isClosed,
+      sales: summary.sales,
+      technicalSales: summary.technicalSales,
+      retailSales: summary.retailSales,
+      retailRatio: summary.retailRatio,
+      hasRetailData: summary.sales > 0,
+      customers: summary.customers,
+      newCustomers: summary.newCustomers,
+      repeatCustomers: summary.repeatCustomers,
+      newCustomerRate: summary.customers > 0 ? (summary.newCustomers / summary.customers) * 100 : 0,
+      hasCustomerData: summary.customers > 0,
+      averageSpend: summary.averageSpend,
+      laborCost: summary.laborCost,
+      laborRate: summary.laborRate,
+      hasLaborData: Boolean(summary.categoryHasEntry?.labor),
+      purchaseCost: summary.costOfGoodsSold,
+      purchaseCostRate: summary.costOfGoodsSoldRate,
+      hasPurchaseData: Boolean(summary.categoryHasEntry?.materials),
+      fixedCost: summary.fixedCost,
+      fixedCostRate: summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0,
+      operatingProfit: summary.operatingProfit,
+      operatingMargin: summary.operatingMargin,
+      isProvisionalProfit: summary.isProvisionalProfit,
+      effectiveStaffCount,
+      productivity,
+      previous: {
+        hasPrevious,
+        sales: previousSummary.sales,
+        customers: previousSummary.customers,
+        averageSpend: previousSummary.averageSpend,
+        newCustomers: previousSummary.newCustomers,
+        retailSales: previousSummary.retailSales,
+        laborCost: previousSummary.laborCost,
+        purchaseCost: previousSummary.costOfGoodsSold,
+        operatingProfit: previousSummary.operatingProfit,
+        operatingMargin: previousSummary.operatingMargin,
+        productivity: previousProductivity,
+      },
+    };
+  });
+};
+
+// 月次経営ダッシュボード用: 全店舗ダッシュボードの会社全体サマリー。getStoreDashboardRowsを
+// 1回だけ呼び、各店舗の実額を合算してから比率を算出する(店舗ごとの比率を平均するのではない
+// — calculateAllStoresMonthSummaryが同じ理由で生の実績から再計算しているのと同じ設計)。
+export const getCompanyDashboardSummary = (state, company, monthValue) => {
+  const storeRows = getStoreDashboardRows(state, company, monthValue);
+
+  const sum = (picker) => storeRows.reduce((total, row) => total + parseNumber(picker(row)), 0);
+  const totalSales = sum((row) => row.sales);
+  const totalOperatingProfit = sum((row) => row.operatingProfit);
+  const totalLaborCost = sum((row) => row.laborCost);
+  const totalPurchaseCost = sum((row) => row.purchaseCost);
+  const totalEffectiveStaffCount = storeRows.reduce(
+    (total, row) => total + (row.productivity.hasStaffCount ? parseNumber(row.effectiveStaffCount) : 0), 0
+  );
+  const hasStaffCount = storeRows.some((row) => row.productivity.hasStaffCount);
+
+  const previousTotalSales = sum((row) => row.previous.sales);
+  const previousTotalOperatingProfit = sum((row) => row.previous.operatingProfit);
+  const previousTotalLaborCost = sum((row) => row.previous.laborCost);
+  const previousTotalPurchaseCost = sum((row) => row.previous.purchaseCost);
+  const previousHasStaffCount = storeRows.some((row) => row.previous.productivity.hasStaffCount);
+  const previousTotalEffectiveStaffCount = storeRows.reduce(
+    (total, row) => total + (row.previous.productivity.hasStaffCount ? parseNumber(row.effectiveStaffCount) : 0), 0
+  );
+  const hasPrevious = storeRows.some((row) => row.previous.hasPrevious);
+
+  return {
+    monthValue,
+    isFullyClosed: storeRows.length > 0 && storeRows.every((row) => row.isClosed),
+    totalSales,
+    totalOperatingProfit,
+    operatingMargin: totalSales > 0 ? (totalOperatingProfit / totalSales) * 100 : 0,
+    totalLaborCost,
+    laborRate: totalSales > 0 ? (totalLaborCost / totalSales) * 100 : 0,
+    totalPurchaseCost,
+    purchaseCostRate: totalSales > 0 ? (totalPurchaseCost / totalSales) * 100 : 0,
+    staffProductivity: {
+      hasStaffCount,
+      current: hasStaffCount && totalEffectiveStaffCount > 0 ? totalSales / totalEffectiveStaffCount : 0,
+    },
+    previous: {
+      hasPrevious,
+      totalSales: previousTotalSales,
+      totalOperatingProfit: previousTotalOperatingProfit,
+      operatingMargin: previousTotalSales > 0 ? (previousTotalOperatingProfit / previousTotalSales) * 100 : 0,
+      totalLaborCost: previousTotalLaborCost,
+      laborRate: previousTotalSales > 0 ? (previousTotalLaborCost / previousTotalSales) * 100 : 0,
+      totalPurchaseCost: previousTotalPurchaseCost,
+      purchaseCostRate: previousTotalSales > 0 ? (previousTotalPurchaseCost / previousTotalSales) * 100 : 0,
+      staffProductivity: {
+        hasStaffCount: previousHasStaffCount,
+        current: previousHasStaffCount && previousTotalEffectiveStaffCount > 0
+          ? previousTotalSales / previousTotalEffectiveStaffCount : 0,
+      },
+    },
+    storeRows,
+  };
+};
+
 // 文字列シードから安定したインデックスを作るだけの軽量ハッシュ。同じシードなら常に同じ
 // バリアントを選ぶため同一レンダー内でコメントが揺れ動くことはないが、シードに日付を含めて
 // 呼び出すことで、同じ状況でも日が変われば言い回しが変わる(状態を持たずに「毎日変化し、

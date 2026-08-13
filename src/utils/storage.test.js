@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -1304,6 +1304,148 @@ test("calculateAllStoresMonthSummary: a newly added store with no data yet doesn
   // それでもA店・B店それぞれの実績(入力済み全件)はそのまま反映される —
   // 新規店舗の追加が既存店舗の実績集計を壊してはいけない。
   assert.equal(summary.sales, 1100000);
+});
+
+// 月次経営ダッシュボード関連のテスト。店舗横断の集計・前月比・「－」表示ルールが、既存の
+// calculateMonthSummary/getStaffProductivitySummaryの結果だけから正しく組み立てられることを
+// 確認する(ダッシュボード専用の手入力データは一切使わない)。
+const buildDashboardTestState = () => {
+  const state = createInitialAppState();
+  const currentKeyA = buildMonthKey("store-a", "2026-08");
+  const previousKeyA = buildMonthKey("store-a", "2026-07");
+  const currentKeyB = buildMonthKey("store-b", "2026-08");
+
+  state.dailyResults[currentKeyA] = [
+    { date: "2026-08-01", totalSales: 200000, technicalSales: 140000, retailSales: 60000, customers: 10, newCustomers: 3, repeatCustomers: 7 },
+    { date: "2026-08-02", totalSales: 300000, technicalSales: 180000, retailSales: 120000, customers: 12, newCustomers: 4, repeatCustomers: 8 },
+  ];
+  state.dailyResults[previousKeyA] = [
+    { date: "2026-07-01", totalSales: 400000, technicalSales: 300000, retailSales: 100000, customers: 20, newCustomers: 5, repeatCustomers: 15 },
+  ];
+  state.dailyResults[currentKeyB] = [
+    { date: "2026-08-01", totalSales: 100000, technicalSales: 80000, retailSales: 20000, customers: 5, newCustomers: 1, repeatCustomers: 4 },
+  ];
+  // store-bの前月(2026-07)は一件もdailyResultsが無い → hasPrevious:false になるはず。
+
+  state.fixedCosts[currentKeyA] = [{ id: "fc-a-rent", name: "家賃", categoryKey: "rent", periodType: "ongoing" }];
+  state.costMonthlyAmounts = { "fc-a-rent__2026-08": { amount: 100000 } };
+  state.monthClosing[currentKeyA] = [
+    { id: "close-a-1", name: "人件費", amount: 150000, category: "人件費", categoryKey: "labor" },
+    { id: "close-a-2", name: "仕入・発注額", amount: 40000, category: "仕入・発注額", categoryKey: "materials" },
+  ];
+  // store-bは人件費・材料/発注費とも未登録(hasLaborData/hasPurchaseData:falseになるはず)。
+
+  state.monthClosingStatus[currentKeyA] = { closed: true, lockedAt: "2026-09-01T00:00:00.000Z", note: "月締め済み" };
+  // store-bは未締め(monthClosingStatusにキー自体が無い = デフォルトfalse)。
+
+  return state;
+};
+
+const dashboardTestCompany = {
+  id: "company-1",
+  stores: [
+    { id: "store-a", name: "店A", staffCount: 5, productivityStaffCount: 0, settings: { useInventoryTracking: false } },
+    { id: "store-b", name: "店B", staffCount: 0, productivityStaffCount: 0, settings: { useInventoryTracking: false } },
+  ],
+};
+
+test("getStoreDashboardRows: 1店舗1行で当月・前月・カテゴリ別入力有無・スタッフ生産性をまとめて返す", () => {
+  const state = buildDashboardTestState();
+  const rows = getStoreDashboardRows(state, dashboardTestCompany, "2026-08");
+
+  assert.equal(rows.length, 2);
+  const storeA = rows.find((row) => row.storeId === "store-a");
+  const storeB = rows.find((row) => row.storeId === "store-b");
+
+  assert.equal(storeA.sales, 500000);
+  assert.equal(storeA.isClosed, true);
+  assert.equal(storeA.laborCost, 150000);
+  assert.equal(storeA.hasLaborData, true);
+  assert.equal(storeA.purchaseCost, 40000);
+  assert.equal(storeA.hasPurchaseData, true);
+  assert.equal(storeA.fixedCost, 100000);
+  assert.equal(storeA.operatingProfit, 210000);
+  assert.equal(storeA.operatingMargin, 42);
+  assert.equal(storeA.isProvisionalProfit, false); // 人件費・材料/発注費とも登録済み
+  assert.equal(storeA.effectiveStaffCount, 5); // productivityStaffCount未入力→staffCountへフォールバック
+  assert.equal(storeA.productivity.hasStaffCount, true);
+  assert.equal(storeA.productivity.current, 100000); // 500000 / 5
+  // 前月(2026-07)は1件データがあるのでhasPrevious:true
+  assert.equal(storeA.previous.hasPrevious, true);
+  assert.equal(storeA.previous.sales, 400000);
+  assert.equal(storeA.previous.operatingProfit, 400000); // 前月は費用データ無し→原価0・費用0
+
+  assert.equal(storeB.sales, 100000);
+  assert.equal(storeB.isClosed, false); // monthClosingStatusにキーが無い→未締め扱い
+  assert.equal(storeB.hasLaborData, false); // 人件費が1件も登録されていない
+  assert.equal(storeB.hasPurchaseData, false); // 材料/発注費が1件も登録されていない
+  assert.equal(storeB.isProvisionalProfit, true); // 人件費・材料/発注費が両方未登録
+  assert.equal(storeB.effectiveStaffCount, 0);
+  assert.equal(storeB.productivity.hasStaffCount, false); // スタッフ数未設定
+  // store-bの前月(2026-07)はdailyResults自体が無い → hasPrevious:false(0円と区別)
+  assert.equal(storeB.previous.hasPrevious, false);
+});
+
+test("getCompanyDashboardSummary: 会社全体の合計・比率は店舗ごとの比率の平均ではなく実額の合算から算出する", () => {
+  const state = buildDashboardTestState();
+  const summary = getCompanyDashboardSummary(state, dashboardTestCompany, "2026-08");
+
+  assert.equal(summary.totalSales, 600000); // 500000 + 100000
+  assert.equal(summary.totalOperatingProfit, 310000); // 210000 + 100000
+  // 51.666...% (店Aの42%と店Bの100%の平均(71%)ではない)
+  assert.ok(Math.abs(summary.operatingMargin - (310000 / 600000) * 100) < 0.001);
+  assert.equal(summary.totalLaborCost, 150000);
+  assert.equal(summary.laborRate, 25); // 150000 / 600000
+  assert.equal(summary.totalPurchaseCost, 40000);
+  // スタッフ生産性: 店Bはスタッフ数未設定なので分母から除外(店Aの5人のみ) → 600000 / 5
+  assert.equal(summary.staffProductivity.hasStaffCount, true);
+  assert.equal(summary.staffProductivity.current, 120000);
+  // 店Aは月締め済み・店Bは未締め → 1店舗でも未締めなら会社全体は「暫定値」扱い
+  assert.equal(summary.isFullyClosed, false);
+  // 前月データ: 店Aにはあり(hasPrevious:true)・店Bには無い → 会社全体としては「一部前月データあり」
+  assert.equal(summary.previous.hasPrevious, true);
+  assert.equal(summary.previous.totalSales, 400000); // 店Aの前月400000 + 店Bの前月0(データ無し)
+  // storeRowsがそのまま返り、子コンポーネント側で再計算しなくて済む
+  assert.equal(summary.storeRows.length, 2);
+});
+
+test("getCompanyDashboardSummary: 全店舗が月締め済みならisFullyClosed:true", () => {
+  const state = buildDashboardTestState();
+  state.monthClosingStatus[buildMonthKey("store-b", "2026-08")] = { closed: true, lockedAt: "2026-09-01T00:00:00.000Z", note: "月締め済み" };
+  const summary = getCompanyDashboardSummary(state, dashboardTestCompany, "2026-08");
+  assert.equal(summary.isFullyClosed, true);
+});
+
+test("getCompanyDashboardSummary: 登録店舗が無い会社ではクラッシュせず、0円・isFullyClosed:falseを返す", () => {
+  const state = buildDashboardTestState();
+  const emptyCompany = { id: "company-empty", stores: [] };
+  const summary = getCompanyDashboardSummary(state, emptyCompany, "2026-08");
+  assert.equal(summary.totalSales, 0);
+  assert.equal(summary.isFullyClosed, false);
+  assert.deepEqual(summary.storeRows, []);
+});
+
+test("diffPercent: 前月データが無い場合・前月が0円の場合はnull(0%と区別する)", () => {
+  assert.equal(diffPercent(120, 100, true), 20);
+  assert.equal(diffPercent(80, 100, true), -20);
+  assert.equal(diffPercent(120, 100, false), null); // hasPrevious:falseなら常にnull
+  assert.equal(diffPercent(120, 0, true), null); // 前月0円は0除算になるためnull
+});
+
+test("formatMoneyOrDash / formatPercentOrDash: hasDataがfalseの時だけ「－」、実際の0はそのまま表示する", () => {
+  assert.equal(formatMoneyOrDash(12345, true), "¥12,345");
+  assert.equal(formatMoneyOrDash(0, true), "¥0"); // 登録済みの0円を「－」にしない
+  assert.equal(formatMoneyOrDash(12345, false), "－");
+  assert.equal(formatPercentOrDash(12.34, true), "12.3%");
+  assert.equal(formatPercentOrDash(0, true), "0.0%");
+  assert.equal(formatPercentOrDash(12.34, false), "－");
+});
+
+test("formatDiffOrDash: 符号付き%表示、nullは「－」", () => {
+  assert.equal(formatDiffOrDash(20), "+20.0%");
+  assert.equal(formatDiffOrDash(-15), "−15.0%");
+  assert.equal(formatDiffOrDash(0), "0.0%");
+  assert.equal(formatDiffOrDash(null), "－");
 });
 
 // 店休日をカレンダーの具体的な日付で管理する新機能のテスト。既存の「休業日数(数値)」だけを

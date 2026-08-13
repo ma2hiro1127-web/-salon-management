@@ -145,6 +145,7 @@ import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
+import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
@@ -375,37 +376,119 @@ const getCompanySetupProgress = (company) => {
   };
 };
 
-const buildDailyInsight = ({ form, targetSales, businessDayCount }) => {
+const formatSignedYen = (value) => `${value >= 0 ? "" : "−"}¥${Math.abs(Math.round(value)).toLocaleString("ja-JP")}`;
+
+// 日次入力画面の「今日のAI分析」を組み立てる。ここは詳しい原因分析・改善提案の場ではなく、
+// (1)当日の売上・目標に対する状況 (2)入力KPIの中から特徴的な1〜2項目 (3)前向きな一言、を
+// 1〜3文で短く総括するだけの役割 — 詳細な分析・改善策は別画面の「AI経営アシスタント」に
+// 任せる。抽象的な「頑張りましょう」だけで終わらせず、必ず実際の入力値・設定済み目標値を
+// 根拠に文章を組み立てる。
+const buildDailyInsight = ({ form, target = {}, businessDayCount }) => {
   const totalSales = parseNumber(form.totalSales);
   const retailSales = parseNumber(form.retailSales);
   const customers = parseNumber(form.customers);
   const newCustomers = parseNumber(form.newCustomers);
   const repeatCustomers = parseNumber(form.repeatCustomers);
-  const targetDailySales = businessDayCount > 0 ? targetSales / businessDayCount : 0;
 
-  if (!totalSales && !retailSales && !customers && !newCustomers && !repeatCustomers) {
+  if (!totalSales && !customers) {
     return "分析に必要なデータが不足しています";
   }
 
-  const insights = [];
+  const targetSales = parseNumber(target.targetSales);
+  const targetDailySales = businessDayCount > 0 ? targetSales / businessDayCount : 0;
+
+  // (1) 当日売上と目標(月間目標を営業日数で割った1日あたり目標)との比較。
+  let salesSentence = "";
+  let salesGood = null;
   if (targetDailySales > 0 && totalSales > 0) {
-    const rate = ((totalSales / targetDailySales) - 1) * 100;
-    insights.push(`今日は目標より${Math.abs(rate).toFixed(0)}%${rate >= 0 ? "高い" : "低い"}です`);
+    const diff = totalSales - targetDailySales;
+    const rate = (diff / targetDailySales) * 100;
+    salesGood = diff >= 0;
+    salesSentence = diff >= 0
+      ? `本日は目標を${formatSignedYen(diff)}上回りました。`
+      : `本日は目標比${rate.toFixed(0)}%(${formatSignedYen(diff)})でした。`;
+  } else if (totalSales > 0) {
+    salesSentence = `本日の売上は¥${totalSales.toLocaleString("ja-JP")}でした。`;
   }
 
-  if (totalSales > 0 && retailSales > 0) {
-    const retailRatio = retailSales / totalSales;
-    insights.push(retailRatio >= 0.7 ? "店販率は概ね良好です" : "店販率が目標を下回っています");
-  }
-
+  // (2) 特徴的なKPIの候補を集め、設定済みの目標値があればそれを基準に、無ければ一般的な
+  // 目安を基準に良し悪しを判定する(いずれも実測値そのものを根拠に文章化する)。
+  const candidates = [];
   if (customers > 0) {
     const newRate = (newCustomers / customers) * 100;
     const repeatRate = (repeatCustomers / customers) * 100;
-    insights.push(newRate >= 30 ? "新規客数は順調です" : "新規客数をもう少し増やせると伸びます");
-    insights.push(repeatRate >= 50 ? "再来率は安定しています" : "再来率をもう少し改善すると利益率が上がります");
+    const averageSpend = totalSales / customers;
+    const targetRepeatRate = parseNumber(target.targetRepeatRate);
+    const targetAverageSpend = parseNumber(target.targetAverageSpend);
+    const targetCustomers = parseNumber(target.targetCustomers);
+    const targetNewCustomers = parseNumber(target.targetNewCustomers);
+    const impliedNewRate = targetCustomers > 0 ? (targetNewCustomers / targetCustomers) * 100 : null;
+
+    candidates.push({
+      label: "新規率",
+      text: `新規率${newRate.toFixed(1)}%`,
+      good: impliedNewRate !== null ? newRate >= impliedNewRate : newRate >= 25,
+      score: (impliedNewRate !== null ? newRate - impliedNewRate : newRate - 25) / 100,
+    });
+    candidates.push({
+      label: "再来率",
+      text: `再来率${repeatRate.toFixed(1)}%`,
+      good: targetRepeatRate > 0 ? repeatRate >= targetRepeatRate : repeatRate >= 50,
+      score: (targetRepeatRate > 0 ? repeatRate - targetRepeatRate : repeatRate - 50) / 100,
+    });
+    if (targetAverageSpend > 0) {
+      candidates.push({
+        label: "客単価",
+        text: `客単価¥${Math.round(averageSpend).toLocaleString("ja-JP")}`,
+        good: averageSpend >= targetAverageSpend,
+        score: (averageSpend - targetAverageSpend) / targetAverageSpend,
+      });
+    }
+  }
+  if (totalSales > 0) {
+    const retailRate = (retailSales / totalSales) * 100;
+    const targetRetailSales = parseNumber(target.targetRetailSales);
+    const impliedRetailRate = targetSales > 0 && targetRetailSales > 0 ? (targetRetailSales / targetSales) * 100 : null;
+    candidates.push({
+      label: "店販率",
+      text: `店販率${retailRate.toFixed(1)}%`,
+      good: impliedRetailRate !== null ? retailRate >= impliedRetailRate : retailRate >= 10,
+      score: (impliedRetailRate !== null ? retailRate - impliedRetailRate : retailRate - 10) / 100,
+    });
   }
 
-  return insights.slice(0, 3).join("\n");
+  // 目標(または目安)からの乖離が大きい項目ほど「特徴的」として優先的に取り上げる。
+  candidates.sort((a, b) => Math.abs(b.score) - Math.abs(a.score));
+  const good = candidates.find((c) => c.good);
+  const bad = candidates.find((c) => !c.good);
+
+  let kpiSentence = "";
+  if (good && bad) {
+    kpiSentence = `${good.text}は良好ですが、${bad.text}はやや低めです。`;
+  } else if (good) {
+    const secondaryGood = candidates.find((c) => c.good && c !== good);
+    kpiSentence = secondaryGood ? `${good.text}・${secondaryGood.label}ともに良好です。` : `${good.text}は良好です。`;
+  } else if (bad) {
+    const secondaryBad = candidates.find((c) => !c.good && c !== bad);
+    kpiSentence = secondaryBad ? `${bad.text}・${secondaryBad.label}がやや低めです。` : `${bad.text}がやや低めです。`;
+  }
+
+  // (3) 前向きな一言(必ず1文のみ、新しい数字は出さない)。売上・KPIの状況に応じて短く締める。
+  // 合計で最大3文(売上1文+KPI1文+総括1文)に収まるよう、ここは複文にしない。
+  let closingSentence;
+  if (salesGood === true) {
+    closingSentence = "このペースを維持しましょう。";
+  } else if (good) {
+    closingSentence = salesGood === false
+      ? `${good.label}は好調なので、この流れを維持していきましょう。`
+      : "この調子で営業を続けましょう。";
+  } else if (salesGood === false) {
+    closingSentence = "まだ十分取り戻せるペースです。";
+  } else {
+    closingSentence = "この調子で営業を続けましょう。";
+  }
+
+  return [salesSentence, kpiSentence, closingSentence].filter(Boolean).join("");
 };
 
 const buildTenantState = (legacyState = {}) => {
@@ -3240,7 +3323,7 @@ function App() {
         setDailyMode("view");
         setDailyOriginalEntry({ ...entry });
       }
-      setDailyInsight(buildDailyInsight({ form: entry, targetSales: parseNumber(target.targetSales), businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      setDailyInsight(buildDailyInsight({ form: entry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
       lastAutoSaveSignatureRef.current = getDailyAutoSaveSignature(entry);
       persistSaveStatus("saved", "保存済み ✓", false);
       if (!silent) {
@@ -3544,7 +3627,7 @@ function App() {
       setDailyForm({ ...existingEntry });
       setDailyMode("view");
       setDailyOriginalEntry({ ...existingEntry });
-      setDailyInsight(buildDailyInsight({ form: existingEntry, targetSales: parseNumber(target.targetSales), businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      setDailyInsight(buildDailyInsight({ form: existingEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
       setNotice("入力済みの日付です。編集ボタンで内容を確認・更新できます。");
       return;
     }
@@ -3583,7 +3666,7 @@ function App() {
     if (dailyOriginalEntry) {
       setDailyForm({ ...dailyOriginalEntry });
       setDailyMode("view");
-      setDailyInsight(buildDailyInsight({ form: dailyOriginalEntry, targetSales: parseNumber(target.targetSales), businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      setDailyInsight(buildDailyInsight({ form: dailyOriginalEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
       setNotice("編集をキャンセルしました");
       return;
     }
@@ -4380,7 +4463,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">SALON MANAGEMENT</p>
-            <h1>{activePage === "dashboard" ? "売上" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : "設定"}</h1>
+            <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : "設定"}</h1>
             {currentUser ? (
               <div className="user-role-badge" style={{ marginTop: 6 }}>
                 {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
@@ -4615,6 +4698,22 @@ function App() {
           </div>
         )}
 
+        {activePage === "monthlyDashboard" && (
+          !currentCompany ? (
+            <div className="empty-card">会社情報を確認できませんでした。</div>
+          ) : (
+            <MonthlyDashboardPage
+              appState={appState}
+              currentCompany={currentCompany}
+              isAllStoresView={isAllStoresView}
+              selectedStoreId={selectedStoreId}
+              selectedStoreEntity={selectedStoreEntity}
+              selectedMonth={selectedMonth}
+              onMonthChange={handleMonthSwitch}
+            />
+          )
+        )}
+
         {activePage === "daily" && (
           <div className="stack">
             {!selectedStore ? (
@@ -4629,11 +4728,6 @@ function App() {
                       <p className="eyebrow">DAILY</p>
                       <h2>売上入力</h2>
                     </div>
-                  </div>
-
-                  <div className="daily-save-banner">
-                    <strong>日次入力は自動保存されます</strong>
-                    <small>入力から約0.4秒後に保存し、オンライン時はSupabaseへ同期します。</small>
                   </div>
 
                   <div className="daily-progress-card">
@@ -4800,7 +4894,7 @@ function App() {
                   </div>
 
                   <div className="insight-card">
-                    <p className="eyebrow">AI COMMENT</p>
+                    <p className="eyebrow">今日のAI分析</p>
                     <strong>{dailyInsight || "分析に必要なデータが不足しています"}</strong>
                   </div>
 

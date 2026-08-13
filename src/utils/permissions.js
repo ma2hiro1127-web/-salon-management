@@ -21,16 +21,17 @@ const ROLE_LABELS_JA = {
 export const getRoleLabel = (role) => ROLE_LABELS_JA[normalizeRole(role)] || role || "";
 
 export const NAV_ITEMS_BY_ROLE = {
-  system_admin: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
-  company_admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
+  system_admin: ["dashboard", "monthlyDashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
+  company_admin: ["dashboard", "monthlyDashboard", "daily", "monthly", "stores", "users", "settings"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
   // branch in App.jsx. No "companies" (店舗管理会社), and no monthly-target-adjacent company-wide
   // settings beyond their own store.
-  store_manager: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
+  store_manager: ["dashboard", "monthlyDashboard", "daily", "monthly", "stores", "users", "settings"],
+  // 月次経営ダッシュボードは店舗横断比較・会社全体集計を含むため、staffには意図的に含めない。
   staff: ["dashboard", "daily", "stores"],
-  owner: ["dashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
-  admin: ["dashboard", "daily", "monthly", "stores", "users", "settings"],
+  owner: ["dashboard", "monthlyDashboard", "daily", "monthly", "companies", "stores", "users", "settings"],
+  admin: ["dashboard", "monthlyDashboard", "daily", "monthly", "stores", "users", "settings"],
 };
 
 export const canAccessPage = (role, page) => {
@@ -83,6 +84,7 @@ export const getVisibleNavItems = (role) => {
     id: page,
     label: {
       dashboard: "売上",
+      monthlyDashboard: "月次ダッシュボード",
       daily: "日次入力",
       monthly: "管理画面",
       companies: "会社管理",
