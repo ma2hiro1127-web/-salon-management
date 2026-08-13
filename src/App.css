@@ -552,6 +552,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .dashboard-cost-table td:nth-child(3), .dashboard-cost-table th:nth-child(3) { text-align: right; }
 .comparison-table td, .comparison-table th { white-space: nowrap; }
 .comparison-table td:first-child, .comparison-table th:first-child { position: sticky; left: 0; background: var(--surface); }
+.comparison-table td:not(:first-child), .comparison-table th:not(:first-child) { text-align: right; }
+.comparison-table-total td { font-weight: 700; background: var(--surface-strong); border-top: 2px solid var(--border); }
+.comparison-table-total td:first-child { background: var(--surface-strong); }
 
 .dashboard-hint { color: var(--muted); font-size: 0.8rem; margin: 4px 0 0; }
 .panel-subheading { margin: 18px 0 8px; font-size: 0.92rem; color: var(--muted); }

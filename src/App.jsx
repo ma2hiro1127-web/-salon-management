@@ -1041,8 +1041,8 @@ function App() {
   const summary = useMemo(
     () => (isAllStoresView
       ? calculateAllStoresMonthSummary(appState, currentCompany, selectedMonth)
-      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking })),
-    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth, useInventoryTracking]
+      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking, hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [] })),
+    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth, useInventoryTracking, selectedStoreEntity]
   );
   const businessDaySummary = useMemo(
     () => (isAllStoresView
@@ -2890,6 +2890,8 @@ function App() {
   // store_input_settings.hidden_closing_categories)。fixedCosts/costMonthlyAmounts等の
   // データ自体は一切変更しない — あくまで月締め一覧への表示/非表示を切り替えるだけなので、
   // useInventoryTrackingトグルと同じくdraft/dirty管理は持たず切り替え次第すぐ保存する。
+  // 完了時の一時的な通知(setNotice)は出さない — チェックリスト上でボタンの表示自体が
+  // 即座に切り替わるため不要、というご指示に基づく(失敗時のエラー通知のみ残す)。
   const handleToggleHiddenClosingCategory = async (categoryKey, hidden) => {
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
@@ -2918,7 +2920,6 @@ function App() {
         )),
       })),
     }));
-    setNotice(hidden ? `${getCostCategoryLabel(categoryKey)}を対象外にしました` : `${getCostCategoryLabel(categoryKey)}を表示に戻しました`);
   };
 
   const handleInviteEmail = async (user) => {

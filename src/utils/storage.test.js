@@ -287,6 +287,24 @@ test("calculateMonthSummary: 人件費が0円で登録済みでもisProvisionalP
   assert.deepEqual(summary.missingCriticalCategories, []);
 });
 
+test("calculateMonthSummary: options.hiddenCategoriesに含めたカテゴリはcategoryHasEntryが解決済み扱いになり、missingCriticalCategoriesから除外される", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額", categoryKey: "materials" }];
+  // 人件費(labor)は1件も登録していないが、店舗設定で「対象外」にしている想定。
+
+  const summary = calculateMonthSummary(state, store, month, { hiddenCategories: ["labor"] });
+
+  assert.equal(summary.categoryHasEntry.labor, true); // 「未入力」ではなく解決済み扱い
+  assert.equal(summary.costsByCategory.labor, 0); // 実額は登録が無いので0円のまま
+  assert.deepEqual(summary.missingCriticalCategories, []);
+  assert.equal(summary.isProvisionalProfit, false); // 対象外設定のせいで暫定値のまま止まらない
+  assert.equal(summary.operatingProfit, 420000); // 500000 - 80000(人件費は0円)
+});
+
 test("calculateMonthSummary: hasFixedCostData/hasExpenseCostDataは対象カテゴリに1件でも登録があるかで判定する(未入力を0として計算した値と区別するため)", () => {
   const state = createInitialAppState();
   const store = "横浜店";
@@ -1430,6 +1448,58 @@ test("getStoreDashboardRows: 1店舗1行で当月・前月・カテゴリ別入�
   assert.equal(storeB.productivity.hasStaffCount, false); // スタッフ数未設定
   // store-bの前月(2026-07)はdailyResults自体が無い → hasPrevious:false(0円と区別)
   assert.equal(storeB.previous.hasPrevious, false);
+});
+
+test("getStoreDashboardRows: 対象外(hiddenClosingCategories)にしたカテゴリは未入力として扱わず、isProvisionalProfitをブロックしない", () => {
+  const state = buildDashboardTestState();
+  const companyWithHiddenLabor = {
+    id: "company-1",
+    stores: [
+      { id: "store-a", name: "店A", staffCount: 5, productivityStaffCount: 0, settings: { useInventoryTracking: false } },
+      // 店Bはスタッフのいないフリーランス想定で人件費・材料/発注費を「対象外」にしている。
+      { id: "store-b", name: "店B", staffCount: 0, productivityStaffCount: 0, settings: { useInventoryTracking: false, hiddenClosingCategories: ["labor", "materials"] } },
+    ],
+  };
+  const rows = getStoreDashboardRows(state, companyWithHiddenLabor, "2026-08");
+  const storeB = rows.find((row) => row.storeId === "store-b");
+
+  assert.equal(storeB.hasLaborData, true); // 対象外は「未入力」ではなく解決済み扱い
+  assert.equal(storeB.laborCost, 0); // 実際の登録額は無いので0円(対象外=0円、－ではない)
+  assert.equal(storeB.hasPurchaseData, true);
+  assert.equal(storeB.purchaseCost, 0);
+  assert.equal(storeB.isProvisionalProfit, false); // 対象外設定のせいで暫定値のまま止まらない
+  assert.equal(storeB.operatingProfit, 100000); // 売上100000 - 費用0
+});
+
+test("getStoreDashboardRows: 目標達成率・広告費を含む(店舗比較表の新規列)", () => {
+  const state = buildDashboardTestState();
+  state.targets = { [buildMonthKey("store-a", "2026-08")]: { targetSales: 400000 } };
+  state.monthClosing[buildMonthKey("store-a", "2026-08")].push({ id: "close-a-3", name: "広告費", amount: 20000, category: "広告費", categoryKey: "advertising" });
+  const rows = getStoreDashboardRows(state, dashboardTestCompany, "2026-08");
+  const storeA = rows.find((row) => row.storeId === "store-a");
+  const storeB = rows.find((row) => row.storeId === "store-b");
+
+  assert.equal(storeA.hasSalesTarget, true);
+  assert.equal(storeA.targetSales, 400000);
+  assert.equal(storeA.targetAchievement, 125); // 500000 / 400000 * 100
+  assert.equal(storeA.adCost, 20000);
+  assert.equal(storeA.hasAdData, true);
+  assert.equal(storeB.hasSalesTarget, false); // 目標未設定
+  assert.equal(storeB.hasAdData, false);
+});
+
+test("getCompanyDashboardSummary: 固定費・広告費・目標達成率の合計は実額の合算から算出する", () => {
+  const state = buildDashboardTestState();
+  state.targets = { [buildMonthKey("store-a", "2026-08")]: { targetSales: 400000 } };
+  const summary = getCompanyDashboardSummary(state, dashboardTestCompany, "2026-08");
+
+  assert.equal(summary.totalFixedCost, 100000); // 店Aの家賃のみ
+  assert.equal(summary.hasFixedCostData, true);
+  assert.equal(summary.totalAdCost, 0);
+  assert.equal(summary.hasAdData, false);
+  assert.equal(summary.totalTargetSales, 400000); // 店Bは目標未設定なので0円扱いで合算
+  assert.equal(summary.hasSalesTarget, true);
+  assert.equal(summary.targetAchievement, 150); // 600000 / 400000 * 100(単純平均ではなく実額の合算)
 });
 
 test("getCompanyDashboardSummary: 会社全体の合計・比率は店舗ごとの比率の平均ではなく実額の合算から算出する", () => {

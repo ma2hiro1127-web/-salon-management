@@ -129,14 +129,14 @@ export default function CompanyDashboardView({ companySummary }) {
         )}
       </section>
 
+      <StoreRankingCard storeRows={companySummary.storeRows} />
+
       <section className="panel">
         <div className="panel-heading">
-          <div><p className="eyebrow">DETAIL</p><h2>店舗別主要指標一覧</h2></div>
+          <div><p className="eyebrow">STORE COMPARISON</p><h2>店舗別 主要指標比較表</h2></div>
         </div>
-        <ComparisonTable storeRows={companySummary.storeRows} />
+        <ComparisonTable storeRows={companySummary.storeRows} totals={companySummary} />
       </section>
-
-      <StoreRankingCard storeRows={companySummary.storeRows} />
     </div>
   );
 }

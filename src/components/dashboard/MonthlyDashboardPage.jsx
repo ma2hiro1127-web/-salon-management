@@ -19,18 +19,19 @@ export default function MonthlyDashboardPage({
   );
 
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
+  const hiddenCategories = useMemo(() => selectedStoreEntity?.settings?.hiddenClosingCategories || [], [selectedStoreEntity]);
   const previousMonth = getMonthOffset(selectedMonth, -1);
   const storeSummary = useMemo(
     () => (!isAllStoresView && selectedStoreEntity
-      ? calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking })
+      ? calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking, hiddenCategories })
       : null),
-    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, selectedMonth, useInventoryTracking]
+    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, selectedMonth, useInventoryTracking, hiddenCategories]
   );
   const previousStoreSummary = useMemo(
     () => (!isAllStoresView && selectedStoreEntity
-      ? calculateMonthSummary(appState, selectedStoreId, previousMonth, { useInventoryTracking })
+      ? calculateMonthSummary(appState, selectedStoreId, previousMonth, { useInventoryTracking, hiddenCategories })
       : null),
-    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, previousMonth, useInventoryTracking]
+    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, previousMonth, useInventoryTracking, hiddenCategories]
   );
   const productivity = useMemo(
     () => (storeSummary ? getStaffProductivitySummary({

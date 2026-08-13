@@ -1139,7 +1139,18 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // 旧カテゴリ「設備投資」の行は昔から経費合計に含めない設計(equipmentInvestmentCostとして
   // 別枠集計のみ)だったため、新しい集計からも除外して過去月の合計値を変えないようにする。
   const categorizableItems = [...fixedCosts, ...variableCosts, ...closingItems].filter((item) => item.category !== "設備投資");
-  const { totals: costsByCategory, hasEntry: categoryHasEntry } = sumByCategoryKey(categorizableItems);
+  const { totals: costsByCategory, hasEntry: rawCategoryHasEntry } = sumByCategoryKey(categorizableItems);
+  // options.hiddenCategories(月締めチェックリストで店舗が「対象外」にしたカテゴリ、
+  // store_input_settings.hidden_closing_categories)は「未入力」ではなく「その店舗では
+  // 基本的に発生しない」項目として扱う — categoryHasEntryを解決済み扱いにする(金額は
+  // costsByCategory[key]の実額、対象外なら通常0円のまま)。これにより、例えばスタッフの
+  // いない店舗が人件費を対象外にした場合でも営業利益がisProvisionalProfitのまま止まらず、
+  // 店舗比較表の計算が壊れない(対象外設定に基づく要件)。
+  const hiddenCategorySet = new Set(Array.isArray(options.hiddenCategories) ? options.hiddenCategories : []);
+  const categoryHasEntry = { ...rawCategoryHasEntry };
+  hiddenCategorySet.forEach((key) => {
+    if (key in categoryHasEntry) categoryHasEntry[key] = true;
+  });
 
   const laborCost = costsByCategory.labor;
   // 材料・発注費(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
@@ -1546,8 +1557,12 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
 
   return stores.map((store) => {
     const useInventoryTracking = Boolean(store.settings?.useInventoryTracking);
-    const summary = calculateMonthSummary(state, store.id, monthValue, { useInventoryTracking });
-    const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, { useInventoryTracking });
+    // 店舗ごとの「対象外」設定(store.settings.hiddenClosingCategories)を渡す — 対象外カテゴリは
+    // 「未入力」として扱われず、営業利益等の計算(isProvisionalProfit)が対象外設定のせいで
+    // ブロックされ続けることがない(月締めの対象外機能と同じ規約、店舗比較表が壊れないため)。
+    const hiddenCategories = store.settings?.hiddenClosingCategories || [];
+    const summary = calculateMonthSummary(state, store.id, monthValue, { useInventoryTracking, hiddenCategories });
+    const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, { useInventoryTracking, hiddenCategories });
     const productivity = getStaffProductivitySummary({
       sales: summary.sales, forecast: summary.forecast,
       staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
@@ -1585,6 +1600,12 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
       fixedCost: summary.fixedCost,
       fixedCostRate: summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0,
       hasFixedCostData: summary.hasFixedCostData,
+      adCost: summary.adCost,
+      adRate: summary.adRate,
+      hasAdData: Boolean(summary.categoryHasEntry?.advertising),
+      targetSales: parseNumber(summary.target?.targetSales),
+      hasSalesTarget: parseNumber(summary.target?.targetSales) > 0,
+      targetAchievement: summary.targetAchievement,
       operatingProfit: summary.operatingProfit,
       operatingMargin: summary.operatingMargin,
       isProvisionalProfit: summary.isProvisionalProfit,
@@ -1622,6 +1643,9 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
   const totalOperatingProfit = sum((row) => row.operatingProfit);
   const totalLaborCost = sum((row) => row.laborCost);
   const totalPurchaseCost = sum((row) => row.purchaseCost);
+  const totalFixedCost = sum((row) => row.fixedCost);
+  const totalAdCost = sum((row) => row.adCost);
+  const totalTargetSales = sum((row) => row.targetSales);
   const totalEffectiveStaffCount = storeRows.reduce(
     (total, row) => total + (row.productivity.hasStaffCount ? parseNumber(row.effectiveStaffCount) : 0), 0
   );
@@ -1633,6 +1657,9 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
   // 合算されてしまっているため)。
   const hasLaborData = storeRows.some((row) => row.hasLaborData);
   const hasPurchaseData = storeRows.some((row) => row.hasPurchaseData);
+  const hasFixedCostData = storeRows.some((row) => row.hasFixedCostData);
+  const hasAdData = storeRows.some((row) => row.hasAdData);
+  const hasSalesTarget = storeRows.some((row) => row.hasSalesTarget);
   const isProvisionalProfit = storeRows.some((row) => row.isProvisionalProfit);
 
   const previousTotalSales = sum((row) => row.previous.sales);
@@ -1661,6 +1688,15 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
     totalPurchaseCost,
     purchaseCostRate: totalSales > 0 ? (totalPurchaseCost / totalSales) * 100 : 0,
     hasPurchaseData,
+    totalFixedCost,
+    fixedCostRate: totalSales > 0 ? (totalFixedCost / totalSales) * 100 : 0,
+    hasFixedCostData,
+    totalAdCost,
+    adRate: totalSales > 0 ? (totalAdCost / totalSales) * 100 : 0,
+    hasAdData,
+    totalTargetSales,
+    hasSalesTarget,
+    targetAchievement: totalTargetSales > 0 ? (totalSales / totalTargetSales) * 100 : 0,
     staffProductivity: {
       hasStaffCount,
       current: hasStaffCount && totalEffectiveStaffCount > 0 ? totalSales / totalEffectiveStaffCount : 0,
