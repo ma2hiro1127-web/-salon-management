@@ -1131,11 +1131,22 @@ function App() {
   const forecastVsTarget = summary.forecast - parseNumber(target.targetSales);
   // KPIエリア(目標に対する数値)用。実績値は営業進捗カードに表示するため、ここには置かない
   // (数字を混在させない、という今回の整理方針)。
-  const dashboardSupportMetrics = useMemo(() => ([
-    { label: "平均客単価", value: money(summary.averageSpend), hint: `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` },
-    { label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` },
-    { label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` },
-  ]), [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers]);
+  const dashboardSupportMetrics = useMemo(() => {
+    const items = [
+      { label: "平均客単価", value: money(summary.averageSpend), hint: `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` },
+      { label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` },
+      { label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` },
+    ];
+    // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない。
+    if (!isAllStoresView && selectedStoreEntity) {
+      items.push({
+        label: "1人あたり月間売上",
+        value: staffProductivitySummary.hasStaffCount ? `${money(staffProductivitySummary.current)} / 人` : "スタッフ数未設定",
+        hint: staffProductivitySummary.hasStaffCount ? `月末予測 ${money(staffProductivitySummary.monthEndForecast)} / 人` : "",
+      });
+    }
+    return items;
+  }, [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -4594,24 +4605,6 @@ function App() {
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
               </div>
               </div>
-              {!isAllStoresView && selectedStoreEntity ? (
-                <div className="today-result-card staff-productivity-card">
-                  <div className="panel-heading compact">
-                    <div>
-                      <p className="eyebrow">STAFF</p>
-                      <h3>1人あたり月間売上</h3>
-                    </div>
-                  </div>
-                  {staffProductivitySummary.hasStaffCount ? (
-                    <div className="kpi-grid compact-grid">
-                      <MetricCard label="現在" value={`${money(staffProductivitySummary.current)} / 人`} />
-                      <MetricCard label="月末予測" value={`${money(staffProductivitySummary.monthEndForecast)} / 人`} />
-                    </div>
-                  ) : (
-                    <div className="empty-card">スタッフ数未設定</div>
-                  )}
-                </div>
-              ) : null}
               <AiAssistantCard onOpen={() => openAiChat()} onQuickQuestion={(question) => openAiChat(question)} />
               {todayEntry ? (
                 <div className="today-result-card">

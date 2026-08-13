@@ -330,7 +330,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-chat-input-row button { flex-shrink: 0; }
 .daily-save-banner { margin-bottom: 14px; padding: 12px 14px; border-radius: 16px; border: 1px solid rgba(47, 125, 246, 0.18); background: linear-gradient(135deg, rgba(47, 125, 246, 0.12), rgba(255, 255, 255, 0.9)); display: flex; flex-direction: column; gap: 4px; }
 .daily-save-banner small { color: var(--muted); }
-.today-result-card, .staff-productivity-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--accent-soft); }
+.today-result-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--accent-soft); }
 .ranking-accordion { display: flex; flex-direction: column; gap: 10px; }
 .ranking-card-accordion { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; box-shadow: var(--shadow); cursor: pointer; }
 .ranking-card-accordion.expanded { border-color: var(--accent); }
@@ -400,7 +400,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .filters { grid-template-columns: 1fr; }
   .panel { padding: 14px; border-radius: 18px; }
   .business-progress-grid, .store-form-grid, .store-metrics { grid-template-columns: 1fr; }
-  .daily-section-card, .daily-settings-card, .setup-card, .today-result-card, .staff-productivity-card { padding: 12px; }
+  .daily-section-card, .daily-settings-card, .setup-card, .today-result-card { padding: 12px; }
   .ranking-card-accordion { padding: 12px; }
   .ranking-card-main { align-items: flex-start; }
   .ranking-card-kpis { width: 100%; }
@@ -449,7 +449,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .metric-card { padding: 10px; }
   .metric-card span { font-size: 0.74rem; }
   .metric-card strong { font-size: 0.95rem; }
-  .today-result-card, .staff-productivity-card { padding: 10px; }
+  .today-result-card { padding: 10px; }
   .status-stack { align-items: stretch; width: 100%; }
   .status-pill, .timestamp-pill { width: 100%; justify-content: center; font-size: 0.74rem; padding: 5px 8px; }
   .topbar { gap: 10px; }
