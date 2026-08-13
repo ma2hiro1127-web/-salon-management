@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -38,17 +38,17 @@ test("calculateMonthSummary returns sales and cost ratios from new monthly struc
     { date: "2026-08-02", totalSales: 300000, technicalSales: 180000, retailSales: 120000, customers: 12, newCustomers: 4, repeatCustomers: 8 },
   ];
   state.fixedCosts[key] = [
-    { id: "fixed-1", name: "家賃", periodType: "ongoing" },
+    { id: "fixed-1", name: "家賃", categoryKey: "rent", periodType: "ongoing" },
   ];
   state.costMonthlyAmounts = { "fixed-1__2026-08": { amount: 100000 } };
   state.variableCosts[key] = [
-    { id: "var-1", name: "広告費", amount: 50000 },
+    { id: "var-1", name: "広告費", categoryKey: "advertising", amount: 50000 },
   ];
   state.monthClosing[key] = [
-    { id: "close-1", name: "人件費", amount: 150000, category: "人件費" },
-    { id: "close-2", name: "材料費", amount: 40000, category: "材料費" },
-    { id: "close-3", name: "固定費", amount: 20000, category: "固定費" },
-    { id: "close-4", name: "販管費", amount: 30000, category: "販管費" },
+    { id: "close-1", name: "人件費", amount: 150000, category: "人件費", categoryKey: "labor" },
+    { id: "close-2", name: "材料費", amount: 40000, category: "材料費", categoryKey: "materials" },
+    { id: "close-3", name: "固定費", amount: 20000, category: "固定費", categoryKey: "other" },
+    { id: "close-4", name: "販管費", amount: 30000, category: "販管費", categoryKey: "other" },
   ];
 
   const summary = calculateMonthSummary(state, store, month);
@@ -58,8 +58,11 @@ test("calculateMonthSummary returns sales and cost ratios from new monthly struc
   assert.equal(summary.remainingSalesTarget, 500000);
   assert.equal(summary.operatingProfit, 110000);
   assert.equal(summary.operatingMargin, 22);
-  assert.equal(summary.fixedCost, 120000);
-  assert.equal(summary.variableCost, 80000);
+  // fixedCost/variableCostはcategory_key基準の内部合計に変わった: 家賃(rent)のみfixedCost、
+  // 「固定費」「販管費」という旧カテゴリ名はother(=variableCost)へ、広告費は別枠(adCost)。
+  assert.equal(summary.fixedCost, 100000);
+  assert.equal(summary.variableCost, 50000);
+  assert.equal(summary.adCost, 50000);
   assert.equal(summary.laborCost, 150000);
   assert.equal(summary.purchaseAmount, 40000);
   assert.equal(summary.costOfGoodsSold, 40000);
@@ -73,9 +76,9 @@ test("calculateMonthSummary: adCost/adRate only count the 広告費 category (an
 
   state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
   state.fixedCosts[key] = [
-    { id: "fc-ad", name: "ホットペッパー掲載費", category: "広告費", periodType: "limited", startMonth: month, endMonth: month },
-    { id: "fc-rent", name: "家賃", category: "家賃", periodType: "limited", startMonth: month, endMonth: month },
-    { id: "fc-legacy-ad", name: "旧広告費", category: "定額広告費", periodType: "limited", startMonth: month, endMonth: month },
+    { id: "fc-ad", name: "ホットペッパー掲載費", category: "広告費", categoryKey: "advertising", periodType: "limited", startMonth: month, endMonth: month },
+    { id: "fc-rent", name: "家賃", category: "家賃", categoryKey: "rent", periodType: "limited", startMonth: month, endMonth: month },
+    { id: "fc-legacy-ad", name: "旧広告費", category: "定額広告費", categoryKey: "advertising", periodType: "limited", startMonth: month, endMonth: month },
   ];
   state.costMonthlyAmounts = {
     "fc-ad__2026-08": { amount: 60000 },
@@ -94,7 +97,7 @@ test("calculateMonthSummary: rates are 0 (not NaN/Infinity) when sales is 0", ()
   const store = "横浜店";
   const month = "2026-08";
   const key = `${store}__${month}`;
-  state.fixedCosts[key] = [{ id: "fc-ad", name: "広告", category: "広告費", periodType: "limited", startMonth: month, endMonth: month }];
+  state.fixedCosts[key] = [{ id: "fc-ad", name: "広告", category: "広告費", categoryKey: "advertising", periodType: "limited", startMonth: month, endMonth: month }];
   state.costMonthlyAmounts = { "fc-ad__2026-08": { amount: 10000 } };
 
   const summary = calculateMonthSummary(state, store, month);
@@ -138,25 +141,28 @@ test("month summary separates fixed and variable costs from closing items", () =
   const key = `${store}__${month}`;
 
   state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000, customers: 20 }];
-  state.fixedCosts[key] = [{ id: "fixed-1", name: "家賃", periodType: "ongoing" }];
+  state.fixedCosts[key] = [{ id: "fixed-1", name: "家賃", categoryKey: "rent", periodType: "ongoing" }];
   state.costMonthlyAmounts = { "fixed-1__2026-08": { amount: 100000 } };
-  state.variableCosts[key] = [{ id: "var-1", name: "広告費", amount: 50000 }];
+  state.variableCosts[key] = [{ id: "var-1", name: "広告費", categoryKey: "advertising", amount: 50000 }];
   state.monthClosing[key] = [
-    { id: "close-1", name: "人件費", amount: 150000, category: "人件費" },
-    { id: "close-2", name: "材料費", amount: 40000, category: "材料費" },
-    { id: "close-3", name: "固定費", amount: 20000, category: "固定費" },
-    { id: "close-4", name: "販管費", amount: 30000, category: "販管費" },
+    { id: "close-1", name: "人件費", amount: 150000, category: "人件費", categoryKey: "labor" },
+    { id: "close-2", name: "材料費", amount: 40000, category: "材料費", categoryKey: "materials" },
+    { id: "close-3", name: "固定費", amount: 20000, category: "固定費", categoryKey: "other" },
+    { id: "close-4", name: "販管費", amount: 30000, category: "販管費", categoryKey: "other" },
     { id: "close-5", name: "設備投資", amount: 30000, category: "設備投資" },
   ];
 
   const summary = calculateMonthSummary(state, store, month);
 
-  assert.equal(summary.fixedCost, 120000);
-  assert.equal(summary.variableCost, 80000);
+  // fixedCost=家賃(rent)のみ、variableCost=「固定費」「販管費」という旧カテゴリ名がother(その他)
+  // へ移った分、広告費はadCostへ別枠化。
+  assert.equal(summary.fixedCost, 100000);
+  assert.equal(summary.variableCost, 50000);
   // equipmentInvestmentCost is still computed (backward-compat for closingItems already tagged
-  // 設備投資) but no longer subtracted anywhere — 設備投資 has no dedicated P&L card or role
-  // anymore (see calculateMonthSummary's design notes); a store that wants it reflected now
-  // registers it as a plain 費用 item instead.
+  // 設備投資) but is explicitly excluded from category-based bucketing (categorizableItems filter)
+  // so it never counts toward fixedCost/variableCost/expenseCost — 設備投資 has no dedicated P&L
+  // card or role anymore (see calculateMonthSummary's design notes); a store that wants it
+  // reflected now registers it as a plain 費用 item under a real category instead.
   assert.equal(summary.equipmentInvestmentCost, 30000);
   assert.equal(summary.expenseCost, 200000);
   assert.equal(summary.operatingProfit, 110000);
@@ -170,8 +176,8 @@ test("grossProfit only deducts costOfGoodsSold (not labor or 経費) — 粗利�
 
   state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
   state.monthClosing[key] = [
-    { id: "close-1", name: "人件費", amount: 150000, category: "人件費" },
-    { id: "close-2", name: "仕入・発注額", amount: 40000, category: "仕入・発注額" },
+    { id: "close-1", name: "人件費", amount: 150000, category: "人件費", categoryKey: "labor" },
+    { id: "close-2", name: "仕入・発注額", amount: 40000, category: "仕入・発注額", categoryKey: "materials" },
   ];
 
   const summary = calculateMonthSummary(state, store, month);
@@ -188,7 +194,7 @@ test("costOfGoodsSold: 在庫管理OFF(既定)では仕入・発注額がその�
   const key = `${store}__${month}`;
 
   state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
-  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額" }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額", categoryKey: "materials" }];
   // 在庫金額を登録しても、useInventoryTracking:falseの場合は一切参照されない。
   state.storeInventoryBalances = { [`${store}__2026-07`]: { amount: 999999 }, [`${store}__2026-08`]: { amount: 1 } };
 
@@ -204,7 +210,7 @@ test("costOfGoodsSold: 在庫管理ONでは前月末在庫+当月仕入・発注
   const key = `${store}__${month}`;
 
   state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
-  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額" }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額", categoryKey: "materials" }];
   state.storeInventoryBalances = {
     [`${store}__2026-07`]: { amount: 100000 }, // 前月末在庫
     [`${store}__2026-08`]: { amount: 60000 }, // 当月末在庫
@@ -223,12 +229,126 @@ test("costOfGoodsSold: 在庫管理ONで前月末在庫が未登録(初回利用
   const key = `${store}__${month}`;
 
   state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
-  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額" }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額", categoryKey: "materials" }];
   state.storeInventoryBalances = { [`${store}__2026-08`]: { amount: 60000 } };
 
   const summary = calculateMonthSummary(state, store, month, { useInventoryTracking: true });
 
   assert.equal(summary.costOfGoodsSold, 20000); // 0(前月末在庫未登録) + 80000 - 60000
+});
+
+test("sumByCategoryKey: totalsは金額合計、hasEntryは1件でも登録があるかを別々に返す(0円登録済みと未登録0件を区別)", () => {
+  const items = [
+    { categoryKey: "rent", amount: 100000 },
+    { categoryKey: "advertising", amount: 0 }, // 0円で登録済み
+    { categoryKey: "not-a-real-key", amount: 5000 }, // 未知のkeyはuncategorizedへ
+  ];
+  const { totals, hasEntry } = sumByCategoryKey(items);
+
+  assert.equal(totals.rent, 100000);
+  assert.equal(hasEntry.rent, true);
+  assert.equal(totals.advertising, 0);
+  assert.equal(hasEntry.advertising, true); // 0円だが登録はされている
+  assert.equal(totals.utilities, 0);
+  assert.equal(hasEntry.utilities, false); // 1件も無い
+  assert.equal(totals.uncategorized, 5000);
+  assert.equal(hasEntry.uncategorized, true);
+});
+
+test("calculateMonthSummary: isProvisionalProfitはlabor/materialsのどちらかが未登録ならtrue", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [{ id: "close-1", name: "仕入・発注額", amount: 80000, category: "仕入・発注額", categoryKey: "materials" }];
+  // 人件費(labor)が1件も登録されていない
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.isProvisionalProfit, true);
+  assert.deepEqual(summary.missingCriticalCategories, ["labor"]);
+});
+
+test("calculateMonthSummary: 人件費が0円で登録済みでもisProvisionalProfitはfalse(未登録0件とは区別)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [
+    { id: "close-1", name: "人件費", amount: 0, category: "人件費", categoryKey: "labor" },
+    { id: "close-2", name: "仕入・発注額", amount: 80000, category: "仕入・発注額", categoryKey: "materials" },
+  ];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.isProvisionalProfit, false);
+  assert.deepEqual(summary.missingCriticalCategories, []);
+});
+
+test("getMonthClosingChecklist: 未入力のカテゴリと売上をmissingItemsに列挙し、カテゴリ名(文字列)ではなくhasEntryで判定する", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.fixedCosts[key] = [{ id: "fixed-1", name: "HPB", categoryKey: "advertising", periodType: "ongoing" }];
+  state.costMonthlyAmounts = { "fixed-1__2026-08": { amount: 30000 } };
+
+  const checklist = getMonthClosingChecklist(state, store, month);
+
+  const salesItem = checklist.items.find((item) => item.key === "sales");
+  const adItem = checklist.items.find((item) => item.key === "advertising");
+  const laborItem = checklist.items.find((item) => item.key === "labor");
+  assert.equal(salesItem.entered, true);
+  assert.equal(adItem.entered, true); // 費用名「HPB」でもcategoryKeyがadvertisingなら入力済み判定
+  assert.equal(laborItem.entered, false);
+  assert.ok(checklist.missingItems.some((item) => item.key === "labor"));
+  assert.equal(checklist.isProvisionalProfit, true);
+});
+
+test("needsMonthReconfirmation: 未確定の月・確定日時が無い月はfalse", () => {
+  const state = createInitialAppState();
+  assert.equal(needsMonthReconfirmation(state, "横浜店", "2026-08"), false);
+
+  state.monthClosingStatus = { "横浜店__2026-08": { closed: true, lockedAt: "" } };
+  assert.equal(needsMonthReconfirmation(state, "横浜店", "2026-08"), false);
+});
+
+test("needsMonthReconfirmation: 確定後にfixedCosts項目のupdatedAtが確定日時より新しければtrue", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.monthClosingStatus = { [buildMonthKey(store, month)]: { closed: true, lockedAt: "2026-08-20T00:00:00.000Z" } };
+  state.fixedCosts[key] = [{ id: "fixed-1", name: "家賃", categoryKey: "rent", periodType: "ongoing", updatedAt: "2026-08-25T00:00:00.000Z" }];
+
+  assert.equal(needsMonthReconfirmation(state, store, month), true);
+});
+
+test("needsMonthReconfirmation: 確定後にデータが変更されていなければfalse", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.monthClosingStatus = { [buildMonthKey(store, month)]: { closed: true, lockedAt: "2026-08-20T00:00:00.000Z" } };
+  state.fixedCosts[key] = [{ id: "fixed-1", name: "家賃", categoryKey: "rent", periodType: "ongoing", updatedAt: "2026-08-10T00:00:00.000Z" }];
+
+  assert.equal(needsMonthReconfirmation(state, store, month), false);
+});
+
+test("getPreviousMonthAmountByNameAndCategory: 前月に同名・同カテゴリの単月項目があればその金額を返す", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  state.fixedCosts[`${store}__2026-07`] = [
+    { id: "labor-jul", name: "人件費", categoryKey: "labor", periodType: "limited", startMonth: "2026-07", endMonth: "2026-07" },
+  ];
+  state.costMonthlyAmounts = { "labor-jul__2026-07": { amount: 320000 } };
+
+  assert.equal(getPreviousMonthAmountByNameAndCategory(state, store, "人件費", "labor", "2026-08"), 320000);
+  assert.equal(getPreviousMonthAmountByNameAndCategory(state, store, "人件費", "materials", "2026-08"), undefined);
+  assert.equal(getPreviousMonthAmountByNameAndCategory(state, store, "存在しない費用", "labor", "2026-08"), undefined);
 });
 
 test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 常に計算されるが、OFFなら引当率未設定=0円のまま", () => {
@@ -907,8 +1027,8 @@ test("buildFixedCostsStateFromRows rebuilds fixedCosts per store from fixed_cost
 
   const { fixedCosts } = buildFixedCostsStateFromRows(rows);
 
-  assert.deepEqual(fixedCosts["store-honten__2026-06"], [{ id: "fc-1", name: "家賃", category: "家賃", memo: "", periodType: "ongoing", startMonth: "", endMonth: "" }]);
-  assert.deepEqual(fixedCosts["store-honten__2026-08"], [{ id: "fc-2", name: "臨時費用", category: "その他", memo: "", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" }]);
+  assert.deepEqual(fixedCosts["store-honten__2026-06"], [{ id: "fc-1", name: "家賃", category: "家賃", categoryKey: "uncategorized", memo: "", periodType: "ongoing", startMonth: "", endMonth: "", updatedAt: "" }]);
+  assert.deepEqual(fixedCosts["store-honten__2026-08"], [{ id: "fc-2", name: "臨時費用", category: "その他", categoryKey: "uncategorized", memo: "", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08", updatedAt: "" }]);
 });
 
 test("buildFixedCostsStateFromRows: a continuing (ongoing) item entered in an earlier month is still visible via getFixedCostsForStoreMonth in a later month it was never directly saved under", () => {
@@ -1025,7 +1145,7 @@ test("buildMonthlyClosingItemsStateFromRows rebuilds monthClosing per store/mont
     { id: "mci-1", store_id: "store-honten", target_month: "2026-08", name: "人件費", amount: 300000, category: "人件費" },
   ];
   const { monthClosing } = buildMonthlyClosingItemsStateFromRows(rows);
-  assert.deepEqual(monthClosing["store-honten__2026-08"], [{ id: "mci-1", name: "人件費", amount: 300000, category: "人件費" }]);
+  assert.deepEqual(monthClosing["store-honten__2026-08"], [{ id: "mci-1", name: "人件費", amount: 300000, category: "人件費", categoryKey: "uncategorized", updatedAt: "" }]);
 });
 
 test("buildCompanySettingsFromRow returns null when no row exists yet (not-registered, not a default object)", () => {

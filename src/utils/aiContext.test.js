@@ -194,3 +194,61 @@ test("buildAiContext: unset target sub-fields are null (not 0), while actuals ke
   assert.equal(context.customers.newCustomers, 0);
   assert.equal(context.sales.otherSales, 0);
 });
+
+// カテゴリ別費用: 未登録カテゴリはnull、登録済みだが0円のカテゴリは0として区別して送る。
+// AIは費用名からの推測ではなく、この category_key 基準のオブジェクトを根拠に分析する。
+test("buildAiContext: costsByCategory distinguishes unregistered (null) from registered-zero (0)", () => {
+  const context = buildAiContext({
+    role: "store_manager",
+    storeName: "渋谷店",
+    storeId: "store-shibuya-uuid",
+    monthValue: "2026-08",
+    isAllStoresView: false,
+    summary: {
+      sales: 1000000,
+      laborCost: 0,
+      fixedCost: 50000,
+      variableCost: 0,
+      adCost: 30000,
+      costOfGoodsSold: 0,
+      costsByCategory: { rent: 30000, labor: 0, advertising: 30000, materials: 0, other: 0, uncategorized: 0 },
+      categoryHasEntry: { rent: true, labor: true, advertising: true, materials: false, other: false, uncategorized: false },
+      missingCriticalCategories: ["materials"],
+      isProvisionalProfit: true,
+    },
+    target: {},
+    businessDaySummary: { businessDayCount: 24, completedDays: 10, remainingBusinessDays: 14 },
+  });
+
+  assert.ok(context.costs, "categoryHasEntry has entries, so costs section must be sent even though legacy totals are mostly 0");
+  assert.equal(context.costs.costsByCategory.rent, 30000);
+  assert.equal(context.costs.costsByCategory.labor, 0); // 登録済みだが0円
+  assert.equal(context.costs.costsByCategory.materials, null); // 未登録
+  assert.equal(context.costs.costsByCategory.other, null); // 未登録
+  assert.equal(context.costs.isProvisionalProfit, true);
+  assert.deepEqual(context.costs.missingCriticalCategories, ["materials"]);
+});
+
+// 人件費・材料/発注費が両方登録済みの場合はisProvisionalProfitがfalseで届く。
+test("buildAiContext: isProvisionalProfit is false once labor and materials are both entered", () => {
+  const context = buildAiContext({
+    role: "store_manager",
+    storeName: "渋谷店",
+    storeId: "store-shibuya-uuid",
+    monthValue: "2026-08",
+    isAllStoresView: false,
+    summary: {
+      sales: 1000000,
+      laborCost: 300000,
+      costsByCategory: { labor: 300000, materials: 100000 },
+      categoryHasEntry: { labor: true, materials: true },
+      missingCriticalCategories: [],
+      isProvisionalProfit: false,
+    },
+    target: {},
+    businessDaySummary: { businessDayCount: 24, completedDays: 10, remainingBusinessDays: 14 },
+  });
+
+  assert.equal(context.costs.isProvisionalProfit, false);
+  assert.deepEqual(context.costs.missingCriticalCategories, []);
+});

@@ -3,14 +3,13 @@ import "./App.css";
 import {
   dailyFieldKeys,
   dailyFieldPresets,
-  defaultClosingItem,
   defaultDailyEntry,
   defaultDailyFieldSettings,
   defaultFixedCostItem,
   defaultMonthlyTargetFieldSettings,
   defaultTarget,
-  closingCategories,
-  costCategories,
+  costCategoryKeys,
+  getCostCategoryLabel,
   monthlyTargetFieldKeys,
   ALL_STORES_VALUE,
 } from "./data/defaults.js";
@@ -33,7 +32,9 @@ import {
   getBusinessDaySettings,
   formatMonthLabel,
   getBusinessDaySummary,
-  getClosingItemsForStoreMonth,
+  getMonthClosingChecklist,
+  needsMonthReconfirmation,
+  getPreviousMonthAmountByNameAndCategory,
   getCustomerTargetSummary,
   getStaffProductivitySummary,
   getDailyResultsForStoreMonth,
@@ -119,8 +120,6 @@ import {
   upsertStoreInventoryBalanceToSupabase,
   loadVariableCostsForCompany,
   loadMonthlyClosingItemsForCompany,
-  upsertMonthlyClosingItemToSupabase,
-  deleteMonthlyClosingItemFromSupabase,
   loadCompanySettings,
   upsertCompanySettings,
   loadStoreProfilesForCompany,
@@ -610,7 +609,6 @@ function App() {
   const [dailyOriginalEntry, setDailyOriginalEntry] = useState(null);
   const [dailyInsight, setDailyInsight] = useState("");
   const [fixedForm, setFixedForm] = useState(() => ({ ...defaultFixedCostItem, startMonth: new Date().toISOString().slice(0, 7) }));
-  const [closingForm, setClosingForm] = useState(defaultClosingItem);
   const [notice, setNotice] = useState("");
   const [businessDayInput, setBusinessDayInput] = useState("");
   const [manualBusinessDayInput, setManualBusinessDayInput] = useState("");
@@ -977,14 +975,13 @@ function App() {
   // ここを分岐させるだけで、これらを参照しているダッシュボードのKPI・営業進捗・AI相談等
   // (customerTargetSummary/dashboardSupportMetrics/AiChatScreen含む)は追加の変更なしに
   // 全店舗の数値を正しく表示する。日次入力・費用入力・月締め・損益表は店舗ごとの機能のまま
-  // (全店舗では別途non-store案内を表示、後述)なので、dailyEntries/fixedCosts/closingItemsは
+  // (全店舗では別途non-store案内を表示、後述)なので、dailyEntries/fixedCostsは
   // 分岐させない(全店舗選択時はどのみち空/未使用になる)。
   const target = isAllStoresView
     ? getAllStoresTargetForCompanyMonth(appState, appState.currentCompanyId, selectedMonth)
     : getTargetForStoreMonth(appState, selectedStoreId, selectedMonth);
   const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
-  const closingItems = useMemo(() => getClosingItemsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   const summary = useMemo(
     () => (isAllStoresView
@@ -1012,6 +1009,14 @@ function App() {
     const key = buildMonthKey(selectedStoreId, selectedMonth);
     return appState.monthClosingStatus?.[key] || { closed: false, lockedAt: "", note: "" };
   }, [appState.monthClosingStatus, selectedStoreId, selectedMonth]);
+  const monthClosingChecklist = useMemo(
+    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, { useInventoryTracking }),
+    [appState, selectedStoreId, selectedMonth, useInventoryTracking]
+  );
+  const monthNeedsReconfirmation = useMemo(
+    () => needsMonthReconfirmation(appState, selectedStoreId, selectedMonth),
+    [appState, selectedStoreId, selectedMonth]
+  );
   const todayEntry = useMemo(() => {
     const todayIso = new Date().toISOString().slice(0, 10);
     return dailyEntries.find((entry) => entry.date === todayIso) || null;
@@ -3603,10 +3608,20 @@ function App() {
       setNotice("金額は必須です");
       return;
     }
-    const periodType = fixedForm.periodType === "limited" ? "limited" : "ongoing";
+    if (!fixedForm.categoryKey) {
+      setNotice("費用カテゴリは必須です");
+      return;
+    }
+    // 人件費・材料/発注費は月途中は未確定なことが多く、対象月ごとに単月入力する運用のため、
+    // 「継続」を選ばせず常に単月(開始月=終了月=対象年月)として登録する。
+    const isSingleMonthCategory = fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials";
+    const periodType = isSingleMonthCategory || fixedForm.periodType === "limited" ? "limited" : "ongoing";
     let startMonth = fixedForm.startMonth || selectedMonth;
     let endMonth = "";
-    if (periodType === "limited") {
+    if (isSingleMonthCategory) {
+      startMonth = fixedForm.startMonth || selectedMonth;
+      endMonth = startMonth;
+    } else if (periodType === "limited") {
       if (!fixedForm.startMonth || !fixedForm.endMonth) {
         setNotice("期間限定の場合は開始月・終了月が必須です");
         return;
@@ -3621,7 +3636,7 @@ function App() {
 
     const key = buildMonthKey(selectedStoreId, startMonth);
     const itemId = fixedForm.id || crypto.randomUUID();
-    const nextItem = { id: itemId, name: fixedForm.name, category: fixedForm.category || "", memo: fixedForm.memo || "", periodType, startMonth, endMonth };
+    const nextItem = { id: itemId, name: fixedForm.name, category: fixedForm.category || "", categoryKey: fixedForm.categoryKey, memo: fixedForm.memo || "", periodType, startMonth, endMonth };
 
     const { company, store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured) {
@@ -3843,85 +3858,6 @@ function App() {
     if (ok) setNotice("当月末在庫を保存しました");
   };
 
-  const submitClosingItem = async (event) => {
-    event.preventDefault();
-    if (!closingForm.name || !closingForm.amount) {
-      setNotice("項目名と金額は必須です");
-      return;
-    }
-
-    const key = buildMonthKey(selectedStoreId, selectedMonth);
-    const itemId = closingForm.id || crypto.randomUUID();
-    const nextItem = { ...closingForm, id: itemId, amount: parseNumber(closingForm.amount) };
-
-    const { company, store } = resolveTargetCompanyAndStore();
-    if (isSupabaseConfigured) {
-      if (!company?.id || !store?.id) {
-        setNotice("店舗情報を確認できませんでした");
-        return;
-      }
-      const result = await upsertMonthlyClosingItemToSupabase({
-        id: itemId,
-        companyId: company.id,
-        storeId: store.id,
-        targetMonth: selectedMonth,
-        userId: appState.currentUserId,
-        item: nextItem,
-      });
-      if (!result.ok) {
-        setNotice(getSupabaseErrorMessage(result.error));
-        return;
-      }
-    }
-
-    setAppState((prev) => {
-      const list = prev.monthClosing?.[key] || [];
-      const updated = closingForm.id
-        ? list.map((item) => (item.id === itemId ? nextItem : item))
-        : [...list, nextItem];
-      return {
-        ...prev,
-        monthClosing: {
-          ...prev.monthClosing,
-          [key]: updated,
-        },
-      };
-    });
-
-    setNotice("月締め項目を保存しました");
-    setClosingForm({ ...defaultClosingItem });
-  };
-
-  const editClosingItem = (item) => {
-    setClosingForm(item);
-    setNotice("月締め項目を編集します");
-  };
-
-  const removeClosingItem = async (itemId) => {
-    if (!window.confirm("この月締め項目を削除しますか？")) {
-      return;
-    }
-    if (isSupabaseConfigured) {
-      const result = await deleteMonthlyClosingItemFromSupabase({ id: itemId });
-      if (!result.ok) {
-        setNotice(getSupabaseErrorMessage(result.error));
-        return;
-      }
-    }
-    setAppState((prev) => {
-      const key = buildMonthKey(prev.selectedStoreId, prev.selectedMonth);
-      const list = prev.monthClosing?.[key] || [];
-      return {
-        ...prev,
-        monthClosing: {
-          ...prev.monthClosing,
-          [key]: list.filter((item) => item.id !== itemId),
-        },
-      };
-    });
-    setNotice("月締め項目を削除しました");
-  };
-
   // saveHolidayCount/saveManualBusinessDayCount/resetBusinessDaySetting used to only call
   // setAppState — they showed "保存しました" but never wrote to Supabase, so the value only
   // survived via the legacy tenant_snapshots autosave (if its race happened to win) or
@@ -4139,6 +4075,15 @@ function App() {
 
     const key = buildMonthKey(selectedStoreId, selectedMonth);
     const nextClosed = !Boolean(monthClosingStatus.closed);
+
+    // 未入力項目があっても確定は可能だが、確定前に必ず警告する(要件18)。締めを解除する
+    // 操作にはこの確認は不要(確認済み・締め直したい場合のみ)。
+    if (nextClosed && monthClosingChecklist.missingItems.length > 0) {
+      const missingLabels = monthClosingChecklist.missingItems.map((item) => item.label).join("、");
+      if (!window.confirm(`${missingLabels}が未入力です。この状態で${selectedMonth}を確定しますか？`)) {
+        return;
+      }
+    }
     const { store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured && !store?.id) {
       const message = "店舗情報を確認できませんでした";
@@ -4275,51 +4220,6 @@ function App() {
   // 月締め専用(固定費/販管費だった「費用入力」は開始月/終了月で自動反映されるため、前月
   // コピーという概念自体が不要になった — item 8)。月締めの人件費・材料費等は毎月確定した
   // 実績を入力する性質上、前月の内訳をコピーして書き換える運用が引き続き便利なため残す。
-  const copyPreviousMonthData = async () => {
-    const previousMonth = getMonthOffset(selectedMonth, -1);
-    const sourceKey = buildMonthKey(selectedStoreId, previousMonth);
-    const targetKey = buildMonthKey(selectedStoreId, selectedMonth);
-    const sourceItems = appState.monthClosing?.[sourceKey] || [];
-    if (!sourceItems.length) {
-      setNotice("前月のデータがありません");
-      return;
-    }
-    const copiedItems = sourceItems.map((item) => ({ ...item, id: crypto.randomUUID() }));
-
-    // monthly_closing_items has no dedicated-table equivalent of rekeyStoreNamedMaps to fall
-    // back on — a copy that only ever reached local state would be silently pruned back out on
-    // the very next hydrate (monthClosing is confirmed-present-in-Supabase-or-gone, per the
-    // same rule as targets). Persist every copied item for real before reflecting it locally.
-    if (isSupabaseConfigured) {
-      const { company, store } = resolveTargetCompanyAndStore();
-      if (!company?.id || !store?.id) {
-        setNotice("店舗情報を確認できませんでした");
-        return;
-      }
-      const results = await Promise.all(copiedItems.map((item) => upsertMonthlyClosingItemToSupabase({
-        id: item.id,
-        companyId: company.id,
-        storeId: store.id,
-        targetMonth: selectedMonth,
-        userId: appState.currentUserId,
-        item,
-      })));
-      const failed = results.find((result) => !result.ok);
-      if (failed) {
-        setNotice(getSupabaseErrorMessage(failed.error));
-        return;
-      }
-    }
-
-    setAppState((prev) => ({
-      ...prev,
-      monthClosing: {
-        ...prev.monthClosing,
-        [targetKey]: copiedItems,
-      },
-    }));
-    setNotice(`前月データを${selectedMonth}へコピーしました`);
-  };
 
   if (authLoading) {
     return (
@@ -5049,47 +4949,75 @@ function App() {
                       </div>
                     </div>
                     <form className="inline-form cost-item-form" onSubmit={submitFixedCost}>
-                      <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="費用名（例: 家賃、求人広告）" />
+                      <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="費用名（例: 家賃、HPB）" />
+                      <select
+                        value={fixedForm.categoryKey || ""}
+                        onChange={(event) => {
+                          const nextCategoryKey = event.target.value;
+                          const nextIsSingleMonth = nextCategoryKey === "labor" || nextCategoryKey === "materials";
+                          setFixedForm((prev) => ({
+                            ...prev,
+                            categoryKey: nextCategoryKey,
+                            periodType: nextIsSingleMonth ? "limited" : prev.periodType,
+                            startMonth: nextIsSingleMonth ? (prev.startMonth || selectedMonth) : prev.startMonth,
+                            endMonth: nextIsSingleMonth ? (prev.startMonth || selectedMonth) : prev.endMonth,
+                          }));
+                        }}
+                        required
+                      >
+                        <option value="">費用カテゴリを選択</option>
+                        {costCategoryKeys.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}
+                      </select>
                       {!fixedForm.id ? (
                         <input value={fixedForm.amount} onChange={(event) => setFixedForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="今月の金額" type="number" />
                       ) : null}
-                      <div className="segmented-control" role="group" aria-label="適用期間">
-                        <button
-                          type="button"
-                          className={fixedForm.periodType === "limited" ? "segmented-button" : "segmented-button active"}
-                          onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "ongoing", endMonth: "" }))}
-                        >
-                          継続
-                        </button>
-                        <button
-                          type="button"
-                          className={fixedForm.periodType === "limited" ? "segmented-button active" : "segmented-button"}
-                          onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "limited" }))}
-                        >
-                          期間限定
-                        </button>
-                      </div>
-                      {fixedForm.periodType === "limited" ? (
+                      {fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials" ? (
+                        <label className="field">
+                          <span>対象年月</span>
+                          <input
+                            type="month"
+                            value={fixedForm.startMonth || ""}
+                            onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value, endMonth: event.target.value }))}
+                            required
+                          />
+                        </label>
+                      ) : (
                         <>
-                          <label className="field">
-                            <span>開始月</span>
-                            <input type="month" value={fixedForm.startMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value }))} required />
-                          </label>
-                          <label className="field">
-                            <span>終了月</span>
-                            <input type="month" value={fixedForm.endMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, endMonth: event.target.value }))} required />
-                          </label>
+                          <div className="segmented-control" role="group" aria-label="適用期間">
+                            <button
+                              type="button"
+                              className={fixedForm.periodType === "limited" ? "segmented-button" : "segmented-button active"}
+                              onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "ongoing", endMonth: "" }))}
+                            >
+                              継続
+                            </button>
+                            <button
+                              type="button"
+                              className={fixedForm.periodType === "limited" ? "segmented-button active" : "segmented-button"}
+                              onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "limited" }))}
+                            >
+                              単月・期間限定
+                            </button>
+                          </div>
+                          {fixedForm.periodType === "limited" ? (
+                            <>
+                              <label className="field">
+                                <span>開始月</span>
+                                <input type="month" value={fixedForm.startMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value }))} required />
+                              </label>
+                              <label className="field">
+                                <span>終了月</span>
+                                <input type="month" value={fixedForm.endMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, endMonth: event.target.value }))} required />
+                              </label>
+                            </>
+                          ) : null}
                         </>
-                      ) : null}
+                      )}
                       <button className="primary-button" type="submit">{fixedForm.id ? "更新" : "追加"}</button>
                       {fixedForm.id ? <button className="secondary-button" type="button" onClick={cancelEditFixedCost}>キャンセル</button> : null}
                       <details className="advanced-fields">
                         <summary>詳細設定（任意）</summary>
                         <div className="advanced-fields-body">
-                          <select value={fixedForm.category || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, category: event.target.value }))}>
-                            <option value="">カテゴリ未設定</option>
-                            {costCategories.map((category) => <option key={category} value={category}>{category}</option>)}
-                          </select>
                           <input value={fixedForm.memo || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, memo: event.target.value }))} placeholder="備考（任意）" />
                         </div>
                       </details>
@@ -5102,11 +5030,16 @@ function App() {
                         const previousAmount = getPreviousMonthCostAmount(appState, item.id, selectedMonth);
                         const savedAmount = getCostMonthlyAmount(appState, item.id, selectedMonth);
                         const draftAmount = getCostAmountDraft(item);
+                        // 単月項目(人件費/材料・発注費等)は月ごとに新しいitem idになるため上のidベースの
+                        // 前月比較が効かない。名前+カテゴリが一致する前月項目があればサジェスト表示する。
+                        const suggestedPreviousAmount = previousAmount === undefined
+                          ? getPreviousMonthAmountByNameAndCategory(appState, selectedStoreId, item.name, item.categoryKey, selectedMonth)
+                          : undefined;
                         return (
                           <div key={item.id} className="list-row cost-row">
                             <div>
                               <strong>{item.name}</strong>
-                              <small>{item.periodType === "limited" ? "期間限定" : "継続"} ／ {periodLabel}{item.category ? ` ／ ${item.category}` : ""}{item.memo ? ` ／ ${item.memo}` : ""}</small>
+                              <small>{getCostCategoryLabel(item.categoryKey)} ／ {item.periodType === "limited" ? "単月・期間限定" : "継続"} ／ {periodLabel}{item.memo ? ` ／ ${item.memo}` : ""}</small>
                             </div>
                             <div className="cost-row-amount">
                               <input
@@ -5117,6 +5050,8 @@ function App() {
                               />
                               {previousAmount !== undefined ? (
                                 <button className="text-button" type="button" onClick={() => copyPreviousMonthAmountFor(item)}>前月をコピー（{money(previousAmount)}）</button>
+                              ) : suggestedPreviousAmount !== undefined ? (
+                                <small className="helper-text">前月の{item.name}: {money(suggestedPreviousAmount)}</small>
                               ) : null}
                               <button className="secondary-button" type="button" onClick={() => saveCostAmountFor(item)}>保存</button>
                             </div>
@@ -5140,46 +5075,70 @@ function App() {
                     <div className="panel-heading">
                       <div>
                         <p className="eyebrow">MANAGEMENT</p>
-                        <h2>管理画面</h2>
+                        <h2>月締め</h2>
                       </div>
-                      <button className="secondary-button" type="button" onClick={() => copyPreviousMonthData()}>前月をコピー</button>
                     </div>
-                    <form className="inline-form" onSubmit={submitClosingItem}>
-                      <input value={closingForm.name} onChange={(event) => setClosingForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="項目名" />
-                      <input value={closingForm.amount} onChange={(event) => setClosingForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="金額" type="number" />
-                      <select value={closingForm.category} onChange={(event) => setClosingForm((prev) => ({ ...prev, category: event.target.value }))}>
-                        {closingCategories.map((category) => <option key={category} value={category}>{category}</option>)}
-                      </select>
-                      <button className="primary-button" type="submit">追加 / 更新</button>
-                    </form>
+                    <p className="helper-text">月締めは、損益表に必要な入力が揃っているかを確認し、月の実績を確定するための画面です。金額の入力・修正は「費用入力」タブで行います。</p>
+                    {monthNeedsReconfirmation ? (
+                      <div className="empty-card danger-text">確定後に費用・在庫データが変更されています。内容をご確認のうえ、必要であれば再確定してください。</div>
+                    ) : null}
+                    <div className="list-card">
+                      {monthClosingChecklist.items.map((item) => (
+                        <div key={item.key} className="list-row">
+                          <div>
+                            <strong>{item.entered ? "✅" : "⚠️"} {item.label}</strong>
+                            <small>{item.entered ? "入力済み" : "未入力"}</small>
+                          </div>
+                          {!item.entered ? (
+                            <div className="row-actions">
+                              <button
+                                className="text-button"
+                                type="button"
+                                onClick={() => {
+                                  if (item.key === "sales") {
+                                    setActivePage("daily");
+                                    return;
+                                  }
+                                  setActiveMonthlyTab("fixed");
+                                  setFixedForm({ ...defaultFixedCostItem, startMonth: selectedMonth, categoryKey: item.categoryKey });
+                                }}
+                              >
+                                登録する
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                    {monthClosingChecklist.missingItems.length > 0 ? (
+                      <div className="empty-card">損益表に必要な未入力項目があります: {monthClosingChecklist.missingItems.map((item) => item.label).join("、")}</div>
+                    ) : null}
+                    <div className="panel-heading compact">
+                      <div>
+                        <p className="eyebrow">P&L PREVIEW</p>
+                        <h3>現時点の損益表</h3>
+                      </div>
+                    </div>
+                    <div className="summary-grid">
+                      <div className="summary-card"><span>店販比率</span><strong>{percent(summary.retailRatio || 0)}</strong></div>
+                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
+                      <div className="summary-card emphasize">
+                        <span>営業利益率</span>
+                        <strong>{percent(summary.operatingMargin)}{summary.isProvisionalProfit ? "（暫定）" : ""}</strong>
+                      </div>
+                    </div>
+                    {summary.isProvisionalProfit ? (
+                      <p className="helper-text">※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は暫定値です。</p>
+                    ) : null}
                     <div className="toggle-panel">
                       <div>
                         <strong>{monthClosingStatus.closed ? "月締め済み" : "未締め"}</strong>
                         <small>{monthClosingStatus.lockedAt ? `最終確定: ${new Date(monthClosingStatus.lockedAt).toLocaleString("ja-JP")}` : "締め状態はまだ未設定です"}</small>
                       </div>
                       <button className={monthClosingStatus.closed ? "secondary-button" : "primary-button"} type="button" onClick={toggleMonthClosing}>
-                        {monthClosingStatus.closed ? "締めを解除" : "月締めを確定"}
+                        {monthClosingStatus.closed ? "締めを解除" : monthNeedsReconfirmation ? "再確定する" : "この月を確定する"}
                       </button>
-                    </div>
-                    <div className="summary-grid">
-                      <div className="summary-card"><span>店販比率</span><strong>{percent(summary.retailRatio || 0)}</strong></div>
-                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
-                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
-                      <div className="summary-card"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
-                    </div>
-                    <div className="list-card">
-                      {closingItems.map((item) => (
-                        <div key={item.id} className="list-row">
-                          <div>
-                            <strong>{item.name}</strong>
-                            <small>{item.category} / {money(item.amount)}</small>
-                          </div>
-                          <div className="row-actions">
-                            <button className="text-button" type="button" onClick={() => editClosingItem(item)}>編集</button>
-                            <button className="text-button danger" type="button" onClick={() => removeClosingItem(item.id)}>削除</button>
-                          </div>
-                        </div>
-                      ))}
                     </div>
                     {useInventoryTracking ? (
                       <div className="setup-card">
@@ -5228,6 +5187,11 @@ function App() {
                       </div>
                     </div>
                     <p className="helper-text">本画面は店舗経営管理用の概算損益です。税務申告上の利益・納税額とは異なる場合があります。</p>
+                    {summary.isProvisionalProfit ? (
+                      <div className="empty-card danger-text">
+                        ※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は暫定値です。「費用入力」タブで登録すると正確な利益が確認できます。
+                      </div>
+                    ) : null}
 
                     <div className="panel-heading compact">
                       <div>
@@ -5277,8 +5241,8 @@ function App() {
                     </div>
                     <div className="summary-grid">
                       <div className="summary-card"><span>粗利益</span><strong>{money(summary.grossProfit)}</strong></div>
-                      <div className="summary-card emphasize"><span>営業利益</span><strong>{money(summary.operatingProfit)}</strong></div>
-                      <div className="summary-card emphasize"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}</strong></div>
+                      <div className="summary-card emphasize"><span>営業利益</span><strong>{money(summary.operatingProfit)}{summary.isProvisionalProfit ? "（暫定）" : ""}</strong></div>
+                      <div className="summary-card emphasize"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}{summary.isProvisionalProfit ? "（暫定）" : ""}</strong></div>
                     </div>
 
                     {/* 経営指標(KPI)セクションは廃止し、同じ位置に「消費税考慮」を配置する。損益表の

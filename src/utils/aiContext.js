@@ -36,6 +36,19 @@ function hasAnyPositive(values) {
   });
 }
 
+// calculateMonthSummaryのcostsByCategory(合計金額)とcategoryHasEntry(1件でも登録があるか)
+// を組み合わせ、カテゴリごとに「未登録(null)」と「登録済みだが0円(0)」を区別してAIへ渡す。
+// AIは費用名からの推測ではなく、この固定category_keyを根拠にカテゴリ別費用を分析する。
+function buildCostsByCategoryContext(summary) {
+  const totals = summary.costsByCategory || {};
+  const hasEntry = summary.categoryHasEntry || {};
+  const result = {};
+  Object.keys(totals).forEach((key) => {
+    result[key] = hasEntry[key] ? numOrNull(totals[key]) : null;
+  });
+  return result;
+}
+
 export function buildAiContext({
   role = "",
   storeName = "",
@@ -103,9 +116,12 @@ export function buildAiContext({
   // calculateAllStoresMonthSummary(全店舗ビュー)は売上系KPIのみを集計し費用・損益は
   // 意図的に含まない設計のため、全店舗選択時はcostsを送らない(存在しないデータを
   // 0円と誤解させないため、また特定店舗の費用データが全店舗ビューに混在しないようにする)。
-  const hasCostData = !isAllStoresView && hasAnyPositive([
+  // 費用カテゴリのどれか1件でも登録があれば(合計が0円のカテゴリのみでも)費用セクションを
+  // 送る — 「登録済みだが0円」を「costsセクションごと未送信」で覆い隠さないため。
+  const categoryHasAnyEntry = Object.values(summary.categoryHasEntry || {}).some(Boolean);
+  const hasCostData = !isAllStoresView && (categoryHasAnyEntry || hasAnyPositive([
     summary.laborCost, summary.fixedCost, summary.variableCost, summary.adCost, summary.costOfGoodsSold,
-  ]);
+  ]));
   const costsSection = (!isAllStoresView && hasCostData) ? {
     laborCost: numOrNull(summary.laborCost),
     costOfGoodsSold: numOrNull(summary.costOfGoodsSold),
@@ -119,6 +135,12 @@ export function buildAiContext({
     operatingMargin: numOrNull(summary.operatingMargin),
     laborCostRate: numOrNull(summary.laborRate),
     costOfGoodsSoldRate: numOrNull(summary.costOfGoodsSoldRate),
+    // カテゴリ別費用(category_key基準、未登録カテゴリはnull・登録済みだが0円は0)。
+    costsByCategory: buildCostsByCategoryContext(summary),
+    // 人件費・材料/発注費が未登録の場合、営業利益・営業利益率を確定値として扱わないための
+    // フラグ。AIはisProvisionalProfitがtrueの間、営業利益を断定的に語らないこと。
+    isProvisionalProfit: Boolean(summary.isProvisionalProfit),
+    missingCriticalCategories: Array.isArray(summary.missingCriticalCategories) ? summary.missingCriticalCategories : [],
   } : null;
 
   return {

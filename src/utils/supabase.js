@@ -1304,6 +1304,7 @@ export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryM
     entry_month: entryMonth,
     name: String(item?.name || ""),
     category: String(item?.category || ""),
+    category_key: String(item?.categoryKey || "uncategorized"),
     memo: String(item?.memo || ""),
     period_type: item?.periodType === "limited" ? "limited" : "ongoing",
     start_month: String(item?.startMonth || ""),
@@ -1464,7 +1465,9 @@ export const loadVariableCostsForCompany = async ({ companyId, yearMonths = [] }
   }
 };
 
-// monthly_closing_items (月締め項目) — same shape of fix as variable_costs above.
+// monthly_closing_items (月締め項目) — 読み取り専用。人件費・発注費用の新規入力は費用入力
+// タブ(fixed_costs)へ一本化したため、この表への書き込み関数(upsert/delete)は廃止した。
+// 過去に登録済みのデータは削除せず、calculateMonthSummaryが引き続き集計に使う。
 export const loadMonthlyClosingItemsForCompany = async ({ companyId, yearMonths = [] }) => {
   if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
   try {
@@ -1478,47 +1481,6 @@ export const loadMonthlyClosingItemsForCompany = async ({ companyId, yearMonths 
   } catch (error) {
     logSupabaseError({ operation: "loadMonthlyClosingItemsForCompany", table: "monthly_closing_items", companyId, error });
     return { ok: false, error, data: [] };
-  }
-};
-
-export const upsertMonthlyClosingItemToSupabase = async ({ id, companyId, storeId, targetMonth, userId, item }) => {
-  if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  const validationError = validateRequiredKeys({ id, companyId, storeId, targetMonth, userId });
-  if (validationError) {
-    const detail = logSupabaseError({ operation: "upsertMonthlyClosingItemToSupabase", table: "monthly_closing_items", userId, companyId, storeId, error: new Error(validationError) });
-    return { ok: false, error: new Error(detail.message) };
-  }
-  const payload = {
-    id,
-    company_id: companyId,
-    store_id: storeId,
-    target_month: targetMonth,
-    name: String(item?.name || ""),
-    amount: Number(item?.amount || 0),
-    category: String(item?.category || ""),
-    updated_by: userId,
-    updated_at: new Date().toISOString(),
-  };
-  try {
-    const { data, error } = await supabase.from("monthly_closing_items").upsert(payload, { onConflict: "id" }).select().single();
-    if (error) throw error;
-    return { ok: true, data };
-  } catch (error) {
-    logSupabaseError({ operation: "upsertMonthlyClosingItemToSupabase", table: "monthly_closing_items", userId, companyId, storeId, error });
-    return { ok: false, error };
-  }
-};
-
-export const deleteMonthlyClosingItemFromSupabase = async ({ id }) => {
-  if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  if (!id) return { ok: true, skipped: true };
-  try {
-    const { error } = await supabase.from("monthly_closing_items").delete().eq("id", id);
-    if (error) throw error;
-    return { ok: true };
-  } catch (error) {
-    logSupabaseError({ operation: "deleteMonthlyClosingItemFromSupabase", table: "monthly_closing_items", id, error });
-    return { ok: false, error };
   }
 };
 

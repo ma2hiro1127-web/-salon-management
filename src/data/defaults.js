@@ -14,6 +14,29 @@ export const costCategories = ["家賃", "リース代", "システム利用料"
 export const fixedCostCategories = ["家賃", "リース代", "システム利用料", "通信費", "顧問料", "保険料", "定額広告費", "その他"];
 export const variableCostCategories = ["広告費", "求人費", "交通費", "消耗品費", "会議費", "研修費", "外注費", "修繕費", "設備投資", "その他経費", "その他"];
 
+// 費用の内部管理用カテゴリ(固定のcategory_key)。表示名(label)は将来変更してもよいが、
+// keyは絶対に変えない — 過去データの集計・AI分析(category_key基準)に影響が出るため。
+// AIが費用名(例:「HPB」)だけから性質を推測しなくて済むよう、費用名とは別にこのカテゴリを
+// 選ばせる。既存のcostCategories/closingCategories等(自由入力文字列)は、過去データの表示
+// 互換のためだけに残し、新規入力フォームでは使わない。
+export const costCategoryKeys = [
+  { key: "rent", label: "家賃" },
+  { key: "labor", label: "人件費・社会保険" },
+  { key: "advertising", label: "広告費" },
+  { key: "utilities", label: "光熱費" },
+  { key: "communication", label: "通信費" },
+  { key: "materials", label: "材料・発注費" },
+  { key: "cleaning", label: "清掃・環境費" },
+  { key: "system", label: "システム・サービス利用料" },
+  { key: "tax_insurance", label: "税金・保険" },
+  { key: "other", label: "その他費用" },
+];
+// 移行時に既存データから確実に判断できなかった項目のフォールバックkey。選択式UIの通常の
+// 10択には出さない(ユーザーが後から手動で正しいカテゴリを選び直すための「未分類」専用)。
+export const UNCATEGORIZED_KEY = "uncategorized";
+export const getCostCategoryLabel = (key) =>
+  costCategoryKeys.find((item) => item.key === key)?.label || "未分類";
+
 export const defaultTarget = {
   targetSales: "",
   targetTechnicalSales: "",
@@ -105,6 +128,7 @@ export const defaultFixedCostItem = {
   name: "",
   amount: "",
   category: "",
+  categoryKey: "",
   memo: "",
   periodType: "ongoing",
   startMonth: "",

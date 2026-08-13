@@ -7,6 +7,8 @@ import {
   defaultVariableCostItem,
   expenseCategories,
   ALL_STORES_VALUE,
+  costCategoryKeys,
+  UNCATEGORIZED_KEY,
 } from "../data/defaults.js";
 
 export { createInitialAppState } from "../data/defaults.js";
@@ -356,6 +358,7 @@ export const buildFixedCostsStateFromRows = (rows = []) => {
       id: row.id,
       name: row.name || "",
       category: row.category || "",
+      categoryKey: row.category_key || "uncategorized",
       memo: row.memo || "",
       // period_type is the explicit "継続/期間限定" choice. Rows saved before this column
       // existed have no value here, so fall back to the old implicit rule (no end_month = 継続)
@@ -363,6 +366,7 @@ export const buildFixedCostsStateFromRows = (rows = []) => {
       periodType: row.period_type || (row.end_month ? "limited" : "ongoing"),
       startMonth: row.start_month || "",
       endMonth: row.end_month || "",
+      updatedAt: row.updated_at || "",
     };
     fixedCosts[key] = [...(fixedCosts[key] || []), item];
   });
@@ -410,6 +414,7 @@ export const buildVariableCostsStateFromRows = (rows = []) => {
       name: row.name || "",
       amount: row.amount,
       category: row.category || "",
+      categoryKey: row.category_key || "uncategorized",
       memo: row.memo || "",
       incurredDate: row.incurred_date || "",
       type: row.type || "regular",
@@ -430,6 +435,8 @@ export const buildMonthlyClosingItemsStateFromRows = (rows = []) => {
       name: row.name || "",
       amount: row.amount,
       category: row.category || "",
+      categoryKey: row.category_key || "uncategorized",
+      updatedAt: row.updated_at || "",
     };
     monthClosing[key] = [...(monthClosing[key] || []), item];
   });
@@ -1081,6 +1088,24 @@ export const getClosingItemsForStoreMonth = (state, storeId, monthValue) => {
   return [...items];
 };
 
+// カテゴリ別の合計金額(totals)と、そのカテゴリに1件でも登録があるか(hasEntry)を同時に返す。
+// 「合計0円」と「1件も登録が無い」を区別できるようにする(月締めチェックリスト・
+// 暫定利益判定の要 — 金額0円で登録済みのカテゴリを「未入力」扱いしないため)。
+export const sumByCategoryKey = (items = []) => {
+  const totals = {};
+  const hasEntry = {};
+  costCategoryKeys.forEach(({ key }) => { totals[key] = 0; hasEntry[key] = false; });
+  totals[UNCATEGORIZED_KEY] = 0;
+  hasEntry[UNCATEGORIZED_KEY] = false;
+  (Array.isArray(items) ? items : []).forEach((item) => {
+    const isKnownKey = costCategoryKeys.some((c) => c.key === item.categoryKey);
+    const key = isKnownKey ? item.categoryKey : UNCATEGORIZED_KEY;
+    totals[key] += parseNumber(item.amount);
+    hasEntry[key] = true;
+  });
+  return { totals, hasEntry };
+};
+
 export const calculateMonthSummary = (state, storeId, monthValue, options = {}) => {
   const target = getTargetForStoreMonth(state, storeId, monthValue);
   const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
@@ -1107,30 +1132,38 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const repeatCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.repeatCustomers || 0), 0);
   const reviewCount = effectiveEntries.reduce((total, item) => total + parseNumber(item.reviewCount || 0), 0);
 
-  const laborCost = closingItems.filter((item) => item.category === "人件費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  // 仕入・発注額(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
-  // 入力する)。「材料費」「発注費」は統合前の旧カテゴリ名で、後方互換のため引き続き拾う
-  // (現行UIの新規入力は必ず「仕入・発注額」というカテゴリ名で保存される)。
-  const purchaseAmount = closingItems
-    .filter((item) => item.category === "仕入・発注額" || item.category === "材料費" || item.category === "発注費")
-    .reduce((sum, item) => sum + parseNumber(item.amount), 0);
+  // 費用入力(fixedCosts)・過去の月締め項目(closingItems)・過去の変動費(variableCosts)を
+  // 1つに結合し、category_key基準で集計する。カテゴリは費用名の文字列ではなく、費用登録時に
+  // ユーザーが選んだ固定key(rent/labor/advertising/...)そのものを見る — 費用名がどんな
+  // 略称・表記でも正しく分類できる(AIが費用名から推測する必要も無くす)。
+  // 旧カテゴリ「設備投資」の行は昔から経費合計に含めない設計(equipmentInvestmentCostとして
+  // 別枠集計のみ)だったため、新しい集計からも除外して過去月の合計値を変えないようにする。
+  const categorizableItems = [...fixedCosts, ...variableCosts, ...closingItems].filter((item) => item.category !== "設備投資");
+  const { totals: costsByCategory, hasEntry: categoryHasEntry } = sumByCategoryKey(categorizableItems);
+
+  const laborCost = costsByCategory.labor;
+  // 材料・発注費(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
+  // 入力してもよいし、月中に複数回に分けて入力してその月の合計として扱ってもよい)。
+  const purchaseAmount = costsByCategory.materials;
+  // 設備投資は新カテゴリに対応枠を持たない(要件3: 必要以上に細かい分類を避ける) — 過去の
+  // 月締め項目(closingItems)に残っている旧カテゴリ「設備投資」の行だけ、後方互換のため
+  // 引き続き集計する(新規入力では発生しない)。
   const equipmentInvestmentCost = closingItems.filter((item) => item.category === "設備投資").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const fixedCost = fixedCosts.reduce((sum, item) => sum + parseNumber(item.amount), 0) + closingItems.filter((item) => item.category === "固定費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const regularVariableCost = variableCosts.filter((item) => item.type !== "temporary").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const temporaryCost = variableCosts.filter((item) => item.type === "temporary").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const variableCost = regularVariableCost + temporaryCost + closingItems.filter((item) => item.category === "販管費").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  const otherCost = closingItems.filter((item) => item.category === "その他").reduce((sum, item) => sum + parseNumber(item.amount), 0);
-  // 経費合計: 費用入力(継続/期間限定費用、fixedCost)・レガシー販管費(variableCost)・月締めの
-  // 「その他」(otherCost)を1本化した表示用合計。固定費/販管費/その他経費という区分をユーザーに
-  // 判断させない(要件7-8)。個々の内訳計算式自体は変えていない。
-  const expenseCost = fixedCost + variableCost + otherCost;
-  // 経営指標の広告費率用。費用全体ではなく「広告費」カテゴリのみを集計する。旧「定額広告費」
-  // (販管費が分かれていた頃のfixedCostCategories)で保存された既存データも壊さず引き続き
-  // 広告費として集計できるよう、両方の名称を対象にする。fixedCosts/variableCosts/closingItems
-  // すべてから拾うことで、統合前の既存データ(あれば)も取りこぼさない。
-  const adCost = [...fixedCosts, ...variableCosts, ...closingItems]
-    .filter((item) => item.category === "広告費" || item.category === "定額広告費")
-    .reduce((sum, item) => sum + parseNumber(item.amount), 0);
+  // 「固定費」(内部合計、損益表では経費合計に統合表示): 家賃・光熱費・通信費・清掃環境費・
+  // システム利用料・税金保険の6カテゴリ。labor/materials/advertisingは別枠で扱うためここには
+  // 含めない。
+  const fixedCost = costsByCategory.rent + costsByCategory.utilities + costsByCategory.communication
+    + costsByCategory.cleaning + costsByCategory.system + costsByCategory.tax_insurance;
+  // 「その他費用」カテゴリそのもの(AIコンテキスト等、個別に参照する箇所があるため独立して残す)。
+  const otherCost = costsByCategory.other;
+  // 「変動費」(内部合計): その他費用 + 未分類(移行時に自動判定できなかった費用、要注意)。
+  const variableCost = otherCost + costsByCategory[UNCATEGORIZED_KEY];
+  // 経費合計 = 固定費+変動費+広告費(labor/materialsは別枠のためここに含めない) — 10カテゴリ
+  // のうちlabor/materials以外の9カテゴリを漏れなくカバーする。固定費/変動費という区分を
+  // ユーザーに判断させない(表示は経費合計に統合、要件7-8)。
+  const expenseCost = fixedCost + variableCost + costsByCategory.advertising;
+  // 経営指標の広告費率用。
+  const adCost = costsByCategory.advertising;
 
   // 材料・仕入原価: 在庫管理を使わない店舗(既定)は仕入・発注額をそのまま原価とする。使う店舗は
   // 前月末在庫+当月仕入・発注額-当月末在庫で計算する。前月末在庫が未入力(初回利用)の場合は
@@ -1195,6 +1228,13 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const repeatTarget = parseNumber(target.targetRepeatRate);
   const repeatTargetAchievement = repeatTarget ? (repeatRate / repeatTarget) * 100 : 0;
 
+  // 人件費・材料/発注費は美容室の損益に直結する重要費用で、月途中は未確定なことが多い
+  // (歩合給等)。この2つが1件も登録されていない月は、営業利益・営業利益率を「暫定値」として
+  // 扱う(0円で確定計算してしまわないため)。他8カテゴリは未入力でも暫定扱いにしない
+  // (清掃費等が無い店舗は単に「無い」だけで、暫定ではない)。
+  const missingCriticalCategories = ["labor", "materials"].filter((key) => !categoryHasEntry[key]);
+  const isProvisionalProfit = missingCriticalCategories.length > 0;
+
   return {
     sales,
     technicalSales,
@@ -1222,12 +1262,14 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     equipmentInvestmentCost,
     fixedCost,
     variableCost,
-    regularVariableCost,
-    temporaryCost,
     otherCost,
     expenseCost,
     adCost,
     adRate,
+    costsByCategory,
+    categoryHasEntry,
+    missingCriticalCategories,
+    isProvisionalProfit,
     expenseTotal,
     grossProfit,
     operatingProfit,
@@ -1263,6 +1305,52 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     closingItems,
     expenseCategories,
   };
+};
+
+// 月締めチェックリスト: 損益表作成に必要な項目(売上+費用10カテゴリ)ごとの入力済み/未入力を
+// 返す。判定は費用名の文字列ではなく、calculateMonthSummaryが算出したcategoryHasEntry
+// (=実際に登録されているデータ)を基準にする。
+export const getMonthClosingChecklist = (state, storeId, monthValue, options = {}) => {
+  const summary = calculateMonthSummary(state, storeId, monthValue, options);
+  const items = [
+    { key: "sales", label: "売上", entered: summary.entries.length > 0, categoryKey: null },
+    ...costCategoryKeys.map(({ key, label }) => ({ key, label, entered: Boolean(summary.categoryHasEntry[key]), categoryKey: key })),
+  ];
+  return {
+    items,
+    missingItems: items.filter((item) => !item.entered),
+    isProvisionalProfit: summary.isProvisionalProfit,
+    missingCriticalCategories: summary.missingCriticalCategories,
+  };
+};
+
+// 月締め確定後(monthClosingStatus.lockedAt)に、損益に影響するデータ(費用金額・費用項目・
+// 在庫)が変更されていないか判定する。新規DBカラムは不要 — 各テーブルが元々持つupdated_atを
+// そのまま比較に使う。
+export const needsMonthReconfirmation = (state, storeId, monthValue) => {
+  const status = state.monthClosingStatus?.[buildMonthKey(storeId, monthValue)];
+  if (!status?.closed || !status.lockedAt) return false;
+  const fixedCosts = getFixedCostsForStoreMonth(state, storeId, monthValue);
+  const timestamps = [
+    ...fixedCosts.map((item) => item.updatedAt || ""),
+    ...fixedCosts.map((item) => state.costMonthlyAmounts?.[`${item.id}__${monthValue}`]?.updatedAt || ""),
+    ...getClosingItemsForStoreMonth(state, storeId, monthValue).map((item) => item.updatedAt || ""),
+    state.storeInventoryBalances?.[`${storeId}__${monthValue}`]?.updatedAt || "",
+  ].filter(Boolean);
+  return timestamps.some((timestamp) => timestamp > status.lockedAt);
+};
+
+// 単月(periodType:"limited"、開始月=終了月)の費用は月ごとに新しいitem idになるため、
+// 「前月をコピー」がcostMonthlyAmounts側では効かない(そのidに前月分の金額が無いため)。
+// 費用名+カテゴリが一致する前月の項目があれば、その金額をサジェストできるようにする
+// (自動入力はしない、入力欄のプレースホルダー用)。
+export const getPreviousMonthAmountByNameAndCategory = (state, storeId, name, categoryKey, monthValue) => {
+  if (!name || !categoryKey) return undefined;
+  const previousMonth = getMonthOffset(monthValue, -1);
+  const previousItems = getFixedCostsForStoreMonth(state, storeId, previousMonth);
+  const match = previousItems.find((item) => item.name === name && item.categoryKey === categoryKey);
+  if (!match) return undefined;
+  return getCostMonthlyAmount(state, match.id, previousMonth);
 };
 
 // 「全店舗」(company_admin専用の仮想集計ビュー)専用の売上サマリー。calculateMonthSummaryを
