@@ -1236,15 +1236,11 @@ function App() {
   // (数字を混在させない、という今回の整理方針)。目標未設定の項目は配列に入れない
   // (0円/0名として表示しない — 任意項目のご指示に基づく)。
   const dashboardSupportMetrics = useMemo(() => {
-    const items = [
-      {
-        label: "平均客単価",
-        value: money(summary.averageSpend),
-        hint: hasCustomerTarget ? `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` : "",
-      },
-    ];
+    // 「必要客数◯名/日」は客数達成率カード側にまとめたため、平均客単価カードは数値だけの
+    // シンプルな表示にする(効率系: 数字中心、補足最小限)。
+    const items = [{ label: "平均客単価", value: money(summary.averageSpend), hint: "" }];
     if (hasSalesTarget) {
-      items.push({ label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
+      items.push({ label: "必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
     }
     // 「目標客数まで」はkpi-hero-gridの「客数達成率」カード(secondaryValue)と同じ数字
     // (remainingCustomersTarget)を表示するだけの重複カードだったため廃止。
@@ -1257,7 +1253,7 @@ function App() {
       });
     }
     return items;
-  }, [summary.averageSpend, hasCustomerTarget, hasSalesTarget, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
+  }, [summary.averageSpend, hasSalesTarget, summary.dailyNeededSales, summary.remainingBusinessDays, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -4566,6 +4562,10 @@ function App() {
                   <h2>売上</h2>
                 </div>
               </div>
+              {/* 進捗系・予測系・効率系を1つのグリッドにまとめ、非表示カードの分の空枠を
+                  残さず、表示対象だけを左上から順に自動で詰めて配置する(kpi-hero-grid/
+                  kpi-gridに分かれていたのを統合)。カードの増減があってもこの1グリッドの
+                  auto-flowでそのまま整う。 */}
               <div className="kpi-hero-grid">
                 {!hasAnyTarget ? <TargetSetupHint onGoToTarget={goToMonthlyTargetSetting} /> : null}
                 {hasSalesTarget ? (
@@ -4576,18 +4576,17 @@ function App() {
                     secondaryValue={`目標売上まで ${money(summary.remainingSalesTarget)}`}
                     tone={summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100)}
                     emphasize
+                    hero
                     onClick={goToMonthlyTargetSetting}
                   />
                 ) : null}
                 <MetricCard
                   label="月末着地予測"
                   value={money(summary.forecast)}
-                  progress={hasSalesTarget ? (summary.forecast / Number(target.targetSales)) * 100 : null}
                   hint={hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
                     : null}
                   tone={hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : ""}
-                  emphasize
                 />
                 {hasCustomerTarget ? (
                   <MetricCard
@@ -4595,8 +4594,8 @@ function App() {
                     value={percent(customerTargetSummary.achievementRate)}
                     progress={customerTargetSummary.achievementRate}
                     secondaryValue={`目標まで ${customerTargetSummary.remainingCustomers}名`}
+                    hint={`必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日`}
                     tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
-                    emphasize
                   />
                 ) : null}
                 {showReviewCountTargetField && hasReviewCountTarget ? (
@@ -4606,11 +4605,8 @@ function App() {
                     progress={summary.reviewCountAchievement}
                     secondaryValue={`目標まで ${number(summary.remainingReviewCountTarget)}件`}
                     tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
-                    emphasize
                   />
                 ) : null}
-              </div>
-              <div className="kpi-grid">
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
               </div>
               </div>
@@ -6026,10 +6022,10 @@ function App() {
 // progress(0-100、任意)を渡すと数値のすぐ下に細い進捗バーを表示する。目標達成率系の
 // カードで「上に内容が寄って下が空白になる」問題を、意味のある情報(進捗バー)で埋めるための
 // 共通の仕組み — 今後増えるカードも同じpropを使うだけで同じ見た目に揃う。
-function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", progress = null, emphasize = false, onClick = null }) {
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", progress = null, emphasize = false, hero = false, onClick = null }) {
   return (
     <div
-      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${onClick ? "clickable" : ""}`}
+      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${onClick ? "clickable" : ""}`}
       onClick={onClick || undefined}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
