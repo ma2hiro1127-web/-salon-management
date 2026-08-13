@@ -1235,6 +1235,13 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const missingCriticalCategories = ["labor", "materials"].filter((key) => !categoryHasEntry[key]);
   const isProvisionalProfit = missingCriticalCategories.length > 0;
 
+  // 表示用の補助フラグ: 「固定費」「経費合計」を構成するカテゴリのうち1つでも登録があるか。
+  // 未入力を0として計算した数字を「－」に置き換えるかどうかの判定にのみ使い、isProvisionalProfit
+  // (人件費・材料費のみを重要費用として見る既存の設計)には影響しない。
+  const hasFixedCostData = ["rent", "utilities", "communication", "cleaning", "system", "tax_insurance"]
+    .some((key) => categoryHasEntry[key]);
+  const hasExpenseCostData = hasFixedCostData || categoryHasEntry.advertising || categoryHasEntry.other || categoryHasEntry[UNCATEGORIZED_KEY];
+
   return {
     sales,
     technicalSales,
@@ -1270,6 +1277,8 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     categoryHasEntry,
     missingCriticalCategories,
     isProvisionalProfit,
+    hasFixedCostData,
+    hasExpenseCostData,
     expenseTotal,
     grossProfit,
     operatingProfit,
@@ -1569,6 +1578,7 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
       hasPurchaseData: Boolean(summary.categoryHasEntry?.materials),
       fixedCost: summary.fixedCost,
       fixedCostRate: summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0,
+      hasFixedCostData: summary.hasFixedCostData,
       operatingProfit: summary.operatingProfit,
       operatingMargin: summary.operatingMargin,
       isProvisionalProfit: summary.isProvisionalProfit,
@@ -1585,6 +1595,10 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
         purchaseCost: previousSummary.costOfGoodsSold,
         operatingProfit: previousSummary.operatingProfit,
         operatingMargin: previousSummary.operatingMargin,
+        hasLaborData: Boolean(previousSummary.categoryHasEntry?.labor),
+        hasPurchaseData: Boolean(previousSummary.categoryHasEntry?.materials),
+        hasFixedCostData: previousSummary.hasFixedCostData,
+        isProvisionalProfit: previousSummary.isProvisionalProfit,
         productivity: previousProductivity,
       },
     };
@@ -1606,6 +1620,14 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
     (total, row) => total + (row.productivity.hasStaffCount ? parseNumber(row.effectiveStaffCount) : 0), 0
   );
   const hasStaffCount = storeRows.some((row) => row.productivity.hasStaffCount);
+  // 会社全体としての費用データ有無: 1店舗でも登録があれば、その合計は「実際に入力された金額の
+  // 合計」として意味を持つ(未入力店舗の0円は単に合算対象から実質除外されるだけ)。1店舗も
+  // 登録が無い場合のみ「－」にする。営業利益/営業利益率は、1店舗でも人件費・材料費が未登録
+  // (isProvisionalProfit)なら会社全体の合計も暫定扱いにする(その店舗の分だけ費用が0円として
+  // 合算されてしまっているため)。
+  const hasLaborData = storeRows.some((row) => row.hasLaborData);
+  const hasPurchaseData = storeRows.some((row) => row.hasPurchaseData);
+  const isProvisionalProfit = storeRows.some((row) => row.isProvisionalProfit);
 
   const previousTotalSales = sum((row) => row.previous.sales);
   const previousTotalOperatingProfit = sum((row) => row.previous.operatingProfit);
@@ -1616,6 +1638,9 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
     (total, row) => total + (row.previous.productivity.hasStaffCount ? parseNumber(row.effectiveStaffCount) : 0), 0
   );
   const hasPrevious = storeRows.some((row) => row.previous.hasPrevious);
+  const previousHasLaborData = storeRows.some((row) => row.previous.hasLaborData);
+  const previousHasPurchaseData = storeRows.some((row) => row.previous.hasPurchaseData);
+  const previousIsProvisionalProfit = storeRows.some((row) => row.previous.isProvisionalProfit);
 
   return {
     monthValue,
@@ -1623,10 +1648,13 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
     totalSales,
     totalOperatingProfit,
     operatingMargin: totalSales > 0 ? (totalOperatingProfit / totalSales) * 100 : 0,
+    isProvisionalProfit,
     totalLaborCost,
     laborRate: totalSales > 0 ? (totalLaborCost / totalSales) * 100 : 0,
+    hasLaborData,
     totalPurchaseCost,
     purchaseCostRate: totalSales > 0 ? (totalPurchaseCost / totalSales) * 100 : 0,
+    hasPurchaseData,
     staffProductivity: {
       hasStaffCount,
       current: hasStaffCount && totalEffectiveStaffCount > 0 ? totalSales / totalEffectiveStaffCount : 0,
@@ -1636,10 +1664,13 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
       totalSales: previousTotalSales,
       totalOperatingProfit: previousTotalOperatingProfit,
       operatingMargin: previousTotalSales > 0 ? (previousTotalOperatingProfit / previousTotalSales) * 100 : 0,
+      isProvisionalProfit: previousIsProvisionalProfit,
       totalLaborCost: previousTotalLaborCost,
       laborRate: previousTotalSales > 0 ? (previousTotalLaborCost / previousTotalSales) * 100 : 0,
+      hasLaborData: previousHasLaborData,
       totalPurchaseCost: previousTotalPurchaseCost,
       purchaseCostRate: previousTotalSales > 0 ? (previousTotalPurchaseCost / previousTotalSales) * 100 : 0,
+      hasPurchaseData: previousHasPurchaseData,
       staffProductivity: {
         hasStaffCount: previousHasStaffCount,
         current: previousHasStaffCount && previousTotalEffectiveStaffCount > 0

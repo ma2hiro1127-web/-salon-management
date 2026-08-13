@@ -34,6 +34,8 @@ import {
   getBusinessDaySummary,
   getMonthClosingChecklist,
   needsMonthReconfirmation,
+  formatMoneyOrDash,
+  formatPercentOrDash,
   getPreviousMonthAmountByNameAndCategory,
   getCustomerTargetSummary,
   getStaffProductivitySummary,
@@ -1146,12 +1148,16 @@ function App() {
       const previousAchievement = previousSummary.targetAchievement;
       const currentChangeRate = previousSales > 0 ? ((currentSales - previousSales) / previousSales) * 100 : 0;
       const previousChangeRate = previousPreviousSales > 0 ? ((previousSales - previousPreviousSales) / previousPreviousSales) * 100 : 0;
+      // 目標未登録の店舗は達成率が常に0%になる(calculateMonthSummary側の仕様)ため、それを
+      // 「未達成」として色付け・ラベル表示しない(任意項目のため、未入力=悪い実績ではない)。
+      const hasTargetSales = Boolean(storeSummary.target.targetSales);
 
       return {
         storeId: store.id,
         storeName: store.name,
         sales: currentSales,
         targetSales: storeSummary.target.targetSales,
+        hasTargetSales,
         achievement,
         operatingProfit: storeSummary.operatingProfit,
         previousSales,
@@ -1160,8 +1166,8 @@ function App() {
         previousChangeRate,
         currentChangeRate,
         forecast: storeSummary.forecast,
-        tone: getRankTone(achievement),
-        achievementLabel: achievement >= 100 ? "順調" : achievement >= 95 ? "要確認" : "要改善",
+        tone: hasTargetSales ? getRankTone(achievement) : "neutral",
+        achievementLabel: !hasTargetSales ? "目標未設定" : achievement >= 100 ? "順調" : achievement >= 95 ? "要確認" : "要改善",
       };
     });
 
@@ -1214,17 +1220,30 @@ function App() {
   const hasSalesTarget = parseNumber(target.targetSales) > 0;
   const hasCustomerTarget = parseNumber(target.targetCustomers) > 0;
   const hasReviewCountTarget = parseNumber(target.targetReviewCount) > 0;
+  // 月間目標を1つも登録していない店舗かどうか。falseの間はダッシュボードの目標系カードを
+  // 個別に「未登録」表示するのではなく、まとめて1箇所の案内(TargetSetupHint)だけを出す
+  // (未入力=警告、を避けるための整理。任意項目のご指示に基づく)。
+  const hasAnyTarget = hasSalesTarget || hasCustomerTarget || hasReviewCountTarget;
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
   const forecastVsTarget = summary.forecast - parseNumber(target.targetSales);
   // KPIエリア(目標に対する数値)用。実績値は営業進捗カードに表示するため、ここには置かない
-  // (数字を混在させない、という今回の整理方針)。
+  // (数字を混在させない、という今回の整理方針)。目標未設定の項目は配列に入れない
+  // (0円/0名として表示しない — 任意項目のご指示に基づく)。
   const dashboardSupportMetrics = useMemo(() => {
     const items = [
-      { label: "平均客単価", value: money(summary.averageSpend), hint: `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` },
-      { label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` },
-      { label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` },
+      {
+        label: "平均客単価",
+        value: money(summary.averageSpend),
+        hint: hasCustomerTarget ? `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` : "",
+      },
     ];
+    if (hasSalesTarget) {
+      items.push({ label: "目標達成に必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
+    }
+    if (hasCustomerTarget) {
+      items.push({ label: "目標客数まで", value: `${number(summary.remainingCustomersTarget)}名`, hint: `現在 ${number(summary.customers)}名` });
+    }
     // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない。
     if (!isAllStoresView && selectedStoreEntity) {
       items.push({
@@ -1234,7 +1253,7 @@ function App() {
       });
     }
     return items;
-  }, [summary.averageSpend, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
+  }, [summary.averageSpend, hasCustomerTarget, hasSalesTarget, customerTargetSummary.remainingCustomersPerDay, summary.dailyNeededSales, summary.remainingBusinessDays, summary.remainingCustomersTarget, summary.customers, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -4522,6 +4541,7 @@ function App() {
                 </div>
               </div>
               <div className="kpi-hero-grid">
+                {!hasAnyTarget ? <TargetSetupHint onGoToTarget={goToMonthlyTargetSetting} /> : null}
                 {hasSalesTarget ? (
                   <MetricCard
                     label="月間達成率"
@@ -4530,9 +4550,7 @@ function App() {
                     tone={getMetricTone(summary.targetAchievement, 85, 100)}
                     emphasize
                   />
-                ) : (
-                  <TargetMissingCard label="月間達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
-                )}
+                ) : null}
                 {hasSalesTarget ? (
                   <MetricCard
                     label="目標売上まで"
@@ -4542,20 +4560,13 @@ function App() {
                     emphasize
                     onClick={goToMonthlyTargetSetting}
                   />
-                ) : (
-                  <TargetMissingCard label="目標売上まで" onGoToTarget={goToMonthlyTargetSetting} emphasize />
-                )}
+                ) : null}
                 <MetricCard
                   label="月末着地予測"
                   value={money(summary.forecast)}
                   hint={hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
-                    : (
-                      <span className="metric-missing-inline">
-                        <span className="metric-missing-label">月間目標未登録</span>
-                        <button type="button" className="metric-missing-link" onClick={(event) => { event.stopPropagation(); goToMonthlyTargetSetting(); }}>月間目標設定</button>
-                      </span>
-                    )}
+                    : null}
                   tone={hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : ""}
                   emphasize
                 />
@@ -4567,21 +4578,15 @@ function App() {
                     tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
                     emphasize
                   />
-                ) : (
-                  <TargetMissingCard label="客数達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
-                )}
-                {showReviewCountTargetField ? (
-                  hasReviewCountTarget ? (
-                    <MetricCard
-                      label="口コミ数達成率"
-                      value={percent(summary.reviewCountAchievement)}
-                      hint={`現在 ${number(summary.reviewCount)}件 / 目標 ${number(summary.reviewCountTarget)}件・残り ${number(summary.remainingReviewCountTarget)}件`}
-                      tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
-                      emphasize
-                    />
-                  ) : (
-                    <TargetMissingCard label="口コミ数達成率" onGoToTarget={goToMonthlyTargetSetting} emphasize />
-                  )
+                ) : null}
+                {showReviewCountTargetField && hasReviewCountTarget ? (
+                  <MetricCard
+                    label="口コミ数達成率"
+                    value={percent(summary.reviewCountAchievement)}
+                    hint={`現在 ${number(summary.reviewCount)}件 / 目標 ${number(summary.reviewCountTarget)}件・残り ${number(summary.remainingReviewCountTarget)}件`}
+                    tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
+                    emphasize
+                  />
                 ) : null}
               </div>
               <div className="kpi-grid">
@@ -4654,7 +4659,7 @@ function App() {
                             </div>
                           </div>
                           <div className="ranking-card-kpis">
-                            <span className={`status-chip ${row.achievement >= 100 ? "good" : row.achievement >= 85 ? "warning" : "danger"}`}>{percent(row.achievement)}</span>
+                            <span className={`status-chip ${!row.hasTargetSales ? "neutral" : row.achievement >= 100 ? "good" : row.achievement >= 85 ? "warning" : "danger"}`}>{row.hasTargetSales ? percent(row.achievement) : "－"}</span>
                             <span className={`status-chip ${row.currentChangeRate >= 0 ? "good" : "danger"}`}>{formatChangeRate(row.currentChangeRate)}</span>
                           </div>
                           <div className="ranking-card-value-block">
@@ -4667,7 +4672,7 @@ function App() {
                           <div className="ranking-card-details">
                             <div className="ranking-detail-item">
                               <span>目標売上</span>
-                              <strong>{money(row.targetSales)}</strong>
+                              <strong>{row.hasTargetSales ? money(row.targetSales) : "－"}</strong>
                             </div>
                             <div className="ranking-detail-item">
                               <span>前月売上</span>
@@ -4683,7 +4688,7 @@ function App() {
                             </div>
                             <div className="ranking-detail-item">
                               <span>目標達成率</span>
-                              <strong>{percent(row.achievement)}</strong>
+                              <strong>{row.hasTargetSales ? percent(row.achievement) : "－"}</strong>
                             </div>
                           </div>
                         ) : null}
@@ -5215,15 +5220,15 @@ function App() {
                     </div>
                     <div className="summary-grid">
                       <div className="summary-card"><span>店販比率</span><strong>{percent(summary.retailRatio || 0)}</strong></div>
-                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
-                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
+                      <div className="summary-card"><span>人件費率</span><strong>{formatPercentOrDash(summary.laborRate, summary.categoryHasEntry.labor)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{formatPercentOrDash(summary.costOfGoodsSoldRate, summary.categoryHasEntry.materials)}</strong></div>
                       <div className="summary-card emphasize">
                         <span>営業利益率</span>
-                        <strong>{percent(summary.operatingMargin)}{summary.isProvisionalProfit ? "（暫定）" : ""}</strong>
+                        <strong>{formatPercentOrDash(summary.operatingMargin, !summary.isProvisionalProfit)}</strong>
                       </div>
                     </div>
                     {summary.isProvisionalProfit ? (
-                      <p className="helper-text">※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は暫定値です。</p>
+                      <p className="helper-text">※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は算出できません。</p>
                     ) : null}
                     <div className="toggle-panel">
                       <div>
@@ -5282,8 +5287,8 @@ function App() {
                     </div>
                     <p className="helper-text">本画面は店舗経営管理用の概算損益です。税務申告上の利益・納税額とは異なる場合があります。</p>
                     {summary.isProvisionalProfit ? (
-                      <div className="empty-card danger-text">
-                        ※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は暫定値です。「費用入力」タブで登録すると正確な利益が確認できます。
+                      <div className="empty-card">
+                        ※{summary.missingCriticalCategories.map((key) => getCostCategoryLabel(key)).join("・")}が未入力のため、営業利益は算出できません。「費用入力」タブで登録すると確認できます。
                       </div>
                     ) : null}
 
@@ -5309,10 +5314,10 @@ function App() {
                       {/* 在庫管理OFFの店舗は仕入・発注額=材料・仕入原価がそのまま同額になるため、
                           重複を避けて原価の内訳(仕入・発注額)は在庫管理ONの店舗だけ表示する。 */}
                       {useInventoryTracking ? (
-                        <div className="summary-card"><span>仕入・発注額</span><strong>{money(summary.purchaseAmount)}</strong></div>
+                        <div className="summary-card"><span>仕入・発注額</span><strong>{formatMoneyOrDash(summary.purchaseAmount, summary.categoryHasEntry.materials)}</strong></div>
                       ) : null}
-                      <div className="summary-card"><span>材料・仕入原価</span><strong>{money(summary.costOfGoodsSold)}</strong></div>
-                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{percent(summary.costOfGoodsSoldRate)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価</span><strong>{formatMoneyOrDash(summary.costOfGoodsSold, summary.categoryHasEntry.materials)}</strong></div>
+                      <div className="summary-card"><span>材料・仕入原価率</span><strong>{formatPercentOrDash(summary.costOfGoodsSoldRate, summary.categoryHasEntry.materials)}</strong></div>
                     </div>
 
                     <div className="panel-heading compact">
@@ -5322,9 +5327,9 @@ function App() {
                       </div>
                     </div>
                     <div className="summary-grid">
-                      <div className="summary-card"><span>人件費</span><strong>{money(summary.laborCost)}</strong></div>
-                      <div className="summary-card"><span>人件費率</span><strong>{percent(summary.laborRate)}</strong></div>
-                      <div className="summary-card"><span>経費合計</span><strong>{money(summary.expenseCost)}</strong></div>
+                      <div className="summary-card"><span>人件費</span><strong>{formatMoneyOrDash(summary.laborCost, summary.categoryHasEntry.labor)}</strong></div>
+                      <div className="summary-card"><span>人件費率</span><strong>{formatPercentOrDash(summary.laborRate, summary.categoryHasEntry.labor)}</strong></div>
+                      <div className="summary-card"><span>経費合計</span><strong>{formatMoneyOrDash(summary.expenseCost, summary.hasExpenseCostData)}</strong></div>
                     </div>
 
                     <div className="panel-heading compact">
@@ -5334,9 +5339,9 @@ function App() {
                       </div>
                     </div>
                     <div className="summary-grid">
-                      <div className="summary-card"><span>粗利益</span><strong>{money(summary.grossProfit)}</strong></div>
-                      <div className="summary-card emphasize"><span>営業利益</span><strong>{money(summary.operatingProfit)}{summary.isProvisionalProfit ? "（暫定）" : ""}</strong></div>
-                      <div className="summary-card emphasize"><span>営業利益率</span><strong>{percent(summary.operatingMargin)}{summary.isProvisionalProfit ? "（暫定）" : ""}</strong></div>
+                      <div className="summary-card"><span>粗利益</span><strong>{formatMoneyOrDash(summary.grossProfit, summary.categoryHasEntry.materials)}</strong></div>
+                      <div className="summary-card emphasize"><span>営業利益</span><strong>{formatMoneyOrDash(summary.operatingProfit, !summary.isProvisionalProfit)}</strong></div>
+                      <div className="summary-card emphasize"><span>営業利益率</span><strong>{formatPercentOrDash(summary.operatingMargin, !summary.isProvisionalProfit)}</strong></div>
                     </div>
 
                     {/* 経営指標(KPI)セクションは廃止し、同じ位置に「消費税考慮」を配置する。損益表の
@@ -6051,15 +6056,15 @@ function MetricCard({ label, value, hint = "", tone = "", emphasize = false, onC
   );
 }
 
-// Fallback for a dashboard metric that's computed from a monthly target when none has been
-// saved yet for the store+month on screen — shown instead of a misleading 0%/¥0, with a direct
-// link into the 月間目標設定 panel so there's always an obvious next action.
-function TargetMissingCard({ label, onGoToTarget, emphasize = false }) {
+// 月間目標を1つも登録していない店舗向けの案内。目標系カードごとに「未登録」を繰り返し表示
+// せず、この1枚だけをkpi-hero-gridの先頭に出す。警告・エラーではなく中立トーン(.setup-card)
+// にし、目標を1つでも登録すればhasAnyTargetがtrueになり自動的に消える(表示ON/OFFの設定は
+// 持たない)。
+function TargetSetupHint({ onGoToTarget }) {
   return (
-    <div className={`metric-card neutral ${emphasize ? "emphasize" : ""}`}>
-      <span>{label}</span>
-      <strong className="metric-missing-label">月間目標未登録</strong>
-      <button type="button" className="metric-missing-link" onClick={onGoToTarget}>月間目標設定</button>
+    <div className="setup-card target-setup-hint">
+      <p className="helper-text">月間目標を設定すると、達成率・目標までの残額・1日あたり必要売上が表示されます。</p>
+      <button type="button" className="secondary-button" onClick={onGoToTarget}>目標を設定する</button>
     </div>
   );
 }

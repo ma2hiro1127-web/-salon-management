@@ -15,8 +15,8 @@ const RANKING_METRICS = [
 // 同じ「0とデータ無しを区別する」規約を、ランキングでもそのまま踏襲する)。
 const getDashboardRankingMetric = (row, metricKey) => {
   switch (metricKey) {
-    case "operatingProfit": return { value: row.operatingProfit, hasData: true, isPercent: false };
-    case "operatingMargin": return { value: row.operatingMargin, hasData: true, isPercent: true };
+    case "operatingProfit": return { value: row.operatingProfit, hasData: !row.isProvisionalProfit, isPercent: false };
+    case "operatingMargin": return { value: row.operatingMargin, hasData: !row.isProvisionalProfit, isPercent: true };
     case "productivity": return { value: row.productivity.current, hasData: row.productivity.hasStaffCount, isPercent: false };
     case "averageSpend": return { value: row.averageSpend, hasData: row.hasCustomerData, isPercent: false };
     case "newCustomers": return { value: row.newCustomers, hasData: row.hasCustomerData, isPercent: false };

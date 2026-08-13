@@ -1,10 +1,5 @@
 import { diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash } from "../../utils/storage.js";
 
-// 「固定費」は損益表側と同じ内部集計(家賃+光熱費+通信費+清掃環境費+システム利用料+税金保険の
-// 6カテゴリ合計、calculateMonthSummary.fixedCost)を1行で表示する — 個別カテゴリを重複して
-// 列挙しない(比較表・CSVの「固定費」列と定義を揃える)。
-const FIXED_COST_SUB_KEYS = ["rent", "utilities", "communication", "cleaning", "system", "tax_insurance"];
-
 function SummaryCard({ label, value, hint, emphasize = false }) {
   return (
     <div className={`summary-card${emphasize ? " emphasize" : ""}`}>
@@ -54,14 +49,14 @@ export default function StoreDashboardView({ storeName, summary, previousSummary
           <SummaryCard label="総売上" value={formatMoneyOrDash(summary.sales)} emphasize />
           <SummaryCard label="月間目標売上" value={formatMoneyOrDash(target.targetSales, Boolean(target.targetSales))} />
           <SummaryCard label="目標達成率" value={formatPercentOrDash(summary.targetAchievement, Boolean(target.targetSales))} />
-          <SummaryCard label="営業利益" value={`${formatMoneyOrDash(summary.operatingProfit)}${summary.isProvisionalProfit ? "(暫定)" : ""}`} emphasize />
-          <SummaryCard label="営業利益率" value={`${formatPercentOrDash(summary.operatingMargin)}${summary.isProvisionalProfit ? "(暫定)" : ""}`} />
+          <SummaryCard label="営業利益" value={formatMoneyOrDash(summary.operatingProfit, !summary.isProvisionalProfit)} emphasize />
+          <SummaryCard label="営業利益率" value={formatPercentOrDash(summary.operatingMargin, !summary.isProvisionalProfit)} />
           <SummaryCard label="人件費率" value={formatPercentOrDash(summary.laborRate, Boolean(summary.categoryHasEntry?.labor))} />
           <SummaryCard label="発注費率" value={formatPercentOrDash(summary.costOfGoodsSoldRate, Boolean(summary.categoryHasEntry?.materials))} />
           <SummaryCard label="スタッフ生産性" value={formatMoneyOrDash(productivity.current, productivity.hasStaffCount)} />
         </div>
         {summary.isProvisionalProfit ? (
-          <p className="dashboard-hint">※人件費または発注費(材料原価)が未入力のため、営業利益は暫定値です。</p>
+          <p className="dashboard-hint">※人件費または発注費(材料原価)が未入力のため、営業利益は算出できません。</p>
         ) : null}
       </section>
 
@@ -75,8 +70,16 @@ export default function StoreDashboardView({ storeName, summary, previousSummary
           <MomCard label="客単価" formattedValue={formatMoneyOrDash(summary.averageSpend, summary.customers > 0)} diff={diffPercent(summary.averageSpend, previousSummary.averageSpend, hasPrevious && previousSummary.customers > 0)} />
           <MomCard label="新規客数" formattedValue={summary.newCustomers} diff={diffPercent(summary.newCustomers, previousSummary.newCustomers, hasPrevious)} />
           <MomCard label="店販売上" formattedValue={formatMoneyOrDash(summary.retailSales)} diff={diffPercent(summary.retailSales, previousSummary.retailSales, hasPrevious)} />
-          <MomCard label="営業利益" formattedValue={formatMoneyOrDash(summary.operatingProfit)} diff={diffPercent(summary.operatingProfit, previousSummary.operatingProfit, hasPrevious)} />
-          <MomCard label="営業利益率" formattedValue={formatPercentOrDash(summary.operatingMargin)} diff={diffPercent(summary.operatingMargin, previousSummary.operatingMargin, hasPrevious)} />
+          <MomCard
+            label="営業利益"
+            formattedValue={formatMoneyOrDash(summary.operatingProfit, !summary.isProvisionalProfit)}
+            diff={diffPercent(summary.operatingProfit, previousSummary.operatingProfit, hasPrevious && !summary.isProvisionalProfit && !previousSummary.isProvisionalProfit)}
+          />
+          <MomCard
+            label="営業利益率"
+            formattedValue={formatPercentOrDash(summary.operatingMargin, !summary.isProvisionalProfit)}
+            diff={diffPercent(summary.operatingMargin, previousSummary.operatingMargin, hasPrevious && !summary.isProvisionalProfit && !previousSummary.isProvisionalProfit)}
+          />
           <MomCard
             label="スタッフ生産性"
             formattedValue={formatMoneyOrDash(productivity.current, productivity.hasStaffCount)}
@@ -122,8 +125,8 @@ export default function StoreDashboardView({ storeName, summary, previousSummary
               </tr>
               <tr>
                 <td>固定費(家賃・光熱費・通信費・清掃環境費・システム利用料・税金保険)</td>
-                <td>{formatMoneyOrDash(summary.fixedCost, FIXED_COST_SUB_KEYS.some((key) => summary.categoryHasEntry?.[key]))}</td>
-                <td>{formatPercentOrDash(summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0, FIXED_COST_SUB_KEYS.some((key) => summary.categoryHasEntry?.[key]) && summary.sales > 0)}</td>
+                <td>{formatMoneyOrDash(summary.fixedCost, summary.hasFixedCostData)}</td>
+                <td>{formatPercentOrDash(summary.sales > 0 ? (summary.fixedCost / summary.sales) * 100 : 0, summary.hasFixedCostData && summary.sales > 0)}</td>
               </tr>
               <tr>
                 <td>広告費</td>

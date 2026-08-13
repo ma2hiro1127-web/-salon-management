@@ -287,6 +287,32 @@ test("calculateMonthSummary: 人件費が0円で登録済みでもisProvisionalP
   assert.deepEqual(summary.missingCriticalCategories, []);
 });
 
+test("calculateMonthSummary: hasFixedCostData/hasExpenseCostDataは対象カテゴリに1件でも登録があるかで判定する(未入力を0として計算した値と区別するため)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  // 固定費・広告費・その他とも一切未登録
+  const summaryEmpty = calculateMonthSummary(state, store, month);
+  assert.equal(summaryEmpty.hasFixedCostData, false);
+  assert.equal(summaryEmpty.hasExpenseCostData, false);
+
+  // 通信費(固定費の内訳の1つ)だけ登録
+  state.fixedCosts[key] = [{ id: "fc-1", name: "通信費", categoryKey: "communication", periodType: "ongoing" }];
+  state.costMonthlyAmounts = { "fc-1__2026-08": { amount: 5000 } };
+  const summaryFixedOnly = calculateMonthSummary(state, store, month);
+  assert.equal(summaryFixedOnly.hasFixedCostData, true);
+  assert.equal(summaryFixedOnly.hasExpenseCostData, true); // 固定費経由でも経費合計側はtrueになる
+
+  // 固定費の内訳には入らない広告費だけ登録されているケース(固定費自体は空のまま)
+  state.fixedCosts[key] = [];
+  state.variableCosts[key] = [{ id: "var-1", name: "広告費", categoryKey: "advertising", amount: 30000 }];
+  const summaryAdOnly = calculateMonthSummary(state, store, month);
+  assert.equal(summaryAdOnly.hasFixedCostData, false); // 固定費の内訳6カテゴリはどれも未登録
+  assert.equal(summaryAdOnly.hasExpenseCostData, true); // 広告費は経費合計の対象なのでtrue
+});
+
 test("getMonthClosingChecklist: 未入力のカテゴリと売上をmissingItemsに列挙し、カテゴリ名(文字列)ではなくhasEntryで判定する", () => {
   const state = createInitialAppState();
   const store = "横浜店";
@@ -1364,6 +1390,7 @@ test("getStoreDashboardRows: 1店舗1行で当月・前月・カテゴリ別入�
   assert.equal(storeA.purchaseCost, 40000);
   assert.equal(storeA.hasPurchaseData, true);
   assert.equal(storeA.fixedCost, 100000);
+  assert.equal(storeA.hasFixedCostData, true); // 家賃(rent)が登録済み
   assert.equal(storeA.operatingProfit, 210000);
   assert.equal(storeA.operatingMargin, 42);
   assert.equal(storeA.isProvisionalProfit, false); // 人件費・材料/発注費とも登録済み
@@ -1374,11 +1401,17 @@ test("getStoreDashboardRows: 1店舗1行で当月・前月・カテゴリ別入�
   assert.equal(storeA.previous.hasPrevious, true);
   assert.equal(storeA.previous.sales, 400000);
   assert.equal(storeA.previous.operatingProfit, 400000); // 前月は費用データ無し→原価0・費用0
+  // 前月は人件費・材料/発注費・固定費とも未登録(hasPrevious:trueでも費用面は別軸で判定する)
+  assert.equal(storeA.previous.hasLaborData, false);
+  assert.equal(storeA.previous.hasPurchaseData, false);
+  assert.equal(storeA.previous.hasFixedCostData, false);
+  assert.equal(storeA.previous.isProvisionalProfit, true);
 
   assert.equal(storeB.sales, 100000);
   assert.equal(storeB.isClosed, false); // monthClosingStatusにキーが無い→未締め扱い
   assert.equal(storeB.hasLaborData, false); // 人件費が1件も登録されていない
   assert.equal(storeB.hasPurchaseData, false); // 材料/発注費が1件も登録されていない
+  assert.equal(storeB.hasFixedCostData, false); // 家賃等も未登録
   assert.equal(storeB.isProvisionalProfit, true); // 人件費・材料/発注費が両方未登録
   assert.equal(storeB.effectiveStaffCount, 0);
   assert.equal(storeB.productivity.hasStaffCount, false); // スタッフ数未設定
@@ -1405,8 +1438,30 @@ test("getCompanyDashboardSummary: 会社全体の合計・比率は店舗ごと�
   // 前月データ: 店Aにはあり(hasPrevious:true)・店Bには無い → 会社全体としては「一部前月データあり」
   assert.equal(summary.previous.hasPrevious, true);
   assert.equal(summary.previous.totalSales, 400000); // 店Aの前月400000 + 店Bの前月0(データ無し)
+  // 費用データ有無: 店Aは人件費・材料/発注費を登録済みなので会社全体としてはtrue
+  // (店Bが未登録でも「1店舗でも登録があれば」で判定し、合計値を「－」にしない)
+  assert.equal(summary.hasLaborData, true);
+  assert.equal(summary.hasPurchaseData, true);
+  // 店Bが人件費・材料/発注費とも未登録のため、会社全体の営業利益も暫定扱い
+  assert.equal(summary.isProvisionalProfit, true);
+  // 前月は店A・店Bともに費用未登録 → 前月側の費用データも無し
+  assert.equal(summary.previous.hasLaborData, false);
+  assert.equal(summary.previous.hasPurchaseData, false);
+  assert.equal(summary.previous.isProvisionalProfit, true);
   // storeRowsがそのまま返り、子コンポーネント側で再計算しなくて済む
   assert.equal(summary.storeRows.length, 2);
+});
+
+test("getCompanyDashboardSummary: 全店舗が人件費・材料/発注費を登録済みならisProvisionalProfit:false", () => {
+  const state = buildDashboardTestState();
+  state.monthClosing[buildMonthKey("store-b", "2026-08")] = [
+    { id: "close-b-1", name: "人件費", amount: 30000, category: "人件費", categoryKey: "labor" },
+    { id: "close-b-2", name: "仕入・発注額", amount: 10000, category: "仕入・発注額", categoryKey: "materials" },
+  ];
+  const summary = getCompanyDashboardSummary(state, dashboardTestCompany, "2026-08");
+  assert.equal(summary.isProvisionalProfit, false);
+  assert.equal(summary.hasLaborData, true);
+  assert.equal(summary.hasPurchaseData, true);
 });
 
 test("getCompanyDashboardSummary: 全店舗が月締め済みならisFullyClosed:true", () => {

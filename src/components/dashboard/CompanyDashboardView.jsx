@@ -33,8 +33,11 @@ export default function CompanyDashboardView({ companySummary }) {
   );
 
   const maxSales = Math.max(1, ...salesRows.map((row) => row.sales));
-  const maxAbsProfit = Math.max(1, ...profitRows.map((row) => Math.abs(row.operatingProfit)));
-  const maxMargin = Math.max(1, ...marginRows.map((row) => Math.abs(row.operatingMargin)));
+  // 営業利益・営業利益率は人件費/材料費が未登録(isProvisionalProfit)の店舗を軸のスケール計算
+  // からは除外する(算出できない値でスケールが歪まないようにする) — バー自体は「－」として
+  // 全店舗分描画する。
+  const maxAbsProfit = Math.max(1, ...profitRows.filter((row) => !row.isProvisionalProfit).map((row) => Math.abs(row.operatingProfit)));
+  const maxMargin = Math.max(1, ...marginRows.filter((row) => !row.isProvisionalProfit).map((row) => Math.abs(row.operatingMargin)));
   const maxProductivity = Math.max(1, ...productivityRows.map((row) => row.productivity.current));
 
   return (
@@ -45,12 +48,37 @@ export default function CompanyDashboardView({ companySummary }) {
         </div>
         <div className="summary-grid">
           <SummaryCard label="総売上" value={formatMoneyOrDash(companySummary.totalSales)} diff={diffPercent(companySummary.totalSales, p.totalSales, p.hasPrevious)} emphasize />
-          <SummaryCard label="営業利益" value={formatMoneyOrDash(companySummary.totalOperatingProfit)} diff={diffPercent(companySummary.totalOperatingProfit, p.totalOperatingProfit, p.hasPrevious)} emphasize />
-          <SummaryCard label="営業利益率" value={formatPercentOrDash(companySummary.operatingMargin)} diff={diffPercent(companySummary.operatingMargin, p.operatingMargin, p.hasPrevious)} />
-          <SummaryCard label="総人件費" value={formatMoneyOrDash(companySummary.totalLaborCost)} diff={diffPercent(companySummary.totalLaborCost, p.totalLaborCost, p.hasPrevious)} />
-          <SummaryCard label="人件費率" value={formatPercentOrDash(companySummary.laborRate)} diff={diffPercent(companySummary.laborRate, p.laborRate, p.hasPrevious)} />
-          <SummaryCard label="発注費" value={formatMoneyOrDash(companySummary.totalPurchaseCost)} diff={diffPercent(companySummary.totalPurchaseCost, p.totalPurchaseCost, p.hasPrevious)} />
-          <SummaryCard label="発注費率" value={formatPercentOrDash(companySummary.purchaseCostRate)} diff={diffPercent(companySummary.purchaseCostRate, p.purchaseCostRate, p.hasPrevious)} />
+          <SummaryCard
+            label="営業利益"
+            value={formatMoneyOrDash(companySummary.totalOperatingProfit, !companySummary.isProvisionalProfit)}
+            diff={diffPercent(companySummary.totalOperatingProfit, p.totalOperatingProfit, p.hasPrevious && !companySummary.isProvisionalProfit && !p.isProvisionalProfit)}
+            emphasize
+          />
+          <SummaryCard
+            label="営業利益率"
+            value={formatPercentOrDash(companySummary.operatingMargin, !companySummary.isProvisionalProfit)}
+            diff={diffPercent(companySummary.operatingMargin, p.operatingMargin, p.hasPrevious && !companySummary.isProvisionalProfit && !p.isProvisionalProfit)}
+          />
+          <SummaryCard
+            label="総人件費"
+            value={formatMoneyOrDash(companySummary.totalLaborCost, companySummary.hasLaborData)}
+            diff={diffPercent(companySummary.totalLaborCost, p.totalLaborCost, p.hasPrevious && companySummary.hasLaborData && p.hasLaborData)}
+          />
+          <SummaryCard
+            label="人件費率"
+            value={formatPercentOrDash(companySummary.laborRate, companySummary.hasLaborData)}
+            diff={diffPercent(companySummary.laborRate, p.laborRate, p.hasPrevious && companySummary.hasLaborData && p.hasLaborData)}
+          />
+          <SummaryCard
+            label="発注費"
+            value={formatMoneyOrDash(companySummary.totalPurchaseCost, companySummary.hasPurchaseData)}
+            diff={diffPercent(companySummary.totalPurchaseCost, p.totalPurchaseCost, p.hasPrevious && companySummary.hasPurchaseData && p.hasPurchaseData)}
+          />
+          <SummaryCard
+            label="発注費率"
+            value={formatPercentOrDash(companySummary.purchaseCostRate, companySummary.hasPurchaseData)}
+            diff={diffPercent(companySummary.purchaseCostRate, p.purchaseCostRate, p.hasPrevious && companySummary.hasPurchaseData && p.hasPurchaseData)}
+          />
           <SummaryCard
             label="スタッフ1人あたり生産性"
             value={formatMoneyOrDash(companySummary.staffProductivity.current, companySummary.staffProductivity.hasStaffCount)}
@@ -75,6 +103,7 @@ export default function CompanyDashboardView({ companySummary }) {
             <StoreBarChartRow
               key={row.storeId} label={row.storeName} value={row.operatingProfit} maxValue={maxAbsProfit}
               formattedValue={formatMoneyOrDash(row.operatingProfit)} danger={row.operatingProfit < 0}
+              hasData={!row.isProvisionalProfit}
             />
           ))}
         </div>
@@ -84,6 +113,7 @@ export default function CompanyDashboardView({ companySummary }) {
             <StoreBarChartRow
               key={row.storeId} label={row.storeName} value={row.operatingMargin} maxValue={maxMargin}
               formattedValue={formatPercentOrDash(row.operatingMargin)} danger={row.operatingMargin < 0}
+              hasData={!row.isProvisionalProfit}
             />
           ))}
         </div>

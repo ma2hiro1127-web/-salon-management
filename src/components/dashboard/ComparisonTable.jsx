@@ -51,10 +51,10 @@ export default function ComparisonTable({ storeRows = [] }) {
                 <td>{formatPercentOrDash(row.laborRate, row.hasLaborData)}</td>
                 <td>{formatMoneyOrDash(row.purchaseCost, row.hasPurchaseData)}</td>
                 <td>{formatPercentOrDash(row.purchaseCostRate, row.hasPurchaseData)}</td>
-                <td>{formatMoneyOrDash(row.fixedCost)}</td>
-                <td>{formatPercentOrDash(row.fixedCostRate)}</td>
-                <td>{formatMoneyOrDash(row.operatingProfit)}</td>
-                <td>{formatPercentOrDash(row.operatingMargin)}</td>
+                <td>{formatMoneyOrDash(row.fixedCost, row.hasFixedCostData)}</td>
+                <td>{formatPercentOrDash(row.fixedCostRate, row.hasFixedCostData)}</td>
+                <td>{formatMoneyOrDash(row.operatingProfit, !row.isProvisionalProfit)}</td>
+                <td>{formatPercentOrDash(row.operatingMargin, !row.isProvisionalProfit)}</td>
                 <td>{row.productivity.hasStaffCount ? row.effectiveStaffCount : "－"}</td>
                 <td>{formatMoneyOrDash(row.productivity.current, row.productivity.hasStaffCount)}</td>
               </tr>
