@@ -734,6 +734,9 @@ function App() {
   const [monthlyTargetFieldDirty, setMonthlyTargetFieldDirty] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [aiChatInitialQuestion, setAiChatInitialQuestion] = useState("");
+  // モバイル(≤900px)のハンバーガーメニュー開閉。PC(>900px)ではCSS側で常時表示のため
+  // この状態は一切参照されない。
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const lastPersistedRef = useRef("");
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
@@ -4469,7 +4472,7 @@ function App() {
               <small>サロン経営管理</small>
             </div>
           </div>
-          <nav className="nav">
+          <nav id="primary-nav" className={`nav${mobileNavOpen ? " open" : ""}`}>
             {visibleNavItems.map((item, index) => {
               // カテゴリ見出し文字は出さず(ページ名「売上」と見出し「売上」が連続して見える
               // 問題を避けるため)、グループの切れ目だけ余白で区切る。
@@ -4479,7 +4482,7 @@ function App() {
                 <button
                   key={item.id}
                   className={`nav-button${activePage === item.id ? " active" : ""}${isNewGroup ? " nav-group-start" : ""}`}
-                  onClick={() => setActivePage(item.id)}
+                  onClick={() => { setActivePage(item.id); setMobileNavOpen(false); }}
                 >
                   {item.label}
                 </button>
@@ -4492,14 +4495,26 @@ function App() {
 
       <main className="main-content">
         <header className="topbar">
-          <div>
-            <p className="eyebrow">SALON MANAGEMENT</p>
-            <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : "設定"}</h1>
-            {currentUser ? (
-              <div className="user-role-badge" style={{ marginTop: 6 }}>
-                {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
-              </div>
-            ) : null}
+          <div className="topbar-heading">
+            <button
+              type="button"
+              className="secondary-button mobile-nav-toggle"
+              aria-expanded={mobileNavOpen}
+              aria-controls="primary-nav"
+              aria-label={mobileNavOpen ? "メニューを閉じる" : "メニューを開く"}
+              onClick={() => setMobileNavOpen((prev) => !prev)}
+            >
+              <span aria-hidden="true">{mobileNavOpen ? "✕" : "☰"}</span>
+            </button>
+            <div>
+              <p className="eyebrow">SALON MANAGEMENT</p>
+              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : "設定"}</h1>
+              {currentUser ? (
+                <div className="user-role-badge" style={{ marginTop: 6 }}>
+                  {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
+                </div>
+              ) : null}
+            </div>
           </div>
 
           <div className="filters">
@@ -4558,16 +4573,7 @@ function App() {
                   <MetricCard
                     label="月間達成率"
                     value={percent(summary.targetAchievement)}
-                    hint={`目標 ${money(target.targetSales || 0)} に対して ${money(summary.sales)}`}
-                    tone={getMetricTone(summary.targetAchievement, 85, 100)}
-                    emphasize
-                  />
-                ) : null}
-                {hasSalesTarget ? (
-                  <MetricCard
-                    label="目標売上まで"
-                    value={money(summary.remainingSalesTarget)}
-                    hint={`現在売上 ${money(summary.sales)}`}
+                    secondaryValue={`目標売上まで ${money(summary.remainingSalesTarget)}`}
                     tone={summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100)}
                     emphasize
                     onClick={goToMonthlyTargetSetting}
@@ -6014,7 +6020,7 @@ function App() {
   );
 }
 
-function MetricCard({ label, value, hint = "", tone = "", emphasize = false, onClick = null }) {
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", emphasize = false, onClick = null }) {
   return (
     <div
       className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${onClick ? "clickable" : ""}`}
@@ -6025,6 +6031,7 @@ function MetricCard({ label, value, hint = "", tone = "", emphasize = false, onC
     >
       <span>{label}</span>
       <strong>{value}</strong>
+      {secondaryValue ? <strong className="metric-card-secondary-value">{secondaryValue}</strong> : null}
       {hint ? <small>{hint}</small> : null}
     </div>
   );

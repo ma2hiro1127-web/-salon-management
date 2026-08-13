@@ -9,6 +9,7 @@
   --accent-soft: #eaf4ff;
   --success: #2ea361;
   --danger: #e35757;
+  --warning: #b45309;
   --shadow: 0 16px 42px rgba(15, 23, 42, 0.06);
   background: linear-gradient(135deg, #f7fbff 0%, #f4f8ff 45%, #f8fcff 100%);
   color: var(--text);
@@ -31,6 +32,7 @@
   --accent-soft: rgba(105, 176, 255, 0.16);
   --success: #5ad48c;
   --danger: #ff7b7b;
+  --warning: #fbbf24;
   --shadow: 0 12px 36px rgba(2, 8, 23, 0.32);
   background: linear-gradient(135deg, #0b1420, #101b2b);
 }
@@ -93,6 +95,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .main-content { flex: 1; padding: 24px 24px 40px; display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 100%; box-sizing: border-box; overflow-x: hidden; }
 .topbar { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 8px; }
+.topbar-heading { display: flex; align-items: center; gap: 10px; }
+.mobile-nav-toggle { display: none; }
 .filters { display: flex; gap: 12px; flex-wrap: wrap; }
 .filters label, .field { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 0.85rem; }
 .filters select, .filters input, .field input, .field select, .inline-form input, .inline-form select, .panel input, .panel select {
@@ -104,7 +108,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .panel-heading h2, .panel-heading h3 { margin: 0; }
 .panel-heading { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 16px; }
 .panel-heading.compact { margin-bottom: 10px; }
-.eyebrow { margin: 0 0 4px; color: var(--accent); font-size: 0.75rem; letter-spacing: 0.18em; font-weight: 700; }
+.eyebrow { margin: 0 0 4px; color: var(--muted); font-size: 0.72rem; letter-spacing: 0.14em; font-weight: 600; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .settings-stack { max-width: 720px; }
 .notice-box { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; }
@@ -132,15 +136,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .preview-card small, .insight-card small { color: var(--muted); }
 .business-progress-card { padding: 16px; border-radius: 18px; border: 1px solid var(--border); background: linear-gradient(135deg, var(--accent-soft), rgba(255,255,255,0.86)); margin-bottom: 14px; width: 100%; max-width: 100%; box-sizing: border-box; }
 .business-progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.business-progress-header.compact { margin-bottom: 6px; }
 .progress-track { width: 100%; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.24); overflow: hidden; margin-bottom: 12px; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: inherit; }
 .business-progress-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .business-progress-grid div { display: flex; flex-direction: column; gap: 4px; }
 .business-progress-grid span { color: var(--muted); font-size: 0.78rem; }
-.business-progress-grid strong { font-size: 0.95rem; }
+.business-progress-grid strong { font-size: 1.05rem; font-weight: 700; }
 .status-chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 999px; font-size: 0.82rem; font-weight: 700; }
 .status-chip.good { background: rgba(22, 163, 74, 0.16); color: var(--success); }
-.status-chip.warning { background: rgba(245, 158, 11, 0.16); color: #b45309; }
+.status-chip.warning { background: rgba(245, 158, 11, 0.16); color: var(--warning); }
 .status-chip.danger { background: rgba(220, 38, 38, 0.16); color: var(--danger); }
 .status-chip.neutral { background: rgba(100, 116, 139, 0.16); color: var(--muted); }
 .calendar-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
@@ -168,7 +173,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .input-with-suffix span { color: var(--muted); font-size: 0.92rem; }
 .primary-button { background: linear-gradient(135deg, #3b8cff, #2f7df6); color: #fff; box-shadow: 0 10px 24px rgba(47, 125, 246, 0.16); }
 .primary-button:hover { transform: translateY(-1px); box-shadow: 0 12px 28px rgba(47, 125, 246, 0.24); }
-.secondary-button { background: linear-gradient(180deg, #ffffff, #f7fbff); color: var(--text); border: 1px solid var(--border); box-shadow: inset 0 1px 0 rgba(255,255,255,0.85); }
+/* ハードコードした白グラデーションだとダークモードでcolor:var(--text)(ほぼ白)と衝突し
+   文字が読めなくなるため、テーマ変数(--surface-strong/--surface)ベースに変更する。
+   ライトモードでの見た目はほぼ変わらない(#ffffff/#f7fbffに近い値)。 */
+.secondary-button { background: linear-gradient(180deg, var(--surface-strong), var(--surface)); color: var(--text); border: 1px solid var(--border); box-shadow: inset 0 1px 0 rgba(255,255,255,0.4); }
 .secondary-button:hover { transform: translateY(-1px); }
 .text-button { background: transparent; color: var(--muted); padding: 6px 8px; }
 .text-button:hover { color: var(--accent); background: rgba(37, 99, 235, 0.06); }
@@ -252,8 +260,10 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .sales-composition-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 160px; }
 .sales-composition-legend li { display: flex; align-items: center; gap: 8px; }
 .sales-composition-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-.sales-composition-label { color: var(--muted); font-size: 0.85rem; flex: 1; }
-.sales-composition-amount { font-size: 0.9rem; }
+/* min-widthが無いと、金額・比率の分だけ幅を取られた残りで日本語ラベルが1文字ずつ縦に
+   折り返ることがあるため、ラベルが読める最小幅を確保する。 */
+.sales-composition-label { color: var(--muted); font-size: 0.85rem; flex: 1 1 auto; min-width: 72px; }
+.sales-composition-amount { font-size: 0.9rem; font-weight: 700; }
 .sales-composition-percent { color: var(--muted); font-size: 0.8rem; min-width: 46px; text-align: right; }
 .kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
 .kpi-grid.compact-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -261,10 +271,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .metric-card strong { word-break: break-word; }
 .metric-card span { color: var(--muted); font-size: 0.8rem; }
 .metric-card strong { font-size: 1.05rem; }
+.metric-card-secondary-value { font-size: 0.9rem; font-weight: 700; color: var(--text); margin-top: -2px; }
 .metric-card small { color: var(--muted); font-size: 0.78rem; }
 .metric-card.emphasize { background: linear-gradient(135deg, rgba(47, 125, 246, 0.14), rgba(255, 255, 255, 0.98)); border-color: rgba(47, 125, 246, 0.16); }
 .metric-card.good strong { color: var(--success); }
-.metric-card.warning strong { color: #b45309; }
+.metric-card.warning strong { color: var(--warning); }
 .metric-card.danger strong { color: var(--danger); }
 /* KPI「売上」エリアの数値は達成/未達で色を変えず、常に通常のテキスト色で統一する
    (営業進捗や他ページのMetricCard/status-chipには影響させない、このエリア限定の上書き)。 */
@@ -333,7 +344,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ranking-card-accordion { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; box-shadow: var(--shadow); cursor: pointer; }
 .ranking-card-accordion.expanded { border-color: var(--accent); }
 .ranking-card-summary { display: flex; align-items: center; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
-.ranking-card-main { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }
+/* min-width:0だけだと店舗名が極端に狭い列に押し込まれて1文字ずつ折り返ることがあるため、
+   店舗名が読める最小幅を確保し、収まらない場合は.ranking-card-summary側で行を折り返す。 */
+.ranking-card-main { display: flex; align-items: center; gap: 10px; min-width: 140px; flex: 1 1 140px; }
 .ranking-card-rank { width: 38px; height: 38px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 800; flex-shrink: 0; }
 .ranking-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ranking-card-title strong { font-size: 0.97rem; color: var(--text); white-space: normal; word-break: break-word; }
@@ -378,7 +391,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 @media (max-width: 900px) {
   .app-shell { flex-direction: column; }
   .sidebar { width: 100%; min-width: unset; border-right: 0; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; height: auto; padding: 12px 12px 10px; }
-  .nav { flex-direction: row; flex-wrap: wrap; }
+  /* ハンバーガーメニュー: 通常は畳んでおき、トグルボタンで開閉する(常時表示だと権限の
+     多いユーザーでナビだけで画面が埋まるため)。 */
+  .mobile-nav-toggle { display: inline-flex; align-items: center; justify-content: center; width: 42px; height: 42px; padding: 0; font-size: 1.1rem; flex-shrink: 0; }
+  .nav { display: none; flex-direction: row; flex-wrap: wrap; margin-top: 10px; }
+  .nav.open { display: flex; }
   .nav-button { flex: 1 1 calc(50% - 6px); text-align: center; justify-content: center; }
   /* 2列の折り返しグリッドでは行の途中に余白を挟むと崩れるため、モバイルではグループ間
      余白を付けない(見出しを削除したことで元々のスッキリした2列表示に戻る)。 */
@@ -436,7 +453,14 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .management-empty { padding: 14px; border: 1px dashed var(--border); border-radius: 16px; color: var(--muted); background: rgba(148, 163, 184, 0.08); font-weight: 600; }
 
 @media (max-width: 640px) {
-  .card-grid, .store-card-grid, .store-form-grid, .store-metrics, .kpi-grid, .kpi-grid.compact-grid { grid-template-columns: 1fr; }
+  .card-grid, .store-card-grid, .store-form-grid, .store-metrics, .kpi-grid.compact-grid { grid-template-columns: 1fr; }
+  /* 補助的なKPI(客単価・スタッフ生産性等)はiPhone幅でも2列を維持し、重要カード
+     (.kpi-hero-grid)だけを1列に絞る — 情報が縦に伸びすぎないようにする。 */
+  .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  /* 円グラフの隣に凡例を並べると金額・比率が読みにくいほど狭くなるため、iPhone幅では
+     円グラフを上・凡例を下に積んで凡例に横幅いっぱいを使わせる(グラフ自体は縮小しない)。 */
+  .sales-composition-body { flex-direction: column; align-items: stretch; }
+  .sales-composition-legend { min-width: 0; width: 100%; }
   .store-url-row { grid-template-columns: 1fr; }
   .main-content { padding: 10px; gap: 10px; }
   .panel { padding: 12px; border-radius: 16px; }
@@ -446,7 +470,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .dashboard-layout { gap: 10px; }
   .business-progress-card { padding: 12px; }
   .business-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .business-progress-grid strong { font-size: 0.9rem; }
+  .business-progress-grid strong { font-size: 0.95rem; }
   .metric-card { padding: 10px; }
   .metric-card span { font-size: 0.74rem; }
   .metric-card strong { font-size: 0.95rem; }
@@ -475,6 +499,12 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .ai-chat-header { padding: 12px 14px; }
   .ai-chat-messages { padding: 14px; }
   .ai-chat-input-row { padding: 10px 14px; }
+}
+
+/* 小型スマートフォン(iPhone SE等)だけ.kpi-gridも1列に落とす。それ以外のiPhone幅は
+   上の640pxブロックの2列のままにする。 */
+@media (max-width: 400px) {
+  .kpi-grid { grid-template-columns: 1fr; }
 }
 
 /* ユーザー管理: 店舗 > 権限 > スタッフ の階層表示 */
@@ -521,7 +551,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .dashboard-bar-label { flex: 0 0 108px; font-size: 0.82rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dashboard-bar-row .progress-track { flex: 1; margin-bottom: 0; }
 .dashboard-bar-row .progress-fill.danger { background: var(--danger); }
-.dashboard-bar-value { flex: 0 0 auto; font-weight: 700; font-size: 0.85rem; min-width: 96px; text-align: right; white-space: nowrap; }
+.dashboard-bar-value { flex: 0 0 auto; font-weight: 700; font-size: 0.92rem; min-width: 96px; text-align: right; white-space: nowrap; }
 .dashboard-bar-value.danger { color: var(--danger); }
 
 .dashboard-cost-table td:nth-child(2), .dashboard-cost-table th:nth-child(2),
@@ -536,7 +566,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 @media (max-width: 640px) {
   .dashboard-toolbar { flex-direction: column; align-items: stretch; }
   .dashboard-bar-label { flex-basis: 80px; font-size: 0.76rem; }
-  .dashboard-bar-value { min-width: 76px; font-size: 0.78rem; }
+  .dashboard-bar-value { min-width: 76px; font-size: 0.82rem; }
 }
 
 /* レポート出力(印刷/PDF)。ブラウザ標準の印刷ダイアログ(window.print())を使うための
