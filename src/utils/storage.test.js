@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -1049,12 +1049,38 @@ test("buildCompanySettingsFromRow maps a company_settings row to settings/taxSet
 
 test("buildStoreProfilesByStoreId keys profile fields by store_id, joins service_types back into a comma-separated string", () => {
   const rows = [
-    { store_id: "store-honten", address: "東京都渋谷区1-2-3", phone: "03-1234-5678", representative_name: "山田太郎", service_types: ["カット", "カラー"] },
+    { store_id: "store-honten", address: "東京都渋谷区1-2-3", phone: "03-1234-5678", representative_name: "山田太郎", service_types: ["カット", "カラー"], staff_count: 6, productivity_staff_count: 5 },
   ];
   const result = buildStoreProfilesByStoreId(rows);
   assert.equal(result["store-honten"].address, "東京都渋谷区1-2-3");
   assert.equal(result["store-honten"].representativeName, "山田太郎");
   assert.equal(result["store-honten"].serviceTypes, "カット, カラー");
+  assert.equal(result["store-honten"].staffCount, 6);
+  assert.equal(result["store-honten"].productivityStaffCount, 5);
+});
+
+test("buildStoreProfilesByStoreId defaults staffCount/productivityStaffCount to 0 when the columns are absent (existing stores before this feature)", () => {
+  const result = buildStoreProfilesByStoreId([{ store_id: "store-old" }]);
+  assert.equal(result["store-old"].staffCount, 0);
+  assert.equal(result["store-old"].productivityStaffCount, 0);
+});
+
+test("getStaffProductivitySummary divides current sales and month-end forecast by the productivity staff count", () => {
+  const result = getStaffProductivitySummary({ sales: 3100000, forecast: 4700000, productivityStaffCount: 5 });
+  assert.equal(result.hasStaffCount, true);
+  assert.equal(result.current, 620000);
+  assert.equal(result.monthEndForecast, 940000);
+});
+
+test("getStaffProductivitySummary supports fractional (FTE) staff counts", () => {
+  const result = getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, productivityStaffCount: 2.5 });
+  assert.equal(result.current, 400000);
+  assert.equal(result.monthEndForecast, 600000);
+});
+
+test("getStaffProductivitySummary reports hasStaffCount:false and never divides by zero when unset", () => {
+  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, productivityStaffCount: 0 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
+  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
 });
 
 test("pruneStaleKeys drops any expected key Supabase no longer has a row for, leaves everything else untouched", () => {

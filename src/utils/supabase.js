@@ -1620,6 +1620,8 @@ export const upsertStoreProfile = async ({ companyId, storeId, userId, profile }
     service_types: serviceTypesArray,
     urls: Array.isArray(profile?.urls) ? profile.urls : [],
     status: String(profile?.status || "active"),
+    staff_count: Number(profile?.staffCount) || 0,
+    productivity_staff_count: Number(profile?.productivityStaffCount) || 0,
     updated_by: userId,
     updated_at: new Date().toISOString(),
   };

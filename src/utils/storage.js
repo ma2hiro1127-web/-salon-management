@@ -488,6 +488,8 @@ export const buildStoreProfilesByStoreId = (rows = []) => {
       serviceTypes: Array.isArray(row.service_types) ? row.service_types.join(", ") : "",
       urls: Array.isArray(row.urls) ? row.urls : [],
       status: row.status || "active",
+      staffCount: Number(row.staff_count) || 0,
+      productivityStaffCount: Number(row.productivity_staff_count) || 0,
     };
   });
   return byStoreId;
@@ -1388,6 +1390,22 @@ export const getCustomerTargetSummary = (input = {}) => {
     forecastCustomers,
     statusLabel,
     targetAverageCustomersPerDay,
+  };
+};
+
+// 「1人あたり月間売上」= 当月総売上(または月末着地予想) ÷ 生産性計算人数(FTE)。
+// 生産性計算人数が未設定(0)の場合は計算せず、0除算も発生させない(hasStaffCount:false を
+// 返すだけ)。損益表・費用入力を使っていない店舗でも、売上とスタッフ人数だけで完結する
+// 独立した指標として設計している。
+export const getStaffProductivitySummary = ({ sales, forecast, productivityStaffCount } = {}) => {
+  const staffCount = parseNumber(productivityStaffCount);
+  if (!staffCount || staffCount <= 0) {
+    return { hasStaffCount: false, current: 0, monthEndForecast: 0 };
+  }
+  return {
+    hasStaffCount: true,
+    current: parseNumber(sales) / staffCount,
+    monthEndForecast: parseNumber(forecast) / staffCount,
   };
 };
 

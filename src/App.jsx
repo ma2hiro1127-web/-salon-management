@@ -35,6 +35,7 @@ import {
   getBusinessDaySummary,
   getClosingItemsForStoreMonth,
   getCustomerTargetSummary,
+  getStaffProductivitySummary,
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
   getCostMonthlyAmount,
@@ -332,6 +333,8 @@ const createStoreFormDefaults = () => ({
   urls: [],
   isActive: true,
   status: "active",
+  staffCount: "",
+  productivityStaffCount: "",
 });
 
 // A single, plain-language status per user instead of the old raw mix of "active"/"未ログイン"/
@@ -996,6 +999,13 @@ function App() {
     [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
+  // 損益表・費用入力を使っていない店舗でも使える独立指標。店舗単位の設定値(生産性計算人数)
+  // を使うだけで、月間目標や費用データの有無とは無関係に成立する。
+  const staffProductivitySummary = useMemo(() => getStaffProductivitySummary({
+    sales: summary.sales,
+    forecast: summary.forecast,
+    productivityStaffCount: selectedStoreEntity?.productivityStaffCount,
+  }), [summary.sales, summary.forecast, selectedStoreEntity]);
   const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const monthClosingStatus = useMemo(() => {
     const key = buildMonthKey(selectedStoreId, selectedMonth);
@@ -2086,6 +2096,11 @@ function App() {
         urls: existingStore?.urls || [],
         status: existingStore?.status || "active",
         isActive: existingStore?.isActive !== false,
+        // 店舗名と同じく、このフォームで実際に編集できる項目なので existingStore ではなく
+        // storeForm から取る(他のプロフィール項目のように「画面に無いので既存値を維持」
+        // ではない)。
+        staffCount: parseNumber(storeForm.staffCount) || 0,
+        productivityStaffCount: parseNumber(storeForm.productivityStaffCount) || 0,
         settings: { ...createStoreSettingsDefaults(), ...(existingStore?.settings || {}), ...(storeSettingsForm || {}) },
       };
       if (isSupabaseConfigured) {
@@ -2299,6 +2314,8 @@ function App() {
       urls: Array.isArray(store.urls) ? store.urls : normalizeStoreUrls(store.urls || []),
       isActive: store.isActive !== false,
       status: store.status || "active",
+      staffCount: store.staffCount ? String(store.staffCount) : "",
+      productivityStaffCount: store.productivityStaffCount ? String(store.productivityStaffCount) : "",
     });
     setStoreSettingsForm({ ...createStoreSettingsDefaults(), ...(store.settings || {}) });
     focusStoreForm();
@@ -4576,6 +4593,24 @@ function App() {
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
               </div>
               </div>
+              {!isAllStoresView && selectedStoreEntity ? (
+                <div className="today-result-card staff-productivity-card">
+                  <div className="panel-heading compact">
+                    <div>
+                      <p className="eyebrow">STAFF</p>
+                      <h3>1人あたり月間売上</h3>
+                    </div>
+                  </div>
+                  {staffProductivitySummary.hasStaffCount ? (
+                    <div className="kpi-grid compact-grid">
+                      <MetricCard label="現在" value={`${money(staffProductivitySummary.current)} / 人`} />
+                      <MetricCard label="月末予測" value={`${money(staffProductivitySummary.monthEndForecast)} / 人`} />
+                    </div>
+                  ) : (
+                    <div className="empty-card">スタッフ数未設定</div>
+                  )}
+                </div>
+              ) : null}
               <AiAssistantCard onOpen={() => openAiChat()} onQuickQuestion={(question) => openAiChat(question)} />
               {todayEntry ? (
                 <div className="today-result-card">
@@ -5394,6 +5429,15 @@ function App() {
                 <label className="field">
                   <span>店舗名</span>
                   <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
+                </label>
+                <label className="field">
+                  <span>在籍スタッフ数</span>
+                  <input type="number" min="0" step="1" value={storeForm.staffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, staffCount: event.target.value }))} placeholder="例: 6" />
+                </label>
+                <label className="field">
+                  <span>生産性計算人数（任意）</span>
+                  <input type="number" min="0" step="0.1" value={storeForm.productivityStaffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: event.target.value }))} placeholder="例: 5.0" />
+                  <small className="field-hint">「1人あたり月間売上」の計算に使う人数(FTE)。パート・アルバイトは稼働時間に応じた人数で入力(例: 週3勤務なら0.6人)。未入力のままでも保存でき、その場合「1人あたり月間売上」カードには「スタッフ数未設定」と表示されます。</small>
                 </label>
               </div>
               {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}
