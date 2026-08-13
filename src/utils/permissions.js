@@ -79,7 +79,9 @@ export const getInvitableRoles = (role) => {
 // でスコープする — calculateAllStoresMonthSummary/getAllStoresBusinessDaySummary等を参照)。
 export const canViewAllStores = (role) => normalizeRole(role) === "company_admin" || normalizeRole(role) === "system_admin";
 
-// サイドメニューの見出しグループ分け(表示専用、権限ロジックには使わない)。
+// サイドメニューの余白区切り用のグループ分け(表示専用、権限ロジックには使わない)。
+// 「売上」ページ名と紛らわしくなるため見出し文字は出さず、グループの切れ目に余白を
+// 空けるためだけに使う(App.jsxのnav-group-start判定)。
 const NAV_ITEM_CATEGORY = {
   dashboard: "sales",
   daily: "sales",
@@ -90,7 +92,6 @@ const NAV_ITEM_CATEGORY = {
   companies: "management",
   settings: "other",
 };
-export const NAV_CATEGORY_LABELS = { sales: "売上", management: "管理", other: "その他" };
 
 export const getVisibleNavItems = (role) => {
   const normalizedRole = normalizeRole(role);

@@ -73,7 +73,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, NAV_CATEGORY_LABELS, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -4471,15 +4471,18 @@ function App() {
           </div>
           <nav className="nav">
             {visibleNavItems.map((item, index) => {
+              // カテゴリ見出し文字は出さず(ページ名「売上」と見出し「売上」が連続して見える
+              // 問題を避けるため)、グループの切れ目だけ余白で区切る。
               const previousCategory = index > 0 ? visibleNavItems[index - 1].category : null;
-              const showCategoryHeading = item.category !== previousCategory;
+              const isNewGroup = index > 0 && item.category !== previousCategory;
               return (
-                <div key={item.id} className="nav-item-group">
-                  {showCategoryHeading ? <p className="nav-category-heading">{NAV_CATEGORY_LABELS[item.category] || ""}</p> : null}
-                  <button className={activePage === item.id ? "nav-button active" : "nav-button"} onClick={() => setActivePage(item.id)}>
-                    {item.label}
-                  </button>
-                </div>
+                <button
+                  key={item.id}
+                  className={`nav-button${activePage === item.id ? " active" : ""}${isNewGroup ? " nav-group-start" : ""}`}
+                  onClick={() => setActivePage(item.id)}
+                >
+                  {item.label}
+                </button>
               );
             })}
           </nav>

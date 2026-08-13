@@ -83,11 +83,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .brand strong { display: block; font-size: 0.98rem; }
 .brand small { color: var(--muted); font-size: 0.8rem; }
 .nav { display: flex; flex-direction: column; gap: 8px; }
-/* display:contentsで折りたたみ、見出し+ボタンを.navの直接の子と同じ扱いにする(モバイルの
-   flex-wrapレイアウトにも影響を与えないため)。JSXではグルーピング用のkeyだけに使う。 */
-.nav-item-group { display: contents; }
-.nav-category-heading { margin: 14px 0 4px; padding: 0 10px; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); text-transform: uppercase; }
-.nav-item-group:first-child .nav-category-heading { margin-top: 2px; }
+/* カテゴリの切れ目は見出し文字ではなく余白だけで区切る(ページ名との重複を避けるため)。 */
+.nav-button.nav-group-start { margin-top: 14px; }
 .nav-button, .subnav-button, .primary-button, .secondary-button, .text-button { border: 0; border-radius: 12px; padding: 8px 10px; font-weight: 700; font-size: 0.86rem; transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease; }
 .nav-button, .subnav-button { background: transparent; color: var(--text); text-align: left; }
 .nav-button:hover, .subnav-button:hover { background: rgba(37, 99, 235, 0.06); transform: translateX(2px); }
@@ -383,8 +380,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .sidebar { width: 100%; min-width: unset; border-right: 0; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; height: auto; padding: 12px 12px 10px; }
   .nav { flex-direction: row; flex-wrap: wrap; }
   .nav-button { flex: 1 1 calc(50% - 6px); text-align: center; justify-content: center; }
-  .nav-category-heading { flex: 1 1 100%; margin: 8px 0 0; padding: 0 4px; }
-  .nav-item-group:first-child .nav-category-heading { margin-top: 0; }
+  /* 2列の折り返しグリッドでは行の途中に余白を挟むと崩れるため、モバイルではグループ間
+     余白を付けない(見出しを削除したことで元々のスッキリした2列表示に戻る)。 */
+  .nav-button.nav-group-start { margin-top: 0; }
   .main-content { padding: 12px; }
   .input-grid, .summary-grid, .kpi-grid, .kpi-grid.compact-grid, .ranking-metrics, .daily-form-grid, .daily-hero, .kpi-hero-grid { grid-template-columns: 1fr; }
   .topbar { flex-direction: column; align-items: stretch; }
