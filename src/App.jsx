@@ -216,44 +216,6 @@ const getDailySalesQueryRange = (targetMonth) => {
   return { startDate: formatLocalDate(firstDate), endDate: formatLocalDate(lastDate) };
 };
 
-const getRankTone = (achievement) => {
-  if (achievement >= 100) return "good";
-  if (achievement >= 95) return "warning";
-  return "danger";
-};
-
-const formatChangeRate = (value) => {
-  if (!Number.isFinite(value)) return "—";
-  const sign = value > 0 ? "+" : value < 0 ? "−" : "";
-  return `${sign}${Math.abs(value).toFixed(1)}%`;
-};
-
-const getRankingMetric = (row, rankingSort, mode = "current") => {
-  if (mode === "previous") {
-    switch (rankingSort) {
-      case "achievement":
-        return row.previousAchievement;
-      case "change":
-        return row.previousChangeRate;
-      case "profit":
-        return row.previousOperatingProfit;
-      default:
-        return row.previousSales;
-    }
-  }
-
-  switch (rankingSort) {
-    case "achievement":
-      return row.achievement;
-    case "change":
-      return row.currentChangeRate;
-    case "profit":
-      return row.operatingProfit;
-    default:
-      return row.sales;
-  }
-};
-
 const createCompanySettingsDefaults = () => ({
   currency: "JPY",
   fiscalYearStartMonth: "1",
@@ -617,8 +579,6 @@ function App() {
     return params.get("invite") || "";
   });
   const [activeMonthlyTab, setActiveMonthlyTab] = useState("closing");
-  const [rankingSort, setRankingSort] = useState("sales");
-  const [expandedRankingStore, setExpandedRankingStore] = useState("");
   const [companyForm, setCompanyForm] = useState({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
   const [storeForm, setStoreForm] = useState(createStoreFormDefaults());
   // 検索・並び替えUIは撤去したが、filteredStoresの絞り込み/並び替えロジック自体は変更せず
@@ -1134,9 +1094,10 @@ function App() {
       companySnapshots: { ...(state.companySnapshots || {}), [companyId]: snapshot },
     };
   };
+  // 店舗売上ランキング: 順位・店舗名・現在売上・先月売上だけのシンプルな一覧。並び順は常に
+  // 当月の現在売上が高い順(先月売上はランキング順位の判定には使わない、比較用の表示のみ)。
   const rankingRows = useMemo(() => {
     const previousMonth = getMonthOffset(selectedMonth, -1);
-    const previousPreviousMonth = getMonthOffset(selectedMonth, -2);
 
     // ランキングの売上はダッシュボードの総売上(summary.sales、入力済み全件)と同じ基準にする —
     // 以前はsummary.closedSales(日締め済みの日だけ)を使っており、当日分を入力しただけでは
@@ -1144,62 +1105,23 @@ function App() {
     // 原因になっていた。日締めを待たず、入力した時点でランキングにも反映される。
     const rows = currentCompanyStores.map((store) => {
       const storeSummary = calculateMonthSummary(appState, store.id, selectedMonth);
+      // previousSummary.entries.length(前月の日次入力が1件でもあるか)で「先月データが
+      // 存在しない」を判定する — 前月の売上が本当に0円だった場合と区別するため。
       const previousSummary = calculateMonthSummary(appState, store.id, previousMonth);
-      const previousPreviousSummary = calculateMonthSummary(appState, store.id, previousPreviousMonth);
-      const currentSales = storeSummary.sales;
-      const previousSales = previousSummary.sales;
-      const previousPreviousSales = previousPreviousSummary.sales;
-      const achievement = storeSummary.targetAchievement;
-      const previousAchievement = previousSummary.targetAchievement;
-      const currentChangeRate = previousSales > 0 ? ((currentSales - previousSales) / previousSales) * 100 : 0;
-      const previousChangeRate = previousPreviousSales > 0 ? ((previousSales - previousPreviousSales) / previousPreviousSales) * 100 : 0;
-      // 目標未登録の店舗は達成率が常に0%になる(calculateMonthSummary側の仕様)ため、それを
-      // 「未達成」として色付け・ラベル表示しない(任意項目のため、未入力=悪い実績ではない)。
-      const hasTargetSales = Boolean(storeSummary.target.targetSales);
 
       return {
         storeId: store.id,
         storeName: store.name,
-        sales: currentSales,
-        targetSales: storeSummary.target.targetSales,
-        hasTargetSales,
-        achievement,
-        operatingProfit: storeSummary.operatingProfit,
-        previousSales,
-        previousAchievement,
-        previousOperatingProfit: previousSummary.operatingProfit,
-        previousChangeRate,
-        currentChangeRate,
-        forecast: storeSummary.forecast,
-        tone: hasTargetSales ? getRankTone(achievement) : "neutral",
-        achievementLabel: !hasTargetSales ? "目標未設定" : achievement >= 100 ? "順調" : achievement >= 95 ? "要確認" : "要改善",
+        sales: storeSummary.sales,
+        previousSales: previousSummary.sales,
+        hasPreviousSales: previousSummary.entries.length > 0,
       };
     });
 
-    const compareRows = (left, right) => {
-      const leftValue = getRankingMetric(left, rankingSort, "current");
-      const rightValue = getRankingMetric(right, rankingSort, "current");
-      return rightValue - leftValue;
-    };
-
-    const previousCompareRows = (left, right) => {
-      const leftValue = getRankingMetric(left, rankingSort, "previous");
-      const rightValue = getRankingMetric(right, rankingSort, "previous");
-      return rightValue - leftValue;
-    };
-
-    const rankedRows = [...rows].sort(compareRows).map((row, index) => ({ ...row, currentRank: index + 1 }));
-    const previousRankedRows = [...rows].sort(previousCompareRows).map((row, index) => ({ ...row, previousRank: index + 1 }));
-    // Keyed by storeId, not storeName — two stores sharing a display name would otherwise get
-    // each other's previous-rank/trend arrow.
-    const previousRankMap = new Map(previousRankedRows.map((row) => [row.storeId, row.previousRank]));
-
-    return rankedRows.map((row) => ({
-      ...row,
-      previousRank: previousRankMap.get(row.storeId) || 0,
-      trend: row.previousRank ? (row.currentRank < row.previousRank ? "↑" : row.currentRank > row.previousRank ? "↓" : "→") : "→",
-    }));
-  }, [appState, rankingSort, selectedMonth, currentCompanyStores]);
+    return [...rows]
+      .sort((left, right) => right.sales - left.sales)
+      .map((row, index) => ({ ...row, currentRank: index + 1 }));
+  }, [appState, selectedMonth, currentCompanyStores]);
   const goToMonthlyTargetSetting = () => {
     // 月間目標設定パネルは selectedMonth (ヘッダーの対象月) とは独立した専用の月選択
     // (targetSelectedMonth) を持つため、ここで同期させないとダッシュボードで見ていた
@@ -1240,7 +1162,7 @@ function App() {
     // シンプルな表示にする(効率系: 数字中心、補足最小限)。
     const items = [{ label: "平均客単価", value: money(summary.averageSpend), hint: "" }];
     if (hasSalesTarget) {
-      items.push({ label: "必要な1日売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
+      items.push({ label: "1日平均必要売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
     }
     // 「目標客数まで」はkpi-hero-gridの「客数達成率」カード(secondaryValue)と同じ数字
     // (remainingCustomersTarget)を表示するだけの重複カードだったため廃止。
@@ -4572,7 +4494,6 @@ function App() {
                   <MetricCard
                     label="月間達成率"
                     value={percent(summary.targetAchievement)}
-                    progress={summary.targetAchievement}
                     secondaryValue={`目標売上まで ${money(summary.remainingSalesTarget)}`}
                     tone={summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100)}
                     emphasize
@@ -4592,7 +4513,6 @@ function App() {
                   <MetricCard
                     label="客数達成率"
                     value={percent(customerTargetSummary.achievementRate)}
-                    progress={customerTargetSummary.achievementRate}
                     secondaryValue={`目標まで ${customerTargetSummary.remainingCustomers}名`}
                     hint={`必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日`}
                     tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
@@ -4602,7 +4522,6 @@ function App() {
                   <MetricCard
                     label="口コミ数達成率"
                     value={percent(summary.reviewCountAchievement)}
-                    progress={summary.reviewCountAchievement}
                     secondaryValue={`目標まで ${number(summary.remainingReviewCountTarget)}件`}
                     tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
                   />
@@ -4652,66 +4571,21 @@ function App() {
                   <p className="eyebrow">RANKING</p>
                   <h2>店舗売上ランキング</h2>
                 </div>
-                <select value={rankingSort} onChange={(event) => setRankingSort(event.target.value)}>
-                  <option value="sales">現在売上順</option>
-                  <option value="achievement">目標達成率順</option>
-                  <option value="change">前月比順</option>
-                  <option value="profit">営業利益順</option>
-                </select>
               </div>
               {stores.length === 0 ? (
                 <div className="empty-card">店舗を追加してください。</div>
               ) : (
-                <div className="ranking-accordion">
-                  {rankingRows.map((row) => {
-                    const isExpanded = expandedRankingStore === row.storeId;
-                    return (
-                      <button key={row.storeId} type="button" className={`ranking-card-accordion ${isExpanded ? "expanded" : ""}`} onClick={() => setExpandedRankingStore((current) => (current === row.storeId ? "" : row.storeId))}>
-                        <div className="ranking-card-summary">
-                          <div className="ranking-card-main">
-                            <div className="ranking-card-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
-                            <div className="ranking-card-title">
-                              <strong>{row.storeName}</strong>
-                              <span>{row.trend} 前回 {row.previousRank || "-"}位</span>
-                            </div>
-                          </div>
-                          <div className="ranking-card-kpis">
-                            <span className={`status-chip ${!row.hasTargetSales ? "neutral" : row.achievement >= 100 ? "good" : row.achievement >= 85 ? "warning" : "danger"}`}>{row.hasTargetSales ? percent(row.achievement) : "－"}</span>
-                            <span className={`status-chip ${row.currentChangeRate >= 0 ? "good" : "danger"}`}>{formatChangeRate(row.currentChangeRate)}</span>
-                          </div>
-                          <div className="ranking-card-value-block">
-                            <span>現在売上</span>
-                            <strong>{money(row.sales)}</strong>
-                          </div>
-                          <div className="ranking-card-toggle">{isExpanded ? "▲" : "▼"}</div>
-                        </div>
-                        {isExpanded ? (
-                          <div className="ranking-card-details">
-                            <div className="ranking-detail-item">
-                              <span>目標売上</span>
-                              <strong>{row.hasTargetSales ? money(row.targetSales) : "－"}</strong>
-                            </div>
-                            <div className="ranking-detail-item">
-                              <span>前月売上</span>
-                              <strong>{money(row.previousSales)}</strong>
-                            </div>
-                            <div className={`ranking-detail-item ${row.currentChangeRate >= 0 ? "positive" : "negative"}`}>
-                              <span>前月比</span>
-                              <strong>{formatChangeRate(row.currentChangeRate)}</strong>
-                            </div>
-                            <div className="ranking-detail-item">
-                              <span>月末着地予測</span>
-                              <strong>{money(row.forecast)}</strong>
-                            </div>
-                            <div className="ranking-detail-item">
-                              <span>目標達成率</span>
-                              <strong>{row.hasTargetSales ? percent(row.achievement) : "－"}</strong>
-                            </div>
-                          </div>
-                        ) : null}
-                      </button>
-                    );
-                  })}
+                <div className="ranking-list">
+                  {rankingRows.map((row) => (
+                    <div key={row.storeId} className="ranking-row">
+                      <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
+                      <div className="ranking-row-main">
+                        <span className="ranking-row-name">{row.storeName}</span>
+                        <strong className="ranking-row-sales">{money(row.sales)}</strong>
+                      </div>
+                      <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "－"}</small>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>
@@ -6019,10 +5893,9 @@ function App() {
   );
 }
 
-// progress(0-100、任意)を渡すと数値のすぐ下に細い進捗バーを表示する。目標達成率系の
-// カードで「上に内容が寄って下が空白になる」問題を、意味のある情報(進捗バー)で埋めるための
-// 共通の仕組み — 今後増えるカードも同じpropを使うだけで同じ見た目に揃う。
-function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", progress = null, emphasize = false, hero = false, onClick = null }) {
+// 上部の「営業進捗」に既に大きな進捗バーがあるため、KPIカード内には進捗バーを持たない
+// (項目名→メイン数値→補足情報のシンプルな構成に統一)。
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", emphasize = false, hero = false, onClick = null }) {
   return (
     <div
       className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${onClick ? "clickable" : ""}`}
@@ -6033,11 +5906,6 @@ function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", p
     >
       <span>{label}</span>
       <strong>{value}</strong>
-      {typeof progress === "number" ? (
-        <div className="metric-card-progress">
-          <div className={`metric-card-progress-fill ${tone}`} style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
-        </div>
-      ) : null}
       {secondaryValue ? <strong className="metric-card-secondary-value">{secondaryValue}</strong> : null}
       {hint ? <small>{hint}</small> : null}
     </div>

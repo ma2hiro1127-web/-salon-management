@@ -267,18 +267,13 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .sales-composition-percent { color: var(--muted); font-size: 0.8rem; min-width: 46px; text-align: right; }
 .kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
 .kpi-grid.compact-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.metric-card { padding: 14px; display: flex; flex-direction: column; gap: 6px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; }
+/* 2列グリッドで行の高さが揃うと、内容の少ないカードだけ下に空白が残るため、内容を
+   カード内で上下中央寄せする(情報を追加せずレイアウト位置だけで統一感を出す)。 */
+.metric-card { padding: 14px; display: flex; flex-direction: column; justify-content: center; gap: 6px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; }
 .metric-card strong { word-break: break-word; }
 .metric-card span { color: var(--muted); font-size: 0.8rem; }
 .metric-card strong { font-size: 1.05rem; }
 .metric-card-secondary-value { font-size: 0.9rem; font-weight: 700; color: var(--text); margin-top: -2px; }
-/* 達成率カード用の細い進捗バー。値のすぐ下に置き、カードが縦に伸びても中身が上に
-   寄って下だけ空白になるのを防ぐ(意味のある情報でカード内を埋める)。 */
-.metric-card-progress { width: 100%; height: 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.22); overflow: hidden; margin: 2px 0; }
-.metric-card-progress-fill { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--accent), var(--success)); }
-.metric-card-progress-fill.good { background: var(--success); }
-.metric-card-progress-fill.warning { background: var(--warning); }
-.metric-card-progress-fill.danger { background: var(--danger); }
 .metric-card small { color: var(--muted); font-size: 0.78rem; }
 .metric-card.emphasize { background: linear-gradient(135deg, rgba(47, 125, 246, 0.14), rgba(255, 255, 255, 0.98)); border-color: rgba(47, 125, 246, 0.16); }
 /* KPIエリアの中で最も中心的な指標(月間達成率)だけに付ける控えめな強調 — 数値サイズを
@@ -350,19 +345,19 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-chat-input-row textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; font: inherit; max-height: 120px; }
 .ai-chat-input-row button { flex-shrink: 0; }
 .today-result-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--accent-soft); }
-.ranking-accordion { display: flex; flex-direction: column; gap: 10px; }
-.ranking-card-accordion { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; text-align: left; box-shadow: var(--shadow); cursor: pointer; }
-.ranking-card-accordion.expanded { border-color: var(--accent); }
-.ranking-card-summary { display: flex; align-items: center; gap: 12px; justify-content: space-between; flex-wrap: wrap; }
-/* min-width:0だけだと店舗名が極端に狭い列に押し込まれて1文字ずつ折り返ることがあるため、
-   店舗名が読める最小幅を確保し、収まらない場合は.ranking-card-summary側で行を折り返す。 */
-.ranking-card-main { display: flex; align-items: center; gap: 10px; min-width: 140px; flex: 1 1 140px; }
-.ranking-card-rank { width: 38px; height: 38px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 800; flex-shrink: 0; }
-.ranking-card-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ranking-card-title strong { font-size: 0.97rem; color: var(--text); white-space: normal; word-break: break-word; }
-.ranking-card-title span { color: var(--muted); font-size: 0.8rem; }
-.ranking-card-kpis { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.ranking-card-value-block { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; min-width: 0; }
+/* 店舗売上ランキング: 順位・店舗名・現在売上・先月売上だけのシンプルな横一列表示
+   (達成率%・前回順位・トレンド矢印・展開式の詳細は廃止)。 */
+.ranking-list { display: flex; flex-direction: column; gap: 8px; }
+.ranking-row { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; box-shadow: var(--shadow); box-sizing: border-box; }
+.ranking-row-rank { width: 32px; height: 32px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 800; font-size: 0.85rem; flex-shrink: 0; }
+.ranking-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
+/* min-widthが無いと店舗名が極端に狭い列に押し込まれて1文字ずつ折り返ることがあるため、
+   店舗名が読める最小幅を確保する。 */
+.ranking-row-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 64px; }
+.ranking-row-sales { font-size: 1.05rem; font-weight: 800; color: var(--text); white-space: nowrap; margin-left: auto; min-width: 100px; text-align: right; }
+/* 先月列を固定幅にすることで、行ごとに数字の桁数が違っても店舗名の切れる位置が
+   行によってバラバラにならないようにする(店舗名の折り返し列の残り幅を揃える)。 */
+.ranking-row-previous { color: var(--muted); font-size: 0.78rem; white-space: nowrap; flex: 0 0 auto; min-width: 118px; text-align: right; }
 .ai-analysis-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .ai-analysis-card { border-radius: 18px; padding: 14px; border: 1px solid var(--border); background: var(--surface-strong); display: flex; flex-direction: column; gap: 6px; }
 .ai-analysis-card span { color: var(--muted); font-size: 0.76rem; }
@@ -371,15 +366,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .summary-card-tone { background: rgba(47, 125, 246, 0.08); }
 .priority-card-tone { background: rgba(245, 158, 11, 0.1); }
 .action-card-tone { background: rgba(46, 163, 97, 0.08); }
-.ranking-card-value-block span { color: var(--muted); font-size: 0.72rem; }
-.ranking-card-value-block strong { font-size: 0.97rem; font-weight: 800; color: var(--text); }
-.ranking-card-toggle { color: var(--accent); font-weight: 700; flex-shrink: 0; }
-.ranking-card-details { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding-top: 2px; }
-.ranking-detail-item { display: flex; flex-direction: column; gap: 3px; padding: 10px; border-radius: 12px; background: rgba(148, 163, 184, 0.08); }
-.ranking-detail-item span { color: var(--muted); font-size: 0.75rem; }
-.ranking-detail-item strong { font-size: 0.92rem; color: var(--text); font-weight: 700; }
-.ranking-detail-item.positive strong { color: var(--success); }
-.ranking-detail-item.negative strong { color: var(--danger); }.auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f8fbff, #f4f6fb); }
+.auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f8fbff, #f4f6fb); }
 .auth-card { width: min(100%, 460px); padding: 28px; border-radius: 24px; background: var(--surface-strong); border: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 16px; }
 .auth-title-block h2 { margin: 0 0 8px; }
 .auth-title-block p { margin: 0; color: var(--muted); line-height: 1.5; }
@@ -387,9 +374,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .auth-form button { width: 100%; }
 .user-role-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.78rem; font-weight: 700; }
 @media (max-width: 860px) {
-  .ranking-card-summary { align-items: flex-start; }
-  .ranking-card-value-block { align-items: flex-start; }
-  .ranking-card-details { grid-template-columns: 1fr; }
   .status-overview-grid, .ai-focus-grid, .ai-analysis-grid { grid-template-columns: 1fr; }
 }
 
@@ -429,9 +413,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .panel { padding: 14px; border-radius: 18px; }
   .business-progress-grid, .store-form-grid, .store-metrics { grid-template-columns: 1fr; }
   .daily-section-card, .daily-settings-card, .setup-card, .today-result-card { padding: 12px; }
-  .ranking-card-accordion { padding: 12px; }
-  .ranking-card-main { align-items: flex-start; }
-  .ranking-card-kpis { width: 100%; }
+  .ranking-row { padding: 10px 12px; gap: 8px; }
+  /* 横幅が足りない分は「先月◯◯」だけ2段目に落とす(店舗名+現在売上は1行目を維持)。 */
+  .ranking-row-previous { flex-basis: 100%; text-align: right; margin-top: -2px; }
   .status-pill { width: 100%; justify-content: center; }
   .button-row { gap: 10px; }
 }
@@ -591,7 +575,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .dashboard-print-area .dashboard-layout { grid-template-columns: repeat(2, 1fr) !important; }
   .dashboard-print-area .panel,
   .dashboard-print-area .metric-card,
-  .dashboard-print-area .ranking-card-accordion,
+  .dashboard-print-area .ranking-row,
   .dashboard-print-area .summary-card { box-shadow: none !important; border: 1px solid #ccc !important; break-inside: avoid; }
   .dashboard-print-area .table-wrap { overflow-x: visible !important; }
   @page { size: A4 portrait; margin: 12mm; }
