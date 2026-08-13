@@ -1393,19 +1393,22 @@ export const getCustomerTargetSummary = (input = {}) => {
   };
 };
 
-// 「1人あたり月間売上」= 当月総売上(または月末着地予想) ÷ 生産性計算人数(FTE)。
-// 生産性計算人数が未設定(0)の場合は計算せず、0除算も発生させない(hasStaffCount:false を
-// 返すだけ)。損益表・費用入力を使っていない店舗でも、売上とスタッフ人数だけで完結する
-// 独立した指標として設計している。
-export const getStaffProductivitySummary = ({ sales, forecast, productivityStaffCount } = {}) => {
-  const staffCount = parseNumber(productivityStaffCount);
-  if (!staffCount || staffCount <= 0) {
+// 「1人あたり月間売上」= 当月総売上(または月末着地予想) ÷ 生産性計算人数。
+// 生産性計算人数(小数対応、パート・アルバイト等の按分用)が入力されていればそれを優先し、
+// 未入力の場合は在籍スタッフ数をそのまま使う(正社員のみの店舗は追加設定なしで使えるように
+// するための仕様) — 優先順位: ①生産性計算人数 ②在籍スタッフ数。どちらも無い(0)場合のみ
+// 計算せず、0除算も発生させない(hasStaffCount:false を返すだけ)。損益表・費用入力を
+// 使っていない店舗でも、売上とスタッフ人数だけで完結する独立した指標として設計している。
+export const getStaffProductivitySummary = ({ sales, forecast, staffCount, productivityStaffCount } = {}) => {
+  const productivityCount = parseNumber(productivityStaffCount);
+  const effectiveCount = productivityCount > 0 ? productivityCount : parseNumber(staffCount);
+  if (!effectiveCount || effectiveCount <= 0) {
     return { hasStaffCount: false, current: 0, monthEndForecast: 0 };
   }
   return {
     hasStaffCount: true,
-    current: parseNumber(sales) / staffCount,
-    monthEndForecast: parseNumber(forecast) / staffCount,
+    current: parseNumber(sales) / effectiveCount,
+    monthEndForecast: parseNumber(forecast) / effectiveCount,
   };
 };
 

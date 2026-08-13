@@ -1004,6 +1004,7 @@ function App() {
   const staffProductivitySummary = useMemo(() => getStaffProductivitySummary({
     sales: summary.sales,
     forecast: summary.forecast,
+    staffCount: selectedStoreEntity?.staffCount,
     productivityStaffCount: selectedStoreEntity?.productivityStaffCount,
   }), [summary.sales, summary.forecast, selectedStoreEntity]);
   const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
@@ -5437,7 +5438,7 @@ function App() {
                 <label className="field">
                   <span>生産性計算人数（任意）</span>
                   <input type="number" min="0" step="0.1" value={storeForm.productivityStaffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: event.target.value }))} placeholder="例: 5.0" />
-                  <small className="field-hint">「1人あたり月間売上」の計算に使う人数(FTE)。パート・アルバイトは稼働時間に応じた人数で入力(例: 週3勤務なら0.6人)。未入力のままでも保存でき、その場合「1人あたり月間売上」カードには「スタッフ数未設定」と表示されます。</small>
+                  <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
                 </label>
               </div>
               {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}

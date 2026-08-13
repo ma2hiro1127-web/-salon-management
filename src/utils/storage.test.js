@@ -1065,21 +1065,35 @@ test("buildStoreProfilesByStoreId defaults staffCount/productivityStaffCount to 
   assert.equal(result["store-old"].productivityStaffCount, 0);
 });
 
-test("getStaffProductivitySummary divides current sales and month-end forecast by the productivity staff count", () => {
-  const result = getStaffProductivitySummary({ sales: 3100000, forecast: 4700000, productivityStaffCount: 5 });
+test("getStaffProductivitySummary divides current sales and month-end forecast by the productivity staff count when it's entered", () => {
+  const result = getStaffProductivitySummary({ sales: 3100000, forecast: 4700000, staffCount: 6, productivityStaffCount: 5 });
   assert.equal(result.hasStaffCount, true);
   assert.equal(result.current, 620000);
   assert.equal(result.monthEndForecast, 940000);
 });
 
-test("getStaffProductivitySummary supports fractional (FTE) staff counts", () => {
+test("getStaffProductivitySummary supports fractional (FTE) productivity staff counts", () => {
   const result = getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, productivityStaffCount: 2.5 });
   assert.equal(result.current, 400000);
   assert.equal(result.monthEndForecast, 600000);
 });
 
-test("getStaffProductivitySummary reports hasStaffCount:false and never divides by zero when unset", () => {
-  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, productivityStaffCount: 0 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
+// 正社員のみ(パート・アルバイト無し)の店舗は、生産性計算人数を未入力のまま在籍スタッフ数を
+// 自動的に使う — 追加設定なしで動く仕様。
+test("getStaffProductivitySummary falls back to staffCount when productivityStaffCount is not entered", () => {
+  const result = getStaffProductivitySummary({ sales: 3600000, forecast: 3600000, staffCount: 6 });
+  assert.equal(result.hasStaffCount, true);
+  assert.equal(result.current, 600000);
+  assert.equal(result.monthEndForecast, 600000);
+});
+
+test("getStaffProductivitySummary prefers productivityStaffCount over staffCount when both are entered", () => {
+  const result = getStaffProductivitySummary({ sales: 5600000, forecast: 5600000, staffCount: 6, productivityStaffCount: 5.6 });
+  assert.ok(Math.abs(result.current - 1000000) < 1);
+});
+
+test("getStaffProductivitySummary reports hasStaffCount:false and never divides by zero when neither is set", () => {
+  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, staffCount: 0, productivityStaffCount: 0 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
   assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
 });
 
