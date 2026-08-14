@@ -586,6 +586,10 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get("invite") || "";
   });
+  // 招待リンクの宛先メールアドレス(get_invite_infoから取得)。新規登録フォームのメール欄を
+  // これで事前入力・固定することで、招待されたメールアドレスと違うメールアドレスを手入力して
+  // しまい「招待メールアドレスと一致するメールアドレスで登録してください」で詰まる事故を防ぐ。
+  const [inviteEmail, setInviteEmail] = useState("");
   const [activeMonthlyTab, setActiveMonthlyTab] = useState("closing");
   const [companyForm, setCompanyForm] = useState({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
   const [storeForm, setStoreForm] = useState(createStoreFormDefaults());
@@ -893,8 +897,48 @@ function App() {
           return;
         }
 
+        // PKCEフロー(?code=...)でのリダイレクトに対する保険。管理者招待(admin.inviteUserByEmail)
+        // は招待先のブラウザに事前のcode_verifierを持たせる手段が無いため、実装上は常にハッシュ
+        // 形式(#access_token=...)でリダイレクトされる(supabase-jsのflowType既定値'implicit'と
+        // 一致)。それでも将来的なSupabase側の仕様変化等で万一?code=が付与された場合に備え、
+        // ここでセッション確立を試みておく(失敗してもベストエフォートで後続の通常フローに
+        // 委ねるため、他の認証方法を妨げない)。
+        if (typeof window !== "undefined") {
+          const codeParam = new URLSearchParams(window.location.search).get("code");
+          if (codeParam) {
+            await supabase.auth.exchangeCodeForSession(codeParam).catch(() => {});
+          }
+        }
+
+        // ハッシュを消す(下記)前に、パスワード再設定リンク(type=recovery)かどうかを控えて
+        // おく。招待(type=invite)は?invite=トークンで判定できるが、再設定はこのtypeでしか
+        // 判定できない。
+        const hashParamsBeforeCleanup = typeof window !== "undefined" ? new URLSearchParams(window.location.hash.replace(/^#/, "")) : new URLSearchParams();
+        const isRecoveryCallback = hashParamsBeforeCleanup.get("type") === "recovery";
+
         const { data: { session }, error } = await getSupabaseSession();
         if (error) throw error;
+        // supabase-jsのdetectSessionInUrlは、access_token等をURLのハッシュ(#…)から読み取った
+        // 時点でセッションを確立するが、ハッシュ自体はブラウザのアドレスバーに残り続ける。
+        // getSupabaseSession()が完了した今、ハッシュに含まれていた情報は既に処理済みなので、
+        // 古いトークンが残ったまま再読み込み・戻る操作をしても再処理されないよう、ここで
+        // 一度だけ取り除く(要件: 古いhash形式のトークンが残留しないようにする)。
+        if (typeof window !== "undefined" && window.location.hash) {
+          window.history.replaceState(null, "", window.location.pathname + window.location.search);
+        }
+        if (isRecoveryCallback && session?.user) {
+          // パスワード再設定メールのリンクを開くと、招待と同様にSupabaseが一時的なセッションを
+          // 自動確立する。ここではまだ「ログイン完了」扱いにせず(currentUserは設定しない)、
+          // 新しいパスワードを入力する専用画面(authMode="recover")を表示する — セッション
+          // 自体はそのまま維持し、そのセッションでsupabase.auth.updateUser({password})を
+          // 呼べるようにする(handleSetNewPassword参照)。
+          setCurrentUser(null);
+          setCurrentRole("staff");
+          setAuthMode("recover");
+          setAppState(initialAppStateValue);
+          setAuthLoading(false);
+          return;
+        }
         if (hasInviteIntent && session?.user) {
           // Clicking a real invitation email link auto-establishes a Supabase session (Supabase
           // verifies the invite token at its own /auth/v1/verify endpoint before redirecting
@@ -988,6 +1032,43 @@ function App() {
 
     void initializeAuth();
   }, []);
+
+  // 招待リンクを開いた直後に、フォーム送信を待たずget_invite_infoで先に検証しておく。
+  // 1) メールアドレスをフォームへ事前入力・固定できる(招待メールアドレスと違うメール
+  //    アドレスを打ち込んでしまう事故を防ぐ)。
+  // 2) 無効・期限切れの招待リンクを、白画面や「何も起きない」状態にせず、開いた瞬間に
+  //    分かりやすいエラーとして表示できる(要件14)。
+  // handleSignUp側でも同じ検証を(実際の登録直前の最終防御として)重ねて行っており、ここでの
+  // 事前チェックはあくまでUX向上のためのもので、実際の認可はサーバー側(get_invite_info /
+  // accept-invite)がそのつど行う。
+  useEffect(() => {
+    if (!inviteToken || !isSupabaseConfigured) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const inviteInfo = await getInviteInfo(inviteToken);
+        if (cancelled) return;
+        if (!inviteInfo) {
+          setAuthError("招待リンクが無効です。管理者に再招待を依頼してください。");
+          return;
+        }
+        if (!inviteInfo.is_active || inviteInfo.invitation_status === "suspended" || inviteInfo.invitation_status === "disabled") {
+          setAuthError("この招待は無効です。管理者にお問い合わせください。");
+          return;
+        }
+        if (isInviteExpired(inviteInfo.invite_expires_at)) {
+          setAuthError("この招待リンクは期限切れです。管理者に再招待を依頼してください。");
+          return;
+        }
+        setInviteEmail(String(inviteInfo.email || "").trim().toLowerCase());
+      } catch (error) {
+        if (!cancelled) setAuthError(getLocalizedSupabaseErrorMessage(error));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [inviteToken]);
 
   useEffect(() => {
     if (currentCompany) {
@@ -1398,7 +1479,14 @@ function App() {
         setInviteToken("");
         setAuthSuccess("招待登録が完了しました。管理画面へ移動します。");
       } catch (error) {
-        setAuthError(getLocalizedSupabaseErrorMessage(error));
+        // acceptInvite自体は既に成功している(アカウントは作成済み)— ここで失敗するのは
+        // その直後のsignInWithEmail/プロフィール取得の段階なので、「登録に失敗した」と
+        // 誤解させる汎用メッセージではなく、アカウントは作れていることが伝わる文言にする
+        // (要件14: 段階ごとに分かるエラー表示)。ログイン画面から普通にログインすれば
+        // 復帰できる。
+        setAuthMode("login");
+        setInviteToken("");
+        setAuthError(`アカウントの作成は完了しましたが、自動ログインに失敗しました(${getLocalizedSupabaseErrorMessage(error)})。お手数ですが、上のログイン画面から設定したメールアドレスとパスワードでログインしてください。`);
       } finally {
         setAuthLoading(false);
       }
@@ -1466,9 +1554,63 @@ function App() {
     setAuthError("");
     setAuthSuccess("");
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmail(email));
+      const redirectTo = typeof window !== "undefined" && window.location?.origin ? window.location.origin : undefined;
+      const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmail(email), redirectTo ? { redirectTo } : undefined);
       if (error) throw error;
       setAuthSuccess("パスワード再設定用のメールを送信しました。" );
+    } catch (error) {
+      setAuthError(getLocalizedSupabaseErrorMessage(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // パスワード再設定リンク(type=recovery)を開いた直後に確立される一時的なセッションを使って、
+  // 新しいパスワードを設定する。initializeAuthのisRecoveryCallback分岐からのみ遷移してくる
+  // (authMode="recover")ので、その時点でSupabaseセッション自体は既に有効。
+  const handleSetNewPassword = async ({ password }) => {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    try {
+      const { error: updateError } = await supabase.auth.updateUser({ password });
+      if (updateError) throw updateError;
+
+      const { data: { session }, error: sessionError } = await getSupabaseSession();
+      if (sessionError) throw sessionError;
+      const authUser = session?.user;
+      if (!authUser) throw new Error("セッションを確認できませんでした。お手数ですが再度ログインしてください。");
+
+      const profile = await ensureProfileForAuthUser({ authUserId: authUser.id, email: authUser.email, role: resolveRoleForEmail(authUser.email) });
+      if (!profile) throw new Error("プロフィール情報を取得できませんでした");
+      const tenantState = await loadTenantStateFromSupabase({ authUserId: authUser.id, email: authUser.email, currentProfile: profile });
+      const localRecoveredState = normalizeAppState(readAppState());
+      const nextUser = buildAuthenticatedUser({ profile, authUser });
+      const nextRole = normalizeRole(profile?.role || "staff");
+      setCurrentUser(nextUser);
+      setCurrentRole(nextRole);
+      const recoverCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
+      const { selectedStore: recoverSelectedStore, selectedStoreId: recoverSelectedStoreId } = resolvePreferredStoreSelection({
+        tenantState,
+        localRecoveredState,
+        currentCompanyId: recoverCompanyId,
+        role: nextRole,
+      });
+      setAppState({
+        ...tenantState,
+        currentCompanyId: recoverCompanyId,
+        currentUserId: nextUser.profileId,
+        currentAuthUserId: nextUser.authUserId,
+        selectedStore: recoverSelectedStore,
+        selectedStoreId: recoverSelectedStoreId,
+        selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+      });
+      await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
+      window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+      window.localStorage.setItem("salon-role", nextRole);
+      setAuthMode("app");
+      setActivePage(resolveDefaultPage(nextRole));
+      setAuthSuccess("パスワードを更新しました。");
     } catch (error) {
       setAuthError(getLocalizedSupabaseErrorMessage(error));
     } finally {
@@ -4358,7 +4500,7 @@ function App() {
   }
 
   if (!currentUser && !authLoading) {
-    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onResetPassword={handleResetPassword} loading={authLoading} error={authError} success={authSuccess} />;
+    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} />;
   }
 
   if (!canAccessCurrentPage) {
