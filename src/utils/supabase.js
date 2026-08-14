@@ -10,10 +10,55 @@ const getEnvValue = (key) => {
 const supabaseUrl = getEnvValue("VITE_SUPABASE_URL");
 const supabaseAnonKey = getEnvValue("VITE_SUPABASE_ANON_KEY");
 
+// GoTrue/PostgRESTがJWTを検証する際、サーバー間のクロックドリフトや端末の時計ずれ(特に
+// PWA復帰直後・スリープ復帰直後)が原因で「JWT issued at future」のような一時的な401を返す
+// ことがある。ユーザーには何もできないエラーなので、通常のAPI呼び出しではこの1箇所
+// (fetchWithAuthRetry)で検知して自動的にセッションを再取得・再送し、失敗した場合だけ
+// 呼び出し元の通常のエラー処理(getSupabaseErrorMessage経由で再ログイン案内)に委ねる。
+const AUTH_TIMING_ERROR_PATTERN = /jwt|token.*expired|expired.*token|refresh token|invalid.*session|session.*expired|not authenticated|pgrst301/i;
+export const isAuthTimingErrorMessage = (message) => AUTH_TIMING_ERROR_PATTERN.test(String(message || ""));
+export const AUTH_SESSION_EXPIRED_MESSAGE = "ログイン情報の有効期限が切れました。お手数ですが再度ログインしてください。";
+
+// /auth/v1/token(セッション更新そのもの)への呼び出しはリトライ対象から除外する — refreshSession
+// 自身がこのエンドポイントを叩くため、除外しないとJWTタイミングエラーが再帰的にrefreshSession
+// を呼び直し続けるループになりかねない。
+const isAuthTokenEndpoint = (input) => {
+  const url = typeof input === "string" ? input : (input?.url || "");
+  return url.includes("/auth/v1/token");
+};
+
+const fetchWithAuthRetry = async (input, init = {}) => {
+  const response = await fetch(input, init);
+  if (response.status !== 401 || isAuthTokenEndpoint(input)) return response;
+
+  let bodyText;
+  try {
+    bodyText = await response.clone().text();
+  } catch {
+    return response;
+  }
+  if (!isAuthTimingErrorMessage(bodyText)) return response;
+
+  // 1回だけセッションを再取得して再送する(無限リトライにはしない)。refreshSessionが失敗
+  // した場合は元の401レスポンスをそのまま返し、呼び出し元の通常のエラー処理に委ねる。
+  try {
+    const { data, error } = await supabase.auth.refreshSession();
+    if (error || !data?.session?.access_token) return response;
+    const retryHeaders = new Headers(init.headers || {});
+    retryHeaders.set("Authorization", `Bearer ${data.session.access_token}`);
+    return await fetch(input, { ...init, headers: retryHeaders });
+  } catch {
+    return response;
+  }
+};
+
 export const supabase = createClient(supabaseUrl || "https://example.supabase.co", supabaseAnonKey || "dummy-key", {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
+  },
+  global: {
+    fetch: fetchWithAuthRetry,
   },
 });
 
@@ -29,7 +74,15 @@ export const getSupabaseConfigurationIssue = () => {
   return null;
 };
 
-export const getSupabaseErrorMessage = (error) => error?.message || "Supabase エラーが発生しました";
+// JWT/セッションのタイミング起因エラー(クロックスキュー等、上のfetchWithAuthRetryで自動
+// 復旧を試みた後もなお失敗したケース)は、生のメッセージを画面に出さず再ログインを促す
+// 文言に差し替える。それ以外のSupabaseエラーは従来通りそのまま返す(保存失敗時の具体的な
+// 原因表示など、既存の挙動は変えない)。
+export const getSupabaseErrorMessage = (error) => {
+  const message = error?.message || "";
+  if (isAuthTimingErrorMessage(message)) return AUTH_SESSION_EXPIRED_MESSAGE;
+  return message || "Supabase エラーが発生しました";
+};
 
 // Common error-reporting shape for every Supabase read/write in the app: which operation,
 // which table, and the identifying keys involved (userId/companyId/storeId/date), so a failure

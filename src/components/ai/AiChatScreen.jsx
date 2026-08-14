@@ -4,6 +4,7 @@ import remarkBreaks from "remark-breaks";
 import { formatMonthLabel } from "../../utils/storage.js";
 import { buildAiContext } from "../../utils/aiContext.js";
 import { sendAiMessage } from "../../utils/aiClient.js";
+import { isAuthTimingErrorMessage, AUTH_SESSION_EXPIRED_MESSAGE } from "../../utils/supabase.js";
 
 const INITIAL_QUESTIONS = [
   "今月の経営状況を分析",
@@ -61,7 +62,10 @@ export default function AiChatScreen({
       const reply = await sendAiMessage({ context, history, message: trimmed });
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
     } catch (error) {
-      setErrorText(error instanceof Error ? error.message : "AI機能は現在準備中です。しばらくお待ちください。");
+      // JWT/セッションのタイミング起因エラー(クロックスキュー等)は生のまま出さず、
+      // 再ログイン案内に差し替える(App.jsx側のresolveErrorReasonと同じ規約)。
+      const message = error instanceof Error ? error.message : "";
+      setErrorText(isAuthTimingErrorMessage(message) ? AUTH_SESSION_EXPIRED_MESSAGE : (message || "AI機能は現在準備中です。しばらくお待ちください。"));
       // 送信できなかったユーザーメッセージは会話に残したまま、エラーだけ表示する
       // (再入力の手間を避けるため取り消さない)
     } finally {

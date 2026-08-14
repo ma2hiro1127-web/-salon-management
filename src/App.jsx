@@ -82,6 +82,8 @@ import {
   isSupabaseConfigured,
   getSupabaseConfigurationIssue,
   getSupabaseErrorMessage,
+  isAuthTimingErrorMessage,
+  AUTH_SESSION_EXPIRED_MESSAGE,
   signInWithEmail,
   signOutFromSupabase,
   getSupabaseSession,
@@ -163,6 +165,14 @@ const monthlyTabs = [
 
 const ensureMonthValue = (value) => value || new Date().toISOString().slice(0, 7);
 const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
+// error.messageをそのまま画面表示に使ってよいかを判定する薄いヘルパー。JWT/セッションの
+// タイミング起因エラー(クロックスキュー等)は生のまま出さず、再ログイン案内に差し替える
+// (getSupabaseErrorMessageと同じ規約を、getSupabaseErrorMessageを経由しない箇所にも適用する)。
+const resolveErrorReason = (error, fallback) => {
+  const message = error instanceof Error ? error.message : "";
+  if (isAuthTimingErrorMessage(message)) return AUTH_SESSION_EXPIRED_MESSAGE;
+  return message || fallback;
+};
 
 const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = null, hasSession = false, authUser = null, setDebugInfo = null } = {}) => {
   if (!setDebugInfo) return;
@@ -2798,7 +2808,7 @@ function App() {
       setDailyFieldDirty(false);
       setDailyFieldSaveStatus({ status: "saved", message: "保存しました" });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "保存に失敗しました";
+      const reason = resolveErrorReason(error, "保存に失敗しました");
       setDailyFieldSaveStatus({ status: "error", message: reason });
       setNotice(`日次入力項目設定の保存に失敗しました: ${reason}`);
     }
@@ -2851,7 +2861,7 @@ function App() {
       setMonthlyTargetFieldDirty(false);
       setMonthlyTargetFieldSaveStatus({ status: "saved", message: "保存しました" });
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "保存に失敗しました";
+      const reason = resolveErrorReason(error, "保存に失敗しました");
       setMonthlyTargetFieldSaveStatus({ status: "error", message: reason });
       setNotice(`月間目標項目設定の保存に失敗しました: ${reason}`);
     }
@@ -3003,7 +3013,7 @@ function App() {
       }
       setSaveStatus({ status: "saved", message: "同期待機中", timestamp, error: false });
     }).catch((error) => {
-      setSaveStatus({ status: "error", message: error instanceof Error ? error.message : "保存に失敗しました", timestamp, error: true });
+      setSaveStatus({ status: "error", message: resolveErrorReason(error, "保存に失敗しました"), timestamp, error: true });
     });
   }, [appState, authMode, currentUser?.authUserId]);
 
