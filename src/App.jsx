@@ -138,6 +138,7 @@ import {
   getInviteInfo,
   acceptInvite,
   sendInviteEmail,
+  generateInviteLink,
   deleteUserAccount,
   updateProfileDetails,
   refreshInviteState,
@@ -610,6 +611,8 @@ function App() {
   // 「再招待」ボタンの二重送信防止。行ごとに独立して無効化するため、対象user.idを保持する
   // (他のユーザー行の再招待ボタンまで巻き込んで無効化しないため)。
   const [resendingUserId, setResendingUserId] = useState("");
+  // 「招待リンクをコピー」ボタンの二重送信防止(generate-invite-link呼び出し中は行ごとに無効化)。
+  const [copyingInviteLinkUserId, setCopyingInviteLinkUserId] = useState("");
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
@@ -3161,18 +3164,46 @@ function App() {
     }
   };
 
+  // 招待メールがResend側でBounced/Suppressed等になっていて届かない場合の代替経路(要件5)。
+  // ローカルに保存された古いリンクをコピーするのではなく、Supabase Authの正式な招待リンクを
+  // generate-invite-link Edge Function経由でその都度生成する(要件1)。メール送信は一切
+  // 行わない。生成したリンクはクリップボードへコピーするだけで、DBへの追加保存はしない
+  // (要件4: 招待URLの安全性 — 平文で永続保存しない)。
   const handleCopyInviteLink = async (user) => {
-    const inviteLink = user.inviteLink || buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", user.inviteToken || createInviteToken());
+    if (user.authUserId) {
+      setNotice(`${user.name} はすでに登録済みです`);
+      return;
+    }
+    if (copyingInviteLinkUserId === user.id) return;
+    if (!isSupabaseConfigured) {
+      const fallbackLink = user.inviteLink || buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", user.inviteToken || createInviteToken());
+      window.prompt("招待リンク", fallbackLink);
+      return;
+    }
+    setCopyingInviteLinkUserId(user.id);
     try {
-      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(inviteLink);
-        setNotice(`${user.name} の招待リンクをコピーしました`);
+      const result = await generateInviteLink({
+        token: user.inviteToken,
+        redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
+      });
+      if (!result.ok || !result.actionLink) {
+        setNotice(`招待リンクの生成に失敗しました: ${resolveInviteEmailErrorMessage(result.error)}`);
         return;
       }
-    } catch (error) {
-      console.warn("Clipboard write failed", error);
+      try {
+        if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(result.actionLink);
+          setNotice("招待リンクをコピーしました");
+        } else {
+          window.prompt("招待リンク", result.actionLink);
+        }
+      } catch (clipboardError) {
+        console.warn("Clipboard write failed", clipboardError);
+        window.prompt("招待リンク", result.actionLink);
+      }
+    } finally {
+      setCopyingInviteLinkUserId("");
     }
-    window.prompt("招待リンク", inviteLink);
   };
 
   useEffect(() => {
@@ -5932,9 +5963,11 @@ function App() {
                                             <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
                                             {!isRegistered && (
                                               <>
-                                                <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>URLコピー</button>
                                                 <button className="text-button" type="button" onClick={() => handleInviteEmail(user)} disabled={resendingUserId === user.id}>
-                                                  {resendingUserId === user.id ? "送信中…" : "再招待"}
+                                                  {resendingUserId === user.id ? "送信中…" : "招待メールを再送"}
+                                                </button>
+                                                <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)} disabled={copyingInviteLinkUserId === user.id}>
+                                                  {copyingInviteLinkUserId === user.id ? "生成中…" : "招待リンクをコピー"}
                                                 </button>
                                               </>
                                             )}

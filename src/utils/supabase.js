@@ -390,6 +390,36 @@ export const sendInviteEmail = async ({ token, redirectOrigin }) => {
   return { ok: true, data };
 };
 
+// メールを送らず、Supabase Authの正式な招待リンク(admin.auth.admin.generateLink)をその場で
+// 生成して返す — generate-invite-link Edge Function(service-role)経由(招待メールが
+// Bounced/Suppressed等で届かない場合の代替経路)。返ってきたactionLinkはこの呼び出し限りの
+// ものとして扱い、呼び出し元でDBへ保存しない(招待URLの安全性要件)。
+export const generateInviteLink = async ({ token, redirectOrigin }) => {
+  const { data, error } = await supabase.functions.invoke("generate-invite-link", {
+    body: { token, redirectOrigin },
+  });
+  if (error) {
+    let message = error.message;
+    let code = "";
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+      if (body?.code) code = body.code;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    const wrapped = new Error(message);
+    wrapped.code = code;
+    return { ok: false, error: wrapped };
+  }
+  if (data?.error) {
+    const wrapped = new Error(data.error);
+    wrapped.code = data.code || "";
+    return { ok: false, error: wrapped };
+  }
+  return { ok: true, actionLink: data?.actionLink || "" };
+};
+
 // Deletes a user (Supabase Auth account + profiles + user_stores) via the delete-user Edge
 // Function (service-role) — see that function for why: deleting the auth account needs the
 // admin API, and the "last admin in this company" guard needs to see across the whole company,
@@ -514,8 +544,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       ? supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").eq("company_id", companyFilter).order("created_at", { ascending: true })
       : supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").order("created_at", { ascending: true }),
     role === "system_admin"
-      ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").order("created_at", { ascending: true })
-      : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
+      ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").order("created_at", { ascending: true })
+      : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
     supabase.from("user_stores").select("user_id, company_id, store_id, is_primary").order("created_at", { ascending: true }),
   ]);
 
@@ -581,6 +611,13 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       invitationStatus: item.invitation_status || "active",
       lastLoginAt: "",
       authUserId: item.auth_user_id || "",
+      // 「招待リンクをコピー」("再招待"を経由せずいきなりコピーする場合)がgenerate-invite-link
+      // Edge Functionを呼ぶ際のトークン特定に使う。以前はここに含まれておらず、再読み込み後は
+      // 常に空になってしまい(inviteToken/inviteExpiresAtがローカル状態にしか無かったため)、
+      // ページを開き直した招待済みユーザーの「招待リンクをコピー」がその都度失敗する原因に
+      // なっていた。
+      inviteToken: item.invite_token || "",
+      inviteExpiresAt: item.invite_expires_at || "",
     };
   });
 
