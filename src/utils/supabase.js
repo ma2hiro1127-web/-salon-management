@@ -420,6 +420,68 @@ export const generateInviteLink = async ({ token, redirectOrigin }) => {
   return { ok: true, actionLink: data?.actionLink || "" };
 };
 
+// メールアドレスの変更をupdate-user-email Edge Function(service-role)経由で行う — 既に
+// 登録済みのユーザーの場合はSupabase Auth側(auth.users.email)も同時に書き換えるため、
+// 直接のprofiles更新(updateProfileDetails)だけでは対応できない(Auth側に古いメールアドレス
+// が残ってしまう)。未登録(招待中)ユーザーの場合は、サーバー側で招待トークンも新しく
+// 発行し直される(古いメールアドレス宛のリンクを無効化するため)。
+export const updateUserEmail = async ({ profileId, email }) => {
+  const { data, error } = await supabase.functions.invoke("update-user-email", {
+    body: { profileId, email },
+  });
+  if (error) {
+    let message = error.message;
+    let code = "";
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+      if (body?.code) code = body.code;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    const wrapped = new Error(message);
+    wrapped.code = code;
+    return { ok: false, error: wrapped };
+  }
+  if (data?.error) {
+    const wrapped = new Error(data.error);
+    wrapped.code = data.code || "";
+    return { ok: false, error: wrapped };
+  }
+  return { ok: true, data };
+};
+
+// 「停止/再開」をset-user-active-state Edge Function(service-role)経由で行う —
+// profiles.is_activeの書き換えに加えて、登録済みユーザーを停止する場合はSupabase Auth側も
+// admin.auth.admin.updateUserById(..., { ban_duration })でロックする。is_active=falseだけ
+// ではRLSが即座に効いてデータへはアクセスできなくなるが、Authトークン自体は理論上有効期限
+// まで生き続けるため、既にログイン中のセッションも確実に無効化するにはAuth側のBANが必要。
+export const setUserActiveState = async ({ profileId, isActive }) => {
+  const { data, error } = await supabase.functions.invoke("set-user-active-state", {
+    body: { profileId, isActive },
+  });
+  if (error) {
+    let message = error.message;
+    let code = "";
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+      if (body?.code) code = body.code;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    const wrapped = new Error(message);
+    wrapped.code = code;
+    return { ok: false, error: wrapped };
+  }
+  if (data?.error) {
+    const wrapped = new Error(data.error);
+    wrapped.code = data.code || "";
+    return { ok: false, error: wrapped };
+  }
+  return { ok: true, data };
+};
+
 // Deletes a user (Supabase Auth account + profiles + user_stores) via the delete-user Edge
 // Function (service-role) — see that function for why: deleting the auth account needs the
 // admin API, and the "last admin in this company" guard needs to see across the whole company,

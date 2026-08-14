@@ -141,6 +141,8 @@ import {
   generateInviteLink,
   deleteUserAccount,
   updateProfileDetails,
+  updateUserEmail,
+  setUserActiveState,
   refreshInviteState,
 } from "./utils/supabase.js";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
@@ -182,6 +184,25 @@ const resolveInviteEmailErrorMessage = (error) => {
     return "短時間に複数回送信されたため、少し時間を空けて再送してください。";
   }
   return getSupabaseErrorMessage(error);
+};
+
+// ユーザー管理画面で、ある行の編集・削除ボタンを表示してよいかどうかのクライアント側の判定。
+// あくまでUIをわかりやすくするためのもので、実際の可否はSupabase RLS/Edge Function側の
+// チェックが最終的な担保(要件5: UIを隠すだけでなくサーバー側でも保護する)。
+// - system_adminは誰からも削除できない(自分自身を含め、他のsystem_adminからも)。
+// - company_adminはsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)。
+// - store_managerが見る一覧(manageableUsers)は、そもそも自分の管理する店舗のstaffのみに
+//   絞り込み済みなので、そこに並ぶ行は常に操作対象になり得る。
+const getUserRowPermissions = (currentRole, targetUser) => {
+  const role = normalizeRole(currentRole);
+  if (role === "system_admin") {
+    return { canEdit: true, canDelete: targetUser.role !== "system_admin" };
+  }
+  if (role === "company_admin") {
+    const isTargetSystemAdmin = targetUser.role === "system_admin";
+    return { canEdit: !isTargetSystemAdmin, canDelete: !isTargetSystemAdmin };
+  }
+  return { canEdit: true, canDelete: true };
 };
 
 const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = null, hasSession = false, authUser = null, setDebugInfo = null } = {}) => {
@@ -613,6 +634,9 @@ function App() {
   const [resendingUserId, setResendingUserId] = useState("");
   // 「招待リンクをコピー」ボタンの二重送信防止(generate-invite-link呼び出し中は行ごとに無効化)。
   const [copyingInviteLinkUserId, setCopyingInviteLinkUserId] = useState("");
+  // 「停止/再開」ボタンの処理中表示。保存が終わるまでの間ボタンを無効化し「処理中…」を出す
+  // ことで、押した直後に何も変わっていないように見える(要件3)ことを防ぐ。
+  const [togglingStatusUserId, setTogglingStatusUserId] = useState("");
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
@@ -2602,6 +2626,22 @@ function App() {
     setEditUserError("");
     try {
       if (isSupabaseConfigured) {
+        // メールアドレスが実際に変わる場合は、専用のupdate-user-email Edge Function(service-
+        // role)を先に呼ぶ。登録済みユーザーはSupabase Auth側(auth.users.email)も同時に
+        // 書き換える必要があり、profilesへの直接更新(updateProfileDetails)だけではAuth側に
+        // 古いメールアドレスが残ってしまう(要件1: UI上だけの変更でAuth側に不整合を残さない)。
+        // 未登録(招待中)ユーザーの場合は、サーバー側で招待トークンも新しく発行し直され、
+        // 古いメールアドレス宛のリンクは無効化される。
+        if (normalizedEmail !== targetUser.email) {
+          const emailResult = await updateUserEmail({ profileId: targetUser.id, email: normalizedEmail });
+          if (!emailResult?.ok) throw emailResult.error || new Error("メールアドレスの変更に失敗しました");
+        }
+        // 有効/停止が変わる場合もset-user-active-state経由にする(要件3と同じ理由 —
+        // 登録済みユーザーを停止する場合はSupabase Auth側もBANし、既存セッションを無効化する)。
+        if (editUserDraft.isActive !== targetUser.isActive) {
+          const activeStateResult = await setUserActiveState({ profileId: targetUser.id, isActive: editUserDraft.isActive });
+          if (!activeStateResult?.ok) throw activeStateResult.error || new Error("状態の変更に失敗しました");
+        }
         const detailsResult = await updateProfileDetails({ profileId: targetUser.id, name: editUserDraft.name.trim(), email: normalizedEmail, isActive: editUserDraft.isActive });
         if (!detailsResult?.ok && !detailsResult?.skipped) throw detailsResult.error || new Error("保存に失敗しました");
         if (nextRole !== targetUser.role) {
@@ -2808,20 +2848,29 @@ function App() {
 
   const handleToggleUserStatus = async (user) => {
     if (!window.confirm(`${user.name} を${user.isActive ? "利用停止" : "再開"}しますか？`)) return;
+    if (togglingStatusUserId === user.id) return;
     const nextActive = !user.isActive;
-    if (isSupabaseConfigured) {
-      const result = await updateProfileDetails({ profileId: user.id, name: user.name, email: user.email, isActive: nextActive });
-      if (!result?.ok && !result?.skipped) {
-        setNotice(`状態の変更に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
-        return;
+    setTogglingStatusUserId(user.id);
+    try {
+      if (isSupabaseConfigured) {
+        // set-user-active-stateはprofiles.is_activeの更新に加え、既に登録済みのユーザーを
+        // 停止する場合はSupabase Auth側もBANする(要件3: 既にログイン中の場合もセッションを
+        // 無効化する)。
+        const result = await setUserActiveState({ profileId: user.id, isActive: nextActive });
+        if (!result?.ok) {
+          setNotice(`状態の変更に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
+          return;
+        }
       }
+      const nextState = {
+        ...appState,
+        users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: nextActive } : item),
+      };
+      persistTenantState(nextState);
+      setNotice(nextActive ? `${user.name} を再開しました` : `${user.name} を停止しました`);
+    } finally {
+      setTogglingStatusUserId("");
     }
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: nextActive } : item),
-    };
-    persistTenantState(nextState);
-    setNotice(nextActive ? `${user.name} を再開しました` : `${user.name} を停止しました`);
   };
 
   const toggleUserStoreSelection = (storeId) => {
@@ -5942,6 +5991,8 @@ function App() {
                                     {roleGroup.users.map((user) => {
                                       const statusMeta = getUserStatusMeta(user);
                                       const isRegistered = Boolean(user.authUserId);
+                                      const isSelf = user.id === currentUser?.profileId;
+                                      const rowPermissions = getUserRowPermissions(currentRole, user);
                                       return (
                                         <div key={user.id} className="user-staff-row">
                                           <div className="user-staff-row-main">
@@ -5959,8 +6010,14 @@ function App() {
                                             <p className="dashboard-hint">招待情報は作成されましたが、メール送信に失敗しました。再送信または招待URLをコピーしてください。</p>
                                           ) : null}
                                           <div className="row-actions">
-                                            <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
-                                            <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
+                                            {rowPermissions.canEdit && (
+                                              <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
+                                            )}
+                                            {rowPermissions.canEdit && !isSelf && (
+                                              <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)} disabled={togglingStatusUserId === user.id}>
+                                                {togglingStatusUserId === user.id ? "処理中…" : (user.isActive ? "停止" : "再開")}
+                                              </button>
+                                            )}
                                             {!isRegistered && (
                                               <>
                                                 <button className="text-button" type="button" onClick={() => handleInviteEmail(user)} disabled={resendingUserId === user.id}>
@@ -5971,7 +6028,7 @@ function App() {
                                                 </button>
                                               </>
                                             )}
-                                            {user.id !== currentUser?.profileId && (
+                                            {!isSelf && rowPermissions.canDelete && (
                                               <button className="text-button danger" type="button" onClick={() => requestDeleteUser(user)}>{isRegistered ? "削除" : "招待取消"}</button>
                                             )}
                                           </div>

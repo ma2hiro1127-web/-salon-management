@@ -91,15 +91,22 @@ Deno.serve(async (req) => {
       return json({ error: "自分自身のアカウントは削除できません" }, 400);
     }
 
+    // Guard: system_admin can never be deleted through this screen, by anyone — including
+    // another system_admin. Previously this was only blocked for company_admin/store_manager
+    // callers (below); a system_admin caller had no such guard at all, relying solely on the
+    // "last admin in the company" count check further down, which only fires once every other
+    // admin is already gone. This is an unconditional, explicit protection per the "誤操作で
+    // 削除できない" requirement.
+    if (target.role === "system_admin") {
+      return json({ error: "システム管理者は削除できません" }, 403);
+    }
+
     // Permission scoping mirrors profiles_update/delete_company_scoped RLS: company_admin only
-    // within their own company and never another admin-or-higher account; store_manager only
-    // ever a staff member assigned to a store they themselves manage.
+    // within their own company; store_manager only ever a staff member assigned to a store they
+    // themselves manage.
     if (callerProfile.role === "company_admin") {
       if (callerProfile.company_id !== target.company_id) {
         return json({ error: "他社のユーザーは削除できません" }, 403);
-      }
-      if (target.role === "system_admin") {
-        return json({ error: "システム管理者は削除できません" }, 403);
       }
     }
     if (callerProfile.role === "store_manager") {
