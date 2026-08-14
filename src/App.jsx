@@ -3239,6 +3239,18 @@ function App() {
         setNotice(`招待リンクの生成に失敗しました: ${resolveInviteEmailErrorMessage(result.error)}`);
         return;
       }
+      // generate-invite-linkは呼び出しのたびにDB側のinvite_tokenを新しく発行し直すため、
+      // ローカルのuser.inviteTokenをここで同期しておかないと、次回このユーザーへ再度
+      // 「招待リンクをコピー」を押した際に古いトークンを送ってしまい「招待情報が見つかりません」
+      // で失敗する(2回目以降のコピーが必ず失敗していたバグの修正)。
+      if (result.inviteToken) {
+        persistTenantState({
+          ...appState,
+          users: (appState.users || []).map((item) => item.id === user.id
+            ? { ...item, invitationStatus: "invited", inviteToken: result.inviteToken, inviteExpiresAt: result.inviteExpiresAt || item.inviteExpiresAt }
+            : item),
+        });
+      }
       try {
         if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
           await navigator.clipboard.writeText(result.actionLink);

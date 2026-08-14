@@ -173,7 +173,12 @@ Deno.serve(async (req) => {
       return json({ error: "招待リンクの生成に失敗しました" }, 500);
     }
 
-    return json({ ok: true, actionLink });
+    // 呼び出し側(App.jsx)がローカルのuser.inviteTokenをこの新しいトークンに更新できるよう、
+    // レスポンスにも含めて返す。これを返さないと、次にこのユーザーへ「招待リンクをコピー」を
+    // 再度押した際、ローカルはまだ古いトークンのままDBには新しいトークンしか無い状態になり、
+    // .eq("invite_token", token)の照合に失敗して「招待情報が見つかりません」エラーになる
+    // (2回目以降のコピーが必ず失敗するバグの原因だった)。
+    return json({ ok: true, actionLink, inviteToken: newToken, inviteExpiresAt: newExpiresAt });
   } catch (error) {
     const message = error instanceof Error ? error.message : "招待リンクの生成に失敗しました";
     logStage("unhandled_error", { token: maskToken(token), message });

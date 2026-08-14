@@ -417,7 +417,7 @@ export const generateInviteLink = async ({ token, redirectOrigin }) => {
     wrapped.code = data.code || "";
     return { ok: false, error: wrapped };
   }
-  return { ok: true, actionLink: data?.actionLink || "" };
+  return { ok: true, actionLink: data?.actionLink || "", inviteToken: data?.inviteToken || "", inviteExpiresAt: data?.inviteExpiresAt || "" };
 };
 
 // メールアドレスの変更をupdate-user-email Edge Function(service-role)経由で行う — 既に
