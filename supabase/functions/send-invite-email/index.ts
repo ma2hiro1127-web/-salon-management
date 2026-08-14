@@ -20,6 +20,19 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// 開発側の追跡用ログ(招待フロー整理の要件11): 発生日時・対象・処理段階・エラー内容は残すが、
+// パスワードやトークンそのものは残さない(先頭8文字だけ、相関確認用)。
+function logStage(stage: string, detail: Record<string, unknown>) {
+  console.error(`[send-invite-email] ${stage}`, { ...detail, timestamp: new Date().toISOString() });
+}
+
+const maskToken = (token: string) => (token ? `${token.slice(0, 8)}…` : "");
+
+// Supabase Auth標準のメール送信環境はレート制限が厳しく(本番運用には非推奨)、短時間に
+// 複数回招待するとここに到達しやすい。生のエラー文言をユーザー画面に出さず、専用のcodeで
+// クライアント側が適切な日本語文言に差し替えられるようにする(招待フロー整理の要件5)。
+const RATE_LIMIT_PATTERN = /rate.?limit|too many requests|429/i;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -137,15 +150,43 @@ Deno.serve(async (req) => {
 
     const { error: inviteError } = await admin.auth.admin.inviteUserByEmail(target.email, { redirectTo });
     if (inviteError) {
-      return json({ error: inviteError.message || "招待メールの送信に失敗しました" }, 500);
+      // ユーザー作成(またはshellの再利用)自体はここまでで完了している可能性が高い一方、
+      // メール送信だけが失敗した状態 — profiles行を「invited」のまま放置せず「pending」
+      // (メール未送信、要再送)に落とす。この更新自体が失敗しても、招待メール失敗という
+      // 本来のエラーを優先して返す(ベストエフォート)。
+      await admin.from("profiles").update({ invitation_status: "pending" }).eq("id", target.id).catch(() => {});
+      const isRateLimited = RATE_LIMIT_PATTERN.test(inviteError.message || "");
+      logStage("invite_send_failed", {
+        token: maskToken(token),
+        profileId: target.id,
+        companyId: target.company_id,
+        code: inviteError.code,
+        status: inviteError.status,
+        message: inviteError.message,
+        rateLimited: isRateLimited,
+      });
+      return json({
+        error: inviteError.message || "招待メールの送信に失敗しました",
+        code: isRateLimited ? "rate_limited" : "invite_send_failed",
+      }, isRateLimited ? 429 : 500);
     }
 
-    await admin.from("profiles").update({ invitation_status: "invited" }).eq("id", target.id);
+    const { error: statusUpdateError } = await admin.from("profiles").update({ invitation_status: "invited" }).eq("id", target.id);
+    if (statusUpdateError) {
+      // メール送信は成功しているので失敗扱いにはしないが、invitation_statusが更新されず
+      // 画面上の表示が実態とずれる可能性があるため記録だけ残す。
+      logStage("profile_status_update_failed_after_send", {
+        token: maskToken(token),
+        profileId: target.id,
+        companyId: target.company_id,
+        message: statusUpdateError.message,
+      });
+    }
 
     return json({ ok: true });
   } catch (error) {
-    console.error("send-invite-email error", error);
     const message = error instanceof Error ? error.message : "招待メールの送信に失敗しました";
-    return json({ error: message }, 500);
+    logStage("unhandled_error", { token: maskToken(token), message });
+    return json({ error: message, code: "server_error" }, 500);
   }
 });

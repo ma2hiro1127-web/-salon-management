@@ -368,16 +368,24 @@ export const sendInviteEmail = async ({ token, redirectOrigin }) => {
   });
   if (error) {
     let message = error.message;
+    let code = "";
     try {
       const body = await error.context?.json?.();
       if (body?.error) message = body.error;
+      if (body?.code) code = body.code;
     } catch {
       // ignore — fall back to error.message
     }
-    return { ok: false, error: new Error(message) };
+    // code(例: "rate_limited")は呼び出し側がレート制限専用の日本語文言に差し替えるために
+    // 使う(招待フロー整理の要件5) — Errorオブジェクトのプロパティとして持ち回す。
+    const wrapped = new Error(message);
+    wrapped.code = code;
+    return { ok: false, error: wrapped };
   }
   if (data?.error) {
-    return { ok: false, error: new Error(data.error) };
+    const wrapped = new Error(data.error);
+    wrapped.code = data.code || "";
+    return { ok: false, error: wrapped };
   }
   return { ok: true, data };
 };
@@ -743,7 +751,19 @@ export const createUserProfileRecord = async ({ name, email, role, companyId, st
       is_primary: primaryStoreId ? storeId === primaryStoreId : index === 0,
     }));
     const { error: userStoreError } = await supabase.from("user_stores").insert(assignments);
-    if (userStoreError) throw userStoreError;
+    if (userStoreError) {
+      // profilesへのinsertは既に成功しているが、店舗の紐付けだけ失敗した状態 — このまま
+      // 放置すると「メールアドレスは既に登録されている(=重複扱い)のに店舗が1件も紐付いて
+      // いない」中途半端な招待が残ってしまい、同じメールアドレスでの再招待もブロックして
+      // しまう(招待フロー整理の要件1)。PostgRESTは複数テーブルにまたがるトランザクションを
+      // クライアントから張れないため、ここではprofiles側を明示的に削除して補償する
+      // (store_managerが自分のスタッフを取り消せるprofiles_delete_company_scopedの
+      // auth_user_id is nullの分岐を利用 — このprofileはauth_user_idがまだnullなので必ず
+      // 削除対象に入る)。
+      await supabase.from("profiles").delete().eq("id", profileId);
+      logSupabaseError({ operation: "createUserProfileRecord", table: "user_stores", companyId, error: userStoreError });
+      throw new Error("店舗の紐付けに失敗したため、招待の作成を取り消しました。もう一度お試しください。");
+    }
   }
 
   return profile;

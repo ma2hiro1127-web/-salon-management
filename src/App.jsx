@@ -145,7 +145,7 @@ import {
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
-import { buildInviteLink, createInviteToken, isInviteExpired } from "./utils/invitations.js";
+import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta } from "./utils/invitations.js";
 import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
@@ -172,6 +172,15 @@ const resolveErrorReason = (error, fallback) => {
   const message = error instanceof Error ? error.message : "";
   if (isAuthTimingErrorMessage(message)) return AUTH_SESSION_EXPIRED_MESSAGE;
   return message || fallback;
+};
+// 招待メール送信(send-invite-email Edge Function)専用のエラーメッセージ解決。Supabase標準の
+// メール送信環境はレート制限が厳しいため、レート制限由来のエラーだけは専用の日本語文言に
+// 差し替える(招待フロー整理の要件5)。それ以外はgetSupabaseErrorMessageの通常の規約に従う。
+const resolveInviteEmailErrorMessage = (error) => {
+  if (error?.code === "rate_limited") {
+    return "短時間に複数回送信されたため、少し時間を空けて再送してください。";
+  }
+  return getSupabaseErrorMessage(error);
 };
 
 const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = null, hasSession = false, authUser = null, setDebugInfo = null } = {}) => {
@@ -323,22 +332,6 @@ const createStoreFormDefaults = () => ({
 // Display order for role subgroups within a store group in ユーザー管理 (higher authority
 // first, matching the hierarchy example: 店舗管理者 above 一般スタッフ).
 const ROLE_GROUP_ORDER = ["system_admin", "company_admin", "store_manager", "staff"];
-
-const getUserStatusMeta = (user) => {
-  if (user?.isActive === false) {
-    return { key: "suspended", label: "停止中", tone: "danger", expiresAt: null };
-  }
-  if (!user?.authUserId) {
-    if (user?.inviteExpiresAt && isInviteExpired(user.inviteExpiresAt)) {
-      return { key: "invite_expired", label: "招待期限切れ", tone: "warning", expiresAt: new Date(user.inviteExpiresAt) };
-    }
-    return { key: "invited", label: "招待中", tone: "info", expiresAt: user?.inviteExpiresAt ? new Date(user.inviteExpiresAt) : null };
-  }
-  if (!user?.lastLoginAt || !user?.loginCount) {
-    return { key: "not_logged_in", label: "未ログイン", tone: "info", expiresAt: null };
-  }
-  return { key: "active", label: "利用中", tone: "success", expiresAt: null };
-};
 
 const getCompanySetupProgress = (company) => {
   const setup = company?.setup || {};
@@ -607,6 +600,12 @@ function App() {
   // spot the user is already looking at.
   const [storeFormStatus, setStoreFormStatus] = useState({ status: "idle", message: "" });
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
+  // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
+  // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
+  const [userFormBusy, setUserFormBusy] = useState(false);
+  // 「再招待」ボタンの二重送信防止。行ごとに独立して無効化するため、対象user.idを保持する
+  // (他のユーザー行の再招待ボタンまで巻き込んで無効化しないため)。
+  const [resendingUserId, setResendingUserId] = useState("");
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
@@ -2219,10 +2218,25 @@ function App() {
       return;
     }
     if (!userForm.name.trim() || !userForm.email.trim()) return;
+    // ボタン連打・二重実行防止(招待フロー整理の要件8)。送信中は早期returnし、Authユーザーの
+    // 重複作成につながる同時多重実行を防ぐ。
+    if (userFormBusy) return;
     const normalizedEmail = userForm.email.trim().toLowerCase();
     const duplicateUser = (appState.users || []).find((user) => user.email === normalizedEmail);
     if (duplicateUser) {
-      setNotice("同じメールアドレスのユーザーが既に登録されています");
+      // 既存行の状態によってメッセージを出し分ける(招待フロー整理の要件1-2)。
+      // 「登録済み」で一律ブロックしていたのが、送信失敗後に同じメールアドレスでもう一度
+      // 招待しようとすると誤解を招くメッセージで詰まってしまう不具合の直接の原因だった —
+      // まだ登録が完了していない(招待中/メール未送信/期限切れ)場合は、新規に招待を作り直す
+      // のではなく既存の行から「再招待」するよう案内する。
+      const duplicateStatus = getUserStatusMeta(duplicateUser);
+      if (duplicateStatus.key === "active" || duplicateStatus.key === "not_logged_in") {
+        setNotice("このメールアドレスはすでに登録済みです");
+      } else if (duplicateStatus.key === "suspended") {
+        setNotice("このメールアドレスは停止中のユーザーとして登録されています。ユーザー一覧から状態をご確認ください");
+      } else {
+        setNotice("このメールアドレスへの招待はすでに作成されています(招待待ち)。ユーザー一覧から「再招待」を押して送信し直してください");
+      }
       return;
     }
     const normalizedCurrentRole = normalizeRole(currentRole);
@@ -2243,6 +2257,7 @@ function App() {
     const requestedStoreIds = (userForm.storeIds.length ? userForm.storeIds : (inviterStoreIds[0] ? [inviterStoreIds[0]] : [])).filter((storeId) => inviterStoreIds.includes(storeId));
     const requestedPrimaryStoreId = inviterStoreIds.includes(userForm.primaryStoreId) ? userForm.primaryStoreId : (requestedStoreIds[0] || "");
 
+    setUserFormBusy(true);
     try {
       // Account creation is deliberately NOT done here: this used to call signUpWithEmail with a
       // hardcoded "password123" the moment an admin clicked 招待する, which (a) left every
@@ -2300,7 +2315,16 @@ function App() {
           redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
         });
         if (!emailResult.ok) {
-          setNotice(`${nextUser.name} を招待しましたが、招待メールの送信に失敗しました: ${getSupabaseErrorMessage(emailResult.error)}（「リンク」からURLをコピーして直接共有することもできます）`);
+          // send-invite-emailはメール送信に失敗した場合、profiles.invitation_statusを
+          // サーバー側で"pending"(メール未送信)に更新済み(要件6: 作成成功/送信失敗を
+          // 明確に分離する) — ローカル状態もそれに合わせておく(次回ハイドレートを待たず
+          // 一覧の表示が即座に正しくなるように)。
+          const pendingState = {
+            ...appState,
+            users: [...(appState.users || []), { ...nextUser, invitationStatus: "pending" }],
+          };
+          persistTenantState(pendingState);
+          setNotice(`${nextUser.name} を招待しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(「再招待」で送信し直すか、「URLコピー」から招待URLを直接共有できます)`);
           return;
         }
         setNotice(`${nextUser.name} を招待し、招待メールを送信しました`);
@@ -2309,6 +2333,8 @@ function App() {
       setNotice(`${nextUser.name} を招待しました。招待リンクを共有してください。`);
     } catch (error) {
       setNotice(getSupabaseErrorMessage(error));
+    } finally {
+      setUserFormBusy(false);
     }
   };
 
@@ -2482,7 +2508,11 @@ function App() {
       setDeleteUserError("自分自身のアカウントは削除できません");
       return;
     }
-    if (!window.confirm(`${targetUser.name}（${targetUser.email}）を削除します。この操作は取り消せません。本当によろしいですか？`)) {
+    const isPendingInvite = !targetUser.authUserId;
+    const confirmMessage = isPendingInvite
+      ? `${targetUser.name}（${targetUser.email}）への招待を取り消します。よろしいですか？`
+      : `${targetUser.name}（${targetUser.email}）を削除します。この操作は取り消せません。本当によろしいですか？`;
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     setDeleteUserSaving(true);
@@ -2491,7 +2521,7 @@ function App() {
       if (isSupabaseConfigured) {
         const result = await deleteUserAccount({ profileId: targetUser.id });
         if (!result.ok) {
-          throw result.error || new Error("削除に失敗しました");
+          throw result.error || new Error(isPendingInvite ? "招待の取り消しに失敗しました" : "削除に失敗しました");
         }
       }
       const nextState = {
@@ -2499,7 +2529,7 @@ function App() {
         users: (appState.users || []).filter((user) => user.id !== targetUser.id),
       };
       persistTenantState(nextState);
-      setNotice(`${targetUser.name} を削除しました`);
+      setNotice(isPendingInvite ? `${targetUser.name} への招待を取り消しました` : `${targetUser.name} を削除しました`);
       closeDeleteUserModal();
     } catch (error) {
       setDeleteUserError(getSupabaseErrorMessage(error));
@@ -2937,40 +2967,56 @@ function App() {
       setNotice(`${user.name} はすでに登録済みです`);
       return;
     }
-    const inviteTokenValue = user.inviteToken || createInviteToken();
-    const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
-    const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    if (isSupabaseConfigured) {
-      const result = await refreshInviteState({ profileId: user.id, inviteToken: inviteTokenValue, inviteExpiresAt });
-      if (!result?.ok && !result?.skipped) {
-        setNotice(`招待リンクの更新に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
+    // ボタン連打・二重実行防止(要件8)。この行の再招待が既に進行中なら何もしない。
+    if (resendingUserId === user.id) return;
+    setResendingUserId(user.id);
+    try {
+      // 既存のuser_id/emailはそのまま(Authユーザーを重複作成しない)、トークンだけは
+      // 毎回新しく発行する(要件3: 「新しい有効な招待リンクを発行してください」— 古いリンクを
+      // 再度有効化するのではなく、常に新しいトークンに切り替える)。
+      const inviteTokenValue = createInviteToken();
+      const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
+      const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      if (isSupabaseConfigured) {
+        const result = await refreshInviteState({ profileId: user.id, inviteToken: inviteTokenValue, inviteExpiresAt });
+        if (!result?.ok && !result?.skipped) {
+          setNotice(`招待リンクの更新に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
+          return;
+        }
+      }
+      const nextState = {
+        ...appState,
+        users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt } : item),
+      };
+      persistTenantState(nextState);
+
+      if (!isSupabaseConfigured) {
+        setNotice(`${user.name} の招待リンクを更新しました（7日間有効）`);
         return;
       }
-    }
-    const nextState = {
-      ...appState,
-      users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt } : item),
-    };
-    persistTenantState(nextState);
 
-    if (!isSupabaseConfigured) {
-      setNotice(`${user.name} の招待リンクを更新しました（7日間有効）`);
-      return;
+      // This used to stop here and report success even though no email was ever sent — the
+      // token/expiry refresh above only updates the database row. Actually dispatching the email
+      // is a separate, genuinely-fallible step (Supabase mail service error, permission denied,
+      // rate limit) that must be reported honestly rather than assumed to have worked.
+      const emailResult = await sendInviteEmail({
+        token: inviteTokenValue,
+        redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
+      });
+      if (!emailResult.ok) {
+        // send-invite-emailはメール送信に失敗した場合、サーバー側でinvitation_statusを
+        // "pending"(メール未送信)に更新済み — ローカル状態もそれに合わせる。
+        persistTenantState({
+          ...nextState,
+          users: (nextState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "pending" } : item),
+        });
+        setNotice(`招待リンクは更新しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(「URLコピー」から招待URLを直接共有することもできます)`);
+        return;
+      }
+      setNotice(`${user.name} に招待メールを再送しました（7日間有効）`);
+    } finally {
+      setResendingUserId("");
     }
-
-    // This used to stop here and report success even though no email was ever sent — the
-    // token/expiry refresh above only updates the database row. Actually dispatching the email
-    // is a separate, genuinely-fallible step (Supabase mail service error, permission denied,
-    // rate limit) that must be reported honestly rather than assumed to have worked.
-    const emailResult = await sendInviteEmail({
-      token: inviteTokenValue,
-      redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
-    });
-    if (!emailResult.ok) {
-      setNotice(`招待リンクは更新しましたが、招待メールの送信に失敗しました: ${getSupabaseErrorMessage(emailResult.error)}（「リンク」からURLをコピーして直接共有することもできます）`);
-      return;
-    }
-    setNotice(`${user.name} に招待メールを再送しました（7日間有効）`);
   };
 
   const handleCopyInviteLink = async (user) => {
@@ -5659,7 +5705,7 @@ function App() {
                     <select value={invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "")} onChange={(event) => setUserForm((prev) => ({ ...prev, role: event.target.value }))}>
                       {invitableRoles.map((roleOption) => <option key={roleOption} value={roleOption}>{getRoleLabel(roleOption)}</option>)}
                     </select>
-                    <button className="primary-button" type="button" onClick={handleSaveUser}>招待する</button>
+                    <button className="primary-button" type="button" onClick={handleSaveUser} disabled={userFormBusy}>{userFormBusy ? "送信中…" : "招待する"}</button>
                   </div>
                   <div className="inline-form">
                     <label className="field">
@@ -5736,17 +5782,22 @@ function App() {
                                             {statusMeta.expiresAt ? <span>招待期限 {statusMeta.expiresAt.toLocaleDateString("ja-JP")}</span> : null}
                                             {isRegistered && user.lastLoginAt ? <span>最終ログイン {new Date(user.lastLoginAt).toLocaleDateString("ja-JP")}</span> : null}
                                           </div>
+                                          {statusMeta.key === "invite_send_failed" ? (
+                                            <p className="dashboard-hint">招待情報は作成されましたが、メール送信に失敗しました。再送信または招待URLをコピーしてください。</p>
+                                          ) : null}
                                           <div className="row-actions">
                                             <button className="text-button" type="button" onClick={() => handleEditUser(user)}>編集</button>
                                             <button className="text-button" type="button" onClick={() => handleToggleUserStatus(user)}>{user.isActive ? "停止" : "再開"}</button>
                                             {!isRegistered && (
                                               <>
-                                                <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>招待リンクをコピー</button>
-                                                <button className="text-button" type="button" onClick={() => handleInviteEmail(user)}>招待メール再送</button>
+                                                <button className="text-button" type="button" onClick={() => handleCopyInviteLink(user)}>URLコピー</button>
+                                                <button className="text-button" type="button" onClick={() => handleInviteEmail(user)} disabled={resendingUserId === user.id}>
+                                                  {resendingUserId === user.id ? "送信中…" : "再招待"}
+                                                </button>
                                               </>
                                             )}
                                             {user.id !== currentUser?.profileId && (
-                                              <button className="text-button danger" type="button" onClick={() => requestDeleteUser(user)}>削除</button>
+                                              <button className="text-button danger" type="button" onClick={() => requestDeleteUser(user)}>{isRegistered ? "削除" : "招待取消"}</button>
                                             )}
                                           </div>
                                         </div>
@@ -5840,25 +5891,30 @@ function App() {
         {deleteUserTargetId && (() => {
           const deleteTarget = (appState.users || []).find((user) => user.id === deleteUserTargetId);
           if (!deleteTarget) return null;
+          const isPendingInvite = !deleteTarget.authUserId;
           return (
             <div className="modal-overlay" onClick={closeDeleteUserModal}>
               <div className="modal-card" onClick={(event) => event.stopPropagation()}>
                 <div className="panel-heading compact">
                   <div>
-                    <p className="eyebrow">DELETE USER</p>
-                    <h3>このユーザーを削除しますか？</h3>
+                    <p className="eyebrow">{isPendingInvite ? "CANCEL INVITE" : "DELETE USER"}</p>
+                    <h3>{isPendingInvite ? "この招待を取り消しますか？" : "このユーザーを削除しますか？"}</h3>
                   </div>
                 </div>
                 {deleteUserError ? <div className="notice-box">{deleteUserError}</div> : null}
                 <p>
-                  <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）を削除します。
+                  <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）{isPendingInvite ? "への招待を取り消します。" : "を削除します。"}
                 </p>
                 <p className="helper-text">
-                  Supabaseの認証アカウント・ユーザー情報・所属店舗・招待情報が削除されます。このユーザーが過去に入力した売上・費用・月締め等の業務データは削除されず、履歴として保持されます。この操作は取り消せません。
+                  {isPendingInvite
+                    ? "このメールアドレスはまだ登録が完了していないため、招待情報を削除するだけです。あとから同じメールアドレスで再度招待できます。"
+                    : "Supabaseの認証アカウント・ユーザー情報・所属店舗・招待情報が削除されます。このユーザーが過去に入力した売上・費用・月締め等の業務データは削除されず、履歴として保持されます。この操作は取り消せません。"}
                 </p>
                 <div className="row-actions" style={{ marginTop: 12 }}>
                   <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>キャンセル</button>
-                  <button className="primary-button danger-button" type="button" onClick={handleConfirmDeleteUser} disabled={deleteUserSaving}>{deleteUserSaving ? "削除中..." : "削除する"}</button>
+                  <button className="primary-button danger-button" type="button" onClick={handleConfirmDeleteUser} disabled={deleteUserSaving}>
+                    {deleteUserSaving ? (isPendingInvite ? "取消中..." : "削除中...") : (isPendingInvite ? "招待を取り消す" : "削除する")}
+                  </button>
                 </div>
               </div>
             </div>

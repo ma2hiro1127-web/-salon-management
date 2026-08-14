@@ -163,6 +163,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .status-pill.saved { background: rgba(46, 163, 97, 0.12); color: var(--success); }
 .status-pill.saving { background: rgba(47, 125, 246, 0.12); color: var(--accent); }
 .status-pill.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
+.status-pill.warning { background: rgba(180, 83, 9, 0.12); color: var(--warning); }
 .helper-text { color: var(--muted); margin-bottom: 12px; }
 .input-grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .input-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
