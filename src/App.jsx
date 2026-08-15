@@ -91,6 +91,7 @@ import {
   loadTenantStateFromSupabase,
   ensureProfileForAuthUser,
   createCompanyRecord,
+  updateCompanyAiAnalysisEnabled,
   createStoreRecord,
   updateStoreRecord,
   updateStoreStatus,
@@ -2232,6 +2233,11 @@ function App() {
         name: normalizedName,
         code: normalizedCode,
         isActive: existingCompany?.isActive ?? true,
+        // このフォームでは編集できない項目(system_admin専用のAI分析トグルからのみ変更可能)
+        // なので、既存値をそのまま引き継ぐ — ここで拾わないと、名前変更等の保存のたびに
+        // ローカル表示上だけAI分析がOFFに戻って見えてしまう(実際のDBの値は変わらないが、
+        // 次のhydrateまで表示が食い違う)。
+        aiAnalysisEnabled: existingCompany?.aiAnalysisEnabled ?? false,
         contractStatus: companyForm.contractStatus || existingCompany?.contractStatus || "trial",
         businessType: companyForm.businessType || existingCompany?.businessType || "salon",
         startedAt: existingCompany?.startedAt || new Date().toISOString(),
@@ -2749,6 +2755,30 @@ function App() {
     const nextState = {
       ...appState,
       companies: (appState.companies || []).map((item) => item.id === company.id ? { ...item, isActive: !item.isActive, lastUpdatedAt: new Date().toISOString() } : item),
+    };
+    persistTenantState(nextState);
+  };
+
+  // AI分析(AI経営アシスタント)の会社単位ON/OFF。system_admin限定(canManageCompanies)
+  // — company_adminが自分の会社のAI契約を勝手に有効化できないようにする(要件: 通常
+  // ユーザーが自由に変更するのではなくsystem_admin側で管理する)。実際の強制力は
+  // companies_update_system_only RLS(system_admin以外はUPDATE自体が通らない)と、
+  // ai-assistant Edge Function側のcompany_id判定にある — このボタンはあくまでその操作口。
+  // OFFにしても過去のAI分析結果(チャット履歴等)は削除しない、新規のAPI呼び出しだけが
+  // 止まる(要件)。
+  const handleToggleCompanyAiAnalysis = async (company) => {
+    const nextEnabled = !company.aiAnalysisEnabled;
+    if (!window.confirm(`${company.name} のAI分析機能を${nextEnabled ? "有効化" : "無効化"}しますか？${nextEnabled ? "" : "\n無効化すると、この会社では新規のAI分析・AI APIの呼び出しができなくなります(過去の分析結果は削除されません)。"}`)) return;
+    if (isSupabaseConfigured) {
+      const result = await updateCompanyAiAnalysisEnabled({ companyId: company.id, enabled: nextEnabled });
+      if (!result.ok) {
+        setNotice(`AI分析設定の変更に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+        return;
+      }
+    }
+    const nextState = {
+      ...appState,
+      companies: (appState.companies || []).map((item) => item.id === company.id ? { ...item, aiAnalysisEnabled: nextEnabled, lastUpdatedAt: new Date().toISOString() } : item),
     };
     persistTenantState(nextState);
   };
@@ -4910,7 +4940,7 @@ function App() {
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
               </div>
               </div>
-              <AiAssistantCard onOpen={() => openAiChat()} onQuickQuestion={(question) => openAiChat(question)} />
+              {currentCompany?.aiAnalysisEnabled ? <AiAssistantCard onOpen={() => openAiChat()} onQuickQuestion={(question) => openAiChat(question)} /> : null}
               {todayEntry ? (
                 <div className="today-result-card">
                   <div className="panel-heading compact">
@@ -5173,10 +5203,12 @@ function App() {
                     {showRepeatCustomersField ? <MetricCard label="再来率" value={percent(dailyEffectiveCustomers ? (parseNumber(dailyForm.repeatCustomers) / dailyEffectiveCustomers) * 100 : 0)} /> : null}
                   </div>
 
-                  <div className="insight-card">
-                    <p className="eyebrow">今日のAI分析</p>
-                    <strong>{dailyInsight || "分析に必要なデータが不足しています"}</strong>
-                  </div>
+                  {currentCompany?.aiAnalysisEnabled ? (
+                    <div className="insight-card">
+                      <p className="eyebrow">今日のAI分析</p>
+                      <strong>{dailyInsight || "分析に必要なデータが不足しています"}</strong>
+                    </div>
+                  ) : null}
 
                   <div className="calendar-card">
                     <div className="panel-heading compact">
@@ -5724,11 +5756,22 @@ function App() {
                         <span>店舗数 {company.stores?.length || 0}</span>
                         <span>ユーザー数 {companyUsers.length}</span>
                         <span>契約 {company.contractStatus || "trial"}</span>
+                        {canManageCompanies(currentRole) && (
+                          <span className={`status-pill ${company.aiAnalysisEnabled ? "saved" : "warning"}`}>AI分析 {company.aiAnalysisEnabled ? "ON" : "OFF"}</span>
+                        )}
                       </div>
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
                         <button className="text-button" type="button" onClick={() => handleToggleCompanyStatus(company)}>{company.isActive ? "停止" : "再開"}</button>
+                        {/* AI分析の契約ON/OFFはsystem_admin限定(要件) — company_adminには
+                            ボタン自体を出さない(UIを隠すだけでなくRLS/Edge Function側でも
+                            強制しているのは上のhandleToggleCompanyAiAnalysis参照)。 */}
+                        {canManageCompanies(currentRole) && (
+                          <button className="text-button" type="button" onClick={() => handleToggleCompanyAiAnalysis(company)}>
+                            AI分析を{company.aiAnalysisEnabled ? "無効化" : "有効化"}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -6340,21 +6383,30 @@ function App() {
           </div>
         )}
       </main>
-      <AiFloatingButton onClick={() => openAiChat()} />
-      {aiChatOpen ? (
-        <AiChatScreen
-          role={currentRole}
-          storeName={selectedStoreEntity?.name || selectedStore}
-          storeId={selectedStoreId}
-          monthValue={selectedMonth}
-          isAllStoresView={isAllStoresView}
-          summary={summary}
-          target={target}
-          businessDaySummary={businessDaySummary}
-          initialQuestion={aiChatInitialQuestion}
-          onClose={closeAiChat}
-        />
-      ) : null}
+      {/* AI分析はcompany.aiAnalysisEnabledがtrueの会社のみ表示する(要件: OFFの会社では
+          AI分析ボタン・AIコメント等を一切表示しない)。実際の利用停止はai-assistant Edge
+          Function側のcompany_id判定が担保しており、これはあくまでUI上の入口を隠すだけ —
+          フローティングボタン自体を出さなければチャット画面(AiChatScreen)を開く経路が
+          そもそも無くなる。 */}
+      {currentCompany?.aiAnalysisEnabled && (
+        <>
+          <AiFloatingButton onClick={() => openAiChat()} />
+          {aiChatOpen ? (
+            <AiChatScreen
+              role={currentRole}
+              storeName={selectedStoreEntity?.name || selectedStore}
+              storeId={selectedStoreId}
+              monthValue={selectedMonth}
+              isAllStoresView={isAllStoresView}
+              summary={summary}
+              target={target}
+              businessDaySummary={businessDaySummary}
+              initialQuestion={aiChatInitialQuestion}
+              onClose={closeAiChat}
+            />
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

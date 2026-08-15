@@ -234,6 +234,24 @@ Deno.serve(async (req) => {
       return json({ error: "利用権限がありません" }, 403);
     }
 
+    // AI分析は会社単位のON/OFF(companies.ai_analysis_enabled、既定false)で契約制御する
+    // 有料オプション。URLやAPIを直接叩かれた場合でもAnthropic APIへは絶対に到達しないよう、
+    // ここでcompany_idを基準に判定してから止める(画面側でボタンを隠すだけでは不十分 —
+    // 要件: サーバー側・Edge Function側でも利用可否をチェックする)。company_idはクライアント
+    // から受け取らず、必ずcallerProfile(JWTから解決した本人のprofiles行)のcompany_idを使う。
+    if (!callerProfile.company_id) {
+      return json({ error: "会社情報を確認できませんでした" }, 403);
+    }
+    const { data: callerCompany, error: callerCompanyError } = await admin
+      .from("companies")
+      .select("id, ai_analysis_enabled")
+      .eq("id", callerProfile.company_id)
+      .maybeSingle();
+    if (callerCompanyError) throw callerCompanyError;
+    if (!callerCompany?.ai_analysis_enabled) {
+      return json({ error: "この会社ではAI分析機能を利用できません。契約状況についてはシステム管理者にお問い合わせください。" }, 403);
+    }
+
     if (isAllStoresView) {
       if (!ADMIN_ROLES.includes(callerProfile.role)) {
         return json({ error: "全店舗の分析は会社管理者・システム管理者のみ利用できます" }, 403);

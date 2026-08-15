@@ -595,8 +595,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
 
   const [{ data: companiesData, error: companiesError }, { data: storesData, error: storesError }, { data: profilesData, error: profilesError }, { data: userStoresData, error: userStoresError }] = await Promise.all([
     companyFilter
-      ? supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").order("created_at", { ascending: true }),
+      ? supabase.from("companies").select("id, name, code, is_active, ai_analysis_enabled, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("companies").select("id, name, code, is_active, ai_analysis_enabled, created_at, updated_at").order("created_at", { ascending: true }),
     // Ordered by creation time, not name: a fresh session/device with no cached selection
     // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
     // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
@@ -635,6 +635,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     name: company.name,
     code: company.code,
     isActive: company.is_active !== false,
+    aiAnalysisEnabled: Boolean(company.ai_analysis_enabled),
     contractStatus: "active",
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
@@ -730,6 +731,26 @@ export const createCompanyRecord = async ({ name, code, createdByProfileId }) =>
   }
 
   return data;
+};
+
+// AI分析(AI経営アシスタント)の会社単位ON/OFF。companiesのUPDATE用RLS(companies_update_
+// system_only)が既にsystem_admin限定になっているため、他の会社管理操作(createCompanyRecord
+// 等)と同じくEdge Functionを介さず直接クライアントから更新する — RLSそのものが権限の実体。
+export const updateCompanyAiAnalysisEnabled = async ({ companyId, enabled }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateCompanyAiAnalysisEnabled", table: "companies", companyId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase.from("companies").update({ ai_analysis_enabled: Boolean(enabled), updated_at: new Date().toISOString() }).eq("id", companyId).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateCompanyAiAnalysisEnabled", table: "companies", companyId, error });
+    return { ok: false, error };
+  }
 };
 
 export const createStoreRecord = async ({ companyId, name, code }) => {
