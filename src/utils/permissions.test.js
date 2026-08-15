@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole } from "./permissions.js";
+import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole } from "./permissions.js";
 
 test("system and company admins can access all stores in their company", () => {
   assert.deepEqual(getAllowedStoreIdsForRole({ role: "system_admin", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s1"] }), ["s1", "s2"]);
@@ -38,4 +38,18 @@ test("role-based management permissions are scoped correctly", () => {
   assert.equal(canViewUserManagement("system_admin"), true);
   assert.equal(canViewUserManagement("company_admin"), true);
   assert.equal(canViewUserManagement("store_manager"), true);
+});
+
+test("store lifecycle (suspend/resume/archive/restore) is allowed for system_admin/company_admin only, never store_manager/staff", () => {
+  assert.equal(canChangeStoreLifecycle("system_admin"), true);
+  assert.equal(canChangeStoreLifecycle("company_admin"), true);
+  assert.equal(canChangeStoreLifecycle("store_manager"), false);
+  assert.equal(canChangeStoreLifecycle("staff"), false);
+});
+
+test("hard-deleting a store is system_admin only — company_admin can suspend/archive but never permanently delete", () => {
+  assert.equal(canHardDeleteStore("system_admin"), true);
+  assert.equal(canHardDeleteStore("company_admin"), false);
+  assert.equal(canHardDeleteStore("store_manager"), false);
+  assert.equal(canHardDeleteStore("staff"), false);
 });

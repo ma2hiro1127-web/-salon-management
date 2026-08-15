@@ -74,7 +74,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -93,7 +93,8 @@ import {
   createCompanyRecord,
   createStoreRecord,
   updateStoreRecord,
-  updateStoreActiveState,
+  updateStoreStatus,
+  deleteStoreCompletely,
   normalizeDailyFieldSettings,
   normalizeMonthlyTargetFieldSettings,
   normalizeHiddenClosingCategories,
@@ -621,6 +622,14 @@ function App() {
   // ないため取得しない。
   const [storeSearch] = useState("");
   const [storeSort] = useState("achievement");
+  // アーカイブ済み店舗は店舗管理画面のデフォルト表示から除外し(要件5)、このトグルで専用の
+  // 一覧として切り替え表示する。
+  const [showArchivedStores, setShowArchivedStores] = useState(false);
+  // 完全削除の確認モーダル(要件2): 対象店舗名を完全一致で入力するまでボタンは無効のまま。
+  const [hardDeleteTargetId, setHardDeleteTargetId] = useState("");
+  const [hardDeleteConfirmText, setHardDeleteConfirmText] = useState("");
+  const [hardDeleteSaving, setHardDeleteSaving] = useState(false);
+  const [hardDeleteError, setHardDeleteError] = useState("");
   // Inline feedback right next to the 店舗追加 button — the shared top-of-page `notice` can be
   // scrolled out of view once the store form is scrolled into view (via focusStoreForm), making
   // a real success/failure result look like nothing happened. This always renders in the same
@@ -760,7 +769,12 @@ function App() {
   // selectedStoreがこの予約値のときは、以降のすべての店舗依存ロジックを分岐させる。
   const isAllStoresView = selectedStore === ALL_STORES_VALUE;
   const currentCompany = useMemo(() => appState.companies?.find((company) => company.id === appState.currentCompanyId) || appState.companies?.[0] || null, [appState.companies, appState.currentCompanyId]);
-  const currentCompanyStores = useMemo(() => currentCompany?.stores || [], [currentCompany]);
+  // アーカイブ済み店舗を、店舗切替・ランキング・全店舗集計・日次入力対象など「通常運用」の
+  // あらゆる場面から除外する単一の定義点(要件5)。停止中の店舗はここでは除外しない — 停止中
+  // でも過去データの閲覧・店舗切替自体は引き続き可能で、新規入力のみを個別にブロックする
+  // 仕様のため。店舗管理画面(filteredStores)だけは、アーカイブ済み店舗の復元操作が必要な
+  // ため意図的にこの変数を経由せず currentCompany.stores を直接参照している。
+  const currentCompanyStores = useMemo(() => (currentCompany?.stores || []).filter((store) => store.status !== "archived"), [currentCompany]);
   // Resolve by selectedStoreId first — see the self-healing effect below for why a name-only
   // match can briefly be stale (e.g. right after another device renames the current store).
   // 全店舗ビューでは実店舗にフォールバックせず、意図的にnullのままにする(そうしないと
@@ -901,12 +915,15 @@ function App() {
     const roleScoped = canManageStores(currentRole)
       ? (currentCompany?.stores || [])
       : (currentCompany?.stores || []).filter((store) => allowedStoreIds.includes(store.id));
-    const source = roleScoped.filter((store) => {
+    // アーカイブ済み店舗は「アーカイブ店舗を表示」トグルがオンの時だけ表示する専用一覧とし、
+    // 通常時は運営中/停止中のみを表示する(要件5)。
+    const statusScoped = roleScoped.filter((store) => (showArchivedStores ? store.status === "archived" : store.status !== "archived"));
+    const source = statusScoped.filter((store) => {
       if (!searchValue) return true;
       return (store.name || "").toLowerCase().includes(searchValue);
     });
     return sortStoresForManagement(source, storeSort);
-  }, [currentCompany?.stores, storeSearch, storeSort, currentRole, allowedStoreIds]);
+  }, [currentCompany?.stores, storeSearch, storeSort, currentRole, allowedStoreIds, showArchivedStores]);
   const activeBusinessType = companyForm.businessType || currentCompany?.businessType || "salon";
   const storeNamePlaceholder = getBusinessTypeDefaultStoreName(activeBusinessType);
 
@@ -2747,19 +2764,42 @@ function App() {
     setNotice(company.isActive ? `${company.name} を停止しました` : `${company.name} を再開しました`);
   };
 
-  // These four used to only call persistTenantState (local state + the legacy tenant_snapshots
-  // blob) — never the real stores.is_active column. Any user-visible "停止しました"/
-  // "アーカイブしました" silently reverted on the very next hydrate (login, reload, another
-  // device), since a fresh fetch from Supabase always wins over the stale local copy. Fixed to
-  // persist through updateStoreActiveState first, only touching local state after the write
-  // actually succeeds, with an honest failure message otherwise — same pattern as the rest of
-  // this app's write paths. "削除" intentionally maps to the same is_active = false as "アーカ
-  // イブ" (see updateStoreActiveState's own comment: a real row delete would cascade-destroy
-  // that store's historical daily_sales/monthly_targets/etc, which must never happen).
-  const applyStoreActiveStateLocally = (storeId, isActive) => {
+  // 店舗の状態は運営中/停止中/アーカイブの3段階(要件1) — 停止/再開/アーカイブ/復元の4操作は
+  // すべて update-store-status Edge Function(service-role)経由にする。以前はこの4操作が全て
+  // 同じ stores.is_active フラグを書くだけで見分けがつかず、「削除」ボタンも実質同じ処理
+  // だった。誤クリックで店舗と過去データを失わないことを最優先に、通常の「削除」ボタンは
+  // 廃止し(要件1)、完全削除は別途 system_admin 限定の確認モーダル経由のみに限定する(要件2)。
+  const STORE_LIFECYCLE_ACTIONS = {
+    suspend: {
+      confirmMessage: (name) => `${name} を停止しますか？\n新規の売上・日次入力・費用入力ができなくなります。過去のデータは削除されません。`,
+      successMessage: (name) => `${name} を停止しました`,
+      failureMessage: "店舗の停止に失敗しました",
+      nextStatus: "suspended",
+    },
+    resume: {
+      confirmMessage: (name) => `${name} の運営を再開しますか？`,
+      successMessage: (name) => `${name} の運営を再開しました`,
+      failureMessage: "店舗の再開に失敗しました",
+      nextStatus: "active",
+    },
+    archive: {
+      confirmMessage: (name) => `${name} をアーカイブしますか？\n通常の店舗一覧・店舗切替・ランキング・全店舗集計・日次入力対象から除外されます。過去のデータは削除されず、アーカイブ一覧からいつでも確認・復元できます。`,
+      successMessage: (name) => `${name} をアーカイブしました`,
+      failureMessage: "店舗のアーカイブに失敗しました",
+      nextStatus: "archived",
+    },
+    restore: {
+      confirmMessage: (name) => `${name} を通常の店舗一覧へ復元しますか？`,
+      successMessage: (name) => `${name} を復元しました`,
+      failureMessage: "店舗の復元に失敗しました",
+      nextStatus: "active",
+    },
+  };
+
+  const applyStoreStatusLocally = (storeId, status) => {
     const nextCompany = {
       ...currentCompany,
-      stores: (currentCompany?.stores || []).map((item) => (item.id === storeId ? { ...item, isActive, status: isActive ? "active" : "archived" } : item)),
+      stores: (currentCompany?.stores || []).map((item) => (item.id === storeId ? { ...item, status, isActive: status !== "archived" } : item)),
     };
     const nextState = {
       ...appState,
@@ -2768,18 +2808,19 @@ function App() {
     persistTenantState(nextState);
   };
 
-  const handleToggleStoreStatus = async (store) => {
-    if (!window.confirm(`${store.name} を${store.isActive ? "利用停止" : "再開"}しますか？`)) return;
-    const nextActive = !store.isActive;
+  const handleStoreLifecycleAction = async (store, action) => {
+    const meta = STORE_LIFECYCLE_ACTIONS[action];
+    if (!meta) return;
+    if (!window.confirm(meta.confirmMessage(store.name))) return;
     if (isSupabaseConfigured) {
-      const result = await updateStoreActiveState({ storeId: store.id, isActive: nextActive });
+      const result = await updateStoreStatus({ storeId: store.id, action });
       if (!result.ok) {
-        setNotice(`店舗状態の更新に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+        setNotice(`${meta.failureMessage}: ${getSupabaseErrorMessage(result.error)}`);
         return;
       }
     }
-    applyStoreActiveStateLocally(store.id, nextActive);
-    setNotice(nextActive ? `${store.name} を再開しました` : `${store.name} を停止しました`);
+    applyStoreStatusLocally(store.id, meta.nextStatus);
+    setNotice(meta.successMessage(store.name));
   };
 
   // handleSaveStore keeps companySnapshots[companyId].stores (the legacy display-name array —
@@ -2822,42 +2863,43 @@ function App() {
     }
   };
 
-  const handleArchiveStore = async (store) => {
-    if (!window.confirm(`${store.name} をアーカイブしますか？`)) return;
-    if (isSupabaseConfigured) {
-      const result = await updateStoreActiveState({ storeId: store.id, isActive: false });
-      if (!result.ok) {
-        setNotice(`店舗のアーカイブに失敗しました: ${getSupabaseErrorMessage(result.error)}`);
-        return;
-      }
-    }
-    applyStoreActiveStateLocally(store.id, false);
-    setNotice(`${store.name} をアーカイブしました`);
+  // 完全削除(要件2): system_admin限定、対象店舗名を完全一致で入力させて初めて削除ボタンが
+  // 有効になる確認モーダル経由のみ。ワンクリック削除は一切ない。関連データが1件でもあれば
+  // delete-store Edge Function側で拒否される(要件3) — このモーダルはその拒否結果を
+  // そのままエラー表示するだけで、クライアント側では「削除できる/できない」を判定しない
+  // (判定はサーバー側が唯一の正)。
+  const requestHardDeleteStore = (store) => {
+    setHardDeleteTargetId(store.id);
+    setHardDeleteConfirmText("");
+    setHardDeleteError("");
   };
 
-  const handleRestoreStore = async (store) => {
-    if (isSupabaseConfigured) {
-      const result = await updateStoreActiveState({ storeId: store.id, isActive: true });
-      if (!result.ok) {
-        setNotice(`店舗の復元に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
-        return;
-      }
-    }
-    applyStoreActiveStateLocally(store.id, true);
-    setNotice(`${store.name} を復元しました`);
+  const closeHardDeleteModal = () => {
+    setHardDeleteTargetId("");
+    setHardDeleteConfirmText("");
+    setHardDeleteError("");
   };
 
-  const handleDeleteStore = async (store) => {
-    if (!window.confirm(`${store.name} を削除しますか？（過去の売上・目標等のデータは保持されます）`)) return;
-    if (isSupabaseConfigured) {
-      const result = await updateStoreActiveState({ storeId: store.id, isActive: false });
-      if (!result.ok) {
-        setNotice(`店舗の削除に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
-        return;
+  const handleConfirmHardDeleteStore = async () => {
+    const target = (currentCompany?.stores || []).find((store) => store.id === hardDeleteTargetId);
+    if (!target || hardDeleteConfirmText !== target.name) return;
+    setHardDeleteSaving(true);
+    setHardDeleteError("");
+    try {
+      if (isSupabaseConfigured) {
+        const result = await deleteStoreCompletely({ storeId: target.id, confirmName: hardDeleteConfirmText });
+        if (!result.ok) {
+          setHardDeleteError(getSupabaseErrorMessage(result.error));
+          return;
+        }
       }
+      const nextCompany = { ...currentCompany, stores: (currentCompany?.stores || []).filter((store) => store.id !== target.id) };
+      persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
+      setNotice(`${target.name} を完全に削除しました`);
+      closeHardDeleteModal();
+    } finally {
+      setHardDeleteSaving(false);
     }
-    applyStoreActiveStateLocally(store.id, false);
-    setNotice(`${store.name} を削除しました`);
   };
 
   const handleToggleUserStatus = async (user) => {
@@ -3540,6 +3582,16 @@ function App() {
       return { ok: false, skipped: true };
     }
 
+    // 停止中の店舗は新規入力不可(要件1)。UI側の最終防御 — 実際の拒否はRLS
+    // (daily_sales_insert_company_scoped、s.status = 'active' 条件)側でも行われる。
+    if (selectedStoreEntity?.status === "suspended") {
+      if (!silent) {
+        setNotice("この店舗は現在停止中のため、新規の売上・日次入力はできません");
+        persistSaveStatus("error", "店舗が停止中のため保存できません", true);
+      }
+      return { ok: false, skipped: true };
+    }
+
     if (dailyMode === "view") {
       return { ok: true, skipped: true };
     }
@@ -3826,6 +3878,13 @@ function App() {
 
     const savedStoreName = selectedStore;
     const { company, store } = resolveTargetCompanyAndStore();
+    // 停止中の店舗は新規入力不可(要件1)。全店舗目標(上のisAllStoresView分岐)は個別店舗の
+    // 状態とは無関係のため対象外 — ここは個別店舗の目標保存のみをガードする。
+    if (store?.status === "suspended") {
+      setTargetSaveStatus({ status: "error", message: "この店舗は現在停止中のため保存できません" });
+      if (!silent) setNotice("この店舗は現在停止中のため、月間目標を保存できません");
+      return { ok: false, skipped: true };
+    }
     if (!isSupabaseConfigured) {
       // Local-only/dev mode: mirror straight into appState (still explicit-save, not
       // per-keystroke) so the rest of the app reflects it.
@@ -4009,6 +4068,12 @@ function App() {
     const nextItem = { id: itemId, name: fixedForm.name, category: fixedForm.category || "", categoryKey: fixedForm.categoryKey, memo: fixedForm.memo || "", periodType, startMonth, endMonth };
 
     const { company, store } = resolveTargetCompanyAndStore();
+    // 停止中の店舗は新規の費用登録不可(要件1)。既存項目の編集(isEditing)はRLS側でも
+    // ブロックしていない(INSERTのみ制限)ため、ここも新規登録のみをガードする。
+    if (!isEditing && store?.status === "suspended") {
+      setNotice("この店舗は現在停止中のため、新しい費用を登録できません");
+      return;
+    }
     if (isSupabaseConfigured) {
       if (!company?.id || !store?.id) {
         setNotice("店舗情報を確認できませんでした");
@@ -4964,6 +5029,9 @@ function App() {
               <div className="empty-card">全店舗ビューでは日次入力はできません。実績は登録店舗ごとの日締め済みデータから自動集計されます。入力する場合は店舗を選択してください。</div>
             ) : (
               <>
+                {selectedStoreEntity?.status === "suspended" && (
+                  <div className="notice-box warning">この店舗は現在停止中です。新規の売上・日次入力はできません(過去のデータは引き続き確認できます)。「店舗管理」から運営を再開できます。</div>
+                )}
                 <section className="panel">
                   <div className="panel-heading">
                     <div>
@@ -5191,6 +5259,9 @@ function App() {
               <div className="empty-card">店舗を追加してから月締めを行ってください。</div>
             ) : (
               <>
+                {!isAllStoresView && selectedStoreEntity?.status === "suspended" && (
+                  <div className="notice-box warning">この店舗は現在停止中です。新規の目標・費用登録はできません(過去のデータは引き続き確認できます)。「店舗管理」から運営を再開できます。</div>
+                )}
                 {activeMonthlyTab === "target" && (
                   <section className="panel">
                     <div className="panel-heading">
@@ -5878,18 +5949,27 @@ function App() {
                 </>
               )}
             </div>
+            {canManageStores(currentRole) && (
+              <div className="row-actions" style={{ marginBottom: 4 }}>
+                <button className="secondary-button" type="button" onClick={() => setShowArchivedStores((prev) => !prev)}>
+                  {showArchivedStores ? "運営中/停止中の店舗を表示" : "アーカイブ店舗を表示"}
+                </button>
+              </div>
+            )}
             {filteredStores.length ? (
               <div className="card-grid store-card-grid">
                 {filteredStores.map((store) => {
                   const summary = computeStoreSummary(store, { staffCount: store.staffIds?.length || store.staffCount || 0 });
-                  const statusLabel = store.status === "archived" ? "アーカイブ" : store.isActive === false ? "停止" : "運営中";
+                  const statusLabel = store.status === "archived" ? "アーカイブ" : store.status === "suspended" ? "停止中" : "運営中";
+                  const statusTone = store.status === "archived" ? "warning" : store.status === "suspended" ? "error" : "saved";
+                  const canOperate = canChangeStoreLifecycle(currentRole);
                   return (
                     <div key={store.id} className="info-card store-info-card">
                       <div className="info-card-head">
                         <div>
                           <strong>{store.name}</strong>
                         </div>
-                        <span className={`status-pill ${store.isActive === false || store.status === "archived" ? "error" : "saved"}`}>{statusLabel}</span>
+                        <span className={`status-pill ${statusTone}`}>{statusLabel}</span>
                       </div>
                       <div className="store-metrics">
                         <div>
@@ -5910,17 +5990,28 @@ function App() {
                         {canEditStoreName(currentRole) && (canManageStores(currentRole) || allowedStoreIds.includes(store.id)) && (
                           <button className="text-button" type="button" onClick={() => handleEditStore(store)}>編集</button>
                         )}
-                        {canManageStores(currentRole) && (store.status === "archived" ? (
-                          <button className="text-button" type="button" onClick={() => handleRestoreStore(store)}>復元</button>
-                        ) : (
-                          <button className="text-button" type="button" onClick={() => handleToggleStoreStatus(store)}>{store.isActive ? "停止" : "再開"}</button>
-                        ))}
+                        {canOperate && store.status === "archived" && (
+                          <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "restore")}>復元</button>
+                        )}
+                        {canOperate && store.status === "active" && (
+                          <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "suspend")}>停止</button>
+                        )}
+                        {canOperate && store.status === "suspended" && (
+                          <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "resume")}>再開</button>
+                        )}
                       </div>
-                      {canManageStores(currentRole) && (
+                      {canOperate && (
                         <div className="row-actions compact-actions">
-                          <button className="text-button" type="button" onClick={() => handleDuplicateStore(store)}>複製</button>
-                          {store.status === "archived" ? null : <button className="text-button" type="button" onClick={() => handleArchiveStore(store)}>アーカイブ</button>}
-                          <button className="text-button danger" type="button" onClick={() => handleDeleteStore(store)}>削除</button>
+                          {store.status === "archived" ? (
+                            canHardDeleteStore(currentRole) && (
+                              <button className="text-button danger" type="button" onClick={() => requestHardDeleteStore(store)}>完全削除</button>
+                            )
+                          ) : (
+                            <>
+                              <button className="text-button" type="button" onClick={() => handleDuplicateStore(store)}>複製</button>
+                              <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "archive")}>アーカイブ</button>
+                            </>
+                          )}
                         </div>
                       )}
                     </div>
@@ -5928,7 +6019,7 @@ function App() {
                 })}
               </div>
             ) : (
-              <div className="management-empty">まだ店舗が登録されていません。上のフォームから店舗を追加してください。</div>
+              <div className="management-empty">{showArchivedStores ? "アーカイブ済みの店舗はありません。" : "まだ店舗が登録されていません。上のフォームから店舗を追加してください。"}</div>
             )}
           </section>
         )}
@@ -6178,6 +6269,41 @@ function App() {
                   <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>キャンセル</button>
                   <button className="primary-button danger-button" type="button" onClick={handleConfirmDeleteUser} disabled={deleteUserSaving}>
                     {deleteUserSaving ? (isPendingInvite ? "取消中..." : "削除中...") : (isPendingInvite ? "招待を取り消す" : "削除する")}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {hardDeleteTargetId && (() => {
+          const hardDeleteTarget = (currentCompany?.stores || []).find((store) => store.id === hardDeleteTargetId);
+          if (!hardDeleteTarget) return null;
+          const confirmMatches = hardDeleteConfirmText === hardDeleteTarget.name;
+          return (
+            <div className="modal-overlay" onClick={closeHardDeleteModal}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">DELETE STORE PERMANENTLY</p>
+                    <h3>店舗を完全に削除しますか？</h3>
+                  </div>
+                </div>
+                {hardDeleteError ? <div className="notice-box">{hardDeleteError}</div> : null}
+                <p className="notice-box warning">
+                  <strong>{hardDeleteTarget.name}</strong> および関連データが完全に削除され、元に戻せません。
+                </p>
+                <p className="helper-text">
+                  日次売上・月間目標・費用・月締め・在庫・スタッフ所属等のデータが1件でも存在する場合は削除できません(停止またはアーカイブをご利用ください)。続行するには、店舗名「{hardDeleteTarget.name}」を正確に入力してください。
+                </p>
+                <label className="field">
+                  <span>店舗名を入力</span>
+                  <input value={hardDeleteConfirmText} onChange={(event) => setHardDeleteConfirmText(event.target.value)} placeholder={hardDeleteTarget.name} disabled={hardDeleteSaving} />
+                </label>
+                <div className="row-actions" style={{ marginTop: 12 }}>
+                  <button className="secondary-button" type="button" onClick={closeHardDeleteModal} disabled={hardDeleteSaving}>キャンセル</button>
+                  <button className="primary-button danger-button" type="button" onClick={handleConfirmHardDeleteStore} disabled={!confirmMatches || hardDeleteSaving}>
+                    {hardDeleteSaving ? "削除中..." : "完全に削除する"}
                   </button>
                 </div>
               </div>

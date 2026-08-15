@@ -515,7 +515,12 @@ export const buildStoreProfilesByStoreId = (rows = []) => {
       googleMapUrl: row.google_map_url || "",
       serviceTypes: Array.isArray(row.service_types) ? row.service_types.join(", ") : "",
       urls: Array.isArray(row.urls) ? row.urls : [],
-      status: row.status || "active",
+      // status intentionally NOT read from here — the store's operational status (active/
+      // suspended/archived) lives on stores.status now (see 20260815010000_store_lifecycle_
+      // status.sql), fetched separately and set on the base store object in
+      // loadTenantStateFromSupabase. This overlay is applied on top of that base object, so
+      // including a status field here (store_profiles.status, a leftover unused column) would
+      // silently clobber the real, authoritative value with whatever's in store_profiles.
       staffCount: Number(row.staff_count) || 0,
       productivityStaffCount: Number(row.productivity_staff_count) || 0,
     };

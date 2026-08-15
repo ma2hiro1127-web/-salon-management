@@ -112,6 +112,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .stack { display: flex; flex-direction: column; gap: 16px; }
 .settings-stack { max-width: 720px; }
 .notice-box { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; }
+.notice-box.warning { background: rgba(180, 83, 9, 0.12); color: var(--warning); }
 .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; font-size: 0.8rem; font-weight: 700; border: 1px solid transparent; max-width: 100%; white-space: normal; }
 .status-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .compact-status-stack { align-items: stretch; min-width: min(100%, 220px); }

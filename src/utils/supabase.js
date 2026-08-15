@@ -603,8 +603,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // store that lands on — including onto a brand-new, still-empty store. Creation order is
     // stable across renames and naturally favors whichever store has been in use longest.
     companyFilter
-      ? supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").eq("company_id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("stores").select("id, company_id, name, code, is_active, daily_field_settings").order("created_at", { ascending: true }),
+      ? supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").eq("company_id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").order("created_at", { ascending: true }),
     role === "system_admin"
       ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").order("created_at", { ascending: true })
       : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
@@ -654,6 +654,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       closingHour: "20:00",
       closedDays: "月",
       isActive: store.is_active !== false,
+      status: store.status || "active",
       settings: { ...createDefaultStoreSettings(), dailyFieldSettings: normalizeDailyFieldSettings(store.daily_field_settings) },
     })),
   }));
@@ -768,29 +769,65 @@ export const updateStoreRecord = async ({ storeId, name }) => {
   }
 };
 
-// Toggle/archive/restore/delete in the UI all ultimately just flip stores.is_active — the real
-// schema has no separate archived/paused/deleted status column (that "status" field only ever
-// existed in local React state). This used to only call setAppState/persistTenantState, so a
-// store's active state silently reverted to whatever Supabase actually had on the very next
-// hydrate (login, reload, another device). "Delete" intentionally maps to the same is_active =
-// false as archive rather than a real row delete: stores.id cascades onto daily_sales/
-// monthly_targets/monthly_closings/etc, so an actual DELETE would destroy that store's historical
-// business data, which existing data must never be destroyed to fix a display bug.
-export const updateStoreActiveState = async ({ storeId, isActive }) => {
+// 店舗の状態(運営中/停止中/アーカイブ)を変更する — update-store-status Edge Function
+// (service-role)経由。停止/再開/アーカイブ/復元の4操作全てをこの1関数でカバーする
+// (action: "suspend"|"resume"|"archive"|"restore")。stores.is_active を直接書き換えるクライア
+// ント直更新はもう使わない — stores.status を書き換えると、DB側のtriggerが is_active を
+// 自動的に同期する(archived以外はtrue)ため、statusとis_activeが食い違う状態を作れない。
+// 状態変更のたびにservice-role経由でstore_status_audit_logへ記録も残るため(要件7)、
+// クライアントから直接is_active/statusを書ける経路を残さないことが重要 — 会社管理者・
+// システム管理者であっても、この関数を経由しない限り記録の残らない状態変更はできない。
+export const updateStoreStatus = async ({ storeId, action }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  const validationError = validateRequiredKeys({ storeId });
-  if (validationError) {
-    const detail = logSupabaseError({ operation: "updateStoreActiveState", table: "stores", storeId, error: new Error(validationError) });
-    return { ok: false, error: new Error(detail.message) };
+  const { data, error } = await supabase.functions.invoke("update-store-status", {
+    body: { storeId, action },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
   }
-  try {
-    const { data, error } = await supabase.from("stores").update({ is_active: isActive, updated_at: new Date().toISOString() }).eq("id", storeId).select().single();
-    if (error) throw error;
-    return { ok: true, data };
-  } catch (error) {
-    logSupabaseError({ operation: "updateStoreActiveState", table: "stores", storeId, error });
-    return { ok: false, error };
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
   }
+  return { ok: true, status: data?.status || "" };
+};
+
+// 店舗の完全削除 — delete-store Edge Function(service-role)経由。system_admin限定、
+// 対象店舗名の完全一致(confirmName)が必須、日次売上/月間目標/費用/月締め/在庫/スタッフ所属
+// 等の関連データが1件でもあれば拒否される(要件3)。stores.id は daily_sales/monthly_targets/
+// 等へ on delete cascade で連鎖するため、このチェックを通過しない限り実際にDELETE文を発行
+// することはない。
+export const deleteStoreCompletely = async ({ storeId, confirmName }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("delete-store", {
+    body: { storeId, confirmName },
+  });
+  if (error) {
+    let message = error.message;
+    let code = "";
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+      if (body?.code) code = body.code;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    const wrapped = new Error(message);
+    wrapped.code = code;
+    return { ok: false, error: wrapped };
+  }
+  if (data?.error) {
+    const wrapped = new Error(data.error);
+    wrapped.code = data.code || "";
+    return { ok: false, error: wrapped };
+  }
+  return { ok: true, data };
 };
 
 export const updateStoreDailyFieldSettings = async ({ storeId, settings }) => {

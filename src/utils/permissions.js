@@ -44,6 +44,15 @@ export const canAccessPage = (role, page) => {
 
 export const canManageCompanies = (role) => normalizeRole(role) === "system_admin";
 export const canManageStores = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
+// 停止/再開/アーカイブ/復元 — canManageStoresと同じ対象(system_admin/company_admin)。
+// store_managerはこれらの操作を一切行えない(店舗管理画面自体には店舗名編集のみ許可されて
+// いるが、状態変更ボタンは表示しない)。canManageStoresのエイリアスだが、店舗の「状態変更」
+// という操作の意味が分かるよう別名で公開する。
+export const canChangeStoreLifecycle = (role) => canManageStores(role);
+// 完全削除はsystem_admin限定。company_adminであっても不可(誤操作で過去データを含む店舗を
+// 完全に失うリスクを最上位の管理権限のみに限定するため) — stores_delete_system_admin_only
+// RLSポリシー・delete-store Edge Functionの権限チェックと同じ規約。
+export const canHardDeleteStore = (role) => normalizeRole(role) === "system_admin";
 // Store name editing is intentionally broader than full store management (create/delete/
 // archive stay canManageStores-only): a store_manager should be able to rename their own
 // store, but callers must still additionally check the store is in the caller's
