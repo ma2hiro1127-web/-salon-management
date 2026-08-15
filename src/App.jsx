@@ -763,6 +763,21 @@ function App() {
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
   const remoteSyncChannelRef = useRef(null);
+  // realtimeサブスクリプション(triggerRehydrate)・ウィンドウフォーカス復帰(handleFocus)の
+  // どちらも、effect本体の外で長生きするコールバック内で `tenantState: appState` を渡している。
+  // これらのeffectのdependency配列にはappState全体が含まれていない(currentCompanyId/
+  // selectedMonth等の一部フィールドのみ)ため、companies[].aiAnalysisEnabled のような
+  // それ以外のフィールドを更新しても、これらのeffectは再実行されず、コールバックは古い
+  // (更新前の)appStateをクロージャで持ったままになる。会社管理画面でAI分析をONにした直後、
+  // その変更がtenant_snapshotsへ自動保存されるとrealtime側のtriggerRehydrateが発火し、
+  // この古いappStateをtenantStateとしてhydrateFromSupabaseへ渡してしまい、直前にONにした
+  // 変更をOFFへ巻き戻していた(「一瞬ONになったあとすぐOFFに戻る」不具合の根本原因)。
+  // appStateRefは常に最新のappStateを指す — 各コールバックはクロージャの代わりにこのrefを
+  // 読むことで、effectの再実行を待たずに常に最新の状態を使えるようにする。
+  const appStateRef = useRef(appState);
+  useEffect(() => {
+    appStateRef.current = appState;
+  }, [appState]);
   const hydrateRetryTimerRef = useRef(null);
   const hydrateRetryCountRef = useRef(0);
   const { stores, selectedStore, selectedStoreId, selectedMonth } = appState;
@@ -3418,7 +3433,11 @@ function App() {
       void hydrateFromSupabase({
         authUser: { id: currentUser.authUserId, email: currentUser.email },
         profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
-        tenantState: appState,
+        // appStateRef.current(常に最新)を使う — このイベントリスナーはeffectの再実行を
+        // またいで生き続けるため、クロージャのappStateはこのeffectが最後に走った時点の
+        // ものに固定されてしまう(古い値でのタブ復帰時rehydrateが、直前の変更を巻き戻す
+        // 原因になっていた)。
+        tenantState: appStateRef.current,
       });
     };
     const handleVisibilityChange = () => {
@@ -3495,7 +3514,14 @@ function App() {
       void hydrateFromSupabase({
         authUser: { id: currentUser.authUserId, email: currentUser.email },
         profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
-        tenantState: appState,
+        // appStateRef.current(常に最新)を使う — このコールバックはSupabase Realtimeの
+        // 購読イベントとして、このeffectが再実行されない限りメモリ上に残り続ける。
+        // クロージャのappStateを使うと、companies[].aiAnalysisEnabled のような、この
+        // effectのdependency配列に含まれないフィールドを変更した直後に自動保存
+        // (tenant_snapshots更新)がrealtimeイベントを発火させ、その古いappStateで
+        // hydrateFromSupabaseを呼んでしまい、直前の変更を巻き戻していた(「AI分析を
+        // 有効化してもすぐOFFに戻る」不具合の根本原因)。
+        tenantState: appStateRef.current,
       });
     };
     // Listen across every table a device's edit can land in, so a change made on one
