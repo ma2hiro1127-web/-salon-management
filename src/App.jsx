@@ -778,6 +778,16 @@ function App() {
   useEffect(() => {
     appStateRef.current = appState;
   }, [appState]);
+  // hydrateFromSupabaseは複数の経路(ログイン時・realtime購読・タブ復帰・リトライ)から
+  // 重複して呼ばれうるが、互いに完了順を保証しない — 先に発火した呼び出しが後から発火した
+  // 呼び出しより後に完了(resolve)した場合、その「古い結果」がsetAppStateで最後に上書きして
+  // しまう(appStateRefで各呼び出しの入力を最新化しても、この完了順の逆転自体は防げない)。
+  // 会社のAI分析トグルのように、appStateRef経由でtenantStateだけは最新化した直後に発火した
+  // 2つ目のhydrateが、1つ目(まだ古いtenantStateで進行中)より先に完了して正しい値を適用した
+  // あと、1つ目が遅れて完了してその結果を古い値で上書きしてしまうケースがこれに当たる
+  // (「OFFにしてもONに戻る」不具合の残っていた原因)。呼び出しごとに増分するIDを持たせ、
+  // 自分より新しい呼び出しが既に開始されていたら、自分の結果は適用せずに破棄する。
+  const hydrateRequestRef = useRef(0);
   const hydrateRetryTimerRef = useRef(null);
   const hydrateRetryCountRef = useRef(0);
   const { stores, selectedStore, selectedStoreId, selectedMonth } = appState;
@@ -1713,6 +1723,10 @@ function App() {
 
   const hydrateFromSupabase = async ({ authUser, profile, tenantState }) => {
     if (!isSupabaseConfigured || !profile?.company_id || !authUser?.id) return;
+    // このシグネチャの時点で「自分が最新の呼び出しである」ことを確定させる — 以降、
+    // setAppStateで結果を適用する直前に hydrateRequestRef.current === requestId を確認し、
+    // 自分より新しい呼び出しが既に始まっていれば、非同期処理が先に終わっても結果を捨てる。
+    const requestId = ++hydrateRequestRef.current;
     try {
       console.info("[sync-hydrate] start", {
         authUserId: authUser?.id,
@@ -2048,6 +2062,7 @@ function App() {
         // though the row existed correctly in Supabase all along. Confirmed via a live
         // fresh-session-after-restore test.
         const hasLocalFallbackCache = Boolean(fallbackState && Object.keys(fallbackState.dailyResults || {}).length);
+        if (hydrateRequestRef.current !== requestId) return;
         setAppState((prev) => {
           let merged = mergeRemoteAppState(prev, {
             ...(hasLocalFallbackCache ? fallbackState : {}),
@@ -2125,6 +2140,7 @@ function App() {
           companySnapshots: undefined,
         }])),
       });
+      if (hydrateRequestRef.current !== requestId) return;
       setAppState((prev) => {
         const merged = applyDailySalesOverlay(mergeRemoteAppState(prev, nextRemoteState));
         writeAppState(merged);
