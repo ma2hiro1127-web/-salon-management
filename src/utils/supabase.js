@@ -736,6 +736,27 @@ export const createCompanyRecord = async ({ name, code, createdByProfileId }) =>
   return data;
 };
 
+// hydrateFromSupabaseは通常、companies/storesテーブルそのものをもう一度取得し直さず、
+// ログイン時にloadTenantStateFromSupabaseが取得した結果(以後はローカルのappStateとして
+// 引き回される)をtenantStateとして受け取るだけで動く。ai_analysis_enabledのように
+// 「company管理画面から随時system_adminが切り替える、DBが唯一の正であるべきフラグ」に
+// 限っては、tenant_snapshots(ある時点のappStateの丸ごとコピー)や、ローカルに保持された
+// 古いappStateを経由せず、hydrateのたびにcompaniesテーブルから直接読み直して上書きする
+// (「AI分析トグルを保存した直後にOFFへ戻る」不具合の対策 — companiesが唯一のsource of
+// truthになるようにする)。
+export const loadCompanyAiAnalysisFlags = async ({ companyIds }) => {
+  const ids = Array.from(new Set((companyIds || []).filter(Boolean)));
+  if (!isSupabaseConfigured || !ids.length) return { ok: true, data: [] };
+  try {
+    const { data, error } = await supabase.from("companies").select("id, ai_analysis_enabled").in("id", ids);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadCompanyAiAnalysisFlags", table: "companies", error });
+    return { ok: false, error, data: [] };
+  }
+};
+
 // AI分析(AI経営アシスタント)の会社単位ON/OFF。companiesのUPDATE用RLS(companies_update_
 // system_only)が既にsystem_admin限定になっているため、他の会社管理操作(createCompanyRecord
 // 等)と同じくEdge Functionを介さず直接クライアントから更新する — RLSそのものが権限の実体。

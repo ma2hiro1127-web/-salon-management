@@ -92,6 +92,7 @@ import {
   ensureProfileForAuthUser,
   createCompanyRecord,
   updateCompanyAiAnalysisEnabled,
+  loadCompanyAiAnalysisFlags,
   createStoreRecord,
   updateStoreRecord,
   updateStoreStatus,
@@ -380,6 +381,14 @@ const formatSignedYen = (value) => `${value >= 0 ? "" : "−"}¥${Math.abs(Math.
 // 1〜3文で短く総括するだけの役割 — 詳細な分析・改善策は別画面の「AI経営アシスタント」に
 // 任せる。抽象的な「頑張りましょう」だけで終わらせず、必ず実際の入力値・設定済み目標値を
 // 根拠に文章を組み立てる。
+// AI分析ON/OFFトグルの調査用。console.infoへオブジェクトをそのまま渡すと、devtools上で
+// 折りたたまれた"Array(1)"等の参照として表示され、中身を都度クリックで展開しないと値が
+// 見えない — JSON.stringifyしたテキストとして出すことで、ログ行を見ただけで実際の
+// company_id/ai_analysis_enabledの値がそのまま読めるようにする。
+const aiTrace = (label, payload) => {
+  console.info(`[ai-trace] ${label}`, JSON.stringify(payload));
+};
+
 const buildDailyInsight = ({ form, target = {}, businessDayCount }) => {
   const totalSales = parseNumber(form.totalSales);
   const retailSales = parseNumber(form.retailSales);
@@ -794,7 +803,7 @@ function App() {
   // 実際に描画する値そのもの。他の[ai-trace]ログと突き合わせて、どの書き込み/どの
   // hydrateFromSupabase呼び出しの結果としてこの値になったのかを追跡する。
   useEffect(() => {
-    console.info("[ai-trace] 0:appState.companies changed (this is what the UI renders)", (appState.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })));
+    aiTrace("0:appState.companies changed (this is what the UI renders)", (appState.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })));
   }, [appState.companies]);
   // hydrateFromSupabaseは複数の経路(ログイン時・realtime購読・タブ復帰・リトライ)から
   // 重複して呼ばれうるが、互いに完了順を保証しない — 先に発火した呼び出しが後から発火した
@@ -1747,7 +1756,7 @@ function App() {
     const requestId = ++hydrateRequestRef.current;
     // [ai-trace] 8: この呼び出しが受け取ったtenantStateの時点でのai_analysis_enabled
     // (誰がこの呼び出しを起こしたか= どのトリガー経由かも呼び出し元側で別途ログする)。
-    console.info("[ai-trace] 8:hydrateFromSupabase called", { requestId, tenantStateCompanies: (tenantState?.companies || []).map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
+    aiTrace("8:hydrateFromSupabase called", { requestId, tenantStateCompanies: (tenantState?.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
     try {
       console.info("[sync-hydrate] start", {
         authUserId: authUser?.id,
@@ -1759,6 +1768,22 @@ function App() {
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
       const companyId = profile.company_id || tenantState?.currentCompanyId || "";
       const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
+
+      // ai_analysis_enabledは、tenant_snapshots(ある時点のappStateの丸ごとコピー)経由でも
+      // ローカルappStateのクロージャ経由でもなく、companiesテーブルを直接読み直した値を必ず
+      // 最終的に採用する — 「AI分析トグルを保存した直後にOFFへ戻る」不具合の対策として、
+      // このフィールドについてはcompaniesテーブルを唯一のsource of truthにする(要件)。
+      // ここで取得したMapを、下の2つの分岐(スナップショット無し/有り)どちらでも
+      // companies配列の最後の上書きとして適用する。
+      const tenantCompanyIds = (tenantState?.companies || []).map((item) => item.id).filter(Boolean);
+      const aiFlagsResult = await loadCompanyAiAnalysisFlags({ companyIds: tenantCompanyIds });
+      const freshAiAnalysisEnabledById = new Map((aiFlagsResult.data || []).map((row) => [row.id, Boolean(row.ai_analysis_enabled)]));
+      aiTrace("8b:hydrateFromSupabase fresh companies.ai_analysis_enabled re-fetch", { requestId, ok: aiFlagsResult.ok, rows: (aiFlagsResult.data || []).map((row) => `${row.id}=${row.ai_analysis_enabled}`) });
+      const applyFreshAiAnalysisFlags = (companies) => (companies || []).map((item) => (
+        freshAiAnalysisEnabledById.has(item.id)
+          ? { ...item, aiAnalysisEnabled: freshAiAnalysisEnabledById.get(item.id) }
+          : item
+      ));
       // Single source of truth for "which store is actually selected right now" — see
       // resolvePreferredStoreSelection's own comments. tenantState here IS the current appState
       // at every call site, so it doubles as both the fresh tenant data and the "local" selection
@@ -2083,8 +2108,8 @@ function App() {
         // though the row existed correctly in Supabase all along. Confirmed via a live
         // fresh-session-after-restore test.
         const hasLocalFallbackCache = Boolean(fallbackState && Object.keys(fallbackState.dailyResults || {}).length);
-        const noSnapshotCompanies = applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || []));
-        console.info("[ai-trace] 9a:hydrateFromSupabase no-snapshot branch about to commit", { requestId, isStale: hydrateRequestRef.current !== requestId, companies: noSnapshotCompanies.map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
+        const noSnapshotCompanies = applyFreshAiAnalysisFlags(applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (fallbackState.companies || [])));
+        aiTrace("9a:hydrateFromSupabase no-snapshot branch about to commit", { requestId, isStale: hydrateRequestRef.current !== requestId, companies: noSnapshotCompanies.map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
         if (hydrateRequestRef.current !== requestId) return;
         setAppState((prev) => {
           let merged = mergeRemoteAppState(prev, {
@@ -2127,12 +2152,12 @@ function App() {
       // [ai-trace] 9b: このtenant_snapshotに埋め込まれていた値(remoteState)と、この呼び出しが
       // 受け取ったtenantStateの値の両方を比較できるようにする — どちらが実際に採用されるかは
       // 次のcompanies:の行(tenantState優先)で決まる。
-      console.info("[ai-trace] 9b:hydrateFromSupabase snapshot vs tenantState", {
+      aiTrace("9b:hydrateFromSupabase snapshot vs tenantState", {
         requestId,
         snapshotId: snapshot?.id,
         snapshotUpdatedAt: snapshot?.updated_at,
-        remoteStateCompanies: (remoteState.companies || []).map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })),
-        tenantStateCompanies: (tenantState?.companies || []).map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })),
+        remoteStateCompanies: (remoteState.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })),
+        tenantStateCompanies: (tenantState?.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })),
         willUseTenantState: Boolean(tenantState?.companies?.length),
       });
       const nextRemoteState = {
@@ -2148,7 +2173,7 @@ function App() {
         // straight from appState.companies, so a stale entry here silently redirects every
         // write for a store to whatever id happened to be embedded in someone else's save —
         // this was reproducible for whichever store hadn't been the most recently saved one.
-        companies: applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (remoteState.companies || [])),
+        companies: applyFreshAiAnalysisFlags(applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (remoteState.companies || []))),
         users: tenantState?.users?.length ? tenantState.users : (remoteState.users || []),
         companySnapshots: remoteState.companySnapshots || (tenantState?.companySnapshots || {}),
         currentCompanyId: remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
@@ -2174,11 +2199,11 @@ function App() {
           companySnapshots: undefined,
         }])),
       });
-      console.info("[ai-trace] 10:hydrateFromSupabase main branch about to commit", { requestId, isStale: hydrateRequestRef.current !== requestId, nextRemoteStateCompanies: nextRemoteState.companies.map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
+      aiTrace("10:hydrateFromSupabase main branch about to commit", { requestId, isStale: hydrateRequestRef.current !== requestId, nextRemoteStateCompanies: nextRemoteState.companies.map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
       if (hydrateRequestRef.current !== requestId) return;
       setAppState((prev) => {
         const merged = applyDailySalesOverlay(mergeRemoteAppState(prev, nextRemoteState));
-        console.info("[ai-trace] 11:hydrateFromSupabase merged result (this is what becomes the new appState)", { requestId, mergedCompanies: (merged.companies || []).map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
+        aiTrace("11:hydrateFromSupabase merged result (this is what becomes the new appState)", { requestId, mergedCompanies: (merged.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
         writeAppState(merged);
         return merged;
       });
@@ -2237,7 +2262,7 @@ function App() {
       companySnapshots: { ...(nextState.companySnapshots || {}), [nextState.currentCompanyId || currentUser?.company_id || ""]: nextState },
     };
     // [ai-trace] 7: setAppStateへ実際に渡す直前の値(会社ごとのai_analysis_enabled)。
-    console.info("[ai-trace] 7:persistTenantState committing", persisted.companies.map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })));
+    aiTrace("7:persistTenantState committing", persisted.companies.map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })));
     writeAppState(persisted);
     setAppState(persisted);
   };
@@ -2837,11 +2862,11 @@ function App() {
   // 止まる(要件)。
   const handleToggleCompanyAiAnalysis = async (company) => {
     const nextEnabled = !company.aiAnalysisEnabled;
-    console.info("[ai-trace] 3:handleToggleCompanyAiAnalysis clicked", { companyId: company.id, currentValue: company.aiAnalysisEnabled, nextEnabled });
+    aiTrace("3:handleToggleCompanyAiAnalysis clicked", { companyId: company.id, currentValue: company.aiAnalysisEnabled, nextEnabled });
     if (!window.confirm(`${company.name} のAI分析機能を${nextEnabled ? "有効化" : "無効化"}しますか？${nextEnabled ? "" : "\n無効化すると、この会社では新規のAI分析・AI APIの呼び出しができなくなります(過去の分析結果は削除されません)。"}`)) return;
     if (isSupabaseConfigured) {
       const result = await updateCompanyAiAnalysisEnabled({ companyId: company.id, enabled: nextEnabled });
-      console.info("[ai-trace] 4:handleToggleCompanyAiAnalysis update result", { companyId: company.id, ok: result.ok, dbValue: result.data?.ai_analysis_enabled });
+      aiTrace("4:handleToggleCompanyAiAnalysis update result", { companyId: company.id, ok: result.ok, dbValue: result.data?.ai_analysis_enabled });
       if (!result.ok) {
         setNotice(`AI分析設定の変更に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
         return;
@@ -2850,7 +2875,7 @@ function App() {
     // [ai-trace] 5: ここで使うappStateがボタンを押した時点(await window.confirm/
     // updateCompanyAiAnalysisEnabledの前)のものか、それとも待機中に他の処理で更新された
     // 最新のものかを確認する — appStateRef.currentと比較してズレがあれば分かる。
-    console.info("[ai-trace] 5:handleToggleCompanyAiAnalysis pre-persist appState check", {
+    aiTrace("5:handleToggleCompanyAiAnalysis pre-persist appState check", {
       companyId: company.id,
       closureAppStateValue: (appState.companies || []).find((c) => c.id === company.id)?.aiAnalysisEnabled,
       refAppStateValue: (appStateRef.current.companies || []).find((c) => c.id === company.id)?.aiAnalysisEnabled,
@@ -2859,7 +2884,7 @@ function App() {
       ...appState,
       companies: (appState.companies || []).map((item) => item.id === company.id ? { ...item, aiAnalysisEnabled: nextEnabled, lastUpdatedAt: new Date().toISOString() } : item),
     };
-    console.info("[ai-trace] 6:handleToggleCompanyAiAnalysis persisting", { companyId: company.id, valueBeingPersisted: nextState.companies.find((c) => c.id === company.id)?.aiAnalysisEnabled });
+    aiTrace("6:handleToggleCompanyAiAnalysis persisting", { companyId: company.id, valueBeingPersisted: nextState.companies.find((c) => c.id === company.id)?.aiAnalysisEnabled });
     persistTenantState(nextState);
   };
 
@@ -3414,18 +3439,18 @@ function App() {
   // 瞬間に、控えていた最新のstateだけを1回だけ送り直す。こうすることで、途中の古い状態を
   // 表す書き込みが後から完了してtenant_snapshotsを巻き戻すことが構造的に起こらなくなる。
   const runPersistToSupabase = (stateToPersist) => {
-    const aiTraceCompanies = (stateToPersist.companies || []).map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled }));
+    const aiTraceCompanies = (stateToPersist.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled }));
     if (persistInFlightRef.current) {
-      console.info("[ai-trace] 12:runPersistToSupabase QUEUED (another write in flight)", aiTraceCompanies);
+      aiTrace("12:runPersistToSupabase QUEUED (another write in flight)", aiTraceCompanies);
       pendingPersistStateRef.current = stateToPersist;
       return;
     }
-    console.info("[ai-trace] 12:runPersistToSupabase STARTING write to tenant_snapshots", aiTraceCompanies);
+    aiTrace("12:runPersistToSupabase STARTING write to tenant_snapshots", aiTraceCompanies);
     persistInFlightRef.current = true;
     const timestamp = new Date().toISOString();
     setSaveStatus({ status: "saving", message: "保存中…", timestamp, error: false });
     void persistToSupabase(stateToPersist).then((result) => {
-      console.info("[ai-trace] 13:runPersistToSupabase write finished", { ok: result?.ok, skipped: result?.skipped, companies: aiTraceCompanies });
+      aiTrace("13:runPersistToSupabase write finished", { ok: result?.ok, skipped: result?.skipped, companies: aiTraceCompanies });
       if (result?.ok && !result?.skipped) {
         setSaveStatus({ status: "saved", message: "保存済み ✓", timestamp, error: false });
         return;
@@ -3518,7 +3543,7 @@ function App() {
   useEffect(() => {
     const handleFocus = () => {
       if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !currentUser?.profileId) return;
-      console.info("[ai-trace] TRIGGER:handleFocus firing hydrateFromSupabase");
+      aiTrace("TRIGGER:handleFocus firing hydrateFromSupabase", {});
       void hydrateFromSupabase({
         authUser: { id: currentUser.authUserId, email: currentUser.email },
         profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
@@ -3600,7 +3625,7 @@ function App() {
 
     const channel = supabase.channel(channelName);
     const triggerRehydrate = (payload) => {
-      console.info("[ai-trace] TRIGGER:realtime triggerRehydrate firing hydrateFromSupabase", { table: payload?.table, eventType: payload?.eventType, refAppStateCompanies: (appStateRef.current.companies || []).map((c) => ({ id: c.id, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
+      aiTrace("TRIGGER:realtime triggerRehydrate firing hydrateFromSupabase", { table: payload?.table, eventType: payload?.eventType, refAppStateCompanies: (appStateRef.current.companies || []).map((c) => ({ id: c.id, name: c.name, aiAnalysisEnabled: c.aiAnalysisEnabled })) });
       void hydrateFromSupabase({
         authUser: { id: currentUser.authUserId, email: currentUser.email },
         profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
