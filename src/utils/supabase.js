@@ -616,6 +616,9 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   if (profilesError) throw profilesError;
   if (userStoresError) throw userStoresError;
 
+  // [ai-trace] 段階1: Supabase companiesテーブルから実際に返ってきた生の値。
+  console.info("[ai-trace] 1:loadTenantStateFromSupabase raw companiesData", (companiesData || []).map((c) => ({ id: c.id, name: c.name, ai_analysis_enabled: c.ai_analysis_enabled })));
+
   const storesByCompany = new Map();
   (storesData || []).forEach((store) => {
     const bucket = storesByCompany.get(store.company_id) || [];
@@ -746,9 +749,13 @@ export const updateCompanyAiAnalysisEnabled = async ({ companyId, enabled }) => 
   try {
     const { data, error } = await supabase.from("companies").update({ ai_analysis_enabled: Boolean(enabled), updated_at: new Date().toISOString() }).eq("id", companyId).select().single();
     if (error) throw error;
+    // [ai-trace] 段階2: UPDATE直後にSupabaseから返ってきた行そのもの(サーバー側で実際に
+    // 確定した値)。
+    console.info("[ai-trace] 2:updateCompanyAiAnalysisEnabled response", { companyId, requestedEnabled: Boolean(enabled), returned_ai_analysis_enabled: data?.ai_analysis_enabled, returned_updated_at: data?.updated_at });
     return { ok: true, data };
   } catch (error) {
     logSupabaseError({ operation: "updateCompanyAiAnalysisEnabled", table: "companies", companyId, error });
+    console.error("[ai-trace] 2:updateCompanyAiAnalysisEnabled FAILED", { companyId, requestedEnabled: Boolean(enabled), error });
     return { ok: false, error };
   }
 };
