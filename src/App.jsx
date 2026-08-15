@@ -625,6 +625,12 @@ function App() {
   // a real success/failure result look like nothing happened. This always renders in the same
   // spot the user is already looking at.
   const [storeFormStatus, setStoreFormStatus] = useState({ status: "idle", message: "" });
+  // storeFormStatusのstate更新は次のレンダーまでボタンのdisabledに反映されないため、
+  // ほぼ同時に2回押された場合はstateだけのガードでは両方すり抜けてしまう(その場合、店舗名の
+  // 一意制約が無いため2件の店舗が作られたり、在籍スタッフ数の保存が2回目の呼び出しの値で
+  // 上書きされたりする)。refはレンダーを待たずに同期的に読み書きできるため、こちらを一次防御
+  // として使う。
+  const savingStoreRef = useRef(false);
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
   // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
@@ -2263,6 +2269,8 @@ function App() {
       setStoreFormStatus({ status: "error", message: "店舗名を入力してください" });
       return;
     }
+    if (savingStoreRef.current) return;
+    savingStoreRef.current = true;
 
     setStoreFormStatus({ status: "saving", message: "" });
     try {
@@ -2322,10 +2330,13 @@ function App() {
         status: existingStore?.status || "active",
         isActive: existingStore?.isActive !== false,
         // 店舗名と同じく、このフォームで実際に編集できる項目なので existingStore ではなく
-        // storeForm から取る(他のプロフィール項目のように「画面に無いので既存値を維持」
-        // ではない)。
-        staffCount: parseNumber(storeForm.staffCount) || 0,
-        productivityStaffCount: parseNumber(storeForm.productivityStaffCount) || 0,
+        // storeForm から取るのが基本(他のプロフィール項目のように「画面に無いので既存値を
+        // 維持」ではない)。ただし新規作成では未入力=0が正しい一方、既存店舗の編集時に
+        // フォームが空欄(何らかの理由でstoreForm.staffCountが未設定)だと、意図せず既存の
+        // 在籍スタッフ数が0へ上書きされてしまう — 編集時は空欄を「変更なし」として扱い、
+        // existingStoreの現在値を保持する(新規作成時はexistingStoreが無いので従来通り0)。
+        staffCount: storeForm.staffCount.trim() !== "" ? parseNumber(storeForm.staffCount) : (existingStore?.staffCount || 0),
+        productivityStaffCount: storeForm.productivityStaffCount.trim() !== "" ? parseNumber(storeForm.productivityStaffCount) : (existingStore?.productivityStaffCount || 0),
         settings: { ...createStoreSettingsDefaults(), ...(existingStore?.settings || {}), ...(storeSettingsForm || {}) },
       };
       if (isSupabaseConfigured) {
@@ -2378,6 +2389,8 @@ function App() {
       const message = getSupabaseErrorMessage(error);
       setNotice(message);
       setStoreFormStatus({ status: "error", message });
+    } finally {
+      savingStoreRef.current = false;
     }
   };
 
@@ -4647,7 +4660,7 @@ function App() {
                 </div>
                 <div className="inline-form">
                   <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder={storeNamePlaceholder} />
-                  <button className="primary-button" type="button" onClick={handleSaveStore}>店舗を追加</button>
+                  <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>{storeFormStatus.status === "saving" ? "追加中…" : "店舗を追加"}</button>
                 </div>
               </div>
               <div className="setup-card">
