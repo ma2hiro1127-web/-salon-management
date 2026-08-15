@@ -3654,7 +3654,20 @@ function App() {
         };
       });
 
-      setDailyForm(entry);
+      // saveDailyEntryは400msデバウンスのサイレント自動保存からも呼ばれる(要件1・8)。
+      // ここまでのawait(Supabaseへのネットワーク往復)の間にユーザーが入力を続けていた
+      // 場合、このentryは保存を開始した時点でclosureに捕まった「古い」値であり、無条件に
+      // setDailyForm(entry)すると、保存中に追加で入力された文字が丸ごと消えてしまう
+      // (「入力途中の数字や文字が突然消える」不具合の根本原因だった)。関数更新にして、
+      // 現在表示中の日付が保存対象の日付と一致する場合だけ id を補完し(次回以降の自動保存が
+      // 同じ行を正しくUPDATEできるように)、それ以外のフィールドは「今まさに入力中の値」を
+      // 優先してそのまま残す。switchToView(明示的な保存確定操作)の時だけ、正規化済みの
+      // 最終値をそのまま表示する。
+      setDailyForm((prev) => {
+        if (prev.date !== entry.date) return prev;
+        if (switchToView) return entry;
+        return prev.id === entry.id ? prev : { ...prev, id: entry.id };
+      });
       if (dailyForm.id || dailyMode === "edit") {
         setDailyOriginalEntry({ ...entry });
       }
@@ -5078,11 +5091,11 @@ function App() {
                       <div className="inline-form">
                         <label className="field">
                           <span>店休日</span>
-                          <input value={businessDayInput} onChange={(event) => setBusinessDayInput(event.target.value)} placeholder="店休日数を入力" type="number" min="0" max="31" />
+                          <NumericInput value={businessDayInput} onChange={setBusinessDayInput} placeholder="店休日数を入力" />
                         </label>
                         <label className="field">
                           <span>営業日数（手動）</span>
-                          <input value={manualBusinessDayInput} onChange={(event) => setManualBusinessDayInput(event.target.value)} placeholder="営業日数を入力" type="number" min="1" max="31" />
+                          <NumericInput value={manualBusinessDayInput} onChange={setManualBusinessDayInput} placeholder="営業日数を入力" />
                         </label>
                         <button className="primary-button" type="button" onClick={saveHolidayCount}>保存</button>
                         <button className="secondary-button" type="button" onClick={saveManualBusinessDayCount}>手動保存</button>
@@ -5139,16 +5152,16 @@ function App() {
                           correctly. Save-time parseNumber()/buildDailyEntryPayload treat "" and
                           0 identically, so totals/KPIs/progress are never affected — this is
                           display-only. */}
-                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
-                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
-                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => updateDailyField("otherSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} /> : null}
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric /> : null}
+                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => updateDailyField("otherSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric /> : null}
                       {totalSalesIsAutoCalculated ? (
                         <div className="summary-card compact">
                           <span>総売上（税込）</span>
                           <strong>{money(parseNumber(dailyForm.totalSales))}</strong>
                         </div>
                       ) : (
-                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} />
+                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
                       )}
                     </div>
 
@@ -5161,17 +5174,17 @@ function App() {
                             <strong>{number(parseNumber(dailyForm.customers))}名</strong>
                           </div>
                         ) : (
-                          <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} />
+                          <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric />
                         )}
-                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} /> : null}
-                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} /> : null}
+                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
                       </div>
                     ) : null}
 
                     {showReviewCountField ? (
                       <div className="daily-section-card">
                         <h3>口コミ</h3>
-                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={(value) => updateDailyField("reviewCount", value)} suffix="件" placeholder="件数を入力" disabled={dailyMode === "view"} type="number" />
+                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={(value) => updateDailyField("reviewCount", value)} suffix="件" placeholder="件数を入力" disabled={dailyMode === "view"} numeric />
                       </div>
                     ) : null}
 
@@ -5300,15 +5313,15 @@ function App() {
                     ) : (
                       <>
                         <div className="input-grid">
-                          {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" type="number" /> : null}
-                          {!isAllStoresView && activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" type="number" /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" type="number" /> : null}
-                          {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" type="number" /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" numeric /> : null}
+                          {!isAllStoresView && activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" numeric /> : null}
+                          {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" numeric /> : null}
                         </div>
                         {isAllStoresView ? (
                           <div className="daily-settings-card">
@@ -5376,7 +5389,7 @@ function App() {
                         {costCategoryKeys.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}
                       </select>
                       {!fixedForm.id ? (
-                        <input value={fixedForm.amount} onChange={(event) => setFixedForm((prev) => ({ ...prev, amount: event.target.value }))} placeholder="今月の金額" type="number" />
+                        <NumericInput value={fixedForm.amount} onChange={(value) => setFixedForm((prev) => ({ ...prev, amount: value }))} placeholder="今月の金額" />
                       ) : null}
                       {fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials" ? (
                         <label className="field">
@@ -5449,11 +5462,10 @@ function App() {
                               <small>{getCostCategoryLabel(item.categoryKey)} ／ {item.periodType === "limited" ? "単月・期間限定" : "継続"} ／ {periodLabel}{item.memo ? ` ／ ${item.memo}` : ""}</small>
                             </div>
                             <div className="cost-row-amount">
-                              <input
-                                type="number"
+                              <NumericInput
                                 value={draftAmount}
                                 placeholder={savedAmount === undefined ? "未入力" : ""}
-                                onChange={(event) => setCostAmountDraft(item.id, event.target.value)}
+                                onChange={(value) => setCostAmountDraft(item.id, value)}
                               />
                               {previousAmount !== undefined ? (
                                 <button className="text-button" type="button" onClick={() => copyPreviousMonthAmountFor(item)}>前月をコピー（{money(previousAmount)}）</button>
@@ -5566,7 +5578,7 @@ function App() {
                             <div className="inline-form">
                               <label className="field">
                                 <span>期首在庫</span>
-                                <input type="number" value={openingInventoryDraft} onChange={(event) => setOpeningInventoryDraft(event.target.value)} placeholder="金額" />
+                                <NumericInput value={openingInventoryDraft} onChange={setOpeningInventoryDraft} placeholder="金額" />
                               </label>
                               <button className="secondary-button" type="button" onClick={saveOpeningInventoryBalance}>期首在庫を保存</button>
                             </div>
@@ -5577,7 +5589,7 @@ function App() {
                         <div className="inline-form">
                           <label className="field">
                             <span>当月末在庫</span>
-                            <input type="number" value={closingInventoryDraft} onChange={(event) => setClosingInventoryDraft(event.target.value)} placeholder="金額" />
+                            <NumericInput value={closingInventoryDraft} onChange={setClosingInventoryDraft} placeholder="金額" />
                           </label>
                           <button className="secondary-button" type="button" onClick={saveClosingInventoryBalance}>当月末在庫を保存</button>
                         </div>
@@ -5684,7 +5696,7 @@ function App() {
                         <div className="inline-form">
                           <label className="field">
                             <span>消費税引当率（%）</span>
-                            <input type="number" value={taxSettingsForm.consumptionTaxReserveRate} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: event.target.value }))} placeholder="例: 5" />
+                            <NumericInput value={taxSettingsForm.consumptionTaxReserveRate} onChange={(value) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: value }))} allowDecimal placeholder="例: 5" />
                           </label>
                           <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>引当率を保存</button>
                         </div>
@@ -5802,17 +5814,11 @@ function App() {
                 </label>
                 <label className="field">
                   <span>在籍スタッフ数</span>
-                  {/* type="number"は、全角数字(IME入力等)のように厳密なfloatとして無効な
-                      文字が入ると、画面には入力した文字が残ったままevent.target.valueだけが
-                      空文字になるブラウザの仕様があり、それが原因で保存時に0扱いになっていた
-                      (店舗追加は成功するがスタッフ数だけ反映されないバグ)。type="text" +
-                      inputMode + 手動サニタイズに切り替えることで、全角/半角どちらの入力でも
-                      確実に正しい値を保持する。 */}
-                  <input type="text" inputMode="numeric" value={storeForm.staffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, staffCount: sanitizeNumericInputValue(event.target.value) }))} placeholder="例: 6" />
+                  <NumericInput value={storeForm.staffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, staffCount: value }))} placeholder="例: 6" />
                 </label>
                 <label className="field">
                   <span>生産性計算人数（任意）</span>
-                  <input type="text" inputMode="decimal" value={storeForm.productivityStaffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: sanitizeNumericInputValue(event.target.value, { allowDecimal: true }) }))} placeholder="例: 5.0" />
+                  <NumericInput value={storeForm.productivityStaffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: value }))} allowDecimal placeholder="例: 5.0" />
                   <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
                 </label>
               </div>
@@ -6366,7 +6372,7 @@ function App() {
                 {taxSettingsForm.considerConsumptionTax ? (
                   <label className="field">
                     <span>消費税引当率（%）</span>
-                    <input type="number" value={taxSettingsForm.consumptionTaxReserveRate} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: event.target.value }))} placeholder="例: 10" />
+                    <NumericInput value={taxSettingsForm.consumptionTaxReserveRate} onChange={(value) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: value }))} allowDecimal placeholder="例: 10" />
                   </label>
                 ) : null}
               </div>
@@ -6510,13 +6516,59 @@ function SalesCompositionCard({ items }) {
   );
 }
 
-function Field({ label, value, onChange, suffix = "", type = "text", disabled = false, placeholder = "" }) {
+// 金額・人数・率などの数値入力欄で共通利用する、composition-safeな数値入力(要件6: 全ての
+// 数値入力を共通処理にまとめる)。type="number"は使わない — 全角数字等の「HTML的に無効な
+// 数値」が入ると、画面には入力した文字が残ったままevent.target.valueだけが空文字になる
+// ブラウザの仕様があり、店舗のスタッフ数入力で実際にこれが原因の不具合が起きたため(過去の
+// 修正参照)。代わりにtype="text" + inputMode="numeric"/"decimal" とし、
+// sanitizeNumericInputValue で全角数字・￥・カンマ・スペース等を自動的に半角の数字へ正規化
+// する(要件2・7)。
+//
+// IME変換中(日本語入力の確定前、compositionstart〜compositionend)は正規化・強制上書きを
+// 行わない — 変換途中の文字を書き換えると、入力中の文字が消えたりカーソル位置がずれたり
+// するため(要件3)。生の入力値はそのままstateへ反映し、変換確定時(compositionend)に
+// 初めて正規化する。
+function NumericInput({ value, onChange, allowDecimal = false, onBlur, ...rest }) {
+  const composingRef = useRef(false);
+  return (
+    <input
+      type="text"
+      inputMode={allowDecimal ? "decimal" : "numeric"}
+      value={value === undefined || value === null ? "" : value}
+      onChange={(event) => {
+        if (composingRef.current) {
+          onChange(event.target.value);
+          return;
+        }
+        onChange(sanitizeNumericInputValue(event.target.value, { allowDecimal }));
+      }}
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
+        onChange(sanitizeNumericInputValue(event.target.value, { allowDecimal }));
+      }}
+      onBlur={(event) => {
+        onChange(sanitizeNumericInputValue(event.target.value, { allowDecimal }));
+        onBlur?.(event);
+      }}
+      {...rest}
+    />
+  );
+}
+
+function Field({ label, value, onChange, suffix = "", type = "text", numeric = false, allowDecimal = false, disabled = false, placeholder = "" }) {
   const normalizedValue = value === undefined || value === null ? "" : value;
   return (
     <label className="field">
       <span>{label}</span>
       <div className="input-with-suffix">
-        <input type={type} value={normalizedValue} onChange={(event) => onChange(event.target.value)} disabled={disabled} placeholder={placeholder} />
+        {numeric ? (
+          <NumericInput value={normalizedValue} onChange={onChange} allowDecimal={allowDecimal} disabled={disabled} placeholder={placeholder} />
+        ) : (
+          <input type={type} value={normalizedValue} onChange={(event) => onChange(event.target.value)} disabled={disabled} placeholder={placeholder} />
+        )}
         {suffix ? <span>{suffix}</span> : null}
       </div>
     </label>
