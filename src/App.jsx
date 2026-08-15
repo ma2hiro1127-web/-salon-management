@@ -760,6 +760,18 @@ function App() {
   // この状態は一切参照されない。
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const lastPersistedRef = useRef("");
+  // persistToSupabase(tenant_snapshotsへの丸ごと自動保存)は、下の useEffect が appState の
+  // 変更のたびに(デバウンス無しで)即座に発火する。appStateが短時間に連続して変わると
+  // (例: 会社のAI分析トグルをONにした直後の再レンダリング)、1回目の書き込み(古いデータ)が
+  // 2回目の書き込み(新しいデータ)より後にSupabase側で完了することがあり、その場合
+  // 「後に完了した方」が勝って新しい値を古い値で上書きしてしまう — 実際に本番の
+  // tenant_snapshotsで、companiesテーブル側は正しくtrueなのに、直後に保存されたスナップ
+  // ショットにはfalseが埋め込まれている状態を確認した(トグルが保存直後に元へ戻って見える
+  // 不具合の実データ上の証拠)。persistInFlightRef/pendingPersistStateRefで「常に1件だけ
+  // 実行中、割り込みは待たせて最新の状態だけを次に送る」ようにし、複数の書き込みが並行して
+  // 走って完了順序が入れ替わる余地そのものを無くす。
+  const persistInFlightRef = useRef(false);
+  const pendingPersistStateRef = useRef(null);
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
   const remoteSyncChannelRef = useRef(null);
@@ -3360,6 +3372,36 @@ function App() {
     }
   };
 
+  // 1件だけ実行中を許し、その間に来た変更は「次に送る最新」として控えておくだけにする
+  // (persistInFlightRef/pendingPersistStateRefの説明参照) — 実行中の書き込みが終わった
+  // 瞬間に、控えていた最新のstateだけを1回だけ送り直す。こうすることで、途中の古い状態を
+  // 表す書き込みが後から完了してtenant_snapshotsを巻き戻すことが構造的に起こらなくなる。
+  const runPersistToSupabase = (stateToPersist) => {
+    if (persistInFlightRef.current) {
+      pendingPersistStateRef.current = stateToPersist;
+      return;
+    }
+    persistInFlightRef.current = true;
+    const timestamp = new Date().toISOString();
+    setSaveStatus({ status: "saving", message: "保存中…", timestamp, error: false });
+    void persistToSupabase(stateToPersist).then((result) => {
+      if (result?.ok && !result?.skipped) {
+        setSaveStatus({ status: "saved", message: "保存済み ✓", timestamp, error: false });
+        return;
+      }
+      setSaveStatus({ status: "saved", message: "同期待機中", timestamp, error: false });
+    }).catch((error) => {
+      setSaveStatus({ status: "error", message: resolveErrorReason(error, "保存に失敗しました"), timestamp, error: true });
+    }).finally(() => {
+      persistInFlightRef.current = false;
+      if (pendingPersistStateRef.current) {
+        const nextPending = pendingPersistStateRef.current;
+        pendingPersistStateRef.current = null;
+        runPersistToSupabase(nextPending);
+      }
+    });
+  };
+
   useEffect(() => {
     if (authMode !== "app" || !currentUser?.authUserId || !syncInitialized) return;
 
@@ -3376,18 +3418,7 @@ function App() {
     }
 
     lastPersistedRef.current = snapshot;
-    const timestamp = new Date().toISOString();
-    setSaveStatus({ status: "saving", message: "保存中…", timestamp, error: false });
-
-    void persistToSupabase(appState).then((result) => {
-      if (result?.ok && !result?.skipped) {
-        setSaveStatus({ status: "saved", message: "保存済み ✓", timestamp, error: false });
-        return;
-      }
-      setSaveStatus({ status: "saved", message: "同期待機中", timestamp, error: false });
-    }).catch((error) => {
-      setSaveStatus({ status: "error", message: resolveErrorReason(error, "保存に失敗しました"), timestamp, error: true });
-    });
+    runPersistToSupabase(appState);
   }, [appState, authMode, currentUser?.authUserId]);
 
   useEffect(() => {
