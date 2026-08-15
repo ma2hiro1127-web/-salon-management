@@ -70,6 +70,7 @@ import {
   percent,
   readAppState,
   readStorage,
+  sanitizeNumericInputValue,
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
@@ -5730,11 +5731,17 @@ function App() {
                 </label>
                 <label className="field">
                   <span>在籍スタッフ数</span>
-                  <input type="number" min="0" step="1" value={storeForm.staffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, staffCount: event.target.value }))} placeholder="例: 6" />
+                  {/* type="number"は、全角数字(IME入力等)のように厳密なfloatとして無効な
+                      文字が入ると、画面には入力した文字が残ったままevent.target.valueだけが
+                      空文字になるブラウザの仕様があり、それが原因で保存時に0扱いになっていた
+                      (店舗追加は成功するがスタッフ数だけ反映されないバグ)。type="text" +
+                      inputMode + 手動サニタイズに切り替えることで、全角/半角どちらの入力でも
+                      確実に正しい値を保持する。 */}
+                  <input type="text" inputMode="numeric" value={storeForm.staffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, staffCount: sanitizeNumericInputValue(event.target.value) }))} placeholder="例: 6" />
                 </label>
                 <label className="field">
                   <span>生産性計算人数（任意）</span>
-                  <input type="number" min="0" step="0.1" value={storeForm.productivityStaffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: event.target.value }))} placeholder="例: 5.0" />
+                  <input type="text" inputMode="decimal" value={storeForm.productivityStaffCount} onChange={(event) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: sanitizeNumericInputValue(event.target.value, { allowDecimal: true }) }))} placeholder="例: 5.0" />
                   <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
                 </label>
               </div>

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -1823,4 +1823,21 @@ test("normalizeAppState applies migrateNameKeyedMapsToStoreId automatically (thi
     dailyResults: { "本店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
   });
   assert.deepEqual(normalized.dailyResults["store-abc__2026-08"], [{ date: "2026-08-01", totalSales: 1000 }]);
+});
+
+test("sanitizeNumericInputValue converts full-width Japanese digits/period to half-width (IME input on 在籍スタッフ数/生産性計算人数)", () => {
+  assert.equal(sanitizeNumericInputValue("４"), "4");
+  assert.equal(sanitizeNumericInputValue("１２"), "12");
+  assert.equal(sanitizeNumericInputValue("５．５", { allowDecimal: true }), "5.5");
+});
+
+test("sanitizeNumericInputValue strips any other non-numeric characters instead of the browser's native <input type=number> badInput behavior (which reports an empty string and silently drops the typed value)", () => {
+  assert.equal(sanitizeNumericInputValue("4人"), "4");
+  assert.equal(sanitizeNumericInputValue("abc"), "");
+  assert.equal(sanitizeNumericInputValue(""), "");
+});
+
+test("sanitizeNumericInputValue keeps at most one decimal point when allowDecimal is set, and strips decimals entirely otherwise", () => {
+  assert.equal(sanitizeNumericInputValue("5.5.5", { allowDecimal: true }), "5.55");
+  assert.equal(sanitizeNumericInputValue("5.5"), "55");
 });

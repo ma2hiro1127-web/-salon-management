@@ -23,6 +23,27 @@ export const parseNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+// <input type="number"> has a well-known browser quirk: once the typed content isn't a
+// strictly valid HTML floating-point number (e.g. full-width Japanese digits like "４" from an
+// IME — very common on Japanese keyboards/numpads), the DOM reports an EMPTY string via
+// event.target.value while the browser keeps showing the raw typed characters in the field
+// ("bad input" state). A controlled React input bound to that empty value therefore silently
+// saves 0 while the number the user typed visibly stays on screen — exactly the "店舗を追加した
+// のにスタッフ数が0のまま、フォームには数字が残る" bug. The fix is to use type="text" with this
+// sanitizer instead of relying on the browser's native number parsing: normalize full-width
+// digits/period to half-width, then strip anything that still isn't a digit (or a single
+// decimal point when allowDecimal).
+const FULLWIDTH_NUMERIC_CHARS = { "０": "0", "１": "1", "２": "2", "３": "3", "４": "4", "５": "5", "６": "6", "７": "7", "８": "8", "９": "9", "．": "." };
+
+export const sanitizeNumericInputValue = (value, { allowDecimal = false } = {}) => {
+  const converted = String(value ?? "").replace(/[０-９．]/g, (char) => FULLWIDTH_NUMERIC_CHARS[char] || char);
+  const cleaned = converted.replace(allowDecimal ? /[^0-9.]/g : /[^0-9]/g, "");
+  if (!allowDecimal) return cleaned;
+  const firstDot = cleaned.indexOf(".");
+  if (firstDot === -1) return cleaned;
+  return cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "");
+};
+
 export const readStorage = (key, fallback) => {
   try {
     const saved = localStorage.getItem(key);
