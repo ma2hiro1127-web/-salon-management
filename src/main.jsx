@@ -2,15 +2,6 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
-import { collectSalonManagerDiagnostics } from './utils/diagnostics.js'
-
-// このセッションが実際にどのビルドのJSを動かしているか、localStorage/IndexedDB/Cache
-// Storage/Service Workerの状態を、起動のたびに自動で1回コンソールへ出す。加えて
-// window.salonManagerDiagnostics()としても公開しているので、「ONにした直後」「OFFへ戻った
-// 直後」等、任意のタイミングでdevtoolsコンソールから手動実行できる — Chrome通常タブと
-// PWA版でこの出力を見比べれば、同じビルドが動いているか、どのストレージ領域に差分が
-// あるかを直接確認できる。
-void collectSalonManagerDiagnostics('startup');
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

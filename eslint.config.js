@@ -14,19 +14,8 @@ export default defineConfig([
       reactRefresh.configs.vite,
     ],
     languageOptions: {
-      // __BUILD_TIME__/__BUILD_COMMIT__ are injected at build time via vite.config.js's
-      // `define` — not real browser globals, but ESLint needs to know they're intentional
-      // (see main.jsx).
-      globals: { ...globals.browser, __BUILD_TIME__: 'readonly', __BUILD_COMMIT__: 'readonly' },
+      globals: globals.browser,
       parserOptions: { ecmaFeatures: { jsx: true } },
-    },
-  },
-  {
-    // Node-context config files (not part of the browser bundle) — process.env etc. are
-    // legitimately available here, unlike in the app source above.
-    files: ['vite.config.js'],
-    languageOptions: {
-      globals: globals.node,
     },
   },
 ])

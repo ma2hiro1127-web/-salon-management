@@ -594,9 +594,12 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   const companyFilter = role === "system_admin" ? null : profile.company_id;
 
   const [{ data: companiesData, error: companiesError }, { data: storesData, error: storesError }, { data: profilesData, error: profilesError }, { data: userStoresData, error: userStoresError }] = await Promise.all([
+    // ai_analysis_enabledはここでは選択しない — AI分析設定はgetCompanyAiAnalysisSettings/
+    // updateCompanyAiAnalysisSettingだけを経由する独立した状態として扱う(tenant_snapshot/
+    // このログイン時ブートストラップ経由では取得・保持しない)。
     companyFilter
-      ? supabase.from("companies").select("id, name, code, is_active, ai_analysis_enabled, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("companies").select("id, name, code, is_active, ai_analysis_enabled, created_at, updated_at").order("created_at", { ascending: true }),
+      ? supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").order("created_at", { ascending: true }),
     // Ordered by creation time, not name: a fresh session/device with no cached selection
     // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
     // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
@@ -615,9 +618,6 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   if (storesError) throw storesError;
   if (profilesError) throw profilesError;
   if (userStoresError) throw userStoresError;
-
-  // [ai-trace] 段階1: Supabase companiesテーブルから実際に返ってきた生の値。
-  console.info("[ai-trace] 1:loadTenantStateFromSupabase raw companiesData", (companiesData || []).map((c) => ({ id: c.id, name: c.name, ai_analysis_enabled: c.ai_analysis_enabled })));
 
   const storesByCompany = new Map();
   (storesData || []).forEach((store) => {
@@ -638,7 +638,6 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     name: company.name,
     code: company.code,
     isActive: company.is_active !== false,
-    aiAnalysisEnabled: Boolean(company.ai_analysis_enabled),
     contractStatus: "active",
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
@@ -736,23 +735,19 @@ export const createCompanyRecord = async ({ name, code, createdByProfileId }) =>
   return data;
 };
 
-// hydrateFromSupabaseは通常、companies/storesテーブルそのものをもう一度取得し直さず、
-// ログイン時にloadTenantStateFromSupabaseが取得した結果(以後はローカルのappStateとして
-// 引き回される)をtenantStateとして受け取るだけで動く。ai_analysis_enabledのように
-// 「company管理画面から随時system_adminが切り替える、DBが唯一の正であるべきフラグ」に
-// 限っては、tenant_snapshots(ある時点のappStateの丸ごとコピー)や、ローカルに保持された
-// 古いappStateを経由せず、hydrateのたびにcompaniesテーブルから直接読み直して上書きする
-// (「AI分析トグルを保存した直後にOFFへ戻る」不具合の対策 — companiesが唯一のsource of
-// truthになるようにする)。
-export const loadCompanyAiAnalysisFlags = async ({ companyIds }) => {
+// AI分析ON/OFFの唯一のsource of truthは companies.ai_analysis_enabled。tenant_snapshot・
+// hydrateFromSupabase・localStorage・appStateのどれも経由せず、常にこの2関数だけを通じて
+// companiesテーブルへ直接読み書きする(App.jsx側は独立したaiAnalysisSettings stateとして
+// 保持し、他の同期処理からは一切触らない)。
+export const getCompanyAiAnalysisSettings = async ({ companyIds }) => {
   const ids = Array.from(new Set((companyIds || []).filter(Boolean)));
   if (!isSupabaseConfigured || !ids.length) return { ok: true, data: [] };
   try {
     const { data, error } = await supabase.from("companies").select("id, ai_analysis_enabled").in("id", ids);
     if (error) throw error;
-    return { ok: true, data: data || [] };
+    return { ok: true, data: (data || []).map((row) => ({ id: row.id, aiAnalysisEnabled: Boolean(row.ai_analysis_enabled) })) };
   } catch (error) {
-    logSupabaseError({ operation: "loadCompanyAiAnalysisFlags", table: "companies", error });
+    logSupabaseError({ operation: "getCompanyAiAnalysisSettings", table: "companies", error });
     return { ok: false, error, data: [] };
   }
 };
@@ -760,23 +755,19 @@ export const loadCompanyAiAnalysisFlags = async ({ companyIds }) => {
 // AI分析(AI経営アシスタント)の会社単位ON/OFF。companiesのUPDATE用RLS(companies_update_
 // system_only)が既にsystem_admin限定になっているため、他の会社管理操作(createCompanyRecord
 // 等)と同じくEdge Functionを介さず直接クライアントから更新する — RLSそのものが権限の実体。
-export const updateCompanyAiAnalysisEnabled = async ({ companyId, enabled }) => {
+export const updateCompanyAiAnalysisSetting = async ({ companyId, enabled }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId });
   if (validationError) {
-    const detail = logSupabaseError({ operation: "updateCompanyAiAnalysisEnabled", table: "companies", companyId, error: new Error(validationError) });
+    const detail = logSupabaseError({ operation: "updateCompanyAiAnalysisSetting", table: "companies", companyId, error: new Error(validationError) });
     return { ok: false, error: new Error(detail.message) };
   }
   try {
-    const { data, error } = await supabase.from("companies").update({ ai_analysis_enabled: Boolean(enabled), updated_at: new Date().toISOString() }).eq("id", companyId).select().single();
+    const { data, error } = await supabase.from("companies").update({ ai_analysis_enabled: Boolean(enabled), updated_at: new Date().toISOString() }).eq("id", companyId).select("id, ai_analysis_enabled").single();
     if (error) throw error;
-    // [ai-trace] 段階2: UPDATE直後にSupabaseから返ってきた行そのもの(サーバー側で実際に
-    // 確定した値)。
-    console.info("[ai-trace] 2:updateCompanyAiAnalysisEnabled response", { companyId, requestedEnabled: Boolean(enabled), returned_ai_analysis_enabled: data?.ai_analysis_enabled, returned_updated_at: data?.updated_at });
-    return { ok: true, data };
+    return { ok: true, data: { id: data.id, aiAnalysisEnabled: Boolean(data.ai_analysis_enabled) } };
   } catch (error) {
-    logSupabaseError({ operation: "updateCompanyAiAnalysisEnabled", table: "companies", companyId, error });
-    console.error("[ai-trace] 2:updateCompanyAiAnalysisEnabled FAILED", { companyId, requestedEnabled: Boolean(enabled), error });
+    logSupabaseError({ operation: "updateCompanyAiAnalysisSetting", table: "companies", companyId, error });
     return { ok: false, error };
   }
 };
