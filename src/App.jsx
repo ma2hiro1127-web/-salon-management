@@ -1528,7 +1528,6 @@ function App() {
         setAuthMode("app");
         setActivePage(resolveDefaultPage(nextRole));
         setInviteToken("");
-        setAuthSuccess("招待登録が完了しました。管理画面へ移動します。");
       } catch (error) {
         // acceptInvite自体は既に成功している(アカウントは作成済み)— ここで失敗するのは
         // その直後のsignInWithEmail/プロフィール取得の段階なので、「登録に失敗した」と
@@ -1584,7 +1583,6 @@ function App() {
         window.localStorage.setItem("salon-role", normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
         setAuthMode("app");
         setActivePage(resolveDefaultPage(normalizeRole(profile?.role || resolveRoleForEmail(authUser.email))));
-        setAuthSuccess("アカウントを作成しました。管理画面へ移動します。" );
         return;
       }
 
@@ -1661,7 +1659,6 @@ function App() {
       window.localStorage.setItem("salon-role", nextRole);
       setAuthMode("app");
       setActivePage(resolveDefaultPage(nextRole));
-      setAuthSuccess("パスワードを更新しました。");
     } catch (error) {
       setAuthError(getLocalizedSupabaseErrorMessage(error));
     } finally {
@@ -2261,7 +2258,6 @@ function App() {
       persistTenantState(nextState);
       setCompanyForm({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
       setCompanyEditId("");
-      setNotice(existingCompany ? `${nextCompany.name} を更新しました` : `${nextCompany.name} を追加しました`);
     } catch (error) {
       setNotice(getSupabaseErrorMessage(error));
     }
@@ -2396,7 +2392,6 @@ function App() {
       setStoreForm(createStoreFormDefaults());
       setStoreEditId("");
       const successMessage = existingStore ? `${nextStore.name} を更新しました` : `${nextStore.name} を追加しました`;
-      setNotice(successMessage);
       setStoreFormStatus({ status: "saved", message: successMessage });
     } catch (error) {
       // console.error here (not just the UI notice) so the real cause is visible in devtools
@@ -2527,10 +2522,8 @@ function App() {
           setNotice(`${nextUser.name} を招待しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(「再招待」で送信し直すか、「URLコピー」から招待URLを直接共有できます)`);
           return;
         }
-        setNotice(`${nextUser.name} を招待し、招待メールを送信しました`);
         return;
       }
-      setNotice(`${nextUser.name} を招待しました。招待リンクを共有してください。`);
     } catch (error) {
       setNotice(getSupabaseErrorMessage(error));
     } finally {
@@ -2572,7 +2565,6 @@ function App() {
     setCompanyEditId(company.id);
     setCompanyForm({ name: company.name, code: company.code, contractStatus: company.contractStatus || "trial", businessType: company.businessType || "salon" });
     setCompanySettingsForm({ ...createCompanySettingsDefaults(), ...(company.settings || {}), businessType: company.businessType || "salon" });
-    setNotice(`${company.name} を編集します`);
   };
 
   const handleEditStore = (store) => {
@@ -2692,7 +2684,6 @@ function App() {
           : user)),
       };
       persistTenantState(nextState);
-      setNotice(`${editUserDraft.name.trim()} の情報を更新しました`);
       closeEditUserModal();
     } catch (error) {
       setEditUserError(getSupabaseErrorMessage(error));
@@ -2745,7 +2736,6 @@ function App() {
         users: (appState.users || []).filter((user) => user.id !== targetUser.id),
       };
       persistTenantState(nextState);
-      setNotice(isPendingInvite ? `${targetUser.name} への招待を取り消しました` : `${targetUser.name} を削除しました`);
       closeDeleteUserModal();
     } catch (error) {
       setDeleteUserError(getSupabaseErrorMessage(error));
@@ -2761,7 +2751,6 @@ function App() {
       companies: (appState.companies || []).map((item) => item.id === company.id ? { ...item, isActive: !item.isActive, lastUpdatedAt: new Date().toISOString() } : item),
     };
     persistTenantState(nextState);
-    setNotice(company.isActive ? `${company.name} を停止しました` : `${company.name} を再開しました`);
   };
 
   // 店舗の状態は運営中/停止中/アーカイブの3段階(要件1) — 停止/再開/アーカイブ/復元の4操作は
@@ -2820,7 +2809,6 @@ function App() {
       }
     }
     applyStoreStatusLocally(store.id, meta.nextStatus);
-    setNotice(meta.successMessage(store.name));
   };
 
   // handleSaveStore keeps companySnapshots[companyId].stores (the legacy display-name array —
@@ -2847,7 +2835,6 @@ function App() {
         stores: [...(currentCompany?.stores || []), { ...store, id: `${store.id}-copy-${Date.now()}`, name: duplicateName, code: crypto.randomUUID(), isActive: true, status: "active" }],
       };
       persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
-      setNotice(`${duplicateName} を複製しました（ローカル）`);
       return;
     }
     try {
@@ -2857,7 +2844,6 @@ function App() {
       const nextStore = { ...store, id: createdStore.id, name: duplicateName, code: createdStore.code, isActive: true, status: "active" };
       const nextCompany = { ...currentCompany, stores: [...(currentCompany?.stores || []), nextStore] };
       persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
-      setNotice(`${duplicateName} を複製しました`);
     } catch (error) {
       setNotice(`店舗の複製に失敗しました: ${getSupabaseErrorMessage(error)}`);
     }
@@ -2895,7 +2881,6 @@ function App() {
       }
       const nextCompany = { ...currentCompany, stores: (currentCompany?.stores || []).filter((store) => store.id !== target.id) };
       persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
-      setNotice(`${target.name} を完全に削除しました`);
       closeHardDeleteModal();
     } finally {
       setHardDeleteSaving(false);
@@ -2923,7 +2908,6 @@ function App() {
         users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: nextActive } : item),
       };
       persistTenantState(nextState);
-      setNotice(nextActive ? `${user.name} を再開しました` : `${user.name} を停止しました`);
     } finally {
       setTogglingStatusUserId("");
     }
@@ -2951,7 +2935,6 @@ function App() {
       companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
     };
     persistTenantState(nextState);
-    setNotice("初期設定を完了しました");
   };
 
   const handleSaveCompanySettings = async () => {
@@ -2984,7 +2967,6 @@ function App() {
       } : company),
     };
     persistTenantState(nextState);
-    setNotice("会社基本設定を保存しました");
   };
 
   // 「消費税を考慮する」+ 引当率専用の保存(company_settings.taxSettings列)。companySettingsForm
@@ -3013,12 +2995,11 @@ function App() {
   };
 
   const handleSaveTaxSettings = async () => {
-    const ok = await persistTaxSettings({
+    await persistTaxSettings({
       ...appState.taxSettings,
       considerConsumptionTax: Boolean(taxSettingsForm.considerConsumptionTax),
       consumptionTaxReserveRate: parseNumber(taxSettingsForm.consumptionTaxReserveRate),
     });
-    if (ok) setNotice("消費税の設定を保存しました");
   };
 
   // 損益表の「消費税考慮」セクションのON/OFFトグル用。在庫管理トグルと同様、単一のON/OFFなので
@@ -3027,7 +3008,6 @@ function App() {
     const ok = await persistTaxSettings({ ...appState.taxSettings, considerConsumptionTax: checked });
     if (ok) {
       setTaxSettingsForm((prev) => ({ ...prev, considerConsumptionTax: checked }));
-      setNotice(checked ? "消費税考慮をONにしました" : "消費税考慮をOFFにしました");
     }
   };
 
@@ -3173,7 +3153,6 @@ function App() {
         )),
       })),
     }));
-    setNotice(checked ? "在庫管理をONにしました" : "在庫管理をOFFにしました");
   };
 
   // 月締めチェックリストの費用項目を「対象外(非表示)」にする/表示に戻す(店舗単位、
@@ -3241,7 +3220,6 @@ function App() {
       persistTenantState(nextState);
 
       if (!isSupabaseConfigured) {
-        setNotice(`${user.name} の招待リンクを更新しました（7日間有効）`);
         return;
       }
 
@@ -3263,7 +3241,6 @@ function App() {
         setNotice(`招待リンクは更新しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(「URLコピー」から招待URLを直接共有することもできます)`);
         return;
       }
-      setNotice(`${user.name} に招待メールを再送しました（7日間有効）`);
     } finally {
       setResendingUserId("");
     }
@@ -3310,7 +3287,6 @@ function App() {
       try {
         if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
           await navigator.clipboard.writeText(result.actionLink);
-          setNotice("招待リンクをコピーしました");
         } else {
           window.prompt("招待リンク", result.actionLink);
         }
@@ -3678,9 +3654,6 @@ function App() {
       setDailyInsight(buildDailyInsight({ form: entry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
       lastAutoSaveSignatureRef.current = getDailyAutoSaveSignature(entry);
       persistSaveStatus("saved", "保存済み ✓", false);
-      if (!silent) {
-        setNotice("日次実績を保存しました");
-      }
       return { ok: true, data: entry, autoSave };
     } catch (error) {
       logSupabaseError({ operation: "saveDailyEntry", table: "daily_sales", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, businessDate: dailyForm.date, error });
@@ -3987,7 +3960,6 @@ function App() {
       setDailyMode("view");
       setDailyOriginalEntry({ ...existingEntry });
       setDailyInsight(buildDailyInsight({ form: existingEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
-      setNotice("入力済みの日付です。編集ボタンで内容を確認・更新できます。");
       return;
     }
 
@@ -3995,7 +3967,6 @@ function App() {
     setDailyMode("create");
     setDailyOriginalEntry(null);
     setDailyInsight("");
-    setNotice("");
   };
 
   const submitDailyEntry = (event) => {
@@ -4009,7 +3980,6 @@ function App() {
     setDailyMode("create");
     setDailyOriginalEntry(null);
     setDailyInsight("");
-    setNotice("新規入力モードです");
   };
 
   const editDailyEntry = () => {
@@ -4018,7 +3988,6 @@ function App() {
       return;
     }
     setDailyMode("edit");
-    setNotice("編集モードです。内容を確認してから完了してください。" );
   };
 
   const cancelDailyEntryEdit = () => {
@@ -4026,13 +3995,11 @@ function App() {
       setDailyForm({ ...dailyOriginalEntry });
       setDailyMode("view");
       setDailyInsight(buildDailyInsight({ form: dailyOriginalEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
-      setNotice("編集をキャンセルしました");
       return;
     }
     setDailyForm({ ...defaultDailyEntry, date: dailyForm.date || "" });
     setDailyMode("create");
     setDailyInsight("");
-    setNotice("入力をキャンセルしました");
   };
 
   // 「費用入力」の項目定義(名前・カテゴリ・備考・継続/期間限定)。金額はここでは扱わず、
@@ -4128,13 +4095,11 @@ function App() {
       await persistCostMonthlyAmount({ costItemId: itemId, targetMonth: selectedMonth, amount: fixedForm.amount });
     }
 
-    setNotice(fixedForm.id ? "費用を更新しました" : "費用を追加しました");
     setFixedForm({ ...defaultFixedCostItem, startMonth: selectedMonth });
   };
 
   const editFixedCost = (item) => {
     setFixedForm({ ...defaultFixedCostItem, ...item, amount: "" });
-    setNotice("編集モードです。内容を確認して更新してください。");
   };
 
   const cancelEditFixedCost = () => {
@@ -4170,7 +4135,6 @@ function App() {
       });
       return { ...prev, fixedCosts: nextFixedCosts, costMonthlyAmounts: nextCostMonthlyAmounts };
     });
-    setNotice("費用を削除しました");
   };
 
   // 対象月ごとの費用金額(cost_monthly_amounts)を1件upsertする。新規登録時の初回金額保存と、
@@ -4243,7 +4207,6 @@ function App() {
         delete next[item.id];
         return next;
       });
-      setNotice("金額を保存しました");
     }
   };
 
@@ -4293,8 +4256,7 @@ function App() {
       setNotice("期首在庫の金額を入力してください");
       return;
     }
-    const ok = await persistInventoryBalance(getMonthOffset(selectedMonth, -1), openingInventoryDraft);
-    if (ok) setNotice("期首在庫を保存しました");
+    await persistInventoryBalance(getMonthOffset(selectedMonth, -1), openingInventoryDraft);
   };
 
   const saveClosingInventoryBalance = async () => {
@@ -4302,8 +4264,7 @@ function App() {
       setNotice("当月末在庫の金額を入力してください");
       return;
     }
-    const ok = await persistInventoryBalance(selectedMonth, closingInventoryDraft);
-    if (ok) setNotice("当月末在庫を保存しました");
+    await persistInventoryBalance(selectedMonth, closingInventoryDraft);
   };
 
   // saveHolidayCount/saveManualBusinessDayCount/resetBusinessDaySetting used to only call
@@ -4367,7 +4328,6 @@ function App() {
       businessDaySettings: { ...prev.businessDaySettings, [key]: nextSetting },
     }));
     persistSaveStatus("saved", "店休日数を保存しました");
-    setNotice("店休日数を保存しました");
   };
 
   const startManualBusinessDayEdit = () => {
@@ -4412,7 +4372,6 @@ function App() {
     }));
     setIsBusinessDayEditing(false);
     persistSaveStatus("saved", "営業日数を手動設定しました");
-    setNotice("営業日数を手動設定しました");
   };
 
   const resetBusinessDaySetting = async () => {
@@ -4443,7 +4402,6 @@ function App() {
     }));
     setIsBusinessDayEditing(false);
     persistSaveStatus("saved", "営業日数を自動計算に戻しました");
-    setNotice("営業日数を自動計算に戻しました");
   };
 
   // カレンダーで店休日をトグルする(要件17)。数値ベースの店休日数(saveHolidayCount)とは
@@ -4483,7 +4441,6 @@ function App() {
       const nextList = isCurrentlyHoliday ? list.filter((date) => date !== dateIso) : [...list, dateIso];
       return { ...prev, storeHolidays: { ...prev.storeHolidays, [key]: nextList } };
     });
-    setNotice(isCurrentlyHoliday ? `${dateIso}の店休日を解除しました` : `${dateIso}を店休日に設定しました`);
   };
 
   // 「全店舗」専用の店休日カレンダー(要件7・9)。各実店舗の店休日設定とは完全に別管理で、
@@ -4512,7 +4469,6 @@ function App() {
       const nextList = isCurrentlyHoliday ? list.filter((date) => date !== dateIso) : [...list, dateIso];
       return { ...prev, allStoresHolidays: { ...prev.allStoresHolidays, [key]: nextList } };
     });
-    setNotice(isCurrentlyHoliday ? `${dateIso}の全店舗店休日を解除しました` : `${dateIso}を全店舗店休日に設定しました`);
   };
 
   const toggleMonthClosing = async () => {
@@ -4571,7 +4527,6 @@ function App() {
       },
     }));
     persistSaveStatus("saved", nextClosed ? "月締めを確定しました" : "月締めを解除しました");
-    setNotice(nextClosed ? "月締めを確定しました" : "月締めを解除しました");
   };
 
   const toggleDayClosing = async () => {
@@ -4662,7 +4617,6 @@ function App() {
     });
 
     persistSaveStatus("saved", "保存済み ✓");
-    setNotice(nextClosed ? "日締めが完了しました" : "日締めを解除しました");
   };
 
   // 月締め専用(固定費/販管費だった「費用入力」は開始月/終了月で自動反映されるため、前月
@@ -4875,7 +4829,10 @@ function App() {
         </header>
 
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
-        {notice ? <div className="notice-box">{notice}</div> : null}
+        {/* このnoticeは「成功しました」等の完了通知には使わない — 画面上部にはエラーのみ
+            表示する(誤操作でデータを失わないための警告や、対応が必要な保存失敗など)。
+            成功・完了の確認は、各操作の近く(保存ステータスチップ・ボタンラベル等)に留める。 */}
+        {notice ? <div className="notice-box error">{notice}</div> : null}
         {activePage === "dashboard" && (
           <div className="dashboard-layout">
             <section className="panel">
