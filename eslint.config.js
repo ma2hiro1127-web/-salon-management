@@ -14,7 +14,9 @@ export default defineConfig([
       reactRefresh.configs.vite,
     ],
     languageOptions: {
-      globals: globals.browser,
+      // __BUILD_TIME__ is injected at build time via vite.config.js's `define` — not a real
+      // browser global, but ESLint needs to know it's intentional (see main.jsx).
+      globals: { ...globals.browser, __BUILD_TIME__: 'readonly' },
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
