@@ -154,6 +154,7 @@ import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/b
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta } from "./utils/invitations.js";
 import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
+import { collectSalonManagerDiagnostics } from "./utils/diagnostics.js";
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
@@ -2886,6 +2887,9 @@ function App() {
     };
     aiTrace("6:handleToggleCompanyAiAnalysis persisting", { companyId: company.id, valueBeingPersisted: nextState.companies.find((c) => c.id === company.id)?.aiAnalysisEnabled });
     persistTenantState(nextState);
+    // Chrome/PWAでビルド・ストレージ状態を直接比較できるよう、操作直後の状態も自動で
+    // ログに残す(要件: 起動直後とAI分析ON操作後の両方でログ出力する)。
+    void collectSalonManagerDiagnostics("after-toggle", { companyId: company.id, companyName: company.name });
   };
 
   // 店舗の状態は運営中/停止中/アーカイブの3段階(要件1) — 停止/再開/アーカイブ/復元の4操作は

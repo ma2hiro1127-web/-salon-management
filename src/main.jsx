@@ -2,12 +2,15 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
+import { collectSalonManagerDiagnostics } from './utils/diagnostics.js'
 
-// このセッションが実際にどのビルドのJSを動かしているかをコンソールで直接確認できるように
-// する。「Chrome通常タブでは直った不具合がPWA版だけ再現する」ような報告があった際、まず
-// ここを比較すれば、単にPWA側が古いJSバンドルのまま止まっているだけなのか、それとも同じ
-// 最新コードで別の不具合が起きているのかを一目で切り分けられる。
-console.info('[build-info] Salon Manager build:', __BUILD_TIME__, 'display-mode:', window.matchMedia('(display-mode: standalone)').matches ? 'standalone(PWA)' : 'browser');
+// このセッションが実際にどのビルドのJSを動かしているか、localStorage/IndexedDB/Cache
+// Storage/Service Workerの状態を、起動のたびに自動で1回コンソールへ出す。加えて
+// window.salonManagerDiagnostics()としても公開しているので、「ONにした直後」「OFFへ戻った
+// 直後」等、任意のタイミングでdevtoolsコンソールから手動実行できる — Chrome通常タブと
+// PWA版でこの出力を見比べれば、同じビルドが動いているか、どのストレージ領域に差分が
+// あるかを直接確認できる。
+void collectSalonManagerDiagnostics('startup');
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
