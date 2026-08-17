@@ -2871,36 +2871,36 @@ function App() {
     }
   };
 
-  // 契約状態(トライアル/契約中/停止中)の遷移。company.isActiveを使った以前のトグルは
-  // ローカルのappStateしか書き換えておらず、次のhydrateで即座に元へ戻ってしまう
+  // 契約状態(無料利用/トライアル/契約中/停止中)の遷移。company.isActiveを使った以前の
+  // トグルはローカルのappStateしか書き換えておらず、次のhydrateで即座に元へ戻ってしまう
   // (=実際には何も保存されていなかった)不具合だったため、update-company-status Edge
-  // Function(service-role)を経由して実際にcompanies.contract_statusを更新するよう作り直した。
-  // activate: トライアル/停止中 → 契約中(「契約中へ変更」「契約中へ復帰」を同じ操作として
-  // 扱う)。suspend: トライアル/契約中 → 停止中。company_id・店舗・ユーザー・売上等の既存
-  // データには一切触れない — ステータスの列を1つ更新するだけ(要件2・3)。
-  const COMPANY_CONTRACT_ACTIONS = {
-    activate: {
-      confirmMessage: (name) => `${name} を契約中にしますか？`,
-      failureMessage: "契約状態の変更に失敗しました",
-    },
-    suspend: {
-      confirmMessage: (name) => `${name} を停止しますか？\n会社・店舗・ユーザー・売上等のデータは削除されず、そのまま保持されます。停止中は system_admin 以外は利用できなくなります。`,
-      failureMessage: "契約状態の変更に失敗しました",
-    },
+  // Function(service-role)を経由して実際にcompanies.contract_statusを更新する。
+  // company_id・店舗・ユーザー・売上等の既存データには一切触れない — ステータスの列を1つ
+  // 更新するだけ。許可される遷移(どの状態からどの状態へ変更できるか)はサーバー側の
+  // ALLOWED_TRANSITIONSと同じ内容をここにも持たせ、UIの選択肢自体を許可された遷移だけに
+  // 絞る(実際の強制力はサーバー側、これはUI上の道しるべ)。
+  const CONTRACT_STATUS_LABELS = { free: "無料利用", trial: "トライアル", active: "契約中", suspended: "停止中" };
+  const CONTRACT_STATUS_ALLOWED_NEXT = {
+    free: ["active", "suspended"],
+    trial: ["active", "free", "suspended"],
+    active: ["suspended", "free"],
+    suspended: ["active", "free", "trial"],
   };
 
-  const handleCompanyContractAction = async (company, action) => {
-    const meta = COMPANY_CONTRACT_ACTIONS[action];
-    if (!meta) return;
-    if (!window.confirm(meta.confirmMessage(company.name))) return;
+  const handleCompanyContractAction = async (company, targetStatus) => {
+    const targetLabel = CONTRACT_STATUS_LABELS[targetStatus] || targetStatus;
+    const confirmMessage = targetStatus === "suspended"
+      ? `${company.name} を停止しますか？\n会社・店舗・ユーザー・売上等のデータは削除されず、そのまま保持されます。停止中は system_admin 以外は利用できなくなります。`
+      : `${company.name} の契約状態を「${targetLabel}」に変更しますか？`;
+    if (!window.confirm(confirmMessage)) return;
     if (companyStatusSavingId) return;
     setCompanyStatusSavingId(company.id);
     try {
-      let nextStatus = action === "activate" ? "active" : "suspended";
+      let nextStatus = targetStatus;
       if (isSupabaseConfigured) {
-        const result = await updateCompanyContractStatus({ companyId: company.id, action });
+        const result = await updateCompanyContractStatus({ companyId: company.id, targetStatus });
         if (!result.ok) {
-          setNotice(`${meta.failureMessage}: ${getSupabaseErrorMessage(result.error)}`);
+          setNotice(`契約状態の変更に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
           return;
         }
         nextStatus = result.status || nextStatus;
@@ -6007,6 +6007,7 @@ function App() {
                   「契約状態を変えたつもりが実際には何も変わらない」トラップになる。 */}
               {!companyEditId && (
                 <select value={companyForm.contractStatus} onChange={(event) => setCompanyForm((prev) => ({ ...prev, contractStatus: event.target.value }))}>
+                  <option value="free">無料利用</option>
                   <option value="trial">トライアル</option>
                   <option value="active">契約中</option>
                   <option value="suspended">停止中</option>
@@ -6030,8 +6031,11 @@ function App() {
                           <strong>{company.name}</strong>
                           <small>{company.code}</small>
                         </div>
-                        <span className={`status-pill ${{ trial: "warning", active: "saved", suspended: "error" }[company.contractStatus || "trial"]}`}>
-                          {{ trial: "トライアル", active: "契約中", suspended: "停止中" }[company.contractStatus || "trial"]}
+                        {/* 会社カードのメイン状態表示は契約状態のみ(要件: 「有効」のような
+                            利用状態と契約状態を重複表示しない)。停止中は一目で利用不可と
+                            分かるよう赤系(error)にする。 */}
+                        <span className={`status-pill ${{ free: "saving", trial: "warning", active: "saved", suspended: "error" }[company.contractStatus || "trial"]}`}>
+                          契約：{CONTRACT_STATUS_LABELS[company.contractStatus || "trial"]}
                         </span>
                       </div>
                       <div className="info-card-meta">
@@ -6045,18 +6049,26 @@ function App() {
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
-                        {/* トライアル/停止中→契約中、トライアル/契約中→停止中(要件2・3)。
-                            company_id・店舗・ユーザー・売上等の既存データには一切触れない —
-                            契約状態の列を1つ更新するだけ。 */}
-                        {canManageCompanies(currentRole) && company.contractStatus !== "active" && (
-                          <button className="text-button" type="button" disabled={companyStatusSavingId === company.id} onClick={() => handleCompanyContractAction(company, "activate")}>
-                            {company.contractStatus === "suspended" ? "契約中へ復帰" : "契約中へ変更"}
-                          </button>
-                        )}
-                        {canManageCompanies(currentRole) && company.contractStatus !== "suspended" && (
-                          <button className="text-button" type="button" disabled={companyStatusSavingId === company.id} onClick={() => handleCompanyContractAction(company, "suspend")}>
-                            停止
-                          </button>
+                        {/* 許可されている遷移先だけを選択肢にする(無料利用/トライアル/契約中/
+                            停止中の組み合わせはCONTRACT_STATUS_ALLOWED_NEXT参照) —
+                            company_id・店舗・ユーザー・売上等の既存データには一切触れない、
+                            契約状態の列を1つ更新するだけ。valueは常に空へ戻すことで、選択の
+                            たびに毎回このメニューから選び直す「実行専用メニュー」として扱う。 */}
+                        {canManageCompanies(currentRole) && (
+                          <select
+                            className="text-button"
+                            value=""
+                            disabled={companyStatusSavingId === company.id}
+                            onChange={(event) => {
+                              const targetStatus = event.target.value;
+                              if (targetStatus) handleCompanyContractAction(company, targetStatus);
+                            }}
+                          >
+                            <option value="">契約状態を変更...</option>
+                            {(CONTRACT_STATUS_ALLOWED_NEXT[company.contractStatus || "trial"] || []).map((status) => (
+                              <option key={status} value={status}>{CONTRACT_STATUS_LABELS[status]}へ変更</option>
+                            ))}
+                          </select>
                         )}
                         {/* AI分析の契約ON/OFFはsystem_admin限定(要件) — company_adminには
                             ボタン自体を出さない(UIを隠すだけでなくRLS/Edge Function側でも

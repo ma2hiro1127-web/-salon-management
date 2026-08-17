@@ -734,15 +734,16 @@ export const createCompanyRecord = async ({ name, code, contractStatus }) => {
   return data;
 };
 
-// 会社の契約状態(トライアル/契約中/停止中)を変更する — update-company-status Edge Function
-// (service-role)経由。system_admin限定、想定外の遷移(既に契約中の会社をactivateする等)は
-// サーバー側で拒否される。クライアントからcompanies.contract_statusを直接書ける経路は
-// 残さない(companies_update_system_only RLSにも守られているが、Edge Function側の遷移検証は
-// RLSだけではできないため)。
-export const updateCompanyContractStatus = async ({ companyId, action }) => {
+// 会社の契約状態(無料利用/トライアル/契約中/停止中)を変更する — update-company-status Edge
+// Function(service-role)経由。system_admin限定、targetStatusは対象companyの現在の状態から
+// 許可されていない遷移(例: 契約中からトライアルへ戻す)であればサーバー側で拒否される。
+// クライアントからcompanies.contract_statusを直接書ける経路は残さない
+// (companies_update_system_only RLSにも守られているが、遷移そのものの妥当性検証はRLSだけ
+// ではできないため)。
+export const updateCompanyContractStatus = async ({ companyId, targetStatus }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const { data, error } = await supabase.functions.invoke("update-company-status", {
-    body: { companyId, action },
+    body: { companyId, targetStatus },
   });
   if (error) {
     let message = error.message;

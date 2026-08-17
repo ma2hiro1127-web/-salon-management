@@ -1,6 +1,7 @@
-// 会社の契約状態(トライアル/契約中/停止中)を変更する。system_admin限定 — companiesの
-// UPDATE自体はcompanies_update_system_only RLSで既にsystem_admin以外は拒否されるが、
-// 他のEdge Function群(update-store-status等)と同じ規約でサーバー側でも明示的に再検証する。
+// 会社の契約状態(無料利用/トライアル/契約中/停止中)を変更する。system_admin限定 —
+// companiesのUPDATE自体はcompanies_update_system_only RLSで既にsystem_admin以外は拒否
+// されるが、他のEdge Function群(update-store-status等)と同じ規約でサーバー側でも明示的に
+// 再検証する。
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -20,12 +21,15 @@ function logStage(stage: string, detail: Record<string, unknown>) {
   console.error(`[update-company-status] ${stage}`, { ...detail, timestamp: new Date().toISOString() });
 }
 
-// action -> { fromStatuses, toStatus } — activateはトライアル/停止中どちらからも契約中へ
-// (「契約中へ変更」「契約中へ復帰」を同じ操作として扱う)、suspendはトライアル/契約中
-// どちらからも停止中へ。想定外の遷移(既に契約中の会社をactivateする等)は明示的に拒否する。
-const TRANSITIONS: Record<string, { fromStatuses: string[]; toStatus: string }> = {
-  activate: { fromStatuses: ["trial", "suspended"], toStatus: "active" },
-  suspend: { fromStatuses: ["trial", "active"], toStatus: "suspended" },
+const VALID_STATUSES = ["free", "trial", "active", "suspended"];
+
+// 現在の状態 -> 遷移可能な状態の一覧。要件で明示された組み合わせのみを許可する
+// (例: 契約中からトライアルへ戻す遷移は要件に含まれていないため許可しない)。
+const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  free: ["active", "suspended"],
+  trial: ["active", "free", "suspended"],
+  active: ["suspended", "free"],
+  suspended: ["active", "free", "trial"],
 };
 
 Deno.serve(async (req) => {
@@ -37,20 +41,19 @@ Deno.serve(async (req) => {
   }
 
   let companyId = "";
-  let action = "";
+  let targetStatus = "";
   try {
     const body = await req.json();
     companyId = String(body?.companyId || "").trim();
-    action = String(body?.action || "").trim();
+    targetStatus = String(body?.targetStatus || "").trim();
   } catch {
     return json({ error: "リクエストの形式が不正です" }, 400);
   }
-  if (!companyId || !action) {
-    return json({ error: "companyId, action は必須です" }, 400);
+  if (!companyId || !targetStatus) {
+    return json({ error: "companyId, targetStatus は必須です" }, 400);
   }
-  const transition = TRANSITIONS[action];
-  if (!transition) {
-    return json({ error: "不正な操作です" }, 400);
+  if (!VALID_STATUSES.includes(targetStatus)) {
+    return json({ error: "不正な契約状態です" }, 400);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -94,20 +97,25 @@ Deno.serve(async (req) => {
       return json({ error: "対象の会社が見つかりません" }, 404);
     }
 
-    if (!transition.fromStatuses.includes(company.contract_status)) {
-      return json({ error: `この会社は現在「${company.contract_status}」のため、この操作は行えません` }, 409);
+    const currentStatus = company.contract_status || "trial";
+    if (currentStatus === targetStatus) {
+      return json({ error: "既にその契約状態です" }, 409);
+    }
+    if (!(ALLOWED_TRANSITIONS[currentStatus] || []).includes(targetStatus)) {
+      return json({ error: `この会社は現在「${currentStatus}」のため、その契約状態へは変更できません` }, 409);
     }
 
+    // company_id・関連データには一切触れない。契約状態の列を1つ更新するだけ。
     const { error: updateError } = await admin
       .from("companies")
-      .update({ contract_status: transition.toStatus, updated_at: new Date().toISOString() })
+      .update({ contract_status: targetStatus, updated_at: new Date().toISOString() })
       .eq("id", companyId);
     if (updateError) throw updateError;
 
-    return json({ ok: true, status: transition.toStatus });
+    return json({ ok: true, status: targetStatus });
   } catch (error) {
     const message = error instanceof Error ? error.message : "会社の契約状態変更に失敗しました";
-    logStage("unhandled_error", { companyId, action, message });
+    logStage("unhandled_error", { companyId, targetStatus, message });
     return json({ error: message }, 500);
   }
 });
