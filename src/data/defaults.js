@@ -175,6 +175,11 @@ export const createInitialAppState = () => {
     storeHolidays: {},
     allStoresHolidays: {},
     dailyResults: {},
+    // 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_sales(dailyResults)とは完全に
+    // 別のマップ — `${storeId}__${month}` -> { [date]: {cashAmount, cashlessAmount, pointAmount} }。
+    // 総売上・損益・月次集計のどの計算もこのフィールドを参照しないため、二重計上は構造的に
+    // 起こらない。
+    cashBreakdownResults: {},
     fixedCosts: {},
     // cost_monthly_amounts — 対象月ごとの費用金額。fixedCosts(項目定義)とは別に
     // `${costItemId}__${targetMonth}`でキー化する(storeId__monthではないためSTORE_KEYED_MAPS

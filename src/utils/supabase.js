@@ -278,7 +278,7 @@ export const loadStoreInputSettingsForCompany = async ({ companyId }) => {
 // Partial upserts are safe here: PostgREST's upsert only sets the columns present in the
 // payload, so saving just dailyFields (or just monthlyTargetFields) can never null out the
 // other column on an existing row.
-export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking, hiddenClosingCategories }) => {
+export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking, useCashBreakdown, hiddenClosingCategories }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId, storeId });
   if (validationError) {
@@ -289,6 +289,7 @@ export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields
   if (dailyFields !== undefined) payload.daily_fields = dailyFields;
   if (monthlyTargetFields !== undefined) payload.monthly_target_fields = monthlyTargetFields;
   if (useInventoryTracking !== undefined) payload.use_inventory_tracking = Boolean(useInventoryTracking);
+  if (useCashBreakdown !== undefined) payload.use_cash_breakdown = Boolean(useCashBreakdown);
   if (hiddenClosingCategories !== undefined) payload.hidden_closing_categories = hiddenClosingCategories;
   try {
     const { data, error } = await supabase.from("store_input_settings").upsert(payload, { onConflict: "company_id,store_id" }).select().single();
@@ -1286,6 +1287,62 @@ export const loadDailySalesForCompanyRange = async ({ companyId, startDate, endD
     return { ok: true, data: data || [] };
   } catch (error) {
     logSupabaseError({ operation: "loadDailySalesForCompanyRange", table: "daily_sales", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+// 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_sales(技術売上/店販売上/総売上)とは
+// 完全に別テーブル・別の保存経路 — is_day_closed/closed_at/closed_byを一切扱わないため、
+// この関数がdaily_salesの日締め状態を書き換えることは構造的に起こらない。
+export const upsertDailyCashBreakdown = async ({ companyId, storeId, userId, businessDate, cashAmount, cashlessAmount, pointAmount }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId, businessDate });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertDailyCashBreakdown", table: "daily_cash_breakdown", userId, companyId, storeId, businessDate, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+
+  const payload = {
+    company_id: companyId,
+    store_id: storeId,
+    business_date: businessDate,
+    cash_amount: Number(cashAmount || 0),
+    cashless_amount: Number(cashlessAmount || 0),
+    point_amount: Number(pointAmount || 0),
+    created_by: userId,
+    updated_by: userId,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase
+      .from("daily_cash_breakdown")
+      .upsert(payload, { onConflict: "company_id,store_id,business_date" })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertDailyCashBreakdown", table: "daily_cash_breakdown", userId, companyId, storeId, businessDate, error });
+    return { ok: false, error };
+  }
+};
+
+// loadDailySalesForCompanyRangeと同じ範囲取得パターン — 日次入力画面の対象月+前2か月分を
+// 一度に取得し、店舗ごとのdailyResultsと同じ要領でクライアント側にキャッシュする。
+export const loadDailyCashBreakdownForCompanyRange = async ({ companyId, startDate, endDate }) => {
+  if (!isSupabaseConfigured || !companyId || !startDate || !endDate) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("daily_cash_breakdown")
+      .select("*")
+      .eq("company_id", companyId)
+      .gte("business_date", startDate)
+      .lte("business_date", endDate);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadDailyCashBreakdownForCompanyRange", table: "daily_cash_breakdown", companyId, error });
     return { ok: false, error, data: [] };
   }
 };

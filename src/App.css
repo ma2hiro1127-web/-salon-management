@@ -201,6 +201,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .daily-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
 .daily-section-card { padding: 14px; border-radius: 18px; border: 1px solid var(--border); background: var(--surface-strong); display: flex; flex-direction: column; gap: 10px; }
 .daily-section-card h3 { margin: 0; font-size: 1rem; }
+/* 日計カード: 既存の.daily-section-cardをそのまま<details>に適用し、角丸・枠線・余白は
+   完全に共通(要件18)。折りたたみ可否だけをネイティブ<details>に任せる(要件11: ユーザー
+   操作を最優先=Reactで開閉stateを持たない・強制的に閉じない)。 */
+.cash-breakdown-card { padding: 14px; }
+.cash-breakdown-summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; min-height: 44px; }
+.cash-breakdown-summary::-webkit-details-marker { display: none; }
+.cash-breakdown-summary h3 { margin: 0; font-size: 1rem; }
+.cash-breakdown-summary::after { content: "▾"; color: var(--muted); font-size: 0.8rem; flex-shrink: 0; transition: transform 0.15s ease; }
+.cash-breakdown-card[open] .cash-breakdown-summary::after { transform: rotate(180deg); }
+.cash-breakdown-summary-pill { font-size: 0.84rem; font-weight: 700; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cash-breakdown-summary-pill.match { color: var(--success); }
+.cash-breakdown-body { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .value-pill.inactive { background: rgba(100, 116, 139, 0.12); color: var(--muted); }

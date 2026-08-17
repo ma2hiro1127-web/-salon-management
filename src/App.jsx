@@ -17,6 +17,7 @@ import {
   STORAGE_KEYS,
   buildDailyEntryPayload,
   buildDailyStateFromRows,
+  buildCashBreakdownStateFromRows,
   dailySalesRowToEntry,
   buildMonthClosingStateFromRows,
   buildTargetStateFromRows,
@@ -109,6 +110,8 @@ import {
   upsertDailySalesEntry,
   updateDailySalesClosingState,
   loadDailySalesForCompanyRange,
+  upsertDailyCashBreakdown,
+  loadDailyCashBreakdownForCompanyRange,
   upsertMonthlyClosingState,
   loadMonthlyClosingsForCompany,
   loadMonthlyTargetsForCompany,
@@ -297,6 +300,11 @@ const createStoreSettingsDefaults = () => ({
   // .use_inventory_trackingが実体、hydrateFromSupabaseのapplyStoreInputSettingsToCompaniesで
   // 上書きされる)。
   useInventoryTracking: false,
+  // 日計管理(任意、初期値OFF)。ONの店舗だけ日次入力画面に現金/キャッシュレス/ポイント利用の
+  // 内訳カードが表示される(store_input_settings.use_cash_breakdownが実体、hydrateFromSupabase
+  // のapplyStoreInputSettingsToCompaniesで上書きされる)。総売上・損益・月次集計には一切
+  // 加算されない、支払方法の内訳確認のみの補助機能。
+  useCashBreakdown: false,
   // 月締めチェックリストで「対象外」にした費用カテゴリkeyの一覧(store_input_settings
   // .hidden_closing_categoriesが実体)。その店舗では基本的に使わない項目を一覧から非表示に
   // するためのもので、データは消さない・いつでも解除できる(要件に基づく)。
@@ -758,6 +766,14 @@ function App() {
   const [dailyMode, setDailyMode] = useState("create");
   const [dailyOriginalEntry, setDailyOriginalEntry] = useState(null);
   const [dailyInsight, setDailyInsight] = useState("");
+  // 日計(現金/キャッシュレス/ポイント利用の内訳)。dailyFormとは完全に別のstateにする —
+  // 保存経路(saveCashBreakdown)・自動保存タイマー・読み込みタイミングをすべて独立させ、
+  // 既存のdailyForm/saveDailyEntry(売上・日締めの保存)の挙動には一切影響しない設計にする
+  // (要件13・17: 日計の追加によって日締め・既存の売上入力を壊さない)。
+  const [cashBreakdownForm, setCashBreakdownForm] = useState({ cashAmount: "", cashlessAmount: "", pointAmount: "" });
+  const updateCashBreakdownField = (field, value) => {
+    setCashBreakdownForm((prev) => ({ ...prev, [field]: value }));
+  };
   const [fixedForm, setFixedForm] = useState(() => ({ ...defaultFixedCostItem, startMonth: new Date().toISOString().slice(0, 7) }));
   const [notice, setNotice] = useState("");
   const [businessDayInput, setBusinessDayInput] = useState("");
@@ -817,6 +833,11 @@ function App() {
   const pendingPersistStateRef = useRef(null);
   const autoSaveTimerRef = useRef(null);
   const lastAutoSaveSignatureRef = useRef("");
+  // 日計専用の自動保存タイマー・直近保存済みシグネチャ。dailyForm側のautoSaveTimerRef/
+  // lastAutoSaveSignatureRefとは完全に別物 — 日計の保存が売上側の自動保存ロジック
+  // (400msデバウンス・stale closure対策)と競合したり干渉したりしない。
+  const cashBreakdownAutoSaveTimerRef = useRef(null);
+  const lastCashBreakdownAutoSaveSignatureRef = useRef("");
   const remoteSyncChannelRef = useRef(null);
   // realtimeサブスクリプション(triggerRehydrate)・ウィンドウフォーカス復帰(handleFocus)の
   // どちらも、effect本体の外で長生きするコールバック内で `tenantState: appState` を渡している。
@@ -937,6 +958,14 @@ function App() {
   // typed directly, so both are always safe to read as-is here.
   const dailyEffectiveTotalSales = parseNumber(dailyForm.totalSales);
   const dailyEffectiveCustomers = parseNumber(dailyForm.customers);
+  // 日計(要件4-7): 3項目すべて未入力の場合は一致・差額の判定自体を表示しない
+  // (「未入力です」等の警告も出さない、という要件7を満たすため hasAnyValue で判定を丸ごと
+  // 出し分ける)。差額があっても保存・日締めを妨げない(要件6) — ここでは表示用の値を
+  // 計算するだけで、保存経路には一切関与しない。
+  const cashBreakdownHasAnyValue = [cashBreakdownForm.cashAmount, cashBreakdownForm.cashlessAmount, cashBreakdownForm.pointAmount].some((value) => parseNumber(value) > 0);
+  const cashBreakdownTotal = parseNumber(cashBreakdownForm.cashAmount) + parseNumber(cashBreakdownForm.cashlessAmount) + parseNumber(cashBreakdownForm.pointAmount);
+  const cashBreakdownDiff = dailyEffectiveTotalSales - cashBreakdownTotal;
+  const cashBreakdownIsMatched = cashBreakdownDiff === 0;
   // 対象日が店休日かどうか(要件18)。dailyForm.dateの月から店休日一覧を取るので、月をまたいで
   // 選択しても正しく判定できる。
   const isDailyFormDateHoliday = Boolean(dailyForm.date) && isHolidayDate(getStoreHolidayDates(appState, selectedStoreId, dailyForm.date.slice(0, 7)), dailyForm.date);
@@ -1296,6 +1325,9 @@ function App() {
   const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
+  // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を
+  // 一切描画しない(余白も残さない)。
+  const useCashBreakdown = Boolean(selectedStoreEntity?.settings?.useCashBreakdown);
   const summary = useMemo(
     () => (isAllStoresView
       ? calculateAllStoresMonthSummary(appState, currentCompany, selectedMonth)
@@ -1864,6 +1896,14 @@ function App() {
       }
       const dailySalesState = buildDailyStateFromRows(dailySalesResult.data);
 
+      // 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_salesと同じ日付レンジで、
+      // 完全に別テーブル・別のstateとして取得する — 総売上等の計算には一切混ざらない。
+      const cashBreakdownResult = await loadDailyCashBreakdownForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate });
+      if (!cashBreakdownResult.ok) {
+        throw cashBreakdownResult.error || new Error("日計データの取得に失敗しました");
+      }
+      const cashBreakdownState = buildCashBreakdownStateFromRows(cashBreakdownResult.data);
+
       // Same reasoning for monthly_closings: it's the authoritative table now (see
       // upsertMonthlyClosingState), so a fresh device/session needs this fetched directly
       // instead of only ever reflecting whatever was last embedded in a tenant_snapshots row.
@@ -1989,6 +2029,7 @@ function App() {
                 dailyFieldSettings: normalizeDailyFieldSettings(inputRow.daily_fields),
                 monthlyTargetFields: normalizeMonthlyTargetFieldSettings(inputRow.monthly_target_fields),
                 useInventoryTracking: Boolean(inputRow.use_inventory_tracking),
+                useCashBreakdown: Boolean(inputRow.use_cash_breakdown),
                 hiddenClosingCategories: normalizeHiddenClosingCategories(inputRow.hidden_closing_categories),
               } : {}),
             },
@@ -2060,6 +2101,7 @@ function App() {
           fixedCosts: fixedCostsOverlay.fixedCosts,
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
+          cashBreakdownResults: cashBreakdownState.cashBreakdownResults,
           variableCosts: variableCostsOverlay.variableCosts,
           monthClosing: monthlyClosingItemsOverlay.monthClosing,
           // company_settings also carries the global showOtherSales toggle and taxSettings —
@@ -2102,11 +2144,27 @@ function App() {
             prunedDayClosingUpdatedAt[key] = nextTimestamps;
           }
         });
+        // 日計も同じ日付レンジ・同じキー形式(storeId__month -> {[date]: {...}})なので、
+        // dailyResultsと全く同じ「取得済みレンジ内でSupabaseに存在しない日付だけ削る」
+        // ロジックをそのまま適用する。dailyResults側とは完全に別のオブジェクトなので、
+        // 万一片方の削除処理にバグがあってももう片方には影響しない。
+        const prunedCashBreakdownResults = { ...merged.cashBreakdownResults };
+        Object.keys(prunedCashBreakdownResults).forEach((key) => {
+          if (!companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix))) return;
+          const freshCashBreakdownDates = new Set(Object.keys(cashBreakdownState.cashBreakdownResults[key] || {}));
+          const nextDates = { ...(prunedCashBreakdownResults[key] || {}) };
+          Object.keys(nextDates).forEach((date) => {
+            const withinFetchedWindow = date >= dailySalesRange.startDate && date <= dailySalesRange.endDate;
+            if (withinFetchedWindow && !freshCashBreakdownDates.has(date)) delete nextDates[date];
+          });
+          prunedCashBreakdownResults[key] = nextDates;
+        });
         return {
           ...merged,
           dailyResults: prunedDailyResults,
           dayClosingStates: prunedDayClosingStates,
           dayClosingUpdatedAt: prunedDayClosingUpdatedAt,
+          cashBreakdownResults: prunedCashBreakdownResults,
           targets: pruneStaleKeys(merged.targets, windowedExpectedKeys, targetStateOverlay.targets),
           allStoresTargets: pruneStaleKeys(merged.allStoresTargets, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresTargets),
           allStoresBusinessDaySettings: pruneStaleKeys(merged.allStoresBusinessDaySettings, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresBusinessDaySettings),
@@ -3510,6 +3568,35 @@ function App() {
     }));
   };
 
+  // 「日計管理を使う」トグル(店舗単位、store_input_settings.use_cash_breakdown)。在庫管理と
+  // 同じ単純なON/OFFなのでdraft/dirty管理は持たず、切り替え次第すぐ保存する。初期値は必ず
+  // OFF(createStoreSettingsDefaults参照)。
+  const handleToggleCashBreakdown = async (checked) => {
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+    if (isSupabaseConfigured) {
+      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, useCashBreakdown: checked });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => ({
+      ...prev,
+      companies: (prev.companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((s) => (
+          s.id === store.id
+            ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), useCashBreakdown: checked } }
+            : s
+        )),
+      })),
+    }));
+  };
+
   // 月締めチェックリストの費用項目を「対象外(非表示)」にする/表示に戻す(店舗単位、
   // store_input_settings.hidden_closing_categories)。fixedCosts/costMonthlyAmounts等の
   // データ自体は一切変更しない — あくまで月締め一覧への表示/非表示を切り替えるだけなので、
@@ -3755,6 +3842,58 @@ function App() {
       }
     };
   }, [dailyForm.date, dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.reviewCount, dailyForm.memo, dailyMode, selectedStore, selectedMonth, dailyForm.id, dailyEntries]);
+
+  // 日計の読み込み(要件14): 表示中の日付・店舗・月が変わるたびに、appState.cashBreakdownResults
+  // (daily_cash_breakdownをhydrateFromSupabaseが取得したもの)から該当日の値を読み直す。
+  // dailyForm側のhandleDailyDateChange等とは別経路 — dailyForm.dateの変化を検知して追従する
+  // だけなので、既存の日付切替ロジックを一切変更せずに済む。読み込み直後にlastCashBreakdown
+  // AutoSaveSignatureRefも同期しておくことで、「読み込んだだけなのに即座に自動保存が走る」
+  // ことを防ぐ(下の自動保存effect参照)。
+  useEffect(() => {
+    const key = buildMonthKey(selectedStoreId, selectedMonth);
+    const existing = appState.cashBreakdownResults?.[key]?.[dailyForm.date];
+    const nextForm = existing
+      ? { cashAmount: existing.cashAmount, cashlessAmount: existing.cashlessAmount, pointAmount: existing.pointAmount }
+      : { cashAmount: "", cashlessAmount: "", pointAmount: "" };
+    setCashBreakdownForm(nextForm);
+    lastCashBreakdownAutoSaveSignatureRef.current = getCashBreakdownAutoSaveSignature(nextForm);
+  }, [dailyForm.date, selectedStoreId, selectedMonth, appState.cashBreakdownResults]);
+
+  // 日計専用の自動保存(要件6・7・19: 差額があっても・未入力でも保存自体は妨げない、
+  // dailyForm側の自動保存とは完全に別のタイマー・別のシグネチャで動く)。useCashBreakdownが
+  // OFFの店舗ではそもそも発火しない(カード自体が表示されないため入力もされ得ない)。
+  useEffect(() => {
+    if (!useCashBreakdown || dailyMode === "view") {
+      if (cashBreakdownAutoSaveTimerRef.current) {
+        window.clearTimeout(cashBreakdownAutoSaveTimerRef.current);
+      }
+      cashBreakdownAutoSaveTimerRef.current = null;
+      return;
+    }
+
+    const hasAnyValue = [cashBreakdownForm.cashAmount, cashBreakdownForm.cashlessAmount, cashBreakdownForm.pointAmount].some((value) => parseNumber(value) > 0);
+    const signature = getCashBreakdownAutoSaveSignature(cashBreakdownForm);
+    if (!dailyForm.date || !hasAnyValue) {
+      return;
+    }
+    if (signature === lastCashBreakdownAutoSaveSignatureRef.current) {
+      return;
+    }
+
+    if (cashBreakdownAutoSaveTimerRef.current) {
+      window.clearTimeout(cashBreakdownAutoSaveTimerRef.current);
+    }
+
+    cashBreakdownAutoSaveTimerRef.current = window.setTimeout(() => {
+      void saveCashBreakdown();
+    }, 400);
+
+    return () => {
+      if (cashBreakdownAutoSaveTimerRef.current) {
+        window.clearTimeout(cashBreakdownAutoSaveTimerRef.current);
+      }
+    };
+  }, [cashBreakdownForm.cashAmount, cashBreakdownForm.cashlessAmount, cashBreakdownForm.pointAmount, dailyMode, dailyForm.date, useCashBreakdown, selectedStoreId, selectedMonth]);
 
   useEffect(() => {
     // Dock版PWAはウィンドウが背景化/復帰する際、Chromeの通常タブとは異なる組み合わせで
@@ -4072,6 +4211,61 @@ function App() {
     return { company, store };
   };
 
+  const getCashBreakdownAutoSaveSignature = (form) => JSON.stringify({
+    cashAmount: form.cashAmount ?? "",
+    cashlessAmount: form.cashlessAmount ?? "",
+    pointAmount: form.pointAmount ?? "",
+  });
+
+  // 日計の保存。daily_cash_breakdown(要件14: company_id・store_id・対象日・現金・
+  // キャッシュレス・ポイント利用を紐付けて保存)への独立した保存経路 — daily_sales/
+  // is_day_closedには一切触れないため、日締め状態を巻き戻すことは構造的に起こらない
+  // (要件13)。差額があっても・未入力でも保存自体は妨げない(要件6・7) — 3項目とも
+  // 未入力の場合は何もしない(空のdaily_cash_breakdown行を作らない)。
+  const saveCashBreakdown = async () => {
+    if (dailyMode === "view") return { ok: true, skipped: true };
+    if (!dailyForm.date) return { ok: true, skipped: true };
+    const hasAnyValue = [cashBreakdownForm.cashAmount, cashBreakdownForm.cashlessAmount, cashBreakdownForm.pointAmount].some((value) => parseNumber(value) > 0);
+    if (!hasAnyValue) return { ok: true, skipped: true };
+
+    const { store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured && (!store?.id || !appState.currentUserId)) {
+      return { ok: false, skipped: true };
+    }
+
+    try {
+      const payload = {
+        cashAmount: parseNumber(cashBreakdownForm.cashAmount),
+        cashlessAmount: parseNumber(cashBreakdownForm.cashlessAmount),
+        pointAmount: parseNumber(cashBreakdownForm.pointAmount),
+      };
+      const remoteResult = await upsertDailyCashBreakdown({
+        companyId: appState.currentCompanyId,
+        storeId: store?.id,
+        userId: appState.currentUserId,
+        businessDate: dailyForm.date,
+        ...payload,
+      });
+      if (!remoteResult?.ok && !remoteResult?.skipped) {
+        throw remoteResult.error || new Error("日計の保存に失敗しました");
+      }
+
+      const key = buildMonthKey(selectedStoreId, selectedMonth);
+      setAppState((prev) => ({
+        ...prev,
+        cashBreakdownResults: {
+          ...prev.cashBreakdownResults,
+          [key]: { ...(prev.cashBreakdownResults?.[key] || {}), [dailyForm.date]: payload },
+        },
+      }));
+      lastCashBreakdownAutoSaveSignatureRef.current = getCashBreakdownAutoSaveSignature(cashBreakdownForm);
+      return { ok: true, data: payload };
+    } catch (error) {
+      logSupabaseError({ operation: "saveCashBreakdown", table: "daily_cash_breakdown", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, businessDate: dailyForm.date, error });
+      return { ok: false, error };
+    }
+  };
+
   useEffect(() => {
     if (!selectedStore || !targetSelectedMonth) return;
     const requestId = targetLoadRequestRef.current + 1;
@@ -4367,6 +4561,10 @@ function App() {
   const submitDailyEntry = (event) => {
     event?.preventDefault();
     void saveDailyEntry({ silent: false, force: true, switchToView: true });
+    // 保存ボタンは日計の400msデバウンスを待たずに即座に確定させる(入力直後に保存を
+    // 押した場合でも取りこぼさないため)。daily_salesとは別の保存経路なので、
+    // どちらかが失敗しても他方には影響しない。
+    if (useCashBreakdown) void saveCashBreakdown();
   };
 
   const startNewDailyEntry = () => {
@@ -5550,6 +5748,33 @@ function App() {
                       </div>
                     ) : null}
 
+                    {useCashBreakdown ? (
+                      <details className="daily-section-card cash-breakdown-card" open>
+                        <summary className="cash-breakdown-summary">
+                          <h3>日計</h3>
+                          {cashBreakdownHasAnyValue ? (
+                            <span className={`cash-breakdown-summary-pill ${cashBreakdownIsMatched ? "match" : "mismatch"}`}>
+                              日計{"　"}{money(cashBreakdownTotal)}{"　"}{cashBreakdownIsMatched ? "✓" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
+                            </span>
+                          ) : null}
+                        </summary>
+                        <div className="cash-breakdown-body">
+                          <Field label="現金" value={cashBreakdownForm.cashAmount || ""} onChange={(value) => updateCashBreakdownField("cashAmount", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
+                          <Field label="キャッシュレス" value={cashBreakdownForm.cashlessAmount || ""} onChange={(value) => updateCashBreakdownField("cashlessAmount", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
+                          <Field label="ポイント利用" value={cashBreakdownForm.pointAmount || ""} onChange={(value) => updateCashBreakdownField("pointAmount", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
+                          <div className="summary-card compact">
+                            <span>日計合計</span>
+                            <strong>{money(cashBreakdownTotal)}</strong>
+                          </div>
+                          {cashBreakdownHasAnyValue ? (
+                            <div className={`value-pill ${cashBreakdownIsMatched ? "active" : "inactive"}`}>
+                              {cashBreakdownIsMatched ? "✓ 日計一致" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
+                            </div>
+                          ) : null}
+                        </div>
+                      </details>
+                    ) : null}
+
                     {showReviewCountField ? (
                       <div className="daily-section-card">
                         <h3>口コミ</h3>
@@ -6486,6 +6711,30 @@ function App() {
                       checked={Boolean(selectedStoreEntity?.settings?.useInventoryTracking)}
                       disabled={!canEditStoreName(currentRole)}
                       onChange={(event) => handleToggleInventoryTracking(event.target.checked)}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
+            <div className="setup-card">
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">CASH BREAKDOWN</p>
+                  <h3>日計管理</h3>
+                </div>
+              </div>
+              {!selectedStore ? (
+                <div className="empty-card">店舗を選択してください。</div>
+              ) : (
+                <>
+                  <p className="helper-text">ONにすると日次入力画面に「日計」カードが表示され、その日の総売上が現金・キャッシュレス・ポイント利用のどの支払方法だったかを記録・確認できます。総売上や損益・月次集計には加算されません(初期値OFF)。</p>
+                  <label className="field-switch">
+                    <span>日計管理を使う</span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(selectedStoreEntity?.settings?.useCashBreakdown)}
+                      disabled={!canEditStoreName(currentRole)}
+                      onChange={(event) => handleToggleCashBreakdown(event.target.checked)}
                     />
                   </label>
                 </>

@@ -316,6 +316,29 @@ export const buildDailyStateFromRows = (rows = []) => {
   return { dailyResults, dayClosingStates, dayClosingUpdatedAt };
 };
 
+// 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_cash_breakdownは完全に独立したテーブル
+// なので、buildDailyStateFromRowsのdailyResults(daily_sales由来)とは合流させず、
+// buildMonthKey(storeId, month) -> { [date]: {cashAmount, cashlessAmount, pointAmount} } という
+// 別のマップとして持つ — 総売上等の既存集計ロジックがこのマップを一切参照しない限り、
+// 二重計上の経路そのものが構造的に存在しない。
+export const buildCashBreakdownStateFromRows = (rows = []) => {
+  const cashBreakdownResults = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.store_id || !row.business_date) return;
+    const month = String(row.business_date).slice(0, 7);
+    const key = buildMonthKey(row.store_id, month);
+    cashBreakdownResults[key] = {
+      ...(cashBreakdownResults[key] || {}),
+      [row.business_date]: {
+        cashAmount: Number(row.cash_amount || 0),
+        cashlessAmount: Number(row.cashless_amount || 0),
+        pointAmount: Number(row.point_amount || 0),
+      },
+    };
+  });
+  return { cashBreakdownResults };
+};
+
 // Same idea as buildDailyStateFromRows but for monthly_closings rows -> monthClosingStatus.
 export const buildMonthClosingStateFromRows = (rows = []) => {
   const monthClosingStatus = {};
@@ -656,6 +679,7 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
+  cashBreakdownResults: mergeShallowMap(localState.cashBreakdownResults, remoteState.cashBreakdownResults),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
   targets: mergeShallowMap(localState.targets, remoteState.targets),
