@@ -339,6 +339,77 @@ export const buildCashBreakdownStateFromRows = (rows = []) => {
   return { cashBreakdownResults };
 };
 
+const WEEKDAY_LABELS_JA = ["日", "月", "火", "水", "木", "金", "土"];
+
+// 月別日計一覧(画面・CSV共通の元データ)。対象月の全日を1行ずつ組み立てる — 店休日・
+// 日計未入力日・総売上未入力日をそれぞれ区別できるよう、金額そのものではなく
+// hasCashBreakdown/hasTotalSales/isHolidayの3フラグを持たせる(要件13: 未入力を0円と
+// 誤認させない)。dailyResults(daily_sales由来)は日付配列なので、まず日付をキーにした
+// ルックアップに変換してから引く。cashBreakdownResults/dailyResultsのどちらを読んでも、
+// 既存の集計(月次ダッシュボード・損益表等)には一切書き込まない完全な読み取り専用処理。
+export const getMonthlyCashBreakdownRows = (state, storeId, monthValue) => {
+  const { yearNumber, monthNumber, daysInMonth } = getMonthInfo(monthValue);
+  const key = buildMonthKey(storeId, monthValue);
+  const cashBreakdownByDate = state.cashBreakdownResults?.[key] || {};
+  const dailyEntryByDate = {};
+  (state.dailyResults?.[key] || []).forEach((entry) => {
+    dailyEntryByDate[entry.date] = entry;
+  });
+  const holidayDates = getStoreHolidayDates(state, storeId, monthValue);
+
+  const rows = [];
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const date = `${yearNumber}-${String(monthNumber).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const weekday = WEEKDAY_LABELS_JA[new Date(yearNumber, monthNumber - 1, day).getDay()];
+    const isHoliday = isHolidayDate(holidayDates, date);
+
+    const breakdown = cashBreakdownByDate[date];
+    const hasCashBreakdown = Boolean(breakdown);
+    const cashAmount = breakdown ? breakdown.cashAmount : 0;
+    const cashlessAmount = breakdown ? breakdown.cashlessAmount : 0;
+    const pointAmount = breakdown ? breakdown.pointAmount : 0;
+    const cashBreakdownTotal = cashAmount + cashlessAmount + pointAmount;
+
+    const dailyEntry = dailyEntryByDate[date];
+    const hasTotalSales = Boolean(dailyEntry);
+    const totalSales = dailyEntry ? dailyEntry.totalSales : 0;
+
+    const hasComparison = hasCashBreakdown && hasTotalSales;
+    const diff = hasComparison ? totalSales - cashBreakdownTotal : 0;
+    const isMatched = hasComparison && diff === 0;
+
+    let status;
+    if (isHoliday && !hasCashBreakdown) status = "holiday";
+    else if (!hasCashBreakdown) status = "unfilled";
+    else if (!hasTotalSales) status = "no_sales_data";
+    else if (isMatched) status = "matched";
+    else status = "mismatch";
+
+    rows.push({
+      date, weekday, isHoliday,
+      hasCashBreakdown, cashAmount, cashlessAmount, pointAmount, cashBreakdownTotal,
+      hasTotalSales, totalSales,
+      hasComparison, diff, isMatched, status,
+    });
+  }
+  return rows;
+};
+
+// 月間合計。要件7: 月間差額は日別差額の絶対値合計ではなく「月間総売上－月間日計合計」で
+// 計算する(日別の±が相殺されるのは意図通り — 月全体で見て支払方法の記録漏れ・記録超過が
+// ネットでどちらに寄っているかを示す値のため)。
+export const summarizeMonthlyCashBreakdown = (rows = []) => {
+  const totals = rows.reduce((acc, row) => {
+    acc.cashTotal += row.cashAmount;
+    acc.cashlessTotal += row.cashlessAmount;
+    acc.pointTotal += row.pointAmount;
+    acc.cashBreakdownGrandTotal += row.cashBreakdownTotal;
+    acc.salesTotal += row.totalSales;
+    return acc;
+  }, { cashTotal: 0, cashlessTotal: 0, pointTotal: 0, cashBreakdownGrandTotal: 0, salesTotal: 0 });
+  return { ...totals, diffTotal: totals.salesTotal - totals.cashBreakdownGrandTotal };
+};
+
 // Same idea as buildDailyStateFromRows but for monthly_closings rows -> monthClosingStatus.
 export const buildMonthClosingStateFromRows = (rows = []) => {
   const monthClosingStatus = {};

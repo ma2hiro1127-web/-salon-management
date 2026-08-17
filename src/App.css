@@ -545,6 +545,13 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; background: var(--surface-strong);
   border-radius: 20px; padding: 20px; box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28); display: flex; flex-direction: column; gap: 12px;
 }
+/* 月別日計一覧(表形式)のような表データを含むモーダル向けの横幅拡張版。角丸・影・背景等の
+   見た目は.modal-cardと完全に共通(要件18の「既存デザインに合わせる」)、max-widthだけ広げる。 */
+.modal-card.modal-card-wide { max-width: 960px; }
+.cash-breakdown-monthly-table th, .cash-breakdown-monthly-table td { white-space: nowrap; }
+.cash-breakdown-monthly-table td:not(:first-child):not(:nth-child(2)), .cash-breakdown-monthly-table th:not(:first-child):not(:nth-child(2)) { text-align: right; }
+.cash-breakdown-row-holiday td { color: var(--muted); }
+.text-muted-cell { color: var(--muted); }
 .danger-button { background: linear-gradient(135deg, #f16565, var(--danger)); color: #fff; box-shadow: 0 10px 24px rgba(227, 87, 87, 0.24); }
 .danger-button:hover { transform: translateY(-1px); }
 

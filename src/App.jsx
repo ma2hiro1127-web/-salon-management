@@ -164,6 +164,7 @@ import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
+import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
@@ -774,6 +775,9 @@ function App() {
   const updateCashBreakdownField = (field, value) => {
     setCashBreakdownForm((prev) => ({ ...prev, [field]: value }));
   };
+  // 月別日計一覧モーダルの開閉のみを持つ(月・店舗はモーダル側のローカルstateで完結させ、
+  // 日次入力側のselectedMonth/dailyFormには一切影響しない)。
+  const [showCashBreakdownMonthly, setShowCashBreakdownMonthly] = useState(false);
   const [fixedForm, setFixedForm] = useState(() => ({ ...defaultFixedCostItem, startMonth: new Date().toISOString().slice(0, 7) }));
   const [notice, setNotice] = useState("");
   const [businessDayInput, setBusinessDayInput] = useState("");
@@ -5771,6 +5775,7 @@ function App() {
                               {cashBreakdownIsMatched ? "✓ 日計一致" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
                             </div>
                           ) : null}
+                          <button type="button" className="text-button" onClick={() => setShowCashBreakdownMonthly(true)}>月別日計を見る</button>
                         </div>
                       </details>
                     ) : null}
@@ -5834,6 +5839,16 @@ function App() {
                     />
                   </div>
                 </section>
+
+                {showCashBreakdownMonthly ? (
+                  <MonthlyCashBreakdownModal
+                    appState={appState}
+                    storeId={selectedStoreId}
+                    storeName={selectedStoreEntity?.name || ""}
+                    initialMonth={selectedMonth}
+                    onClose={() => setShowCashBreakdownMonthly(false)}
+                  />
+                ) : null}
 
                 {todayEntry ? (
                   <section className="panel">

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -1840,4 +1840,87 @@ test("sanitizeNumericInputValue strips any other non-numeric characters instead 
 test("sanitizeNumericInputValue keeps at most one decimal point when allowDecimal is set, and strips decimals entirely otherwise", () => {
   assert.equal(sanitizeNumericInputValue("5.5.5", { allowDecimal: true }), "5.55");
   assert.equal(sanitizeNumericInputValue("5.5"), "55");
+});
+
+test("getMonthlyCashBreakdownRows builds one row per calendar day, correctly distinguishing 一致/差額/未入力/店休/総売上未入力 (not misreading any of them as ¥0)", () => {
+  const state = {
+    companies: [{ id: "company-1", stores: [{ id: "store-abc", name: "本店" }] }],
+    storeHolidays: { "store-abc__2026-08": ["2026-08-10"] },
+    dailyResults: {
+      "store-abc__2026-08": [
+        { date: "2026-08-01", totalSales: 100000 },
+        { date: "2026-08-02", totalSales: 50000 },
+        // 2026-08-04: no daily_sales entry at all (日計だけ入力されているケース)
+      ],
+    },
+    cashBreakdownResults: {
+      "store-abc__2026-08": {
+        "2026-08-01": { cashAmount: 60000, cashlessAmount: 40000, pointAmount: 0 }, // 一致
+        "2026-08-02": { cashAmount: 20000, cashlessAmount: 20000, pointAmount: 0 }, // 差額あり
+        "2026-08-04": { cashAmount: 1000, cashlessAmount: 0, pointAmount: 0 }, // 総売上未入力
+        // 2026-08-03: 日計未入力(dailyResultsにはあるが日計にはない)
+        // 2026-08-10: 店休日、日計も未入力
+      },
+    },
+  };
+
+  const rows = getMonthlyCashBreakdownRows(state, "store-abc", "2026-08");
+  assert.equal(rows.length, 31);
+
+  const byDate = Object.fromEntries(rows.map((row) => [row.date, row]));
+
+  assert.equal(byDate["2026-08-01"].status, "matched");
+  assert.equal(byDate["2026-08-01"].isMatched, true);
+  assert.equal(byDate["2026-08-01"].cashBreakdownTotal, 100000);
+  assert.equal(byDate["2026-08-01"].weekday, "土");
+
+  assert.equal(byDate["2026-08-02"].status, "mismatch");
+  assert.equal(byDate["2026-08-02"].diff, 10000);
+
+  assert.equal(byDate["2026-08-03"].status, "unfilled");
+  assert.equal(byDate["2026-08-03"].hasCashBreakdown, false);
+  // 未入力日はhasTotalSalesがtrueでも金額0として扱わない(hasComparisonがfalseになる)
+  assert.equal(byDate["2026-08-03"].hasComparison, false);
+
+  assert.equal(byDate["2026-08-04"].status, "no_sales_data");
+  assert.equal(byDate["2026-08-04"].hasTotalSales, false);
+  assert.equal(byDate["2026-08-04"].hasComparison, false);
+
+  assert.equal(byDate["2026-08-10"].status, "holiday");
+  assert.equal(byDate["2026-08-10"].isHoliday, true);
+  assert.equal(byDate["2026-08-10"].hasCashBreakdown, false);
+});
+
+test("getMonthlyCashBreakdownRows never leaks another store's or another month's data into the current one", () => {
+  const state = {
+    companies: [{ id: "company-1", stores: [{ id: "store-a", name: "A店" }, { id: "store-b", name: "B店" }] }],
+    dailyResults: {
+      "store-b__2026-08": [{ date: "2026-08-01", totalSales: 999999 }],
+      "store-a__2026-07": [{ date: "2026-07-01", totalSales: 888888 }],
+    },
+    cashBreakdownResults: {
+      "store-b__2026-08": { "2026-08-01": { cashAmount: 999999, cashlessAmount: 0, pointAmount: 0 } },
+    },
+  };
+  const rows = getMonthlyCashBreakdownRows(state, "store-a", "2026-08");
+  rows.forEach((row) => {
+    assert.equal(row.hasCashBreakdown, false);
+    assert.equal(row.hasTotalSales, false);
+  });
+});
+
+test("summarizeMonthlyCashBreakdown: 月間差額は日別差額の絶対値合計ではなく、月間総売上－月間日計合計で計算する", () => {
+  const rows = [
+    { cashAmount: 60000, cashlessAmount: 40000, pointAmount: 0, cashBreakdownTotal: 100000, totalSales: 100000 },
+    { cashAmount: 20000, cashlessAmount: 20000, pointAmount: 0, cashBreakdownTotal: 40000, totalSales: 50000 }, // +10000差額
+    { cashAmount: 30000, cashlessAmount: 30000, pointAmount: 0, cashBreakdownTotal: 60000, totalSales: 50000 }, // -10000差額
+  ];
+  const summary = summarizeMonthlyCashBreakdown(rows);
+  assert.equal(summary.cashTotal, 110000);
+  assert.equal(summary.cashlessTotal, 90000);
+  assert.equal(summary.pointTotal, 0);
+  assert.equal(summary.cashBreakdownGrandTotal, 200000);
+  assert.equal(summary.salesTotal, 200000);
+  // 日別の絶対値合計なら20000になるはずだが、正しくは相殺されて0
+  assert.equal(summary.diffTotal, 0);
 });
