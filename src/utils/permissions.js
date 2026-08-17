@@ -23,14 +23,11 @@ export const getRoleLabel = (role) => ROLE_LABELS_JA[normalizeRole(role)] || rol
 // 並び順は実際の使用頻度に合わせている: 売上系(毎日使う)→管理系(随時)→その他。
 // 月次ダッシュボードは月末・月次確認が主な用途のため、日次入力・管理画面より後ろに置く。
 export const NAV_ITEMS_BY_ROLE = {
-  // system_adminはサロンマネージャー運営者アカウント — 会社管理(契約・トライアル・AI機能
-  // ON/OFF・最初のcompany_admin招待・店舗数/ユーザー数確認)のみを行い、顧客企業の経営データ
-  // (売上/日次入力/管理画面の費用・月締め/月次ダッシュボード/設定の損益・税設定等)には
-  // 一切アクセスしない(要件: 会社管理と顧客企業の業務データを明確に分離する)。RLS側でも
-  // 同時にsystem_adminの業務データアクセスを撤廃済み(20260817010000)— この配列がURLの
-  // 存在しないこのSPAにおける唯一の認可ゲート(canAccessPage)なので、ここを絞ることが
-  // フロントエンド側の「URL直接アクセスでも拒否」に相当する。
-  system_admin: ["companies", "stores", "users"],
+  // system_adminは「通常機能すべて＋会社管理」— company_admin等が使える画面はすべて使え、
+  // それに加えてsystem_admin専用の会社管理("companies")が使える(要件: system_adminを
+  // 専用画面に切り替えるのではなく、通常権限のスーパーセットとして扱う)。RLS側もこれに
+  // 合わせてsystem_adminの業務データアクセスを維持している(20260818000000で復元)。
+  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "settings"],
   company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
