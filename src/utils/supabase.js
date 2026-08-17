@@ -598,8 +598,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // updateCompanyAiAnalysisSettingだけを経由する独立した状態として扱う(tenant_snapshot/
     // このログイン時ブートストラップ経由では取得・保持しない)。
     companyFilter
-      ? supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("companies").select("id, name, code, is_active, created_at, updated_at").order("created_at", { ascending: true }),
+      ? supabase.from("companies").select("id, name, code, is_active, contract_status, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("companies").select("id, name, code, is_active, contract_status, created_at, updated_at").order("created_at", { ascending: true }),
     // Ordered by creation time, not name: a fresh session/device with no cached selection
     // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
     // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
@@ -638,7 +638,10 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     name: company.name,
     code: company.code,
     isActive: company.is_active !== false,
-    contractStatus: "active",
+    // 以前はここで常に"active"を返しており、トライアルとして作成した会社もハイドレートの
+    // たびに契約中扱いへ戻ってしまっていた(要件1の直接の原因)。companies.contract_status
+    // (20260819000000で追加)をそのまま採用する。
+    contractStatus: company.contract_status || "trial",
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -714,25 +717,71 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   };
 };
 
-export const createCompanyRecord = async ({ name, code, createdByProfileId }) => {
+export const createCompanyRecord = async ({ name, code, contractStatus }) => {
   const { data, error } = await supabase
     .from("companies")
     .insert({
       name,
       code,
       is_active: true,
+      contract_status: contractStatus || "trial",
     })
     .select()
     .single();
 
   if (error) throw error;
 
-  if (createdByProfileId) {
-    const { error: profileError } = await supabase.from("profiles").update({ company_id: data.id, role: "company_admin" }).eq("id", createdByProfileId);
-    if (profileError) throw profileError;
-  }
-
   return data;
+};
+
+// 会社の契約状態(トライアル/契約中/停止中)を変更する — update-company-status Edge Function
+// (service-role)経由。system_admin限定、想定外の遷移(既に契約中の会社をactivateする等)は
+// サーバー側で拒否される。クライアントからcompanies.contract_statusを直接書ける経路は
+// 残さない(companies_update_system_only RLSにも守られているが、Edge Function側の遷移検証は
+// RLSだけではできないため)。
+export const updateCompanyContractStatus = async ({ companyId, action }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("update-company-status", {
+    body: { companyId, action },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, status: data?.status || "" };
+};
+
+// 会社の完全削除 — delete-company Edge Function(service-role)経由。system_admin限定、
+// 対象会社名の完全一致(confirmName)が必須。stores個別削除(deleteStoreCompletely)と異なり
+// 関連データの有無で拒否せず、company_idに紐づく全データを明示的にcascade削除する(要件)。
+export const deleteCompanyCompletely = async ({ companyId, confirmName }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("delete-company", {
+    body: { companyId, confirmName },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
 };
 
 // AI分析ON/OFFの唯一のsource of truthは companies.ai_analysis_enabled。tenant_snapshot・

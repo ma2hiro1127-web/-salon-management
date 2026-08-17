@@ -93,6 +93,8 @@ import {
   createCompanyRecord,
   updateCompanyAiAnalysisSetting,
   getCompanyAiAnalysisSettings,
+  updateCompanyContractStatus,
+  deleteCompanyCompletely,
   createStoreRecord,
   updateStoreRecord,
   updateStoreStatus,
@@ -638,6 +640,14 @@ function App() {
   const [hardDeleteConfirmText, setHardDeleteConfirmText] = useState("");
   const [hardDeleteSaving, setHardDeleteSaving] = useState(false);
   const [hardDeleteError, setHardDeleteError] = useState("");
+  // 会社の完全削除用の確認モーダル。店舗の完全削除(上のhardDelete*)とは別画面から起動される
+  // ため衝突しないよう別のstateにする — 会社名を完全一致で入力するまでボタンは無効のまま。
+  const [companyHardDeleteTargetId, setCompanyHardDeleteTargetId] = useState("");
+  const [companyHardDeleteConfirmText, setCompanyHardDeleteConfirmText] = useState("");
+  const [companyHardDeleteSaving, setCompanyHardDeleteSaving] = useState(false);
+  const [companyHardDeleteError, setCompanyHardDeleteError] = useState("");
+  // 契約状態(トライアル/契約中/停止中)ボタンの多重クリック防止。
+  const [companyStatusSavingId, setCompanyStatusSavingId] = useState("");
   // Inline feedback right next to the 店舗追加 button — the shared top-of-page `notice` can be
   // scrolled out of view once the store form is scrolled into view (via focusStoreForm), making
   // a real success/failure result look like nothing happened. This always renders in the same
@@ -2330,6 +2340,7 @@ function App() {
         createdCompany = await createCompanyRecord({
           name: normalizedName,
           code: normalizedCode,
+          contractStatus: companyForm.contractStatus || "trial",
         });
       }
 
@@ -2860,13 +2871,93 @@ function App() {
     }
   };
 
-  const handleToggleCompanyStatus = (company) => {
-    if (!window.confirm(`${company.name} を${company.isActive ? "利用停止" : "再開"}しますか？`)) return;
-    const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((item) => item.id === company.id ? { ...item, isActive: !item.isActive, lastUpdatedAt: new Date().toISOString() } : item),
-    };
-    persistTenantState(nextState);
+  // 契約状態(トライアル/契約中/停止中)の遷移。company.isActiveを使った以前のトグルは
+  // ローカルのappStateしか書き換えておらず、次のhydrateで即座に元へ戻ってしまう
+  // (=実際には何も保存されていなかった)不具合だったため、update-company-status Edge
+  // Function(service-role)を経由して実際にcompanies.contract_statusを更新するよう作り直した。
+  // activate: トライアル/停止中 → 契約中(「契約中へ変更」「契約中へ復帰」を同じ操作として
+  // 扱う)。suspend: トライアル/契約中 → 停止中。company_id・店舗・ユーザー・売上等の既存
+  // データには一切触れない — ステータスの列を1つ更新するだけ(要件2・3)。
+  const COMPANY_CONTRACT_ACTIONS = {
+    activate: {
+      confirmMessage: (name) => `${name} を契約中にしますか？`,
+      failureMessage: "契約状態の変更に失敗しました",
+    },
+    suspend: {
+      confirmMessage: (name) => `${name} を停止しますか？\n会社・店舗・ユーザー・売上等のデータは削除されず、そのまま保持されます。停止中は system_admin 以外は利用できなくなります。`,
+      failureMessage: "契約状態の変更に失敗しました",
+    },
+  };
+
+  const handleCompanyContractAction = async (company, action) => {
+    const meta = COMPANY_CONTRACT_ACTIONS[action];
+    if (!meta) return;
+    if (!window.confirm(meta.confirmMessage(company.name))) return;
+    if (companyStatusSavingId) return;
+    setCompanyStatusSavingId(company.id);
+    try {
+      let nextStatus = action === "activate" ? "active" : "suspended";
+      if (isSupabaseConfigured) {
+        const result = await updateCompanyContractStatus({ companyId: company.id, action });
+        if (!result.ok) {
+          setNotice(`${meta.failureMessage}: ${getSupabaseErrorMessage(result.error)}`);
+          return;
+        }
+        nextStatus = result.status || nextStatus;
+      }
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, contractStatus: nextStatus, lastUpdatedAt: new Date().toISOString() } : item)),
+      };
+      persistTenantState(nextState);
+    } finally {
+      setCompanyStatusSavingId("");
+    }
+  };
+
+  // 会社の完全削除(要件5): system_admin限定、会社編集画面からのみ起動でき、会社一覧へ
+  // ワンクリック削除ボタンは置かない。対象会社名を完全一致で入力させて初めて削除ボタンが
+  // 有効になる確認モーダル経由のみ。company_idに紐づくデータ(店舗・ユーザー・売上・
+  // 日次入力・月次データ・費用・設定等)はdelete-company Edge Function側で明示的に
+  // company_id単位で削除される(要件6) — 他社のデータには一切触れない。
+  const requestHardDeleteCompany = (company) => {
+    if (!company) return;
+    setCompanyHardDeleteTargetId(company.id);
+    setCompanyHardDeleteConfirmText("");
+    setCompanyHardDeleteError("");
+  };
+
+  const closeCompanyHardDeleteModal = () => {
+    setCompanyHardDeleteTargetId("");
+    setCompanyHardDeleteConfirmText("");
+    setCompanyHardDeleteError("");
+  };
+
+  const handleConfirmHardDeleteCompany = async () => {
+    const target = (appState.companies || []).find((company) => company.id === companyHardDeleteTargetId);
+    if (!target || companyHardDeleteConfirmText !== target.name) return;
+    setCompanyHardDeleteSaving(true);
+    setCompanyHardDeleteError("");
+    try {
+      if (isSupabaseConfigured) {
+        const result = await deleteCompanyCompletely({ companyId: target.id, confirmName: companyHardDeleteConfirmText });
+        if (!result.ok) {
+          setCompanyHardDeleteError(getSupabaseErrorMessage(result.error));
+          return;
+        }
+      }
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).filter((company) => company.id !== target.id),
+        currentCompanyId: appState.currentCompanyId === target.id ? "" : appState.currentCompanyId,
+      };
+      persistTenantState(nextState);
+      setCompanyEditId("");
+      setCompanyForm({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
+      closeCompanyHardDeleteModal();
+    } finally {
+      setCompanyHardDeleteSaving(false);
+    }
   };
 
   // AI分析(AI経営アシスタント)の会社単位ON/OFF。system_admin限定(canManageCompanies)
@@ -4834,6 +4925,23 @@ function App() {
     return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} />;
   }
 
+  // 停止中の会社は、データを保持したまま通常ユーザー(system_admin以外)の利用だけを止める
+  // (要件4)。system_adminは停止中でも会社管理画面から会社情報・データを引き続き確認できる
+  // 必要があるため、この画面はsystem_admin以外にのみ表示する。
+  if (currentCompany?.contractStatus === "suspended" && normalizeRole(currentRole) !== "system_admin") {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-title-block">
+            <p className="eyebrow">SUSPENDED</p>
+            <h2>ご利用を停止しています</h2>
+            <p>現在この会社の利用は停止されています。管理者へお問い合わせください。</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!canAccessCurrentPage) {
     return <AccessDenied />;
   }
@@ -5892,12 +6000,24 @@ function App() {
                 <option value="eyelash">まつげサロン</option>
                 <option value="esthetic">エステサロン</option>
               </select>
-              <select value={companyForm.contractStatus} onChange={(event) => setCompanyForm((prev) => ({ ...prev, contractStatus: event.target.value }))}>
-                <option value="trial">トライアル</option>
-                <option value="active">契約中</option>
-                <option value="suspended">停止中</option>
-              </select>
+              {/* 契約状態は新規作成時にだけこのセレクトで選ぶ(要件1)。作成後の状態変更は
+                  下の会社カードの「契約中へ変更」「停止」ボタン経由のみで行う — このフォームの
+                  「会社情報を更新」は元々companiesテーブルへ実際に反映されない(会社名・業種の
+                  編集もローカル表示のみ)ため、編集モードでこのセレクトを操作できてしまうと
+                  「契約状態を変えたつもりが実際には何も変わらない」トラップになる。 */}
+              {!companyEditId && (
+                <select value={companyForm.contractStatus} onChange={(event) => setCompanyForm((prev) => ({ ...prev, contractStatus: event.target.value }))}>
+                  <option value="trial">トライアル</option>
+                  <option value="active">契約中</option>
+                  <option value="suspended">停止中</option>
+                </select>
+              )}
               <button className="primary-button" type="button" onClick={handleSaveCompany}>{companyEditId ? "会社情報を更新" : "会社追加"}</button>
+              {companyEditId && (
+                <button className="text-button" type="button" onClick={() => requestHardDeleteCompany((appState.companies || []).find((c) => c.id === companyEditId))}>
+                  会社データを削除
+                </button>
+              )}
             </div>
             {(appState.companies || []).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).length ? (
               <div className="card-grid">
@@ -5910,13 +6030,14 @@ function App() {
                           <strong>{company.name}</strong>
                           <small>{company.code}</small>
                         </div>
-                        <span className={`status-pill ${company.isActive ? "saved" : "error"}`}>{company.isActive ? "有効" : "停止"}</span>
+                        <span className={`status-pill ${{ trial: "warning", active: "saved", suspended: "error" }[company.contractStatus || "trial"]}`}>
+                          {{ trial: "トライアル", active: "契約中", suspended: "停止中" }[company.contractStatus || "trial"]}
+                        </span>
                       </div>
                       <div className="info-card-meta">
                         <span>業種 {getBusinessTypeLabel(company.businessType || "salon")}</span>
                         <span>店舗数 {company.stores?.length || 0}</span>
                         <span>ユーザー数 {companyUsers.length}</span>
-                        <span>契約 {company.contractStatus || "trial"}</span>
                         {canManageCompanies(currentRole) && (
                           <span className={`status-pill ${aiAnalysisSettings[company.id] ? "saved" : "warning"}`}>AI分析 {aiAnalysisSettings[company.id] ? "ON" : "OFF"}</span>
                         )}
@@ -5924,7 +6045,19 @@ function App() {
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
-                        <button className="text-button" type="button" onClick={() => handleToggleCompanyStatus(company)}>{company.isActive ? "停止" : "再開"}</button>
+                        {/* トライアル/停止中→契約中、トライアル/契約中→停止中(要件2・3)。
+                            company_id・店舗・ユーザー・売上等の既存データには一切触れない —
+                            契約状態の列を1つ更新するだけ。 */}
+                        {canManageCompanies(currentRole) && company.contractStatus !== "active" && (
+                          <button className="text-button" type="button" disabled={companyStatusSavingId === company.id} onClick={() => handleCompanyContractAction(company, "activate")}>
+                            {company.contractStatus === "suspended" ? "契約中へ復帰" : "契約中へ変更"}
+                          </button>
+                        )}
+                        {canManageCompanies(currentRole) && company.contractStatus !== "suspended" && (
+                          <button className="text-button" type="button" disabled={companyStatusSavingId === company.id} onClick={() => handleCompanyContractAction(company, "suspend")}>
+                            停止
+                          </button>
+                        )}
                         {/* AI分析の契約ON/OFFはsystem_admin限定(要件) — company_adminには
                             ボタン自体を出さない(UIを隠すだけでなくRLS/Edge Function側でも
                             強制しているのは上のhandleToggleCompanyAiAnalysis参照)。 */}
@@ -6501,6 +6634,41 @@ function App() {
                   <button className="secondary-button" type="button" onClick={closeHardDeleteModal} disabled={hardDeleteSaving}>キャンセル</button>
                   <button className="primary-button danger-button" type="button" onClick={handleConfirmHardDeleteStore} disabled={!confirmMatches || hardDeleteSaving}>
                     {hardDeleteSaving ? "削除中..." : "完全に削除する"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {companyHardDeleteTargetId && (() => {
+          const companyHardDeleteTarget = (appState.companies || []).find((company) => company.id === companyHardDeleteTargetId);
+          if (!companyHardDeleteTarget) return null;
+          const companyConfirmMatches = companyHardDeleteConfirmText === companyHardDeleteTarget.name;
+          return (
+            <div className="modal-overlay" onClick={closeCompanyHardDeleteModal}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">DELETE COMPANY PERMANENTLY</p>
+                    <h3>会社データを完全に削除しますか？</h3>
+                  </div>
+                </div>
+                {companyHardDeleteError ? <div className="notice-box">{companyHardDeleteError}</div> : null}
+                <p className="notice-box warning">
+                  この操作を行うと、<strong>{companyHardDeleteTarget.name}</strong>に紐づく店舗・ユーザー・売上・日次入力・月次データ・費用・設定などのデータが完全に削除されます。この操作は元に戻せません。
+                </p>
+                <p className="helper-text">
+                  続行するには、削除対象の会社名「{companyHardDeleteTarget.name}」を正確に入力してください。
+                </p>
+                <label className="field">
+                  <span>会社名を入力</span>
+                  <input value={companyHardDeleteConfirmText} onChange={(event) => setCompanyHardDeleteConfirmText(event.target.value)} placeholder={companyHardDeleteTarget.name} disabled={companyHardDeleteSaving} />
+                </label>
+                <div className="row-actions" style={{ marginTop: 12 }}>
+                  <button className="secondary-button" type="button" onClick={closeCompanyHardDeleteModal} disabled={companyHardDeleteSaving}>キャンセル</button>
+                  <button className="primary-button danger-button" type="button" onClick={handleConfirmHardDeleteCompany} disabled={!companyConfirmMatches || companyHardDeleteSaving}>
+                    {companyHardDeleteSaving ? "削除中..." : "完全に削除する"}
                   </button>
                 </div>
               </div>
