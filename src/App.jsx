@@ -376,6 +376,12 @@ const getCompanySetupProgress = (company) => {
 
 const formatSignedYen = (value) => `${value >= 0 ? "" : "−"}¥${Math.abs(Math.round(value)).toLocaleString("ja-JP")}`;
 
+// 会社コードはstores.codeと同じく「実質的には使われないが列としてはunique not null」な
+// 内部識別用の値 — 人間が考えて入力するものではないので、店舗コード(crypto.randomUUID()を
+// そのまま使う既存パターン)と同様、自動生成する。会社コードだけは "salon-xxxxxxxx" という
+// 読める形式が要件で指定されているため、UUIDから先頭8文字を切り出して整形する。
+const generateCompanyCode = () => `salon-${(typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}${Math.random()}`).replace(/-/g, "").slice(0, 8)}`;
+
 // 日次入力画面の「今日のAI分析」を組み立てる。ここは詳しい原因分析・改善提案の場ではなく、
 // (1)当日の売上・目標に対する状況 (2)入力KPIの中から特徴的な1〜2項目 (3)前向きな一言、を
 // 1〜3文で短く総括するだけの役割 — 詳細な分析・改善策は別画面の「AI経営アシスタント」に
@@ -647,6 +653,16 @@ function App() {
   // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
   // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
   const [userFormBusy, setUserFormBusy] = useState(false);
+  // 会社管理画面の「管理者を招待」用。system_adminが会社を都度切り替えてからユーザー管理
+  // 画面で招待する(=切り替え忘れによる誤company_id招待の事故が起きうる)のではなく、
+  // 会社カードのボタンから直接その会社のidを指定して招待できるようにする(要件3)。
+  // どの会社カードのインライン招待フォームを開いているかだけを保持する — 実際の入力値は
+  // 既存のuserForm/handleSaveUserをそのまま再利用する。
+  const [inviteAdminCompanyId, setInviteAdminCompanyId] = useState("");
+  const openInviteAdminForm = (company) => {
+    setInviteAdminCompanyId(company.id);
+    setUserForm((prev) => ({ ...prev, name: "", email: "", role: "company_admin", companyId: company.id, storeIds: [], primaryStoreId: "" }));
+  };
   // 「再招待」ボタンの二重送信防止。行ごとに独立して無効化するため、対象user.idを保持する
   // (他のユーザー行の再招待ボタンまで巻き込んで無効化しないため)。
   const [resendingUserId, setResendingUserId] = useState("");
@@ -2300,15 +2316,20 @@ function App() {
     const normalizedName = companyForm.name.trim();
     if (!normalizedName) return;
     const existingCompany = (appState.companies || []).find((company) => company.id === companyEditId) || null;
-    const normalizedCode = (companyForm.code || normalizedName).trim().toLowerCase();
+    // 会社コードは人が入力するものではなく自動生成(要件) — 既存会社を編集する場合は既存の
+    // コードを絶対に変更しない。新規作成時だけ生成する。
+    const normalizedCode = existingCompany?.code || generateCompanyCode();
 
     try {
       let createdCompany = null;
       if (!existingCompany) {
+        // createdByProfileId(会社作成者を自動的にそのcompany_adminへ昇格させる仕組み)は
+        // 意図的に渡さない — 会社を作ったsystem_admin自身がその会社のcompany_adminに
+        // なってしまう(=最上位権限者が入れ替わってしまう)不具合になっていた。最初の
+        // company_adminは、会社カードの「管理者を招待」から別途明示的に招待する(要件3)。
         createdCompany = await createCompanyRecord({
           name: normalizedName,
           code: normalizedCode,
-          createdByProfileId: appState.currentUserId || currentUser?.profileId || "",
         });
       }
 
@@ -2531,12 +2552,21 @@ function App() {
     const invitableRoles = getInvitableRoles(normalizedCurrentRole);
     const role = invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "staff");
     const companyId = normalizedCurrentRole === "system_admin" ? (userForm.companyId || appState.currentCompanyId) : appState.currentCompanyId;
+    // inviterStoreIds/currentCompanyStores は「今アクティブになっている会社(appState.
+    // currentCompanyId)」基準で組み立てられている。会社カードの「管理者を招待」
+    // (companyId !== appState.currentCompanyId になりうる)経由で呼ばれた場合、この
+    // フォールバックをそのまま使うと無関係な(アクティブな会社の)store_idが紛れ込みかねない
+    // — company_adminはそもそもuser_stores(店舗紐付け)を必要としない権限モデルのため
+    // (companies配下は常にcompany_id単位でスコープされ、店舗個別の紐付けを見ない)、
+    // company_admin招待では店舗紐付けの自動補完自体を行わない。
     const inviterStoreIds = normalizedCurrentRole === "store_manager" ? allowedStoreIds : currentCompanyStores.map((store) => store.id);
     const inviteTokenValue = createInviteToken();
     const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
     const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-    const requestedStoreIds = (userForm.storeIds.length ? userForm.storeIds : (inviterStoreIds[0] ? [inviterStoreIds[0]] : [])).filter((storeId) => inviterStoreIds.includes(storeId));
-    const requestedPrimaryStoreId = inviterStoreIds.includes(userForm.primaryStoreId) ? userForm.primaryStoreId : (requestedStoreIds[0] || "");
+    const requestedStoreIds = role === "company_admin"
+      ? []
+      : (userForm.storeIds.length ? userForm.storeIds : (inviterStoreIds[0] ? [inviterStoreIds[0]] : [])).filter((storeId) => inviterStoreIds.includes(storeId));
+    const requestedPrimaryStoreId = role === "company_admin" ? "" : (inviterStoreIds.includes(userForm.primaryStoreId) ? userForm.primaryStoreId : (requestedStoreIds[0] || ""));
 
     setUserFormBusy(true);
     try {
@@ -4836,7 +4866,6 @@ function App() {
                 </div>
                 <div className="inline-form">
                   <input value={companyForm.name} onChange={(event) => setCompanyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="会社名" />
-                  <input value={companyForm.code} onChange={(event) => setCompanyForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="会社コード" />
                   <select value={companyForm.businessType || "salon"} onChange={(event) => setCompanyForm((prev) => ({ ...prev, businessType: event.target.value }))}>
                     <option value="salon">サロン</option>
                     <option value="nail">ネイルサロン</option>
@@ -5857,7 +5886,6 @@ function App() {
             <p className="management-help">会社を追加して、店舗・ユーザー・設定をまとめて管理できます。業種を先に選ぶと、後続の店舗登録も自然になります。</p>
             <div className="inline-form">
               <input value={companyForm.name} onChange={(event) => setCompanyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="会社名" />
-              <input value={companyForm.code} onChange={(event) => setCompanyForm((prev) => ({ ...prev, code: event.target.value }))} placeholder="会社コード" />
               <select value={companyForm.businessType || "salon"} onChange={(event) => setCompanyForm((prev) => ({ ...prev, businessType: event.target.value }))}>
                 <option value="salon">サロン</option>
                 <option value="nail">ネイルサロン</option>
@@ -5905,7 +5933,37 @@ function App() {
                             AI分析を{aiAnalysisSettings[company.id] ? "無効化" : "有効化"}
                           </button>
                         )}
+                        {/* system_adminが上のトップバーで会社を切り替えてからユーザー管理画面へ
+                            移動する方式だと、切り替え忘れで誤った会社へ招待してしまう事故が
+                            起こりうる。会社カードのボタンから直接その会社のidを指定して
+                            company_adminを招待できるようにし、この事故を構造的に防ぐ(要件3)。 */}
+                        {canManageCompanies(currentRole) && (
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => (inviteAdminCompanyId === company.id ? setInviteAdminCompanyId("") : openInviteAdminForm(company))}
+                          >
+                            {inviteAdminCompanyId === company.id ? "招待フォームを閉じる" : "管理者を招待"}
+                          </button>
+                        )}
                       </div>
+                      {inviteAdminCompanyId === company.id && (
+                        <div className="inline-form">
+                          <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="管理者の氏名" />
+                          <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="管理者のメールアドレス" />
+                          <button
+                            className="primary-button"
+                            type="button"
+                            disabled={userFormBusy}
+                            onClick={async () => {
+                              await handleSaveUser();
+                              setInviteAdminCompanyId("");
+                            }}
+                          >
+                            {userFormBusy ? "送信中…" : "招待する"}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
