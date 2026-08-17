@@ -35,7 +35,10 @@ export const NAV_ITEMS_BY_ROLE = {
   // settings beyond their own store.
   store_manager: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
   // 月次経営ダッシュボードは店舗横断比較・会社全体集計を含むため、staffには意図的に含めない。
-  staff: ["dashboard", "daily", "stores"],
+  // 店舗管理("stores")も同様にstaffの通常業務範囲外のため含めない — この配列がURLの
+  // 存在しないこのSPAにおける唯一の認可ゲート(canAccessPage)なので、ここから外すことが
+  // そのままURL直接アクセスの拒否にもなる。
+  staff: ["dashboard", "daily"],
   owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "settings"],
   admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
 };
