@@ -94,6 +94,7 @@ import {
   updateCompanyAiAnalysisSetting,
   getCompanyAiAnalysisSettings,
   updateCompanyContractStatus,
+  softDeleteCompany,
   deleteCompanyCompletely,
   createStoreRecord,
   updateStoreRecord,
@@ -640,12 +641,27 @@ function App() {
   const [hardDeleteConfirmText, setHardDeleteConfirmText] = useState("");
   const [hardDeleteSaving, setHardDeleteSaving] = useState(false);
   const [hardDeleteError, setHardDeleteError] = useState("");
-  // 会社の完全削除用の確認モーダル。店舗の完全削除(上のhardDelete*)とは別画面から起動される
-  // ため衝突しないよう別のstateにする — 会社名を完全一致で入力するまでボタンは無効のまま。
+  // 会社の完全削除(3段階の最終段階)用の確認モーダル。店舗の完全削除(上のhardDelete*)とは
+  // 別画面から起動されるため衝突しないよう別のstateにする — 会社名の完全一致に加えて
+  // 「完全削除」という固定フレーズの入力も必須(要件8、通常削除より1段厳重にする)。
   const [companyHardDeleteTargetId, setCompanyHardDeleteTargetId] = useState("");
   const [companyHardDeleteConfirmText, setCompanyHardDeleteConfirmText] = useState("");
+  const [companyHardDeleteConfirmPhrase, setCompanyHardDeleteConfirmPhrase] = useState("");
   const [companyHardDeleteSaving, setCompanyHardDeleteSaving] = useState(false);
   const [companyHardDeleteError, setCompanyHardDeleteError] = useState("");
+  // 会社の論理削除(3段階の2段目、「会社データを削除」ボタン)用の確認モーダル。物理削除
+  // (companyHardDelete*)とは完全に別の操作 — こちらはcompanies.deleted_at等を立てるだけで
+  // company_idに紐づくデータには一切触れない。会社名の完全一致が必須。
+  const [companySoftDeleteTargetId, setCompanySoftDeleteTargetId] = useState("");
+  const [companySoftDeleteConfirmText, setCompanySoftDeleteConfirmText] = useState("");
+  const [companySoftDeleteSaving, setCompanySoftDeleteSaving] = useState(false);
+  const [companySoftDeleteError, setCompanySoftDeleteError] = useState("");
+  // 削除済み会社(ゴミ箱)一覧の表示切替。通常の会社一覧からは常に除外し、system_adminが
+  // 明示的に開いた時だけ表示する。
+  const [showDeletedCompanies, setShowDeletedCompanies] = useState(false);
+  const [companyRestoreSavingId, setCompanyRestoreSavingId] = useState("");
+  // 無料利用理由変更(実行専用メニュー)の多重クリック防止。
+  const [freeReasonSavingId, setFreeReasonSavingId] = useState("");
   // 契約状態(トライアル/契約中/停止中)ボタンの多重クリック防止。
   const [companyStatusSavingId, setCompanyStatusSavingId] = useState("");
   // Inline feedback right next to the 店舗追加 button — the shared top-of-page `notice` can be
@@ -2915,32 +2931,106 @@ function App() {
     }
   };
 
-  // 会社の完全削除(要件5): system_admin限定、会社編集画面からのみ起動でき、会社一覧へ
-  // ワンクリック削除ボタンは置かない。対象会社名を完全一致で入力させて初めて削除ボタンが
-  // 有効になる確認モーダル経由のみ。company_idに紐づくデータ(店舗・ユーザー・売上・
-  // 日次入力・月次データ・費用・設定等)はdelete-company Edge Function側で明示的に
-  // company_id単位で削除される(要件6) — 他社のデータには一切触れない。
+  // 会社の削除は3段階(要件6): ①停止(既存の契約状態遷移、データは一切触れない) →
+  // ②削除(論理削除、company_idに紐づくデータには一切触れずcompanies.deleted_at等を
+  // 立てるだけ、30日間は復元可能) → ③完全削除(物理削除、②を経ていない会社には
+  // サーバー側で拒否される)。「会社データを削除」ボタンは②(論理削除)を起動する —
+  // 以前は直接物理削除していたが、誤操作対策として変更した(要件5の調査結果参照)。
+  const requestSoftDeleteCompany = (company) => {
+    if (!company) return;
+    setCompanySoftDeleteTargetId(company.id);
+    setCompanySoftDeleteConfirmText("");
+    setCompanySoftDeleteError("");
+  };
+
+  const closeSoftDeleteCompanyModal = () => {
+    setCompanySoftDeleteTargetId("");
+    setCompanySoftDeleteConfirmText("");
+    setCompanySoftDeleteError("");
+  };
+
+  const handleConfirmSoftDeleteCompany = async () => {
+    const target = (appState.companies || []).find((company) => company.id === companySoftDeleteTargetId);
+    if (!target || companySoftDeleteConfirmText !== target.name) return;
+    setCompanySoftDeleteSaving(true);
+    setCompanySoftDeleteError("");
+    try {
+      let deletedAt = new Date().toISOString();
+      let deletionScheduledAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      if (isSupabaseConfigured) {
+        const result = await softDeleteCompany({ companyId: target.id, action: "delete", confirmName: companySoftDeleteConfirmText });
+        if (!result.ok) {
+          setCompanySoftDeleteError(getSupabaseErrorMessage(result.error));
+          return;
+        }
+        deletedAt = result.data?.deletedAt || deletedAt;
+        deletionScheduledAt = result.data?.deletionScheduledAt || deletionScheduledAt;
+      }
+      // company_id・関連データには一切触れない — companies行の3列を更新するだけ。
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).map((company) => (company.id === target.id ? { ...company, deletedAt, deletedBy: currentUser?.profileId || "", deletionScheduledAt } : company)),
+        currentCompanyId: appState.currentCompanyId === target.id ? "" : appState.currentCompanyId,
+      };
+      persistTenantState(nextState);
+      setCompanyEditId("");
+      setCompanyForm({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
+      closeSoftDeleteCompanyModal();
+    } finally {
+      setCompanySoftDeleteSaving(false);
+    }
+  };
+
+  // 復元(要件6②): companies.deleted_at等をnullへ戻すだけ。店舗・ユーザー・売上等は
+  // 削除時から一切触れていないため、復元すれば即座に以前の状態のまま利用を再開できる。
+  const handleRestoreCompany = async (company) => {
+    if (!company) return;
+    if (!window.confirm(`${company.name} を復元しますか？`)) return;
+    setCompanyRestoreSavingId(company.id);
+    try {
+      if (isSupabaseConfigured) {
+        const result = await softDeleteCompany({ companyId: company.id, action: "restore" });
+        if (!result.ok) {
+          setNotice(`会社の復元に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+          return;
+        }
+      }
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, deletedAt: "", deletedBy: "", deletionScheduledAt: "" } : item)),
+      };
+      persistTenantState(nextState);
+    } finally {
+      setCompanyRestoreSavingId("");
+    }
+  };
+
+  // 完全削除(要件6③・8): ②(論理削除)を経ていない会社はサーバー側で拒否される。
+  // 会社名の完全一致に加えて「完全削除」という固定フレーズの入力も必須にし、通常削除
+  // (②)より確認を1段厳重にする。ゴミ箱(削除済み会社一覧)からのみ起動できる。
   const requestHardDeleteCompany = (company) => {
     if (!company) return;
     setCompanyHardDeleteTargetId(company.id);
     setCompanyHardDeleteConfirmText("");
+    setCompanyHardDeleteConfirmPhrase("");
     setCompanyHardDeleteError("");
   };
 
   const closeCompanyHardDeleteModal = () => {
     setCompanyHardDeleteTargetId("");
     setCompanyHardDeleteConfirmText("");
+    setCompanyHardDeleteConfirmPhrase("");
     setCompanyHardDeleteError("");
   };
 
   const handleConfirmHardDeleteCompany = async () => {
     const target = (appState.companies || []).find((company) => company.id === companyHardDeleteTargetId);
-    if (!target || companyHardDeleteConfirmText !== target.name) return;
+    if (!target || companyHardDeleteConfirmText !== target.name || companyHardDeleteConfirmPhrase !== "完全削除") return;
     setCompanyHardDeleteSaving(true);
     setCompanyHardDeleteError("");
     try {
       if (isSupabaseConfigured) {
-        const result = await deleteCompanyCompletely({ companyId: target.id, confirmName: companyHardDeleteConfirmText });
+        const result = await deleteCompanyCompletely({ companyId: target.id, confirmName: companyHardDeleteConfirmText, confirmPhrase: companyHardDeleteConfirmPhrase });
         if (!result.ok) {
           setCompanyHardDeleteError(getSupabaseErrorMessage(result.error));
           return;
@@ -2952,11 +3042,32 @@ function App() {
         currentCompanyId: appState.currentCompanyId === target.id ? "" : appState.currentCompanyId,
       };
       persistTenantState(nextState);
-      setCompanyEditId("");
-      setCompanyForm({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
       closeCompanyHardDeleteModal();
     } finally {
       setCompanyHardDeleteSaving(false);
+    }
+  };
+
+  // 無料利用理由(要件2): 無料利用中の会社にのみ設定できる。状態遷移は起こさず理由だけを
+  // 更新する — update-company-status Edge FunctionにtargetStatusを渡さずfreeReasonだけ渡す。
+  const FREE_REASON_LABELS = { self: "自社", monitor: "モニター", friend: "知人特典", campaign: "キャンペーン", other: "その他" };
+  const handleUpdateCompanyFreeReason = async (company, freeReason) => {
+    setFreeReasonSavingId(company.id);
+    try {
+      if (isSupabaseConfigured) {
+        const result = await updateCompanyContractStatus({ companyId: company.id, freeReason });
+        if (!result.ok) {
+          setNotice(`無料利用理由の変更に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+          return;
+        }
+      }
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, freeReason: freeReason || "" } : item)),
+      };
+      persistTenantState(nextState);
+    } finally {
+      setFreeReasonSavingId("");
     }
   };
 
@@ -4925,10 +5036,11 @@ function App() {
     return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} />;
   }
 
-  // 停止中の会社は、データを保持したまま通常ユーザー(system_admin以外)の利用だけを止める
-  // (要件4)。system_adminは停止中でも会社管理画面から会社情報・データを引き続き確認できる
-  // 必要があるため、この画面はsystem_admin以外にのみ表示する。
-  if (currentCompany?.contractStatus === "suspended" && normalizeRole(currentRole) !== "system_admin") {
+  // 停止中、または削除(論理削除)済みの会社は、データを保持したまま通常ユーザー
+  // (system_admin以外)の利用だけを止める(要件4・6)。system_adminはどちらの状態でも
+  // 会社管理画面から会社情報・データを引き続き確認できる必要があるため、この画面は
+  // system_admin以外にのみ表示する。
+  if ((currentCompany?.contractStatus === "suspended" || currentCompany?.deletedAt) && normalizeRole(currentRole) !== "system_admin") {
     return (
       <div className="auth-shell">
         <div className="auth-card">
@@ -5981,16 +6093,37 @@ function App() {
                 <h2>会社管理</h2>
               </div>
             </div>
-            {normalizeRole(currentRole) === "system_admin" ? (
-              <div className="inline-form">
-                <label className="field">
-                  <span>会社選択</span>
-                  <select value={appState.currentCompanyId || ""} onChange={(event) => handleCompanySwitch(event.target.value)}>
-                    {(appState.companies || []).map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
-                  </select>
-                </label>
-              </div>
-            ) : null}
+            {normalizeRole(currentRole) === "system_admin" ? (() => {
+              // 削除済み(ゴミ箱)会社は集計・通常の会社選択・通常一覧のどこにも含めない
+              // (要件4・6②)。将来の有料契約社数・MRR集計は「契約中」のみを対象にできるよう、
+              // ここで会社数を契約状態ごとに数えておく(契約中のみが課金対象、という前提の
+              // 集計構造)。
+              const liveCompanies = (appState.companies || []).filter((company) => !company.deletedAt);
+              const statusCounts = { free: 0, trial: 0, active: 0, suspended: 0 };
+              liveCompanies.forEach((company) => {
+                const status = company.contractStatus || "trial";
+                if (status in statusCounts) statusCounts[status] += 1;
+              });
+              return (
+                <>
+                  <div className="kpi-hero-grid">
+                    <MetricCard label="全会社数" value={String(liveCompanies.length)} />
+                    <MetricCard label="契約中" value={String(statusCounts.active)} tone="good" />
+                    <MetricCard label="無料利用" value={String(statusCounts.free)} />
+                    <MetricCard label="トライアル" value={String(statusCounts.trial)} tone="warning" />
+                    <MetricCard label="停止" value={String(statusCounts.suspended)} tone="warning" />
+                  </div>
+                  <div className="inline-form">
+                    <label className="field">
+                      <span>会社選択</span>
+                      <select value={appState.currentCompanyId || ""} onChange={(event) => handleCompanySwitch(event.target.value)}>
+                        {liveCompanies.map((company) => <option key={company.id} value={company.id}>{company.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                </>
+              );
+            })() : null}
             <p className="management-help">会社を追加して、店舗・ユーザー・設定をまとめて管理できます。業種を先に選ぶと、後続の店舗登録も自然になります。</p>
             <div className="inline-form">
               <input value={companyForm.name} onChange={(event) => setCompanyForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="会社名" />
@@ -6014,15 +6147,18 @@ function App() {
                 </select>
               )}
               <button className="primary-button" type="button" onClick={handleSaveCompany}>{companyEditId ? "会社情報を更新" : "会社追加"}</button>
+              {/* 危険度に応じて配置(要件10): 会社情報を更新(通常)の隣に、赤系(危険)の
+                  「会社データを削除」を並べる。これは物理削除ではなく論理削除(要件6②) —
+                  company_idに紐づくデータには一切触れず、30日間はゴミ箱から復元できる。 */}
               {companyEditId && (
-                <button className="text-button" type="button" onClick={() => requestHardDeleteCompany((appState.companies || []).find((c) => c.id === companyEditId))}>
+                <button className="text-button danger" type="button" onClick={() => requestSoftDeleteCompany((appState.companies || []).find((c) => c.id === companyEditId))}>
                   会社データを削除
                 </button>
               )}
             </div>
-            {(appState.companies || []).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).length ? (
+            {(appState.companies || []).filter((company) => !company.deletedAt).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).length ? (
               <div className="card-grid">
-                {(appState.companies || []).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).map((company) => {
+                {(appState.companies || []).filter((company) => !company.deletedAt).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).map((company) => {
                   const companyUsers = (appState.users || []).filter((user) => user.companyId === company.id);
                   return (
                     <div key={company.id} className="info-card">
@@ -6042,10 +6178,33 @@ function App() {
                         <span>業種 {getBusinessTypeLabel(company.businessType || "salon")}</span>
                         <span>店舗数 {company.stores?.length || 0}</span>
                         <span>ユーザー数 {companyUsers.length}</span>
+                        {/* 無料利用理由(要件2) — 無料利用中の会社にのみ表示。今後無料利用の
+                            会社が増えても、なぜ無料なのかここで確認できる。 */}
+                        {company.contractStatus === "free" && (
+                          <span>理由 {company.freeReason ? FREE_REASON_LABELS[company.freeReason] || company.freeReason : "未設定"}</span>
+                        )}
                         {canManageCompanies(currentRole) && (
                           <span className={`status-pill ${aiAnalysisSettings[company.id] ? "saved" : "warning"}`}>AI分析 {aiAnalysisSettings[company.id] ? "ON" : "OFF"}</span>
                         )}
                       </div>
+                      {canManageCompanies(currentRole) && company.contractStatus === "free" && (
+                        <div className="row-actions">
+                          <select
+                            className="text-button"
+                            value=""
+                            disabled={freeReasonSavingId === company.id}
+                            onChange={(event) => {
+                              const reason = event.target.value;
+                              if (reason) handleUpdateCompanyFreeReason(company, reason);
+                            }}
+                          >
+                            <option value="">無料利用理由を変更...</option>
+                            {Object.entries(FREE_REASON_LABELS).map(([key, label]) => (
+                              <option key={key} value={key}>{label}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
@@ -6115,6 +6274,47 @@ function App() {
               </div>
             ) : (
               <div className="management-empty">まだ会社が登録されていません。上のフォームから最初の会社を追加してください。</div>
+            )}
+            {/* ゴミ箱(削除済み会社、要件6②): 通常の会社一覧には一切表示せず、system_admin が
+                明示的に開いた時だけ表示する。ここからのみ「復元」「完全削除」ができる。 */}
+            {canManageCompanies(currentRole) && (
+              <>
+                <div className="row-actions" style={{ marginTop: 16 }}>
+                  <button className="text-button" type="button" onClick={() => setShowDeletedCompanies((prev) => !prev)}>
+                    {showDeletedCompanies ? "ゴミ箱を閉じる" : `ゴミ箱を表示(${(appState.companies || []).filter((c) => c.deletedAt).length})`}
+                  </button>
+                </div>
+                {showDeletedCompanies && (
+                  <div className="card-grid">
+                    {(appState.companies || []).filter((company) => company.deletedAt).map((company) => (
+                      <div key={company.id} className="info-card">
+                        <div className="info-card-head">
+                          <div>
+                            <strong>{company.name}</strong>
+                            <small>{company.code}</small>
+                          </div>
+                          <span className="status-pill error">削除済み</span>
+                        </div>
+                        <div className="info-card-meta">
+                          <span>削除日 {company.deletedAt ? new Date(company.deletedAt).toLocaleDateString("ja-JP") : "-"}</span>
+                          <span>完全削除可能日 {company.deletionScheduledAt ? new Date(company.deletionScheduledAt).toLocaleDateString("ja-JP") : "-"}</span>
+                        </div>
+                        <div className="row-actions">
+                          <button className="text-button" type="button" disabled={companyRestoreSavingId === company.id} onClick={() => handleRestoreCompany(company)}>
+                            {companyRestoreSavingId === company.id ? "復元中…" : "復元"}
+                          </button>
+                          <button className="text-button danger" type="button" onClick={() => requestHardDeleteCompany(company)}>
+                            完全削除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                    {!(appState.companies || []).some((company) => company.deletedAt) && (
+                      <div className="management-empty">削除済みの会社はありません。</div>
+                    )}
+                  </div>
+                )}
+              </>
             )}
           </section>
         )}
@@ -6653,10 +6853,51 @@ function App() {
           );
         })()}
 
+        {/* 会社の論理削除(3段階の2段目、要件7) — company_idに紐づくデータには一切触れず、
+            会社名の完全一致を入力するまで削除ボタンは無効のまま。30日間はゴミ箱から復元できる
+            旨を明記する。 */}
+        {companySoftDeleteTargetId && (() => {
+          const softDeleteTarget = (appState.companies || []).find((company) => company.id === companySoftDeleteTargetId);
+          if (!softDeleteTarget) return null;
+          const softConfirmMatches = companySoftDeleteConfirmText === softDeleteTarget.name;
+          return (
+            <div className="modal-overlay" onClick={closeSoftDeleteCompanyModal}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">DELETE COMPANY</p>
+                    <h3>この会社を削除しますか？</h3>
+                  </div>
+                </div>
+                {companySoftDeleteError ? <div className="notice-box">{companySoftDeleteError}</div> : null}
+                <p className="notice-box warning">
+                  <strong>{softDeleteTarget.name}</strong>を削除します。30日間は「ゴミ箱」から復元でき、店舗・ユーザー・売上・日次入力・月次データ・費用・設定などのデータは削除されません。復元しないまま30日が経過すると完全削除の対象になります。
+                </p>
+                <p className="helper-text">
+                  続行するには、削除する会社名「{softDeleteTarget.name}」を正確に入力してください。
+                </p>
+                <label className="field">
+                  <span>会社名を入力</span>
+                  <input value={companySoftDeleteConfirmText} onChange={(event) => setCompanySoftDeleteConfirmText(event.target.value)} placeholder={softDeleteTarget.name} disabled={companySoftDeleteSaving} />
+                </label>
+                <div className="row-actions" style={{ marginTop: 12 }}>
+                  <button className="secondary-button" type="button" onClick={closeSoftDeleteCompanyModal} disabled={companySoftDeleteSaving}>キャンセル</button>
+                  <button className="primary-button danger-button" type="button" onClick={handleConfirmSoftDeleteCompany} disabled={!softConfirmMatches || companySoftDeleteSaving}>
+                    {companySoftDeleteSaving ? "削除中..." : "削除する"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* 完全削除(3段階の最終段階、要件8) — 通常削除より確認を1段厳重にする: 会社名の
+            完全一致に加えて「完全削除」という固定フレーズの入力も必須。復元不可であることを
+            明記する。ゴミ箱(削除済み会社)からのみ起動できる。 */}
         {companyHardDeleteTargetId && (() => {
           const companyHardDeleteTarget = (appState.companies || []).find((company) => company.id === companyHardDeleteTargetId);
           if (!companyHardDeleteTarget) return null;
-          const companyConfirmMatches = companyHardDeleteConfirmText === companyHardDeleteTarget.name;
+          const companyConfirmMatches = companyHardDeleteConfirmText === companyHardDeleteTarget.name && companyHardDeleteConfirmPhrase === "完全削除";
           return (
             <div className="modal-overlay" onClick={closeCompanyHardDeleteModal}>
               <div className="modal-card" onClick={(event) => event.stopPropagation()}>
@@ -6668,7 +6909,7 @@ function App() {
                 </div>
                 {companyHardDeleteError ? <div className="notice-box">{companyHardDeleteError}</div> : null}
                 <p className="notice-box warning">
-                  この操作を行うと、<strong>{companyHardDeleteTarget.name}</strong>に紐づく店舗・ユーザー・売上・日次入力・月次データ・費用・設定などのデータが完全に削除されます。この操作は元に戻せません。
+                  この操作を行うと、<strong>{companyHardDeleteTarget.name}</strong>に紐づく店舗・ユーザー・売上・日次入力・月次データ・費用・設定などのデータが完全に削除されます。<strong>この操作は元に戻せません(復元不可)。</strong>
                 </p>
                 <p className="helper-text">
                   続行するには、削除対象の会社名「{companyHardDeleteTarget.name}」を正確に入力してください。
@@ -6676,6 +6917,13 @@ function App() {
                 <label className="field">
                   <span>会社名を入力</span>
                   <input value={companyHardDeleteConfirmText} onChange={(event) => setCompanyHardDeleteConfirmText(event.target.value)} placeholder={companyHardDeleteTarget.name} disabled={companyHardDeleteSaving} />
+                </label>
+                <p className="helper-text">
+                  さらに、「完全削除」と正確に入力してください。
+                </p>
+                <label className="field">
+                  <span>「完全削除」と入力</span>
+                  <input value={companyHardDeleteConfirmPhrase} onChange={(event) => setCompanyHardDeleteConfirmPhrase(event.target.value)} placeholder="完全削除" disabled={companyHardDeleteSaving} />
                 </label>
                 <div className="row-actions" style={{ marginTop: 12 }}>
                   <button className="secondary-button" type="button" onClick={closeCompanyHardDeleteModal} disabled={companyHardDeleteSaving}>キャンセル</button>

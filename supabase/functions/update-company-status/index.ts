@@ -1,7 +1,12 @@
-// 会社の契約状態(無料利用/トライアル/契約中/停止中)を変更する。system_admin限定 —
-// companiesのUPDATE自体はcompanies_update_system_only RLSで既にsystem_admin以外は拒否
-// されるが、他のEdge Function群(update-store-status等)と同じ規約でサーバー側でも明示的に
-// 再検証する。
+// 会社の契約状態(無料利用/トライアル/契約中/停止中)、および無料利用理由(free_reason)を
+// 変更する。system_admin限定 — companiesのUPDATE自体はcompanies_update_system_only RLSで
+// 既にsystem_admin以外は拒否されるが、他のEdge Function群(update-store-status等)と同じ
+// 規約でサーバー側でも明示的に再検証する。
+//
+// targetStatusを指定した場合は状態遷移(下のALLOWED_TRANSITIONS参照)。freeReasonは
+// targetStatusが"free"の時だけ一緒に保存され、"free"以外へ遷移する際は自動的にクリアする
+// (無料利用でなくなった会社に古い理由が残り続けるのを防ぐ)。targetStatusを省略しfreeReason
+// だけ渡した場合は、現在既に"free"の会社の理由だけを更新する(状態遷移は起こさない)。
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -22,6 +27,7 @@ function logStage(stage: string, detail: Record<string, unknown>) {
 }
 
 const VALID_STATUSES = ["free", "trial", "active", "suspended"];
+const VALID_FREE_REASONS = ["self", "monitor", "friend", "campaign", "other"];
 
 // 現在の状態 -> 遷移可能な状態の一覧。要件で明示された組み合わせのみを許可する
 // (例: 契約中からトライアルへ戻す遷移は要件に含まれていないため許可しない)。
@@ -42,18 +48,31 @@ Deno.serve(async (req) => {
 
   let companyId = "";
   let targetStatus = "";
+  let freeReason: string | null | undefined;
   try {
     const body = await req.json();
     companyId = String(body?.companyId || "").trim();
     targetStatus = String(body?.targetStatus || "").trim();
+    // freeReasonが未指定(undefined)なら「今回は理由を変更しない」、nullまたは空文字なら
+    // 「理由を消す」、それ以外は候補一覧のいずれかである必要がある。
+    if (body?.freeReason !== undefined) {
+      const raw = body.freeReason === null ? "" : String(body.freeReason).trim();
+      freeReason = raw || null;
+    }
   } catch {
     return json({ error: "リクエストの形式が不正です" }, 400);
   }
-  if (!companyId || !targetStatus) {
-    return json({ error: "companyId, targetStatus は必須です" }, 400);
+  if (!companyId) {
+    return json({ error: "companyId は必須です" }, 400);
   }
-  if (!VALID_STATUSES.includes(targetStatus)) {
+  if (!targetStatus && freeReason === undefined) {
+    return json({ error: "targetStatus または freeReason のいずれかが必要です" }, 400);
+  }
+  if (targetStatus && !VALID_STATUSES.includes(targetStatus)) {
     return json({ error: "不正な契約状態です" }, 400);
+  }
+  if (freeReason && !VALID_FREE_REASONS.includes(freeReason)) {
+    return json({ error: "不正な無料利用理由です" }, 400);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -89,15 +108,32 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, name, contract_status")
+      .select("id, name, contract_status, deleted_at")
       .eq("id", companyId)
       .maybeSingle();
     if (companyError) throw companyError;
     if (!company) {
       return json({ error: "対象の会社が見つかりません" }, 404);
     }
+    if (company.deleted_at) {
+      return json({ error: "削除済みの会社の契約状態は変更できません。先に復元してください" }, 409);
+    }
 
     const currentStatus = company.contract_status || "trial";
+
+    // targetStatus省略時: 現在すでに"free"の会社の理由だけを更新する(状態遷移なし)。
+    if (!targetStatus) {
+      if (currentStatus !== "free") {
+        return json({ error: "無料利用理由は「無料利用」状態の会社にのみ設定できます" }, 409);
+      }
+      const { error: reasonOnlyError } = await admin
+        .from("companies")
+        .update({ free_reason: freeReason ?? null, updated_at: new Date().toISOString() })
+        .eq("id", companyId);
+      if (reasonOnlyError) throw reasonOnlyError;
+      return json({ ok: true, status: currentStatus, freeReason: freeReason ?? null });
+    }
+
     if (currentStatus === targetStatus) {
       return json({ error: "既にその契約状態です" }, 409);
     }
@@ -105,10 +141,15 @@ Deno.serve(async (req) => {
       return json({ error: `この会社は現在「${currentStatus}」のため、その契約状態へは変更できません` }, 409);
     }
 
-    // company_id・関連データには一切触れない。契約状態の列を1つ更新するだけ。
+    // company_id・関連データには一切触れない。契約状態(と無料利用理由)の列を更新するだけ。
+    // free以外へ遷移する場合は理由を自動的にクリアする(古い理由が残り続けないように)。
     const { error: updateError } = await admin
       .from("companies")
-      .update({ contract_status: targetStatus, updated_at: new Date().toISOString() })
+      .update({
+        contract_status: targetStatus,
+        free_reason: targetStatus === "free" ? (freeReason ?? null) : null,
+        updated_at: new Date().toISOString(),
+      })
       .eq("id", companyId);
     if (updateError) throw updateError;
 

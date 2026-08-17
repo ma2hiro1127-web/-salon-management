@@ -598,8 +598,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // updateCompanyAiAnalysisSettingだけを経由する独立した状態として扱う(tenant_snapshot/
     // このログイン時ブートストラップ経由では取得・保持しない)。
     companyFilter
-      ? supabase.from("companies").select("id, name, code, is_active, contract_status, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("companies").select("id, name, code, is_active, contract_status, created_at, updated_at").order("created_at", { ascending: true }),
+      ? supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, deleted_by, deletion_scheduled_at, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, deleted_by, deletion_scheduled_at, created_at, updated_at").order("created_at", { ascending: true }),
     // Ordered by creation time, not name: a fresh session/device with no cached selection
     // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
     // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
@@ -642,6 +642,12 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // たびに契約中扱いへ戻ってしまっていた(要件1の直接の原因)。companies.contract_status
     // (20260819000000で追加)をそのまま採用する。
     contractStatus: company.contract_status || "trial",
+    // 無料利用理由・論理削除状態(20260821000000で追加)。deletedAtが設定されている会社は
+    // 「ゴミ箱」でのみ表示し、通常の会社一覧からは除外する(App.jsx側でフィルタ)。
+    freeReason: company.free_reason || "",
+    deletedAt: company.deleted_at || "",
+    deletedBy: company.deleted_by || "",
+    deletionScheduledAt: company.deletion_scheduled_at || "",
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -734,16 +740,17 @@ export const createCompanyRecord = async ({ name, code, contractStatus }) => {
   return data;
 };
 
-// 会社の契約状態(無料利用/トライアル/契約中/停止中)を変更する — update-company-status Edge
-// Function(service-role)経由。system_admin限定、targetStatusは対象companyの現在の状態から
-// 許可されていない遷移(例: 契約中からトライアルへ戻す)であればサーバー側で拒否される。
-// クライアントからcompanies.contract_statusを直接書ける経路は残さない
-// (companies_update_system_only RLSにも守られているが、遷移そのものの妥当性検証はRLSだけ
-// ではできないため)。
-export const updateCompanyContractStatus = async ({ companyId, targetStatus }) => {
+// 会社の契約状態(無料利用/トライアル/契約中/停止中)・無料利用理由を変更する —
+// update-company-status Edge Function(service-role)経由。system_admin限定、targetStatusは
+// 対象companyの現在の状態から許可されていない遷移(例: 契約中からトライアルへ戻す)であれば
+// サーバー側で拒否される。targetStatusを省略しfreeReasonだけ渡すと、既に無料利用中の会社の
+// 理由だけを状態遷移なしで更新できる。クライアントからcompanies.contract_status/free_reason
+// を直接書ける経路は残さない(companies_update_system_only RLSにも守られているが、遷移
+// そのものの妥当性検証はRLSだけではできないため)。
+export const updateCompanyContractStatus = async ({ companyId, targetStatus, freeReason }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const { data, error } = await supabase.functions.invoke("update-company-status", {
-    body: { companyId, targetStatus },
+    body: { companyId, targetStatus, freeReason },
   });
   if (error) {
     let message = error.message;
@@ -758,16 +765,45 @@ export const updateCompanyContractStatus = async ({ companyId, targetStatus }) =
   if (data?.error) {
     return { ok: false, error: new Error(data.error) };
   }
-  return { ok: true, status: data?.status || "" };
+  return { ok: true, status: data?.status || "", freeReason: data?.freeReason };
 };
 
-// 会社の完全削除 — delete-company Edge Function(service-role)経由。system_admin限定、
-// 対象会社名の完全一致(confirmName)が必須。stores個別削除(deleteStoreCompletely)と異なり
-// 関連データの有無で拒否せず、company_idに紐づく全データを明示的にcascade削除する(要件)。
-export const deleteCompanyCompletely = async ({ companyId, confirmName }) => {
+// 会社の論理削除・復元 — soft-delete-company Edge Function(service-role)経由。system_admin
+// 限定。削除(action: "delete")は対象会社名の完全一致(confirmName)が必須で、
+// company_idに紐づくデータには一切触れず、companies行のdeleted_at/deleted_by/
+// deletion_scheduled_atだけを更新する。復元(action: "restore")はその3列をnullへ戻すだけ —
+// 店舗・ユーザー・売上等はそもそも削除されていないため、復元すれば即座に以前の状態のまま
+// 利用を再開できる。
+export const softDeleteCompany = async ({ companyId, action, confirmName }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("soft-delete-company", {
+    body: { companyId, action, confirmName },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
+// 会社の完全削除(3段階のうち最終段階) — delete-company Edge Function(service-role)経由。
+// system_admin限定、論理削除済み(deleted_atが設定済み)の会社にしか実行できず、対象会社名の
+// 完全一致(confirmName)に加えて固定フレーズ「完全削除」の入力(confirmPhrase)も必須(要件8:
+// 論理削除より確認を1段厳重にする)。stores個別削除(deleteStoreCompletely)と異なり関連
+// データの有無で拒否せず、company_idに紐づく全データを明示的にcascade削除する(要件)。
+export const deleteCompanyCompletely = async ({ companyId, confirmName, confirmPhrase }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const { data, error } = await supabase.functions.invoke("delete-company", {
-    body: { companyId, confirmName },
+    body: { companyId, confirmName, confirmPhrase },
   });
   if (error) {
     let message = error.message;

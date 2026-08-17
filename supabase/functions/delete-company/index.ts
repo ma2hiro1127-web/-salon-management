@@ -1,6 +1,10 @@
-// 会社の完全削除。system_admin限定(companies_delete_system_only RLS自体で既に
-// company_admin以下はDELETEできないが、他のEdge Function群と同じ規約でサーバー側でも
-// 明示的に再検証する)。
+// 会社の完全削除(3段階のうち最終段階)。system_admin限定(companies_delete_system_only
+// RLS自体で既にcompany_admin以下はDELETEできないが、他のEdge Function群と同じ規約で
+// サーバー側でも明示的に再検証する)。
+//
+// 誤操作対策として、論理削除(soft-delete-company)を経ていない会社(deleted_atがnull)には
+// 完全削除を許可しない — 停止→削除(論理、30日間は復元可能)→完全削除、の順序をサーバー側
+// でも強制する。
 //
 // stores個別の完全削除(delete-store)は「関連データが1件でもあれば拒否」する設計だが、
 // 会社の完全削除は要件として「店舗・ユーザー・売上・日次入力・月次データ・費用・設定など
@@ -65,15 +69,22 @@ Deno.serve(async (req) => {
 
   let companyId = "";
   let confirmName = "";
+  let confirmPhrase = "";
   try {
     const body = await req.json();
     companyId = String(body?.companyId || "").trim();
     confirmName = String(body?.confirmName || "").trim();
+    confirmPhrase = String(body?.confirmPhrase || "").trim();
   } catch {
     return json({ error: "リクエストの形式が不正です" }, 400);
   }
-  if (!companyId || !confirmName) {
-    return json({ error: "companyId, confirmName は必須です" }, 400);
+  if (!companyId || !confirmName || !confirmPhrase) {
+    return json({ error: "companyId, confirmName, confirmPhrase は必須です" }, 400);
+  }
+  // 通常削除(論理削除)より確認を1段厳重にする(要件8) — 会社名の一致に加え、
+  // 「完全削除」という固定フレーズの入力も必須にする。
+  if (confirmPhrase !== "完全削除") {
+    return json({ error: "確認文言が一致しません" }, 400);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -109,12 +120,18 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, name")
+      .select("id, name, deleted_at")
       .eq("id", companyId)
       .maybeSingle();
     if (companyError) throw companyError;
     if (!company) {
       return json({ error: "対象の会社が見つかりません" }, 404);
+    }
+
+    // 停止→削除(論理)→完全削除の順序をサーバー側でも強制する。論理削除を経ていない会社は
+    // ここで必ず拒否する(要件6: 完全削除は論理削除から一定期間経過後にのみ行う設計)。
+    if (!company.deleted_at) {
+      return json({ error: "この会社はまだ削除(論理削除)されていません。先に会社を削除してください" }, 409);
     }
 
     if (confirmName !== company.name) {
