@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isAuthTimingErrorMessage, AUTH_SESSION_EXPIRED_MESSAGE, getSupabaseErrorMessage } from "./supabase.js";
+import { isAuthTimingErrorMessage, AUTH_SESSION_EXPIRED_MESSAGE, getSupabaseErrorMessage, normalizeDailyFieldSettings, normalizeMonthlyTargetFieldSettings } from "./supabase.js";
 
 test("isAuthTimingErrorMessage: JWT/セッションのタイミング起因エラー文言を検知する", () => {
   assert.equal(isAuthTimingErrorMessage("JWT issued at future"), true);
@@ -22,4 +22,30 @@ test("getSupabaseErrorMessage: JWT以外の通常のSupabaseエラーはこれ�
   assert.equal(getSupabaseErrorMessage({ message: "店舗情報を確認できませんでした" }), "店舗情報を確認できませんでした");
   assert.equal(getSupabaseErrorMessage({}), "Supabase エラーが発生しました");
   assert.equal(getSupabaseErrorMessage(null), "Supabase エラーが発生しました");
+});
+
+test("normalizeDailyFieldSettings: 保存済みのfields内で明示的にtrueにした項目(口コミ数等)はデフォルトで上書きされず、そのまま残る", () => {
+  const saved = { mode: "custom", fields: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: false, reviewCount: true } };
+  const normalized = normalizeDailyFieldSettings(saved);
+  assert.equal(normalized.mode, "custom");
+  assert.equal(normalized.fields.reviewCount, true);
+  assert.equal(normalized.fields.memo, false);
+});
+
+test("normalizeDailyFieldSettings: 口コミ数キーが無い古い保存データはfalse(デフォルトOFF)にフォールバックする(既存店舗に勝手に表示させない)", () => {
+  const legacy = { mode: "detailed", fields: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true } };
+  const normalized = normalizeDailyFieldSettings(legacy);
+  assert.equal(normalized.fields.reviewCount, false);
+});
+
+test("normalizeDailyFieldSettings: 値が無い(null/未設定)場合はデフォルト設定を返す", () => {
+  assert.equal(normalizeDailyFieldSettings(null).fields.reviewCount, false);
+  assert.equal(normalizeDailyFieldSettings(undefined).fields.reviewCount, false);
+});
+
+test("normalizeMonthlyTargetFieldSettings: 目標口コミ数のON/OFFは日次入力側のnormalizeDailyFieldSettingsと完全に別のオブジェクト・別のデフォルトを持つ(依存させない)", () => {
+  const dailyOn = normalizeDailyFieldSettings({ mode: "custom", fields: { reviewCount: true } });
+  const targetOff = normalizeMonthlyTargetFieldSettings(null);
+  assert.equal(dailyOn.fields.reviewCount, true);
+  assert.equal(targetOff.fields.targetReviewCount, false);
 });

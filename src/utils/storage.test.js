@@ -93,6 +93,29 @@ test("calculateMonthSummary: adCost/adRate only count the 広告費 category (an
   assert.equal(summary.adRate, 7.5); // 75000 / 1000000 * 100
 });
 
+test("calculateMonthSummary: 口コミ数の累計は月間目標(targetReviewCount)の有無に関わらず常に集計される(日次入力の口コミ数トグルと目標口コミ数トグルは独立)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 100000, reviewCount: 5 },
+    { date: "2026-08-02", totalSales: 100000, reviewCount: 3 },
+  ];
+  // targetsに何も設定しない(目標口コミ数OFF相当)ケース。
+  const summaryWithoutTarget = calculateMonthSummary(state, store, month);
+  assert.equal(summaryWithoutTarget.reviewCount, 8);
+  assert.equal(summaryWithoutTarget.reviewCountTarget, 0);
+  assert.equal(summaryWithoutTarget.reviewCountAchievement, 0);
+
+  // 目標口コミ数を設定した場合、累計自体は変わらず、達成率だけが計算されるようになる。
+  state.targets[key] = { targetReviewCount: 10 };
+  const summaryWithTarget = calculateMonthSummary(state, store, month);
+  assert.equal(summaryWithTarget.reviewCount, 8);
+  assert.equal(summaryWithTarget.reviewCountTarget, 10);
+  assert.equal(summaryWithTarget.reviewCountAchievement, 80);
+});
+
 test("calculateMonthSummary: rates are 0 (not NaN/Infinity) when sales is 0", () => {
   const state = createInitialAppState();
   const store = "横浜店";
@@ -1320,14 +1343,14 @@ const buildAllStoresTestState = () => ({
   ...createInitialAppState(),
   dailyResults: {
     [buildMonthKey("A店", "2026-08")]: [
-      { date: "2026-08-01", totalSales: 100000, customers: 10 },
+      { date: "2026-08-01", totalSales: 100000, customers: 10, reviewCount: 3 },
       // A店の8/2は未締め: 全店舗合算には一切含まれてはいけない
-      { date: "2026-08-02", totalSales: 500000, customers: 50 },
+      { date: "2026-08-02", totalSales: 500000, customers: 50, reviewCount: 4 },
     ],
     [buildMonthKey("B店", "2026-08")]: [
-      { date: "2026-08-01", totalSales: 200000, customers: 5 },
+      { date: "2026-08-01", totalSales: 200000, customers: 5, reviewCount: 2 },
       // B店は8/2は日締めしたが、A店が8/2未締めなので「全店舗として営業完了」にはならない
-      { date: "2026-08-02", totalSales: 300000, customers: 30 },
+      { date: "2026-08-02", totalSales: 300000, customers: 30, reviewCount: 1 },
     ],
   },
   dayClosingStates: {
@@ -1391,6 +1414,19 @@ test("calculateAllStoresMonthSummary: a newly added store with no data yet doesn
   // それでもA店・B店それぞれの実績(入力済み全件)はそのまま反映される —
   // 新規店舗の追加が既存店舗の実績集計を壊してはいけない。
   assert.equal(summary.sales, 1100000);
+});
+
+test("calculateAllStoresMonthSummary: 口コミ数は目標(targetReviewCount)が未設定でも会社内の全店舗分を合算する(日次口コミON/目標口コミOFFでも累計は使える、という独立要件)", () => {
+  const state = buildAllStoresTestState();
+  const summary = calculateAllStoresMonthSummary(state, allStoresTestCompany, "2026-08");
+  // A店(3+4)+B店(2+1) = 10。closedSalesと違い、未締めのA店8/2分も含めて合算する(salesと
+  // 同じ扱い — 日締めの有無で口コミ実績を除外する理由がないため)。
+  assert.equal(summary.reviewCount, 10);
+  // 目標未設定(allStoresTargetsにtargetReviewCountが無い)なので達成率・残数は0のまま
+  // クラッシュしない(未設定を「0件と比較して即0%」扱いにするのは正しいが、任意項目な
+  // ので警告やエラーにはならない、という点をロックする)。
+  assert.equal(summary.reviewCountTarget, 0);
+  assert.equal(summary.reviewCountAchievement, 0);
 });
 
 // 月次経営ダッシュボード関連のテスト。店舗横断の集計・前月比・「－」表示ルールが、既存の

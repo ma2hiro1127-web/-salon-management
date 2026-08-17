@@ -955,6 +955,10 @@ function App() {
   const effectiveShowTechnicalSalesField = isAllStoresView ? companyHasDailyFieldEnabled("technicalSales") : showTechnicalSalesField;
   const effectiveShowRetailSalesField = isAllStoresView ? companyHasDailyFieldEnabled("retailSales") : showRetailSalesField;
   const effectiveShowOtherSalesField = isAllStoresView ? companyHasDailyFieldEnabled("otherSales") : showOtherSalesField;
+  // 売上ダッシュボードの口コミカード表示可否。日次入力の口コミ数トグル(実績を入力する機能)
+  // だけで決める — 目標口コミ数(showReviewCountTargetField、任意の目標設定)には依存させない
+  // (要件3: 「目標口コミ数をONにしないと口コミ実績が使えない」という仕様にはしない)。
+  const effectiveShowReviewCountField = isAllStoresView ? companyHasDailyFieldEnabled("reviewCount") : showReviewCountField;
   const totalSalesIsAutoCalculated = showTechnicalSalesField && showRetailSalesField;
   const customersIsAutoCalculated = showNewCustomersField && showRepeatCustomersField;
   // updateDailyField keeps dailyForm.totalSales/dailyForm.customers correctly synced whether
@@ -5513,12 +5517,14 @@ function App() {
                     tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
                   />
                 ) : null}
-                {showReviewCountTargetField && hasReviewCountTarget ? (
+                {effectiveShowReviewCountField ? (
                   <MetricCard
-                    label="口コミ数達成率"
-                    value={percent(summary.reviewCountAchievement)}
-                    secondaryValue={`目標まで ${number(summary.remainingReviewCountTarget)}件`}
-                    tone={getMetricTone(summary.reviewCountAchievement, 85, 100)}
+                    label="口コミ数"
+                    value={showReviewCountTargetField && hasReviewCountTarget
+                      ? `${number(summary.reviewCount)}件 / ${number(summary.reviewCountTarget)}件`
+                      : `${number(summary.reviewCount)}件`}
+                    hint={showReviewCountTargetField && hasReviewCountTarget ? `達成率 ${percent(summary.reviewCountAchievement)}` : null}
+                    tone={showReviewCountTargetField && hasReviewCountTarget ? getMetricTone(summary.reviewCountAchievement, 85, 100) : ""}
                   />
                 ) : null}
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
