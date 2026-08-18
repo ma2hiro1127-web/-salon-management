@@ -7,8 +7,86 @@ import { FAQ_CATEGORIES, FAQ_ITEMS } from "../../data/faq.js";
 // 意味検索ではない。現時点ではAI相談への導線・リンクは意図的に設置しない。
 const normalizeSearchText = (value) => String(value || "").toLowerCase();
 
+// このFAQ画面から開いた場合に「発生している画面」欄へ自動入力する値。将来他の画面にも
+// 問い合わせ導線を追加する場合は、その画面から同じ形の値を渡せばよい(今回はFAQ画面のみ)。
+const CURRENT_SCREEN_LABEL = "使い方・FAQ";
+
+function buildInquiryText({ screen, situation, content }) {
+  return [
+    "サロンマネージャーについて問い合わせです。",
+    "",
+    "【発生している画面】",
+    screen || "未入力",
+    "",
+    "【状況】",
+    situation || "未入力",
+    "",
+    "【問い合わせ内容】",
+    content || "未入力",
+  ].join("\n");
+}
+
+// 問い合わせ内容モーダル。送信システム・メール送信は実装しない — 入力内容を定型文として
+// クリップボードへコピーし、利用者が普段使っている連絡手段(LINE・メール・チャット等)で
+// そのままサロン管理者/導入担当者へ送れるようにするだけの、閲覧・コピー専用の機能。
+function ContactModal({ onClose }) {
+  const [situation, setSituation] = useState("");
+  const [content, setContent] = useState("");
+  const [copyStatus, setCopyStatus] = useState("idle");
+
+  const handleCopy = async () => {
+    const text = buildInquiryText({ screen: CURRENT_SCREEN_LABEL, situation, content });
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        window.prompt("問い合わせ内容", text);
+      }
+      setCopyStatus("copied");
+    } catch (error) {
+      console.warn("Clipboard write failed", error);
+      window.prompt("問い合わせ内容", text);
+      setCopyStatus("copied");
+    }
+  };
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+        <div className="panel-heading compact">
+          <div>
+            <p className="eyebrow">CONTACT</p>
+            <h3>管理者に問い合わせる</h3>
+          </div>
+        </div>
+        <p className="helper-text">
+          入力内容を定型文としてコピーできます。送信機能はありません。コピーした内容を、普段お使いの連絡手段（LINE・メール・チャット等）でサロン管理者または導入担当者へお送りください。
+        </p>
+        <label className="field">
+          <span>発生している画面</span>
+          <input value={CURRENT_SCREEN_LABEL} disabled />
+        </label>
+        <label className="field">
+          <span>発生状況</span>
+          <textarea value={situation} onChange={(event) => { setSituation(event.target.value); setCopyStatus("idle"); }} rows={3} placeholder="例：本日の日次入力画面で口コミ数の入力欄が表示されない" />
+        </label>
+        <label className="field">
+          <span>問い合わせ内容</span>
+          <textarea value={content} onChange={(event) => { setContent(event.target.value); setCopyStatus("idle"); }} rows={3} placeholder="例：口コミ数をONにしましたが表示されません。確認をお願いします。" />
+        </label>
+        {copyStatus === "copied" ? <div className="notice-box">問い合わせ内容をコピーしました。上記の連絡手段でお送りください。</div> : null}
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={onClose}>閉じる</button>
+          <button type="button" className="primary-button" onClick={handleCopy}>問い合わせ内容をコピー</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function FaqPage() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [showContactModal, setShowContactModal] = useState(false);
 
   const itemsByCategory = useMemo(() => {
     const query = normalizeSearchText(searchQuery).trim();
@@ -79,8 +157,10 @@ export default function FaqPage() {
 
       <section className="panel">
         <p className="helper-text">解決しませんでしたか？</p>
-        <p>お手数ですが、管理者へお問い合わせください。</p>
+        <button type="button" className="secondary-button" onClick={() => setShowContactModal(true)}>管理者に問い合わせる</button>
       </section>
+
+      {showContactModal ? <ContactModal onClose={() => setShowContactModal(false)} /> : null}
     </div>
   );
 }
