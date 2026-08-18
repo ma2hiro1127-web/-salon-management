@@ -931,9 +931,14 @@ export const getBusinessDaySummary = (state, storeId, monthValue) => {
   );
 
   // 店休日は営業完了数に含めない(要件11)。
-  const closedDateList = Object.entries(closingMap)
+  const closingBasedClosedDates = Object.entries(closingMap)
     .filter(([date, isClosed]) => Boolean(isClosed) && String(date).startsWith(`${monthValue}-`) && dailyEntryDates.has(String(date)) && !holidayDateSet.has(String(date)))
-    .map(([date]) => String(date))
+    .map(([date]) => String(date));
+  // まとめて入力で反映された日も「入力済み・完了」として営業進捗に数える(要件17)。
+  // getBatchAllocatedEntries自体が店休日・既存の実日次データを既に除外して計算するため、
+  // ここで追加のフィルタは不要 — 単純に和集合を取るだけでよい。まとめ入力を使っていない
+  // 店舗はこの集合が常に空なので、既存店舗のcompletedDays/progressRateは一切変わらない。
+  const closedDateList = [...new Set([...closingBasedClosedDates, ...getBatchAllocatedDatesSet(state, storeId, monthValue)])]
     .sort((a, b) => a.localeCompare(b));
 
   return {
@@ -1042,6 +1047,77 @@ export const getBusinessDayDatesInRange = (state, storeId, startDate, endDate) =
   }
   return dates;
 };
+
+// まとめて入力の期間合計を「その日その日の実績」としてカレンダー・営業進捗・日次入力の
+// 閲覧専用表示に使えるよう、その都度(店休日設定・既存の実日次入力・他のまとめ入力の状況に
+// 応じて)動的に配分する。結果はDBへは一切保存しない — 店休日設定が変わるたびに常に最新の
+// 状態から計算し直されるため、明示的な「再計算トリガー」を書く必要がない(要件5・6・8は
+// この関数を都度呼ぶだけで自動的に満たされる)。月間合計(calculateMonthSummaryのsales等)は
+// この配分結果からではなく、daily_batch_entriesの期間合計を直接合算する既存ロジックのまま
+// なので、配分ロジックのどんな計算結果も月間合計には一切影響しない(要件18の核心的な保証)。
+//
+// 最大剰余法(largest remainder method): 合計を日数で割った商を全日に配り、割り切れない
+// 余りを日付の早い方から1ずつ追加で配る。客数31人/10日なら3人×9日+4人×1日のように、
+// 分配後の合計が必ず元の合計と一致する(要件6・11)。金額もこのアプリでは常に整数円のため
+// 同じロジックを使う。
+const distributeIntegerAcrossDates = (total, dateCount) => {
+  if (!Number.isFinite(total) || dateCount <= 0) return [];
+  const sign = total < 0 ? -1 : 1;
+  const absTotal = Math.abs(Math.round(total));
+  const base = Math.floor(absTotal / dateCount);
+  const remainder = absTotal - base * dateCount;
+  return Array.from({ length: dateCount }, (_, index) => sign * (base + (index < remainder ? 1 : 0)));
+};
+
+const BATCH_ALLOCATABLE_FIELDS = ["totalSales", "technicalSales", "retailSales", "otherSales", "customers", "newCustomers", "repeatCustomers", "reviewCount", "cashAmount", "cashlessAmount", "pointAmount"];
+
+// 対象店舗・対象月のまとめ入力すべてを、日別の「配分エントリ」の配列へ展開する。
+// isBatchDerived: true と batchEntryId を必ず持たせる(要件2: どのまとめ入力由来かを
+// 常に追跡できるようにする)。
+//   - 開始日が早い(同じ日ならid順)まとめ入力から順に処理し、後続のまとめ入力は既に
+//     「claimed」された日付を対象から除外する(要件14: まとめ入力同士の二重計上防止)。
+//   - 実日次入力(dailyResults)が既にある日付は最初から候補に含めない(要件12・13:
+//     既存データを保護)。
+//   - getBusinessDayDatesInRange自体が店休日カレンダーを除外するため、店休日は候補にすら
+//     入らない(要件5・7: 店休日には0円/0人を割り当てず、対象外として扱う)。
+export const getBatchAllocatedEntries = (state, storeId, monthValue) => {
+  const batchEntries = [...getBatchEntriesForStoreMonth(state, storeId, monthValue)]
+    .sort((a, b) => String(a.startDate).localeCompare(String(b.startDate)) || String(a.id).localeCompare(String(b.id)));
+  if (!batchEntries.length) return [];
+
+  const realEntryDates = new Set(getDailyResultsForStoreMonth(state, storeId, monthValue).map((entry) => String(entry?.date || "")).filter(Boolean));
+  const claimedDates = new Set();
+  const allocated = [];
+
+  batchEntries.forEach((entry) => {
+    const candidateDates = getBusinessDayDatesInRange(state, storeId, entry.startDate, entry.endDate)
+      .filter((date) => !realEntryDates.has(date) && !claimedDates.has(date));
+    if (!candidateDates.length) return;
+
+    const perFieldDistribution = {};
+    BATCH_ALLOCATABLE_FIELDS.forEach((field) => {
+      const value = entry[field];
+      perFieldDistribution[field] = value === null || value === undefined
+        ? candidateDates.map(() => null)
+        : distributeIntegerAcrossDates(value, candidateDates.length);
+    });
+
+    candidateDates.forEach((date, index) => {
+      claimedDates.add(date);
+      const dayEntry = { date, batchEntryId: entry.id, isBatchDerived: true };
+      BATCH_ALLOCATABLE_FIELDS.forEach((field) => {
+        dayEntry[field] = perFieldDistribution[field][index];
+      });
+      allocated.push(dayEntry);
+    });
+  });
+
+  return allocated;
+};
+
+// カレンダー・営業進捗など、日付集合だけあれば十分な用途向けの軽量版。
+export const getBatchAllocatedDatesSet = (state, storeId, monthValue) =>
+  new Set(getBatchAllocatedEntries(state, storeId, monthValue).map((entry) => entry.date));
 
 export const normalizeObjectMap = (value) => {
   if (!value || typeof value !== "object") return {};
@@ -1433,12 +1509,15 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const repeatCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.repeatCustomers || 0), 0) + batchRepeatCustomers;
   const reviewCount = effectiveEntries.reduce((total, item) => total + parseNumber(item.reviewCount || 0), 0) + batchReviewCount;
 
-  // 「実績が存在する営業日数」(要件14・15の平均・月末着地予測用)。既存のcompletedDays
-  // (日締め済みの日だけ)とは別の並行概念 — 日次入力がある日(日締め有無は問わない) ∪
-  // まとめ入力期間のうち売上系項目が1つでも入っているものの営業日、を重複なく数える。
-  // pace/forecast/completedDays/averageDailySales(既存フィールド)はこの下で一切変更しない。
-  const dailyEntryDateSet = new Set(effectiveEntries.map((entry) => String(entry?.date || "")).filter(Boolean));
-  const salesResultDateSet = new Set(dailyEntryDateSet);
+  // 「まとめ入力の実績が存在する営業日数」。completedDays(下のbusinessDaySummary.completedDays)
+  // は今回からgetBatchAllocatedDatesSet経由でまとめ入力の日を直接含むようになった(要件17)ため、
+  // 通常はこちらの値と一致する。ただし「店休日・既存の実日次入力と衝突して1日も配分できな
+  // かった」極端なケースでは配分結果(completedDays)が0のままになりうるため、その時だけの
+  // フォールバック用に、まとめ入力が対象としている期間そのもの(配分の成否に関わらない)を
+  // 別途数えておく。実日次入力(dailyEntryDateSet)は意図的に含めない — 含めてしまうと、
+  // まとめ入力を一切使わず日締めもまだしていない普通の店舗まで、この後のdisplayForecast
+  // フォールバックが発動して見た目が変わってしまうため。
+  const salesResultDateSet = new Set();
   batchEntries.forEach((batchEntry) => {
     const hasSalesData = batchEntry.totalSales !== null || batchEntry.technicalSales !== null || batchEntry.retailSales !== null || batchEntry.otherSales !== null;
     if (!hasSalesData) return;
@@ -1527,7 +1606,12 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const dailyNeededSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const closedDateSet = new Set(businessDaySummary.closedDates || []);
   const closedEntries = effectiveEntries.filter((entry) => closedDateSet.has(String(entry?.date || "")));
-  const closedSales = closedEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0);
+  // まとめて入力の日もcompletedDays(businessDaySummary.closedDates)に含まれるようになった
+  // (要件17)。分子(closedSales)にまとめ入力分を入れないとpace/forecastが薄まってしまう
+  // ため、既に計算済みのbatchSales(期間合計そのもの、配分結果からの再集計ではない)を
+  // そのまま足す。これはsales本体に足しているのと同じ値・同じ考え方(要件18: 配分ロジックが
+  // 月間合計/pace計算に独自の数字を持ち込まない)。
+  const closedSales = closedEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0) + batchSales;
   const pace = completedDays > 0 ? closedSales / completedDays : 0;
   const forecast = completedDays > 0 && businessDaySummary.businessDayCount ? pace * businessDaySummary.businessDayCount : 0;
   const averageSales = effectiveEntries.length > 0 ? sales / effectiveEntries.length : 0;
@@ -1679,7 +1763,9 @@ export const getMonthClosingChecklist = (state, storeId, monthValue, options = {
   const hiddenSet = new Set(Array.isArray(options.hiddenCategories) ? options.hiddenCategories : []);
   const allCostItems = costCategoryKeys.map(({ key, label }) => ({ key, label, entered: Boolean(summary.categoryHasEntry[key]), categoryKey: key }));
   const items = [
-    { key: "sales", label: "売上", entered: summary.entries.length > 0, categoryKey: null },
+    // まとめて入力だけで売上が登録されている月(通常の日次入力が1件も無い月)を「未入力」と
+    // 誤判定しないよう、まとめ入力の有無も見る。
+    { key: "sales", label: "売上", entered: summary.entries.length > 0 || summary.batchEntries.length > 0, categoryKey: null },
     ...allCostItems.filter((item) => !hiddenSet.has(item.key)),
   ];
   return {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -2186,28 +2186,46 @@ test("getBusinessDayDatesInRange: 明示的な店休日カレンダーが設定�
   assert.deepEqual(dates, ["2026-08-01", "2026-08-02", "2026-08-05"]);
 });
 
-test("要件14・15: 日締めが1件も無い(completedDays=0)店舗でも、まとめ入力の実績があればforecast/averageDailySalesが0(異常値)にならない", () => {
+test("要件17: まとめて入力の日は日締めが無くてもcompletedDays(営業進捗)に含まれ、forecast/averageDailySalesが0(異常値)にならない", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   const month = "2026-08";
   const key = `${store}__${month}`;
-  // 店休日カレンダーを設定して営業日数を確定させる(31日中、土日等の除外は無いのでbusinessDayCount=31のまま — 明示的な店休日を1件も設定しない場合の既存fallback)。
   state.dailyBatchEntries[key] = [
     { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
   ];
   const summary = calculateMonthSummary(state, store, month);
-  // 日締めが無いので既存のpace/forecast/averageDailySalesは0のまま(変更しない、という要件)。
-  assert.equal(summary.completedDays, 0);
-  assert.equal(summary.forecast, 0);
-  assert.equal(summary.averageDailySales, 0);
-  // だが実績カバー日数(10日、まとめ入力の期間内営業日)を分母にした新フィールドは0円にならない。
-  assert.equal(summary.resultsCoverageBusinessDays, 10);
-  assert.equal(summary.averageSalesPerResultDay, 100000); // 1000000 / 10
-  assert.ok(summary.forecastByResults > 0);
-  // UI表示用のdisplayForecast/displayAverageDailySalesは、completedDaysが0でも実績があれば
-  // フォールバックし、既存のforecast/averageDailySales自体は変更しない。
-  assert.equal(summary.displayAverageDailySales, summary.averageSalesPerResultDay);
-  assert.equal(summary.displayForecast, summary.forecastByResults);
+  // まとめ入力の10日分がcompletedDaysに直接含まれる(要件17: 営業進捗に「完了」として反映)。
+  assert.equal(summary.completedDays, 10);
+  // pace/forecast/averageDailySalesは既存の計算式のまま(completedDaysが増えたことで自動的に
+  // 正しい値になる — 別のフォールバック値を経由しない)。
+  assert.equal(summary.averageDailySales, 100000); // 1000000 / 10
+  assert.ok(summary.forecast > 0);
+  assert.equal(summary.displayForecast, summary.forecast);
+  assert.equal(summary.displayAverageDailySales, summary.averageDailySales);
+});
+
+test("フォールバック(要件12・13・18の周辺ケース): まとめ入力の対象期間が全て既存の実日次データと重なり1日も配分できなかった場合でも、月間合計(sales)は既存データ+まとめ入力分で維持されつつdisplayForecastが0円にならない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  // 8/1〜8/3は全て既存の実日次データ(未日締め)で埋まっている → まとめ入力はこの3日を
+  // 配分対象から除外する(要件12・13: 既存データを保護)。
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 10000 },
+    { date: "2026-08-02", totalSales: 10000 },
+    { date: "2026-08-03", totalSales: 10000 },
+  ];
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-03", totalSales: 300000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 330000); // 30000(既存) + 300000(まとめ入力の期間合計、配分の成否に関わらず維持) — 要件18
+  assert.equal(summary.completedDays, 0); // 配分できる日が無いのでcompletedDaysは増えない(既存の3日も未日締めのため)
+  assert.equal(summary.forecast, 0); // 既存のforecastは変更しない
+  assert.ok(summary.resultsCoverageBusinessDays > 0); // まとめ入力自体の対象日数(3日)は数えている
+  assert.ok(summary.displayForecast > 0); // フォールバックにより異常値(0円)にはならない
 });
 
 test("calculateAllStoresMonthSummary: 各店舗のまとめ入力を正しく合算し、resultsCoverageBusinessDaysも店舗横断で合算する", () => {
@@ -2225,4 +2243,154 @@ test("calculateAllStoresMonthSummary: 各店舗のまとめ入力を正しく合
   ];
   const summary = calculateAllStoresMonthSummary(state, company, month);
   assert.equal(summary.sales, 600000);
+});
+
+// ============================================================
+// まとめて入力: 日別配分(getBatchAllocatedEntries) — カレンダー連動・店休日再配分
+// ============================================================
+
+test("ケース1: 10日間まとめ入力 → 10件の配分エントリが返り、それぞれbatchEntryIdでこのまとめ入力を追跡できる(要件1・2)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const allocated = getBatchAllocatedEntries(state, store, month);
+  assert.equal(allocated.length, 10);
+  assert.ok(allocated.every((entry) => entry.batchEntryId === "b1" && entry.isBatchDerived === true));
+  assert.equal(allocated.reduce((sum, entry) => sum + entry.totalSales, 0), 1000000); // 合計は期間合計と一致
+  // カレンダー用の日付集合にも同じ10日が入る(要件1)。
+  assert.equal(getBatchAllocatedDatesSet(state, store, month).size, 10);
+});
+
+test("ケース3: まとめ入力後に2日を店休日へ変更 → 残り8営業日へ自動再配分され、1日平均が再計算される。期間合計は変わらない(要件5・6・7・9)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const before = getBatchAllocatedEntries(state, store, month);
+  assert.equal(before.length, 10);
+  assert.equal(before.reduce((sum, entry) => sum + entry.totalSales, 0), 1000000);
+
+  // 3日・7日を店休日に変更。
+  state.storeHolidays[key] = ["2026-08-03", "2026-08-07"];
+  const after = getBatchAllocatedEntries(state, store, month);
+  assert.equal(after.length, 8); // 対象営業日8日
+  assert.ok(!after.some((entry) => entry.date === "2026-08-03" || entry.date === "2026-08-07")); // 店休日には割り当てない(0円でもない、要件7)
+  assert.equal(after.reduce((sum, entry) => sum + entry.totalSales, 0), 1000000); // 期間合計は不変(要件18)
+  // 1,000,000 / 8 = 125,000円/日(プランの例と一致)。
+  assert.ok(after.every((entry) => entry.totalSales === 125000));
+});
+
+test("ケース4: 店休日を1日解除 → 再び対象営業日に含まれ、最新の営業日設定を基準に再配分される(要件8)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 900000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  state.storeHolidays[key] = ["2026-08-03", "2026-08-07"];
+  assert.equal(getBatchAllocatedEntries(state, store, month).length, 8);
+
+  // 8/3の店休日を解除。
+  state.storeHolidays[key] = ["2026-08-07"];
+  const after = getBatchAllocatedEntries(state, store, month);
+  assert.equal(after.length, 9); // 対象営業日9日に戻る
+  assert.ok(after.some((entry) => entry.date === "2026-08-03")); // 解除した日が対象に戻っている
+  assert.equal(after.reduce((sum, entry) => sum + entry.totalSales, 0), 900000); // 合計は不変
+});
+
+test("ケース6・要件12・13: 期間内に既存の実日次入力がある日は配分対象から除外され、残りの日数で再配分される(既存データは上書きしない)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  // 5日は既に実日次入力済み。
+  state.dailyResults[key] = [{ date: "2026-08-05", totalSales: 50000, customers: 5 }];
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 900000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const allocated = getBatchAllocatedEntries(state, store, month);
+  assert.equal(allocated.length, 9); // 10日中、既存データがある5日を除いた9日
+  assert.ok(!allocated.some((entry) => entry.date === "2026-08-05")); // 5日はまとめ入力の対象外
+  assert.equal(allocated.reduce((sum, entry) => sum + entry.totalSales, 0), 900000); // まとめ入力の期間合計自体は変わらない
+});
+
+test("ケース7・要件14: まとめ入力対象期間が既存の別のまとめ入力と重複しても、同じ日が二重に配分されない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-05", totalSales: 500000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+    { id: "b2", startDate: "2026-08-03", endDate: "2026-08-08", totalSales: 600000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const allocated = getBatchAllocatedEntries(state, store, month);
+  const dates = allocated.map((entry) => entry.date);
+  // 同じ日付が2回配分されていないこと(気付かないまま二重計上されない、要件14)。
+  assert.equal(new Set(dates).size, dates.length);
+  // 開始日が早いb1(8/1〜8/5)が8/3〜8/5を先に確保し、b2(8/3〜8/8)は残りの8/6〜8/8だけを得る。
+  const b1Dates = allocated.filter((e) => e.batchEntryId === "b1").map((e) => e.date).sort();
+  const b2Dates = allocated.filter((e) => e.batchEntryId === "b2").map((e) => e.date).sort();
+  assert.deepEqual(b1Dates, ["2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04", "2026-08-05"]);
+  assert.deepEqual(b2Dates, ["2026-08-06", "2026-08-07", "2026-08-08"]);
+});
+
+test("ケース8・要件6・11: 客数31人/10日のような割り切れない整数項目は、最大剰余法で合計が31人になるよう配分される(単純に3.1人を保存しない)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: null, technicalSales: null, retailSales: null, otherSales: null, customers: 31, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const allocated = getBatchAllocatedEntries(state, store, month);
+  assert.equal(allocated.length, 10);
+  const customerCounts = allocated.map((entry) => entry.customers);
+  assert.ok(customerCounts.every((count) => Number.isInteger(count))); // 全て整数(3.1人のような小数は無い)
+  assert.equal(customerCounts.reduce((sum, count) => sum + count, 0), 31); // 合計は必ず31人
+  assert.equal(customerCounts.filter((count) => count === 4).length, 1); // 4人の日が1日
+  assert.equal(customerCounts.filter((count) => count === 3).length, 9); // 3人の日が9日
+});
+
+test("要件4: まとめ入力を削除する(=配列から取り除く)と、その回のまとめ入力分だけが配分対象から消え、対象日は通常の日次入力ができる状態に戻る", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = buildMonthKey(store, month);
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-05", totalSales: 500000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+    { id: "b2", startDate: "2026-08-11", endDate: "2026-08-15", totalSales: 400000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  assert.equal(getBatchAllocatedEntries(state, store, month).length, 10); // 5日+5日
+
+  // b1だけ削除。
+  state.dailyBatchEntries[key] = state.dailyBatchEntries[key].filter((entry) => entry.id !== "b1");
+  const afterDelete = getBatchAllocatedEntries(state, store, month);
+  assert.equal(afterDelete.length, 5); // b2の5日だけ残る
+  assert.ok(afterDelete.every((entry) => entry.batchEntryId === "b2"));
+  // b1が占有していた8/1〜8/5は、getBatchAllocatedDatesSetからも消えている(=通常の日次入力ができる状態に戻る)。
+  const dateSet = getBatchAllocatedDatesSet(state, store, month);
+  assert.ok(!dateSet.has("2026-08-01"));
+  assert.ok(!dateSet.has("2026-08-05"));
+});
+
+test("getBusinessDaySummary: まとめ入力を使わない店舗の既存挙動は完全に無変更(まとめ入力データが無ければcompletedDaysは従来通り)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.businessDaySettings[key] = { holidayCount: 2, mode: "auto" };
+  state.dailyResults[key] = [{ id: "e1", date: "2026-08-01", totalSales: 10000 }];
+  state.dayClosingStates[key] = { "2026-08-01": true };
+  const summary = getBusinessDaySummary(state, store, month);
+  assert.equal(summary.businessDayCount, 29);
+  assert.equal(summary.completedDays, 1);
+  assert.equal(summary.remainingBusinessDays, 28);
 });

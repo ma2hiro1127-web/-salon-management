@@ -56,7 +56,14 @@
 // (company.name === store.nameの場合に同じ文字列が2回表示されていた)。加盟店欄は自社
 // 店舗と同じく店舗名だけを表示するよう変更。company_id/store_id/加盟店関係/承認状態/
 // 売上データ等には一切影響しない表示専用の修正。
-const CACHE_NAME = 'salon-manager-cache-v18';
+// v19: まとめて入力をカレンダー・営業進捗・日次入力と正式に連動。期間合計(daily_batch_entries)
+// はDB保存のまま変更せず、日別の「配分」は店休日・既存の実日次入力・他のまとめ入力を踏まえて
+// その都度メモリ内で再計算する(getBatchAllocatedEntries、新テーブルは作らない)。まとめ入力の
+// 日はカレンダーで緑表示・営業進捗の完了日数に算入され、日次入力画面からは閲覧専用(編集は
+// 「まとめて入力」側のみ)になる。店休日に変更した日は自動的に配分対象から除外され、残りの
+// 営業日へ最大剰余法で再配分される(期間合計・月間合計は常に不変)。「まとめて入力を保存
+// しました」等の成功バナーは削除(エラー・削除確認は維持)。
+const CACHE_NAME = 'salon-manager-cache-v19';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

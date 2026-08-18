@@ -22,6 +22,7 @@ import {
   buildDailyBatchEntryPayload,
   dailyBatchEntryRowToEntry,
   getBatchEntriesForStoreMonth,
+  getBatchAllocatedEntries,
   detectBatchEntryFieldOverlap,
   dailySalesRowToEntry,
   buildMonthClosingStateFromRows,
@@ -1608,6 +1609,17 @@ function App() {
   // まとめて入力の一覧(この店舗・この対象月分)。dailyEntriesとは別配列 — 日別データへは
   // 一切混ぜない(要件3)。
   const batchEntries = useMemo(() => getBatchEntriesForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  // まとめて入力の期間合計を、店休日・既存の実日次入力を踏まえて日別に動的配分した結果
+  // (DBには保存しない、その都度の計算 — storage.jsのgetBatchAllocatedEntries参照)。
+  // カレンダーの緑表示・営業進捗・日次入力画面の閲覧専用表示、この3箇所で共通して使う。
+  const batchAllocatedEntries = useMemo(() => getBatchAllocatedEntries(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  // 現在選択中の日付がまとめて入力で埋まっているかどうか(要件3: 日次入力からは編集不可・
+  // 閲覧のみにする対象日の判定)。
+  const dailyDateBatchAllocation = useMemo(
+    () => (dailyForm.date ? batchAllocatedEntries.find((entry) => entry.date === dailyForm.date) || null : null),
+    [batchAllocatedEntries, dailyForm.date]
+  );
+  const isDailyDateBatchLocked = Boolean(dailyDateBatchAllocation);
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を
@@ -4553,6 +4565,13 @@ function App() {
       if (!silent) setNotice("加盟店データは閲覧のみです（編集・保存はできません）");
       return { ok: false, skipped: true };
     }
+    // まとめて入力で埋まっている日は日次入力から保存できない(要件3)。UI側(ボタンの
+    // disabled・フォームの閲覧専用表示)に加え、オートセーブ等どの経路から呼ばれても
+    // 確実にブロックする最終防御(店休日チェックと同じパターン)。
+    if (isDailyDateBatchLocked) {
+      if (!silent) setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
+      return { ok: false, skipped: true };
+    }
     if (!selectedStore) {
       if (!silent) {
         setNotice("店舗を先に追加してください");
@@ -4818,9 +4837,10 @@ function App() {
           dailyBatchEntries: { ...prev.dailyBatchEntries, [key]: [...currentList, savedEntry] },
         };
       });
-      const successMessage = batchEditId ? "まとめて入力の内容を更新しました" : "まとめて入力を保存しました";
-      setBatchFormStatus({ status: "saved", message: successMessage });
-      setNotice(successMessage);
+      // 保存成功時のバナー通知は出さない(要件19-22: 通常の保存成功は画面上部の常設通知
+      // ではなく、一覧に反映される・フォームが閉じる、といった自然な変化で分かるようにする
+      // というUIルール)。失敗時のエラー通知だけは維持する(下のcatch節)。
+      setBatchFormStatus({ status: "idle", message: "" });
       resetBatchForm();
     } catch (error) {
       const reason = getSupabaseErrorMessage(error);
@@ -4846,7 +4866,8 @@ function App() {
         ...prev,
         dailyBatchEntries: { ...prev.dailyBatchEntries, [key]: (prev.dailyBatchEntries?.[key] || []).filter((item) => item.id !== entry.id) },
       }));
-      setNotice("まとめて入力を削除しました");
+      // 削除確認(上のwindow.confirm)は維持しつつ、削除成功のバナー通知は出さない(要件19-22)。
+      // 一覧からその行が消えることで削除できたことが自然に分かる。
       if (batchEditId === entry.id) resetBatchForm();
     } catch (error) {
       setNotice(`削除に失敗しました: ${getSupabaseErrorMessage(error)}`);
@@ -5199,6 +5220,19 @@ function App() {
       return;
     }
 
+    // まとめて入力で埋まっている日はdailyResultsに実データが無い(要件3: 日別データへ分割
+    // しないため)。ここで日付が一致する配分結果を探し、あればその値を表示専用として
+    // dailyFormへ読み込む(dailyModeは常にview固定 — isDailyDateBatchLockedが編集系の
+    // 各ハンドラをガードする)。
+    const batchAllocation = batchAllocatedEntries.find((entry) => entry.date === nextDate) || null;
+    if (batchAllocation) {
+      setDailyForm({ ...defaultDailyEntry, ...batchAllocation, date: nextDate });
+      setDailyMode("view");
+      setDailyOriginalEntry(null);
+      setDailyInsight("");
+      return;
+    }
+
     setDailyForm({ ...defaultDailyEntry, date: nextDate });
     setDailyMode("create");
     setDailyOriginalEntry(null);
@@ -5215,6 +5249,10 @@ function App() {
   };
 
   const startNewDailyEntry = () => {
+    if (isDailyDateBatchLocked) {
+      setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
+      return;
+    }
     const defaultValue = { ...defaultDailyEntry, date: dailyForm.date || "" };
     setDailyForm(defaultValue);
     setDailyMode("create");
@@ -5223,6 +5261,10 @@ function App() {
   };
 
   const editDailyEntry = () => {
+    if (isDailyDateBatchLocked) {
+      setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
+      return;
+    }
     if (!dailyForm.id) {
       setNotice("編集対象のデータがありません");
       return;
@@ -5776,6 +5818,10 @@ function App() {
 
   const toggleDayClosing = async () => {
     if (guardFranchiseReadOnly()) return;
+    if (isDailyDateBatchLocked) {
+      setNotice("この日はまとめて入力で反映されています。日締めは通常の日次入力のみが対象です。");
+      return;
+    }
     if (!selectedStore || !dailyForm.date) {
       setNotice("締め対象の日付を入力してください");
       return;
@@ -6452,21 +6498,34 @@ function App() {
                       <h3>{formatMonthLabel(selectedMonth)}のまとめて入力一覧</h3>
                       {batchEntries.length ? (
                         <div className="stack">
-                          {[...batchEntries].sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))).map((entry) => (
-                            <div key={entry.id} className="preview-card">
-                              <strong>{entry.startDate} 〜 {entry.endDate}（まとめて入力）</strong>
-                              <small>
-                                {entry.totalSales !== null ? `総売上 ${money(entry.totalSales)} ` : ""}
-                                {entry.customers !== null ? `客数 ${entry.customers}名 ` : ""}
-                                {entry.reviewCount !== null ? `口コミ ${entry.reviewCount}件 ` : ""}
-                                {entry.cashAmount !== null || entry.cashlessAmount !== null || entry.pointAmount !== null ? "日計あり" : ""}
-                              </small>
-                              <div className="button-row">
-                                <button className="text-button" type="button" onClick={() => handleEditBatchEntry(entry)}>編集</button>
-                                <button className="text-button" type="button" onClick={() => handleDeleteBatchEntry(entry)}>削除</button>
+                          {[...batchEntries].sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))).map((entry) => {
+                            // 配分対象営業日数(要件9: 実際に配分された営業日数を分母にした
+                            // 1日平均)。店休日・既存の実日次入力・他のまとめ入力と重複して
+                            // 除外された日は含まれない — getBatchAllocatedEntriesの結果を
+                            // そのまま数えるだけで、ここでは独自の日数計算をしない。
+                            const allocatedForThisEntry = batchAllocatedEntries.filter((item) => item.batchEntryId === entry.id);
+                            const allocatedDayCount = allocatedForThisEntry.length;
+                            return (
+                              <div key={entry.id} className="preview-card">
+                                <strong>{entry.startDate} 〜 {entry.endDate}（まとめて入力）</strong>
+                                <small>
+                                  {entry.totalSales !== null ? `総売上 ${money(entry.totalSales)} ` : ""}
+                                  {entry.customers !== null ? `客数 ${entry.customers}名 ` : ""}
+                                  {entry.reviewCount !== null ? `口コミ ${entry.reviewCount}件 ` : ""}
+                                  {entry.cashAmount !== null || entry.cashlessAmount !== null || entry.pointAmount !== null ? "日計あり" : ""}
+                                </small>
+                                <small>
+                                  配分対象営業日数 {allocatedDayCount}日
+                                  {entry.totalSales !== null && allocatedDayCount > 0 ? `（1日平均 ${money(Math.round(entry.totalSales / allocatedDayCount))}）` : ""}
+                                  {allocatedDayCount === 0 ? "（店休日・既存データ等と重複し、現在配分できる日がありません）" : ""}
+                                </small>
+                                <div className="button-row">
+                                  <button className="text-button" type="button" onClick={() => handleEditBatchEntry(entry)}>編集</button>
+                                  <button className="text-button" type="button" onClick={() => handleDeleteBatchEntry(entry)}>削除</button>
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <p className="helper-text">この月のまとめて入力はまだありません。</p>
@@ -6536,15 +6595,20 @@ function App() {
                   ) : null}
 
                   <div className="button-row">
-                    <button className="secondary-button" type="button" onClick={startNewDailyEntry}>新規入力</button>
-                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff}>編集</button>
+                    <button className="secondary-button" type="button" onClick={startNewDailyEntry} disabled={isDailyDateBatchLocked}>新規入力</button>
+                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff || isDailyDateBatchLocked}>編集</button>
                     <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff || isDailyDateBatchLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
                   </div>
 
                   {isDailyFormDateHoliday ? (
                     <div className="notice-box">
                       この日（{dailyForm.date}）は店休日です。日次入力・保存・日締めはできません。
+                    </div>
+                  ) : null}
+                  {isDailyDateBatchLocked ? (
+                    <div className="notice-box">
+                      この日はまとめて入力（{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.startDate : ""}〜{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.endDate : ""}の期間）で反映されています。編集・削除は「まとめて入力」から行ってください。
                     </div>
                   ) : null}
                   {isDailyEntryLockedForStaff ? (
