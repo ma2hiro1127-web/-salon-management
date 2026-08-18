@@ -6120,6 +6120,11 @@ function App() {
                     {showCustomersField ? (
                       <div className="daily-section-card">
                         <h3>客数</h3>
+                        {/* 総売上と同じ考え方: 入力項目(新規・再来)を先に並べ、自動合計される
+                            客数は結果として一番下に置く(要件: どこが入力でどこが自動計算か
+                            直感的に分かるように)。 */}
+                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
                         {customersIsAutoCalculated ? (
                           <div className="summary-card compact">
                             <span>客数</span>
@@ -6128,8 +6133,6 @@ function App() {
                         ) : (
                           <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric />
                         )}
-                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
-                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
                       </div>
                     ) : null}
 

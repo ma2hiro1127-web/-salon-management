@@ -24,7 +24,8 @@
 // が加盟店自身の過去スナップショットからisViewingFranchiseを誤って引き継いでいたバグ)。
 // v10: 会社管理画面の是正 — 会社カードから重複していた「管理者を招待」導線を削除、
 // 無料利用理由変更に成功通知を追加、system_admin付与を通常のユーザー招待から除外。
-const CACHE_NAME = 'salon-manager-cache-v10';
+// v11: 日次入力画面の客数カードの並びを、新規客数→再来客数→客数(自動合計)に変更。
+const CACHE_NAME = 'salon-manager-cache-v11';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
