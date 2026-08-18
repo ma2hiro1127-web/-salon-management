@@ -6108,11 +6108,16 @@ function App() {
                 行き来できる。自社欄はhomeStoresForDropdown(閲覧状態に左右されない、
                 常に本社を指す参照)から描画するため、加盟店を開いた後も消えない。
                 加盟店側は"──── 加盟店 ────"という視覚的な区切り(optgroup)の下に、
-                会社名+店舗名で店舗単位で列挙する(自社店舗と同じ「1店舗を選ぶ」扱いにする
-                ため — 会社単位で1行にして全店舗ビューを開く仕様だと、損益表・月締め・
-                費用入力等の単一店舗前提ページが軒並み弾かれてしまっていた)。承認済み
-                (status='approved')の連携だけが対象のため、pending/rejected/disconnectedの
-                加盟店はここに一切出てこない。 */}
+                店舗単位で列挙する(自社店舗と同じ「1店舗を選ぶ」扱いにするため — 会社単位で
+                1行にして全店舗ビューを開く仕様だと、損益表・月締め・費用入力等の単一店舗
+                前提ページが軒並み弾かれてしまっていた)。ラベルは自社店舗の並びと揃えて
+                店舗名だけを表示する(会社名は付けない) — 会社名と店舗名を連結すると、
+                会社名と店舗名が同じ加盟店(例: 会社「INTRO」の店舗「INTRO」)で
+                「INTRO INTRO」のように二重表示になってしまうため。valueには
+                `__franchise__:companyId:storeId`を使うので、会社名を表示に含めなくても
+                どの会社のどの店舗かは内部的に正しく特定できる。承認済み(status='approved')
+                の連携だけが対象のため、pending/rejected/disconnectedの加盟店はここに
+                一切出てこない。 */}
             <label>
               店舗
               <select
@@ -6125,7 +6130,7 @@ function App() {
                 {viewableFranchisePartnerStores.length > 0 ? (
                   <optgroup label="──── 加盟店 ────">
                     {viewableFranchisePartnerStores.map((item) => (
-                      <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.companyName} {item.storeName}</option>
+                      <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.storeName}</option>
                     ))}
                   </optgroup>
                 ) : null}
@@ -6563,7 +6568,7 @@ function App() {
                           {viewableFranchisePartnerStores.length > 0 ? (
                             <optgroup label="──── 加盟店 ────">
                               {viewableFranchisePartnerStores.map((item) => (
-                                <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.companyName} {item.storeName}</option>
+                                <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.storeName}</option>
                               ))}
                             </optgroup>
                           ) : null}

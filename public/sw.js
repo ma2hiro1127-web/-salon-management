@@ -51,7 +51,12 @@
 // 未入力項目は0として保存せず、月間集計(calculateMonthSummary/calculateAllStoresMonthSummary)
 // にだけ非破壊的に加算する — 日別データ(dailyResults)・目標・営業日設定・日締めは一切
 // 変更しない。既存の日次入力機能自体は無変更。
-const CACHE_NAME = 'salon-manager-cache-v17';
+// v18: 加盟店の店舗名が「INTRO INTRO」のように二重表示される不具合を修正。原因は店舗
+// レコードの重複ではなく、店舗切替の<option>ラベルが会社名+店舗名を連結していたこと
+// (company.name === store.nameの場合に同じ文字列が2回表示されていた)。加盟店欄は自社
+// 店舗と同じく店舗名だけを表示するよう変更。company_id/store_id/加盟店関係/承認状態/
+// 売上データ等には一切影響しない表示専用の修正。
+const CACHE_NAME = 'salon-manager-cache-v18';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
