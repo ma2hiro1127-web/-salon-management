@@ -33,7 +33,11 @@
 // v13: 総合監査での修正 — 加盟店閲覧中の店舗設定(日次入力項目/月間目標項目/在庫管理/
 // 日計管理)トグルが、保存時にはguardFranchiseReadOnlyで拒否される一方、見た目は編集
 // 可能なままだった不整合を修正(既存の読み取り専用表示分岐に合流)。
-const CACHE_NAME = 'salon-manager-cache-v13';
+// v14: 加盟店に店舗が1件も登録されていない場合にhandleFranchiseViewがALL_STORES_VALUEへ
+// フォールバックしていた経路を修正。0店舗の会社を選んでも自社の全店舗ビューへ移動したり
+// currentCompanyId/isViewingFranchiseを中途半端に切り替えたりせず、現在の表示状態を
+// 一切変更せずに「店舗が登録されていません」と通知するだけにした。
+const CACHE_NAME = 'salon-manager-cache-v14';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

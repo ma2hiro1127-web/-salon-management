@@ -2984,7 +2984,8 @@ function App() {
   // 月締め・費用入力・日次入力などの単一店舗前提ページが軒並み利用できなくなっていた
   // 不具合の修正)。targetStoreIdが渡されればその店舗、渡されなければ(会社単位の
   // 「表示する」ボタン等からの呼び出し)先頭のアクティブ店舗をデフォルトにする —
-  // ALL_STORES_VALUEには決してしない。
+  // ALL_STORES_VALUEには決してしない。加盟店固有の処理ではなく、承認済みのどの会社にも
+  // 同じロジックが適用される(要件: INTRO固有の特別扱いを作らない)。
   const handleFranchiseView = async (partnerCompanyId, targetStoreId) => {
     if (!partnerCompanyId) return;
     if (appState.currentCompanyId === partnerCompanyId && appState.selectedStoreId === targetStoreId) return;
@@ -2995,21 +2996,30 @@ function App() {
         setNotice(getSupabaseErrorMessage(result.error));
         return;
       }
+      const activeFranchiseStores = (result.company.stores || []).filter((store) => store.status !== "archived");
+      // 加盟店にまだ1店舗も登録されていない場合、ALL_STORES_VALUEへフォールバックしたり
+      // currentCompanyId/isViewingFranchise/selectedStoreを中途半端に切り替えたりしない —
+      // 「加盟店を選んだのに全店舗ビューが開く」という誤解を招く上、店舗が無い会社に対して
+      // 全店舗集計・自社データ・別加盟店データを取得しに行く必要も無い。現在の表示状態は
+      // 一切変更せず、通知だけ出して終了する(要件1・2)。
+      if (!activeFranchiseStores.length) {
+        setNotice("この加盟店にはまだ店舗が登録されていません。");
+        return;
+      }
       const homeCompanyId = appState.isViewingFranchise ? appState.homeCompanyIdBeforeFranchiseView : appState.currentCompanyId;
       const alreadyPresent = (appState.companies || []).some((company) => company.id === partnerCompanyId);
       const nextCompanies = alreadyPresent
         ? (appState.companies || []).map((company) => (company.id === partnerCompanyId ? { ...company, ...result.company } : company))
         : [...(appState.companies || []), result.company];
-      const activeFranchiseStores = (result.company.stores || []).filter((store) => store.status !== "archived");
-      const targetStore = (targetStoreId && activeFranchiseStores.find((store) => store.id === targetStoreId)) || activeFranchiseStores[0] || null;
+      const targetStore = (targetStoreId && activeFranchiseStores.find((store) => store.id === targetStoreId)) || activeFranchiseStores[0];
       const nextState = {
         ...appState,
         companies: nextCompanies,
         currentCompanyId: partnerCompanyId,
         isViewingFranchise: true,
         homeCompanyIdBeforeFranchiseView: homeCompanyId,
-        selectedStore: targetStore ? targetStore.name : ALL_STORES_VALUE,
-        selectedStoreId: targetStore ? targetStore.id : "",
+        selectedStore: targetStore.name,
+        selectedStoreId: targetStore.id,
       };
       setAppState(nextState);
       writeAppState(nextState);
