@@ -475,7 +475,7 @@ test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 常に計算
   assert.equal(summary.profitAfterConsumptionTaxReserve, summary.operatingProfit);
 });
 
-test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 引当率が設定されていれば総売上×引当率で計算する", () => {
+test("consumptionTaxReserveAmount: ONの場合、税込対象売上×税率÷(100+税率)で税込売上に含まれる消費税相当額を概算する(不具合修正: 旧実装は誤って売上×税率÷100=税抜換算の税額を計算していた)", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   const month = "2026-08";
@@ -486,8 +486,55 @@ test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 引当率が
 
   const summary = calculateMonthSummary(state, store, month);
 
-  assert.equal(summary.consumptionTaxReserveAmount, 50000); // 1000000 * 5%
-  assert.equal(summary.profitAfterConsumptionTaxReserve, summary.operatingProfit - 50000);
+  assert.equal(summary.consumptionTaxReserveAmount, 47619); // round(1000000 * 5 / 105)
+  assert.equal(summary.profitAfterConsumptionTaxReserve, summary.operatingProfit - 47619);
+});
+
+test("consumptionTaxReserveAmount: ユーザー指定の具体例(税込対象売上2,200,000円・税率10%→引当額200,000円)を再現する", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 2200000 }];
+  state.taxSettings = { ...state.taxSettings, considerConsumptionTax: true, consumptionTaxReserveRate: 10 };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.consumptionTaxReserveAmount, 200000);
+});
+
+test("consumptionTaxReserveAmount: 営業利益が赤字でも引当額を0円にせず、消費税考慮後利益はそのままマイナスで計算する(営業利益・粗利益を基準にした条件分岐は行わない)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  // 経費を売上より大きくして営業利益を赤字にする。
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 2200000 }];
+  state.fixedCosts[key] = [{ id: "rent-1", name: "家賃", categoryKey: "rent", periodType: "ongoing" }];
+  state.costMonthlyAmounts = { [`rent-1__${month}`]: { amount: 2719604 } };
+  state.taxSettings = { ...state.taxSettings, considerConsumptionTax: true, consumptionTaxReserveRate: 10 };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.ok(summary.operatingProfit < 0, "operatingProfit should be negative for this test setup");
+  assert.equal(summary.consumptionTaxReserveAmount, 200000);
+  assert.equal(summary.profitAfterConsumptionTaxReserve, summary.operatingProfit - 200000);
+});
+
+test("consumptionTaxReserveAmount: ONだが税率が未保存(0)の場合は日本の標準税率10%をフォールバックにする(入力欄のプレースホルダーと計算を一致させ、「ONにしても¥0のまま」という不具合の再発を防ぐ)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1100000 }];
+  state.taxSettings = { ...state.taxSettings, considerConsumptionTax: true, consumptionTaxReserveRate: 0 };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.consumptionTaxReserveAmount, 100000); // round(1100000 * 10 / 110)
 });
 
 test("customer target summary returns a safe zero value when no business days remain", () => {

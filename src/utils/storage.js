@@ -1589,11 +1589,23 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const expenseTotal = costOfGoodsSold + laborCost + expenseCost;
   const grossProfit = sales - costOfGoodsSold;
   const operatingProfit = grossProfit - laborCost - expenseCost;
-  // 消費税引当額(概算): 「消費税を考慮する」がOFFでも計算はしておく(引当率が0なら0円になる
-  // だけ)。表示するかどうかはUI側でstate.taxSettings.considerConsumptionTaxにより出し分ける。
-  // 正式な納税額の自動計算ではなく、資金確保用の概算引当(要件17-18)。
-  const consumptionTaxReserveRate = Number(state.taxSettings?.consumptionTaxReserveRate ?? 0);
-  const consumptionTaxReserveAmount = sales * (consumptionTaxReserveRate / 100);
+  // 消費税引当額(概算): 「消費税を考慮する」がONの場合のみ計算する(OFFの場合は計算対象外=0)。
+  // 正式な納税額の自動計算ではなく、資金確保用の概算引当(不具合修正: 権限体系整理の報告後に
+  // 発覚した別件)。売上に占める消費税相当額を概算する式は「対象売上 × 税率 ÷ (100 + 税率)」
+  // (税込売上から逆算する式。誤って「売上 × 税率 ÷ 100」を使うと税抜売上に課税した額になり、
+  // 税込売上を基準にする仕様と食い違う)。基準は当月の対象売上(sales、税込)であり、営業利益・
+  // 粗利益を基準にはしない — 営業利益が赤字でも引当額を0円にせず、そのまま
+  // profitAfterConsumptionTaxReserveへ反映する(赤字だから引当を免除する、という業務ルールは
+  // 存在しない)。税率が未保存(0)のままONにした場合にUI側の入力欄がプレースホルダーとして
+  // 表示する日本の標準税率10%と計算結果が食い違わないよう、同じ「未保存時は10%」という
+  // フォールバックをここでも使う(App.jsx側のtaxSettingsForm初期化と揃える) — これが実際の
+  // 不具合(ONにしても¥0のまま)の根本原因だった: 入力欄は10%を表示するのに計算は未保存の
+  // 0%を参照していたため、ユーザーが「10%に設定した」つもりでも反映されなかった。
+  const considerConsumptionTax = Boolean(state.taxSettings?.considerConsumptionTax);
+  const consumptionTaxReserveRate = Number(state.taxSettings?.consumptionTaxReserveRate) || 10;
+  const consumptionTaxReserveAmount = considerConsumptionTax && consumptionTaxReserveRate > 0
+    ? Math.round((sales * consumptionTaxReserveRate) / (100 + consumptionTaxReserveRate))
+    : 0;
   const profitAfterConsumptionTaxReserve = operatingProfit - consumptionTaxReserveAmount;
 
   const targetSales = parseNumber(target.targetSales);

@@ -7291,8 +7291,8 @@ function App() {
                       <>
                         <div className="inline-form">
                           <label className="field">
-                            <span>消費税引当率（%）</span>
-                            <NumericInput value={taxSettingsForm.consumptionTaxReserveRate} onChange={(value) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: value }))} allowDecimal placeholder="例: 5" />
+                            <span>消費税率（%）</span>
+                            <NumericInput value={taxSettingsForm.consumptionTaxReserveRate} onChange={(value) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: value }))} allowDecimal placeholder="例: 10" />
                           </label>
                           <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>引当率を保存</button>
                         </div>
@@ -8407,7 +8407,7 @@ function App() {
                 </label>
                 {taxSettingsForm.considerConsumptionTax ? (
                   <label className="field">
-                    <span>消費税引当率（%）</span>
+                    <span>消費税率（%）</span>
                     <NumericInput value={taxSettingsForm.consumptionTaxReserveRate} onChange={(value) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: value }))} allowDecimal placeholder="例: 10" />
                   </label>
                 ) : null}
