@@ -1398,6 +1398,24 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewableFranchisePartnerCompanies]);
 
+  // 店舗プルダウンで加盟店を「店舗単位」で選べるようにする展開版(加盟店選択時の全店舗
+  // ビュー誤判定の修正)。以前は会社単位で1行だけ表示し、選ぶと必ずその加盟店の
+  // 「全店舗」ビュー(ALL_STORES_VALUE)を開いていたが、損益表・月締め・費用入力・
+  // 日次入力など単一店舗を前提にしたページが軒並み「全店舗ビューでは利用できません」で
+  // 弾いてしまっていた。isAllStoresViewはselectedStore === ALL_STORES_VALUEという単一の
+  // 判定式(このファイル内で1箇所)から導かれるため、加盟店を開いた時点でselectedStoreに
+  // 必ず実際の店舗名を入れてしまえば、ページ側を個別に直さなくても全ページが自動的に
+  // 「通常の店舗ビュー」として扱われる(要件: 画面ごとの個別修正ではなく共通判定の修正)。
+  // 各加盟店のstores(loadFranchiseCompanyMetadataで先読み済み、上のuseEffect参照)を
+  // 展開して1店舗1行にする。
+  const viewableFranchisePartnerStores = useMemo(() => {
+    return viewableFranchisePartnerCompanies.flatMap((item) => {
+      const company = (appState.companies || []).find((c) => c.id === item.companyId);
+      const stores = (company?.stores || []).filter((store) => store.status !== "archived");
+      return stores.map((store) => ({ ...item, storeId: store.id, storeName: store.name }));
+    });
+  }, [viewableFranchisePartnerCompanies, appState.companies]);
+
   // ログインユーザー本来の所属会社(本社)の店舗一覧。isViewingFranchise中でもcurrentCompanyId
   // ではなくmyCompanyIdを常に参照する — currentCompanyStores/visibleStoresは「今表示中の
   // 会社」の店舗一覧なので、加盟店を閲覧中はそちらが加盟店の店舗にすり替わってしまい、
@@ -1412,11 +1430,12 @@ function App() {
   const homeStoresForDropdown = appState.isViewingFranchise ? homeCompanyStores : visibleStores;
 
   // 店舗切替一覧の統合ハンドラ。value形式: 自社店舗は既存通り店舗名そのまま、加盟店は
-  // "__franchise__:companyId"というマーカー付き値にする(会社単位のみ、個別店舗の選択肢は
-  // 無い — 選ぶと必ずその加盟店の全店舗ビューを開く)。
+  // "__franchise__:companyId:storeId"というマーカー付き値にする(店舗単位 — 自社店舗選択
+  // と同じ「1店舗を選んでいる状態」として扱い、全店舗ビューにはしない)。
   const handleUnifiedStoreSwitch = async (value) => {
     if (value.startsWith("__franchise__:")) {
-      await handleFranchiseView(value.slice("__franchise__:".length));
+      const [franchiseCompanyId, franchiseStoreId] = value.slice("__franchise__:".length).split(":");
+      await handleFranchiseView(franchiseCompanyId, franchiseStoreId);
       return;
     }
     if (appState.isViewingFranchise) {
@@ -2961,11 +2980,14 @@ function App() {
   // 実データ取得を即座に(待ち時間・エラーをこの関数内でハンドリングできる形で)行う。
   // companySnapshots(applyCompanySnapshot)は使わない — 加盟店側のUI選択状態を自社の
   // companySnapshotsへ混ぜたくないため。
-  // 加盟店は店舗プルダウン上では会社単位1行のみ(個別店舗は列挙しない)なので、選ぶと必ず
-  // その加盟店の「全店舗」ビュー(ALL_STORES_VALUE)で入る。既に同じ加盟店を表示中の場合は
-  // 何もしない(同じ会社の行をもう一度選ぶことはUI上起こらないが、念のため無効化)。
-  const handleFranchiseView = async (partnerCompanyId) => {
-    if (!partnerCompanyId || appState.currentCompanyId === partnerCompanyId) return;
+  // 加盟店は自社店舗と同じ「1店舗を選んでいる状態」として扱う(全店舗ビューでは損益表・
+  // 月締め・費用入力・日次入力などの単一店舗前提ページが軒並み利用できなくなっていた
+  // 不具合の修正)。targetStoreIdが渡されればその店舗、渡されなければ(会社単位の
+  // 「表示する」ボタン等からの呼び出し)先頭のアクティブ店舗をデフォルトにする —
+  // ALL_STORES_VALUEには決してしない。
+  const handleFranchiseView = async (partnerCompanyId, targetStoreId) => {
+    if (!partnerCompanyId) return;
+    if (appState.currentCompanyId === partnerCompanyId && appState.selectedStoreId === targetStoreId) return;
     setFranchiseViewBusy(true);
     try {
       const result = await loadFranchiseCompanyMetadata({ companyId: partnerCompanyId });
@@ -2978,14 +3000,16 @@ function App() {
       const nextCompanies = alreadyPresent
         ? (appState.companies || []).map((company) => (company.id === partnerCompanyId ? { ...company, ...result.company } : company))
         : [...(appState.companies || []), result.company];
+      const activeFranchiseStores = (result.company.stores || []).filter((store) => store.status !== "archived");
+      const targetStore = (targetStoreId && activeFranchiseStores.find((store) => store.id === targetStoreId)) || activeFranchiseStores[0] || null;
       const nextState = {
         ...appState,
         companies: nextCompanies,
         currentCompanyId: partnerCompanyId,
         isViewingFranchise: true,
         homeCompanyIdBeforeFranchiseView: homeCompanyId,
-        selectedStore: ALL_STORES_VALUE,
-        selectedStoreId: "",
+        selectedStore: targetStore ? targetStore.name : ALL_STORES_VALUE,
+        selectedStoreId: targetStore ? targetStore.id : "",
       };
       setAppState(nextState);
       writeAppState(nextState);
@@ -5764,23 +5788,25 @@ function App() {
                 「本社に戻る」ボタンを設けなくても、この<select>だけで本社・加盟店を
                 行き来できる。自社欄はhomeStoresForDropdown(閲覧状態に左右されない、
                 常に本社を指す参照)から描画するため、加盟店を開いた後も消えない。
-                加盟店側は"──── 加盟店 ────"という視覚的な区切り(optgroup)の下に会社単位で
-                1行だけ表示する(個別店舗は列挙しない — 選ぶと必ずその加盟店の全店舗ビューを
-                開く)。承認済み(status='approved')の連携だけが対象のため、pending/rejected/
-                disconnectedの加盟店はここに一切出てこない。 */}
+                加盟店側は"──── 加盟店 ────"という視覚的な区切り(optgroup)の下に、
+                会社名+店舗名で店舗単位で列挙する(自社店舗と同じ「1店舗を選ぶ」扱いにする
+                ため — 会社単位で1行にして全店舗ビューを開く仕様だと、損益表・月締め・
+                費用入力等の単一店舗前提ページが軒並み弾かれてしまっていた)。承認済み
+                (status='approved')の連携だけが対象のため、pending/rejected/disconnectedの
+                加盟店はここに一切出てこない。 */}
             <label>
               店舗
               <select
-                value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}` : selectedStore}
+                value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}:${appState.selectedStoreId || ""}` : selectedStore}
                 onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
                 disabled={franchiseViewBusy}
               >
                 {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
                 {homeStoresForDropdown.length ? homeStoresForDropdown.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
-                {viewableFranchisePartnerCompanies.length > 0 ? (
+                {viewableFranchisePartnerStores.length > 0 ? (
                   <optgroup label="──── 加盟店 ────">
-                    {viewableFranchisePartnerCompanies.map((company) => (
-                      <option key={company.relationshipId} value={`__franchise__:${company.companyId}`}>{company.companyName}</option>
+                    {viewableFranchisePartnerStores.map((item) => (
+                      <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.companyName} {item.storeName}</option>
                     ))}
                   </optgroup>
                 ) : null}
@@ -6070,16 +6096,16 @@ function App() {
                       <label className="field">
                         <span>店舗</span>
                         <select
-                          value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}` : selectedStore}
+                          value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}:${appState.selectedStoreId || ""}` : selectedStore}
                           onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
                           disabled={franchiseViewBusy}
                         >
                           {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
                           {homeStoresForDropdown.length ? homeStoresForDropdown.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
-                          {viewableFranchisePartnerCompanies.length > 0 ? (
+                          {viewableFranchisePartnerStores.length > 0 ? (
                             <optgroup label="──── 加盟店 ────">
-                              {viewableFranchisePartnerCompanies.map((company) => (
-                                <option key={company.relationshipId} value={`__franchise__:${company.companyId}`}>{company.companyName}</option>
+                              {viewableFranchisePartnerStores.map((item) => (
+                                <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.companyName} {item.storeName}</option>
                               ))}
                             </optgroup>
                           ) : null}

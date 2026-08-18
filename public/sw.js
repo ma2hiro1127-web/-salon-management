@@ -25,7 +25,12 @@
 // v10: 会社管理画面の是正 — 会社カードから重複していた「管理者を招待」導線を削除、
 // 無料利用理由変更に成功通知を追加、system_admin付与を通常のユーザー招待から除外。
 // v11: 日次入力画面の客数カードの並びを、新規客数→再来客数→客数(自動合計)に変更。
-const CACHE_NAME = 'salon-manager-cache-v11';
+// v12: 加盟店を選択すると常にその加盟店の「全店舗ビュー」(ALL_STORES_VALUE)を開いていた
+// ため、損益表・月締め・費用入力・日次入力など単一店舗前提のページが軒並み「全店舗
+// ビューでは利用できません」で弾かれていた不具合の修正。店舗プルダウンの加盟店欄を
+// 会社単位1行から店舗単位に展開し、選択すると必ず実店舗が選ばれた状態(isAllStoresView
+// にならない状態)になるようにした。
+const CACHE_NAME = 'salon-manager-cache-v12';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
