@@ -1049,6 +1049,12 @@ function App() {
   // はdaily_sales_update/delete_company_scoped RLS(is_day_closed=falseを要求)で強制しているが、
   // ここでも操作前にUIで気づけるようにする。店長以上はこの制限を受けない。
   const isDailyEntryLockedForStaff = normalizeRole(currentRole) === "staff" && Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date]);
+  // 権限体系の正式仕様: staffの日次入力は「今日の分のみ」。日締め状態(上のisDailyEntry
+  // LockedForStaff)とは別の制約 — 今日作成した自分のデータでも、日付をまたいだ翌日以降
+  // (=過去日になった後)は編集・削除できない(RLS側のbusiness_date=今日の条件と揃える、
+  // 20260825000000_staff_today_only_update_delete.sql参照)。未来日も同様に対象外にする
+  // (INSERTのRLSも今日限定のため)。
+  const isStaffPastOrFutureDateLocked = normalizeRole(currentRole) === "staff" && Boolean(dailyForm.date) && dailyForm.date !== formatLocalDate(new Date());
   // 対象日の現在の日締め状態。toggleDayClosingのボタン表示・確認ダイアログの文言をこれで
   // 出し分ける(常に「日締め」という同じラベルのボタンだと、既に締め済みの日をもう一度押した
   // ときに実際は「解除」される、と気づかず誤って締めを解除してしまう不具合があったため)。
@@ -4572,6 +4578,13 @@ function App() {
       if (!silent) setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
       return { ok: false, skipped: true };
     }
+    // 権限体系の正式仕様: staffは今日以外の日付を保存できない。RLS側(daily_sales_update/
+    // insert_company_scopedのbusiness_date=今日の条件)と同じ制約をここでも明示的に
+    // かける — どの経路(オートセーブ含む)から呼ばれても確実にブロックする最終防御。
+    if (isStaffPastOrFutureDateLocked) {
+      if (!silent) setNotice("スタッフは今日の日次入力のみ保存できます。過去日・未来日は編集できません。");
+      return { ok: false, skipped: true };
+    }
     if (!selectedStore) {
       if (!silent) {
         setNotice("店舗を先に追加してください");
@@ -4759,6 +4772,15 @@ function App() {
   // 項目単位の重複検知(要件7・8)で警告を挟むが、ブロックはしない — 承知の上での重複入力も
   // 許可する。
   const handleSaveBatchEntry = async () => {
+    // 権限体系の正式仕様(要件6): まとめて入力の権限はUI(ボタン非表示)だけに頼らず、
+    // 保存処理側でも明示的にチェックする — staffが万一URL直接アクセス・ブラウザ改変等で
+    // この関数を呼び出しても、ここで確実に拒否する(RLS側のdaily_batch_entries_insert/
+    // update_company_scopedもstore_manager以上限定のため最終的にも拒否されるが、
+    // 分かりやすいエラーメッセージのためここでも明示的にチェックする)。
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("まとめて入力を利用できるのは会社管理者・店舗管理者以上です。");
+      return;
+    }
     if (guardFranchiseReadOnly()) return;
     if (!selectedStore) {
       setNotice("店舗を先に追加してください");
@@ -4854,6 +4876,11 @@ function App() {
   // まとめて入力の削除(要件22)。この1件だけをdailyBatchEntriesから取り除く — 日次入力・
   // 目標データ・他のまとめ入力レコードには一切触れない。
   const handleDeleteBatchEntry = async (entry) => {
+    // 保存処理と同じ理由で削除処理側にも明示的な権限チェックを持たせる(要件6)。
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("まとめて入力を利用できるのは会社管理者・店舗管理者以上です。");
+      return;
+    }
     if (guardFranchiseReadOnly()) return;
     if (!window.confirm(`${entry.startDate}〜${entry.endDate}のまとめて入力を削除しますか？この操作は取り消せません。`)) return;
     try {
@@ -5233,8 +5260,11 @@ function App() {
       return;
     }
 
+    // staffは今日以外の日付には新規入力できない(要件: 過去日・未来日の編集不可)。
+    // データが存在しない日でも、編集可能な空フォームを開かせずview固定にする。
+    const isStaffNonTodayDate = normalizeRole(currentRole) === "staff" && nextDate !== formatLocalDate(new Date());
     setDailyForm({ ...defaultDailyEntry, date: nextDate });
-    setDailyMode("create");
+    setDailyMode(isStaffNonTodayDate ? "view" : "create");
     setDailyOriginalEntry(null);
     setDailyInsight("");
   };
@@ -5253,6 +5283,10 @@ function App() {
       setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
       return;
     }
+    if (isStaffPastOrFutureDateLocked) {
+      setNotice("スタッフは今日の日次入力のみ保存できます。過去日・未来日は編集できません。");
+      return;
+    }
     const defaultValue = { ...defaultDailyEntry, date: dailyForm.date || "" };
     setDailyForm(defaultValue);
     setDailyMode("create");
@@ -5263,6 +5297,10 @@ function App() {
   const editDailyEntry = () => {
     if (isDailyDateBatchLocked) {
       setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
+      return;
+    }
+    if (isStaffPastOrFutureDateLocked) {
+      setNotice("スタッフは今日の日次入力のみ保存できます。過去日・未来日は編集できません。");
       return;
     }
     if (!dailyForm.id) {
@@ -5820,6 +5858,10 @@ function App() {
     if (guardFranchiseReadOnly()) return;
     if (isDailyDateBatchLocked) {
       setNotice("この日はまとめて入力で反映されています。日締めは通常の日次入力のみが対象です。");
+      return;
+    }
+    if (isStaffPastOrFutureDateLocked) {
+      setNotice("スタッフは今日の日次入力のみ操作できます。過去日・未来日の日締めはできません。");
       return;
     }
     if (!selectedStore || !dailyForm.date) {
@@ -6595,10 +6637,10 @@ function App() {
                   ) : null}
 
                   <div className="button-row">
-                    <button className="secondary-button" type="button" onClick={startNewDailyEntry} disabled={isDailyDateBatchLocked}>新規入力</button>
-                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff || isDailyDateBatchLocked}>編集</button>
+                    <button className="secondary-button" type="button" onClick={startNewDailyEntry} disabled={isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>新規入力</button>
+                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>編集</button>
                     <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff || isDailyDateBatchLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
                   </div>
 
                   {isDailyFormDateHoliday ? (
@@ -6609,6 +6651,11 @@ function App() {
                   {isDailyDateBatchLocked ? (
                     <div className="notice-box">
                       この日はまとめて入力（{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.startDate : ""}〜{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.endDate : ""}の期間）で反映されています。編集・削除は「まとめて入力」から行ってください。
+                    </div>
+                  ) : null}
+                  {isStaffPastOrFutureDateLocked ? (
+                    <div className="notice-box">
+                      スタッフが入力できるのは今日の分のみです。過去日・未来日は閲覧のみで、編集・保存・日締めはできません。
                     </div>
                   ) : null}
                   {isDailyEntryLockedForStaff ? (

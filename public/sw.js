@@ -63,7 +63,14 @@
 // 「まとめて入力」側のみ)になる。店休日に変更した日は自動的に配分対象から除外され、残りの
 // 営業日へ最大剰余法で再配分される(期間合計・月間合計は常に不変)。「まとめて入力を保存
 // しました」等の成功バナーは削除(エラー・削除確認は維持)。
-const CACHE_NAME = 'salon-manager-cache-v19';
+// v20: 権限体系の最終整理。(1) FAQをstaffには表示しない(管理者向けヘルプとして
+// system_admin/company_admin/store_managerのみ)。(2) staffのdaily_sales/daily_cash_breakdown
+// UPDATE/DELETEに「今日の分のみ」という制約が無く、日締め前なら過去日でも編集・削除できて
+// いた抜け道をRLSで是正(INSERTと同じbusiness_date=今日の条件を追加)。フロント側にも同じ
+// 制約を追加。(3) まとめて入力の保存/削除処理に明示的な権限チェックを追加(UI非表示だけに
+// 頼らない)。(4) FAQに「権限について」「まとめて入力は誰が使えますか」を追加、内部コード名
+// (system_admin等)を本文から排除。
+const CACHE_NAME = 'salon-manager-cache-v20';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

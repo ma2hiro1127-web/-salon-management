@@ -30,8 +30,9 @@ export const NAV_ITEMS_BY_ROLE = {
   // "franchise"(加盟店連携)はsystem_admin/company_adminだけに追加する — 加盟店連携リクエスト
   // の送信(system_admin限定)・承認/拒否・閲覧切替はどちらのロールにも関係するが、
   // store_manager/staffには加盟店データを一切見せない(要件10)ため含めない。
-  // "faq"(使い方・FAQ)は全ロールに追加する — AI機能とは無関係の通常機能で、ログインして
-  // いる全ユーザーが閲覧できる(要件: AI契約・設定を前提としない)。
+  // "faq"(使い方・FAQ)は権限体系の正式仕様(会社管理画面・まとめて入力の権限整理)により
+  // system_admin/company_admin/store_managerの管理者向けヘルプとして扱う — staffには
+  // ナビゲーション・URL直接アクセスとも表示しない(要件8)。
   system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings", "faq"],
   company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings", "faq"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
@@ -42,8 +43,9 @@ export const NAV_ITEMS_BY_ROLE = {
   // 月次経営ダッシュボードは店舗横断比較・会社全体集計を含むため、staffには意図的に含めない。
   // 店舗管理("stores")も同様にstaffの通常業務範囲外のため含めない — この配列がURLの
   // 存在しないこのSPAにおける唯一の認可ゲート(canAccessPage)なので、ここから外すことが
-  // そのままURL直接アクセスの拒否にもなる。faqだけは例外的に全ロール共通で追加する。
-  staff: ["dashboard", "daily", "faq"],
+  // そのままURL直接アクセスの拒否にもなる。faqも管理者向けヘルプのためstaffには含めない
+  // (要件8: 権限体系の正式仕様)。
+  staff: ["dashboard", "daily"],
   owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings", "faq"],
   admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings", "faq"],
 };
