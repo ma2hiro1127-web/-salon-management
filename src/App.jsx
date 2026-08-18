@@ -7008,7 +7008,7 @@ function App() {
               </div>
               {!selectedStore ? (
                 <div className="empty-card">店舗を選択してください。</div>
-              ) : !canEditStoreName(currentRole) ? (
+              ) : (!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()) ? (
                 <div className="field-switch-grid">
                   {dailyFieldKeys.map((fieldKey) => (
                     <label key={fieldKey} className="field-switch">
@@ -7060,7 +7060,7 @@ function App() {
               </div>
               {!selectedStore ? (
                 <div className="empty-card">店舗を選択してください。</div>
-              ) : !canEditStoreName(currentRole) ? (
+              ) : (!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()) ? (
                 <div className="field-switch-grid">
                   {monthlyTargetFieldKeys.map((fieldKey) => (
                     <label key={fieldKey} className="field-switch">
@@ -7116,7 +7116,7 @@ function App() {
                     <input
                       type="checkbox"
                       checked={Boolean(selectedStoreEntity?.settings?.useInventoryTracking)}
-                      disabled={!canEditStoreName(currentRole)}
+                      disabled={!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()}
                       onChange={(event) => handleToggleInventoryTracking(event.target.checked)}
                     />
                   </label>
@@ -7140,7 +7140,7 @@ function App() {
                     <input
                       type="checkbox"
                       checked={Boolean(selectedStoreEntity?.settings?.useCashBreakdown)}
-                      disabled={!canEditStoreName(currentRole)}
+                      disabled={!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()}
                       onChange={(event) => handleToggleCashBreakdown(event.target.checked)}
                     />
                   </label>
