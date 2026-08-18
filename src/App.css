@@ -114,17 +114,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice-box { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; }
 .notice-box.warning { background: rgba(180, 83, 9, 0.12); color: var(--warning); }
 .notice-box.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
-/* 加盟店連携(閲覧専用)のバナー。既存.notice-boxと同じ丸み・余白・コンパクトさを踏襲し、
-   警告色(danger/warning)は使わない — 通常のお知らせと同じ落ち着いたトーンにする
-   (要件14: 警告表示のように強くしすぎない)。 */
-.franchise-viewing-banner, .franchise-request-banner {
+/* 加盟店連携リクエストの通知バナー(未対応リクエストがある間だけ表示)。既存.notice-boxと
+   同じ丸み・余白・コンパクトさを踏襲し、警告色(danger/warning)は使わない — 通常のお知らせと
+   同じ落ち着いたトーンにする。加盟店を閲覧中であることを示す専用バナーは意図的に置かない —
+   店舗プルダウンの「全店舗」から常に本社へ戻れるため不要(店舗プルダウンだけで完結させる)。 */
+.franchise-request-banner {
   display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap;
   background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; font-size: 0.9rem;
 }
-.franchise-viewing-banner span, .franchise-request-banner span { font-weight: 600; }
+.franchise-request-banner span { font-weight: 600; }
 @media (max-width: 640px) {
-  .franchise-viewing-banner, .franchise-request-banner { flex-direction: column; align-items: stretch; text-align: left; font-size: 0.86rem; }
-  .franchise-viewing-banner button, .franchise-request-banner button { width: 100%; }
+  .franchise-request-banner { flex-direction: column; align-items: stretch; text-align: left; font-size: 0.86rem; }
+  .franchise-request-banner button { width: 100%; }
 }
 .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; font-size: 0.8rem; font-weight: 700; border: 1px solid transparent; max-width: 100%; white-space: normal; }
 .status-stack { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
