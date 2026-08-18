@@ -88,7 +88,11 @@ export const canViewUserManagement = (role) => canManageUsers(role);
 // offering choices the backend would reject anyway.
 export const getInvitableRoles = (role) => {
   const normalized = normalizeRole(role);
-  if (normalized === "system_admin") return ["system_admin", "company_admin", "store_manager", "staff"];
+  // system_admin権限そのものは、通常の会社ユーザー招待/編集フローからは付与できない
+  // (会社管理画面の是正・要件3) — システム全体の管理者を増やす操作は、この画面のような
+  // 「1つの会社を対象にした」導線とは別に、意図的に切り離しておく。RLS側(profiles_insert_
+  // company_scoped, 20260823030000)も同じ制約をDBレベルで強制している。
+  if (normalized === "system_admin") return ["company_admin", "store_manager", "staff"];
   if (normalized === "company_admin") return ["company_admin", "store_manager", "staff"];
   if (normalized === "store_manager") return ["staff"];
   return [];

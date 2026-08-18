@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage } from "./permissions.js";
+import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage, getInvitableRoles } from "./permissions.js";
 
 test("system and company admins can access all stores in their company", () => {
   assert.deepEqual(getAllowedStoreIdsForRole({ role: "system_admin", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s1"] }), ["s1", "s2"]);
@@ -89,4 +89,11 @@ test("「使い方・FAQ」はAI機能とは無関係に全ロール(system_admi
   });
   // 先頭は引き続きdashboardのまま(faqが初期表示ページになってしまわないこと)。
   assert.equal(resolveDefaultPage("staff"), "dashboard");
+});
+
+test("system_adminであっても、通常の会社ユーザー招待/編集からsystem_adminを付与することはできない(会社管理画面の是正・要件3)", () => {
+  assert.deepEqual(getInvitableRoles("system_admin"), ["company_admin", "store_manager", "staff"]);
+  assert.ok(!getInvitableRoles("system_admin").includes("system_admin"));
+  assert.deepEqual(getInvitableRoles("company_admin"), ["company_admin", "store_manager", "staff"]);
+  assert.deepEqual(getInvitableRoles("store_manager"), ["staff"]);
 });

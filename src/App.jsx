@@ -689,20 +689,10 @@ function App() {
   // 上書きされたりする)。refはレンダーを待たずに同期的に読み書きできるため、こちらを一次防御
   // として使う。
   const savingStoreRef = useRef(false);
-  const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
+  const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
   // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
   const [userFormBusy, setUserFormBusy] = useState(false);
-  // 会社管理画面の「管理者を招待」用。system_adminが会社を都度切り替えてからユーザー管理
-  // 画面で招待する(=切り替え忘れによる誤company_id招待の事故が起きうる)のではなく、
-  // 会社カードのボタンから直接その会社のidを指定して招待できるようにする(要件3)。
-  // どの会社カードのインライン招待フォームを開いているかだけを保持する — 実際の入力値は
-  // 既存のuserForm/handleSaveUserをそのまま再利用する。
-  const [inviteAdminCompanyId, setInviteAdminCompanyId] = useState("");
-  const openInviteAdminForm = (company) => {
-    setInviteAdminCompanyId(company.id);
-    setUserForm((prev) => ({ ...prev, name: "", email: "", role: "company_admin", companyId: company.id, storeIds: [], primaryStoreId: "" }));
-  };
   // 「再招待」ボタンの二重送信防止。行ごとに独立して無効化するため、対象user.idを保持する
   // (他のユーザー行の再招待ボタンまで巻き込んで無効化しないため)。
   const [resendingUserId, setResendingUserId] = useState("");
@@ -2640,8 +2630,10 @@ function App() {
       if (!existingCompany) {
         // createdByProfileId(会社作成者を自動的にそのcompany_adminへ昇格させる仕組み)は
         // 意図的に渡さない — 会社を作ったsystem_admin自身がその会社のcompany_adminに
-        // なってしまう(=最上位権限者が入れ替わってしまう)不具合になっていた。最初の
-        // company_adminは、会社カードの「管理者を招待」から別途明示的に招待する(要件3)。
+        // なってしまう(=最上位権限者が入れ替わってしまう)不具合になっていた。会社作成後は
+        // 下でcurrentCompanyIdが自動的に新会社へ切り替わるため、最初のcompany_adminは
+        // そのままユーザー管理画面の「ユーザー招待」から招待すればよい(会社管理画面に
+        // 重複した招待導線は置かない — 要件2)。
         createdCompany = await createCompanyRecord({
           name: normalizedName,
           code: normalizedCode,
@@ -2868,14 +2860,7 @@ function App() {
     // invite within their own company but never system_admin.
     const invitableRoles = getInvitableRoles(normalizedCurrentRole);
     const role = invitableRoles.includes(userForm.role) ? userForm.role : (invitableRoles[invitableRoles.length - 1] || "staff");
-    const companyId = normalizedCurrentRole === "system_admin" ? (userForm.companyId || appState.currentCompanyId) : appState.currentCompanyId;
-    // inviterStoreIds/currentCompanyStores は「今アクティブになっている会社(appState.
-    // currentCompanyId)」基準で組み立てられている。会社カードの「管理者を招待」
-    // (companyId !== appState.currentCompanyId になりうる)経由で呼ばれた場合、この
-    // フォールバックをそのまま使うと無関係な(アクティブな会社の)store_idが紛れ込みかねない
-    // — company_adminはそもそもuser_stores(店舗紐付け)を必要としない権限モデルのため
-    // (companies配下は常にcompany_id単位でスコープされ、店舗個別の紐付けを見ない)、
-    // company_admin招待では店舗紐付けの自動補完自体を行わない。
+    const companyId = appState.currentCompanyId;
     const inviterStoreIds = normalizedCurrentRole === "store_manager" ? allowedStoreIds : currentCompanyStores.map((store) => store.id);
     const inviteTokenValue = createInviteToken();
     const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
@@ -2930,7 +2915,7 @@ function App() {
         users: [...(appState.users || []), nextUser],
       };
       persistTenantState(nextState);
-      setUserForm({ name: "", email: "", role: invitableRoles[invitableRoles.length - 1] || "staff", companyId: "", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
+      setUserForm({ name: "", email: "", role: invitableRoles[invitableRoles.length - 1] || "staff", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
 
       // The profile row (role/company/store) is already fully set up at this point — sending
       // the actual email is a separate step that can genuinely fail (Supabase mail service
@@ -3446,6 +3431,9 @@ function App() {
         companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, freeReason: freeReason || "" } : item)),
       };
       persistTenantState(nextState);
+      // 保存の成否がラベルの見た目の変化だけでは分かりにくい(要件1: 保存後、その場で
+      // 表示内容を更新したことが利用者に伝わるようにする)ため、成功を明示する通知を出す。
+      setNotice(`無料利用理由を「${FREE_REASON_LABELS[freeReason] || freeReason || "未設定"}」に変更しました`);
     } finally {
       setFreeReasonSavingId("");
     }
@@ -6879,37 +6867,7 @@ function App() {
                             AI分析を{aiAnalysisSettings[company.id] ? "無効化" : "有効化"}
                           </button>
                         )}
-                        {/* system_adminが上のトップバーで会社を切り替えてからユーザー管理画面へ
-                            移動する方式だと、切り替え忘れで誤った会社へ招待してしまう事故が
-                            起こりうる。会社カードのボタンから直接その会社のidを指定して
-                            company_adminを招待できるようにし、この事故を構造的に防ぐ(要件3)。 */}
-                        {canManageCompanies(currentRole) && (
-                          <button
-                            className="text-button"
-                            type="button"
-                            onClick={() => (inviteAdminCompanyId === company.id ? setInviteAdminCompanyId("") : openInviteAdminForm(company))}
-                          >
-                            {inviteAdminCompanyId === company.id ? "招待フォームを閉じる" : "管理者を招待"}
-                          </button>
-                        )}
                       </div>
-                      {inviteAdminCompanyId === company.id && (
-                        <div className="inline-form">
-                          <input value={userForm.name} onChange={(event) => setUserForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="管理者の氏名" />
-                          <input value={userForm.email} onChange={(event) => setUserForm((prev) => ({ ...prev, email: event.target.value }))} placeholder="管理者のメールアドレス" />
-                          <button
-                            className="primary-button"
-                            type="button"
-                            disabled={userFormBusy}
-                            onClick={async () => {
-                              await handleSaveUser();
-                              setInviteAdminCompanyId("");
-                            }}
-                          >
-                            {userFormBusy ? "送信中…" : "招待する"}
-                          </button>
-                        </div>
-                      )}
                     </div>
                   );
                 })}

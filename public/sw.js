@@ -22,7 +22,9 @@
 // 表示されやすくする。
 // v9: 加盟店を開いた後、店舗プルダウンから自社へ戻れなくなる不具合の修正(hydrateFromSupabase
 // が加盟店自身の過去スナップショットからisViewingFranchiseを誤って引き継いでいたバグ)。
-const CACHE_NAME = 'salon-manager-cache-v9';
+// v10: 会社管理画面の是正 — 会社カードから重複していた「管理者を招待」導線を削除、
+// 無料利用理由変更に成功通知を追加、system_admin付与を通常のユーザー招待から除外。
+const CACHE_NAME = 'salon-manager-cache-v10';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
