@@ -41,7 +41,12 @@
 // 既存店舗名・追加する店舗名を見せて確認するダイアログを追加。作成完了時の通知文言も
 // 「新しい店舗として追加しました」に明確化。加盟店閲覧中の「複製」操作も他の書き込み
 // ハンドラと同じ明示的な拒否に揃えた(実データはRLSで元々作成不可)。
-const CACHE_NAME = 'salon-manager-cache-v15';
+// v16: 会社追加→招待→company_admin初回ログインの正式フローを整備。company_adminが
+// company_idに有効な店舗0件の状態でログインした場合だけ「最初の店舗を登録」画面を
+// 強制表示する(setup.completeフラグではなく実際の店舗数を基準にする、店舗が1件でも
+// あれば二度と出ない)。「店舗を追加」時に既存店舗名との類似(全角半角・大文字小文字・
+// スペース・「本店」等の接尾辞違い)を検知した場合は警告文言を強める。
+const CACHE_NAME = 'salon-manager-cache-v16';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

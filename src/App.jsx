@@ -399,6 +399,20 @@ const formatSignedYen = (value) => `${value >= 0 ? "" : "−"}¥${Math.abs(Math.
 // 読める形式が要件で指定されているため、UUIDから先頭8文字を切り出して整形する。
 const generateCompanyCode = () => `salon-${(typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}${Math.random()}`).replace(/-/g, "").slice(0, 8)}`;
 
+// 新規店舗名が既存店舗名と「同一店舗のつもりで別レコードを作ってしまっている」可能性が
+// 高いかどうかの簡易判定(要件: 完全一致/大文字小文字違い/全角半角違い/スペース違い/
+// 「本店」「店」などの接尾辞違いは同一とみなす)。NFKCで全角英数・記号を半角に正規化し、
+// 空白を除去・小文字化したうえで、末尾の「本店」「支店」「店」を1回だけ取り除いて比較する
+// — INTRO本店とINTROのように、片方だけ屋号の接尾辞を持つケースを検出するため。誤検出で
+// 正当な別店舗の作成automaticallyを止めることはせず、あくまで警告文言を強めるためだけに使う。
+const normalizeStoreNameForSimilarity = (name) =>
+  String(name || "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/(本店|支店|店)$/u, "");
+
 // 日次入力画面の「今日のAI分析」を組み立てる。ここは詳しい原因分析・改善提案の場ではなく、
 // (1)当日の売上・目標に対する状況 (2)入力KPIの中から特徴的な1〜2項目 (3)前向きな一言、を
 // 1〜3文で短く総括するだけの役割 — 詳細な分析・改善策は別画面の「AI経営アシスタント」に
@@ -1524,6 +1538,17 @@ function App() {
   // or it doesn't. Not dead code — it's the non-Supabase demo mode's own onboarding flow — just
   // never triggered once Supabase is configured.
   const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
+  // 会社作成→招待→company_adminの初回ログイン、という正式フローの「最初の店舗登録」
+  // ゲート。上のshowInitialSetupは(コメントの通り)setup.completeがSupabase接続時は常に
+  // trueに固定されるため本番では実質デッドコードで、店舗0件のまま通常画面へ入れてしまう
+  // 抜け道になっていた(INTRO社の実例)。判定はフラグではなく「対象company_idに現に
+  // 有効な店舗が存在するか」の一点にする — company_adminが誰であっても(後から追加された
+  // 2人目以降でも)、店舗が1件も無い間は必ずこの画面になり、1件でも作られれば以後二度と
+  // 出ない。加盟店閲覧中(isViewingFranchise)は対象外 — 加盟店側の店舗0件は別ロジック
+  // (handleFranchiseView)で既に安全に処理済みで、こことは無関係。system_adminは対象外の
+  // ままにする — 会社を作った直後にユーザー招待画面へ自由に移動できる必要があるため
+  // (要件の正式フローの4番: 招待はsystem_adminが行う)。
+  const needsFirstStoreSetup = Boolean(currentCompany) && !appState.isViewingFranchise && normalizeRole(currentRole) === "company_admin" && currentCompanyStores.length === 0;
   // 全店舗ビューではtarget/summary/businessDaySummaryを会社全体の集計版に差し替える。
   // ここを分岐させるだけで、これらを参照しているダッシュボードのKPI・営業進捗・AI相談等
   // (customerTargetSummary/dashboardSupportMetrics/AiChatScreen含む)は追加の変更なしに
@@ -2721,14 +2746,20 @@ function App() {
     // 誤操作による意図しない2店舗目・3店舗目の作成を防ぐ確認(要件1)。新規作成時のみが
     // 対象 — 既存店舗の編集(名称変更等)は別処理なので対象外。既存の運用中店舗が1件でも
     // あれば必ず確認を挟み、既存店舗名・追加しようとしている店舗名の両方を見せることで、
-    // 「切り替えたつもりが実は新規作成だった」という取り違えに気づけるようにする。
+    // 「切り替えたつもりが実は新規作成だった」という取り違えに気づけるようにする。名称が
+    // 似ている場合(要件: 完全一致・大文字小文字・全角半角・スペース違い・「本店」等の
+    // 接尾辞違い)は、既存店舗の編集で対応すべきでは、という文言を追加してさらに強く
+    // 警告する — ただし本当に別店舗の可能性もあるため、作成自体は禁止しない。
     if (!existingStore) {
-      const existingActiveStoreNames = (currentCompany?.stores || []).filter((store) => store.status !== "archived").map((store) => store.name);
-      if (existingActiveStoreNames.length > 0) {
-        const confirmed = window.confirm(
-          `この会社にはすでに店舗が登録されています。新しい店舗を追加しますか？\n\n既存店舗：\n${existingActiveStoreNames.join("\n")}\n\n追加する店舗：\n${storeForm.name.trim()}\n\nOKで新しい別店舗として追加します。キャンセルすると追加は行われません。`
-        );
-        if (!confirmed) return;
+      const existingActiveStores = (currentCompany?.stores || []).filter((store) => store.status !== "archived");
+      if (existingActiveStores.length > 0) {
+        const newNameNormalized = normalizeStoreNameForSimilarity(storeForm.name);
+        const similarStore = existingActiveStores.find((store) => normalizeStoreNameForSimilarity(store.name) === newNameNormalized);
+        const existingNamesText = existingActiveStores.map((store) => store.name).join("\n");
+        const message = similarStore
+          ? `既存の「${similarStore.name}」と名称が似ています。\n\n既存店舗の設定(スタッフ数・生産性計算人数・営業日など)を変更したい場合は、新規店舗を作成せず「店舗設定」から編集してください。\n\n現在登録されている店舗：\n${existingNamesText}\n\n新しく追加する店舗：\n${storeForm.name.trim()}\n\n本当に別店舗として追加しますか？\nOKで別店舗として追加します。キャンセルすると追加は行われません。`
+          : `この会社にはすでに店舗が登録されています。新しい店舗を追加しますか？\n\n既存店舗：\n${existingNamesText}\n\n追加する店舗：\n${storeForm.name.trim()}\n\nOKで新しい別店舗として追加します。キャンセルすると追加は行われません。`;
+        if (!window.confirm(message)) return;
       }
     }
     if (savingStoreRef.current) return;
@@ -5640,6 +5671,31 @@ function App() {
             <p className="eyebrow">SUSPENDED</p>
             <h2>ご利用を停止しています</h2>
             <p>現在この会社の利用は停止されています。管理者へお問い合わせください。</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (needsFirstStoreSetup) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-title-block">
+            <p className="eyebrow">SETUP</p>
+            <h2>最初の店舗を登録してください</h2>
+            <p>{currentCompany?.name || "この会社"}にはまだ店舗が登録されていません。店舗名を入力して、最初の店舗を作成してください。以後、この画面は表示されません。</p>
+          </div>
+          <label className="field">
+            <span>店舗名</span>
+            <input value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder={storeNamePlaceholder} />
+          </label>
+          {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}
+          <div className="button-row">
+            <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>
+              {storeFormStatus.status === "saving" ? "作成中…" : "最初の店舗を作成する"}
+            </button>
+            <button className="secondary-button" type="button" onClick={handleLogout}>ログアウト</button>
           </div>
         </div>
       </div>
