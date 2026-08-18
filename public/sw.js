@@ -13,7 +13,14 @@
 // タイミングと重なっていた。これがChrome版では再現せずPWA版だけ「1回目は古い値に戻り、
 // 2回目(接続が落ち着いた後)は成功する」形で再現していた根本原因 — 下のfetchハンドラを
 // 同一オリジンのみに限定する。
-const CACHE_NAME = 'salon-manager-cache-v7';
+// v8: 加盟店連携機能を実装したのに「反映されていない」という報告 — 本番デプロイ自体は
+// 確認済みで正しく最新コードが配信されている。長時間開きっぱなしのPWA/タブは、JS実行
+// コンテキストが既にメモリ上にロードされたままなので、fetchハンドラが network-first でも
+// ページ自体を再読み込みしない限り新しいバンドルは反映されない。このファイル(sw.js)を
+// 変更してバイト差分を作ることで、ブラウザに新しいService Workerの install/activate
+// (=古いCache Storageの破棄)を確実に発火させ、次の起動・再読み込み時に最新版が
+// 表示されやすくする。
+const CACHE_NAME = 'salon-manager-cache-v8';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
