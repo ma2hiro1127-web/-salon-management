@@ -37,7 +37,11 @@
 // フォールバックしていた経路を修正。0店舗の会社を選んでも自社の全店舗ビューへ移動したり
 // currentCompanyId/isViewingFranchiseを中途半端に切り替えたりせず、現在の表示状態を
 // 一切変更せずに「店舗が登録されていません」と通知するだけにした。
-const CACHE_NAME = 'salon-manager-cache-v14';
+// v15: 店舗重複作成の事故防止 — 既存店舗がある会社で「店舗を追加」から新規作成する際、
+// 既存店舗名・追加する店舗名を見せて確認するダイアログを追加。作成完了時の通知文言も
+// 「新しい店舗として追加しました」に明確化。加盟店閲覧中の「複製」操作も他の書き込み
+// ハンドラと同じ明示的な拒否に揃えた(実データはRLSで元々作成不可)。
+const CACHE_NAME = 'salon-manager-cache-v15';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

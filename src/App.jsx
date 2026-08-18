@@ -2718,6 +2718,19 @@ function App() {
       setStoreFormStatus({ status: "error", message: "店舗名を入力してください" });
       return;
     }
+    // 誤操作による意図しない2店舗目・3店舗目の作成を防ぐ確認(要件1)。新規作成時のみが
+    // 対象 — 既存店舗の編集(名称変更等)は別処理なので対象外。既存の運用中店舗が1件でも
+    // あれば必ず確認を挟み、既存店舗名・追加しようとしている店舗名の両方を見せることで、
+    // 「切り替えたつもりが実は新規作成だった」という取り違えに気づけるようにする。
+    if (!existingStore) {
+      const existingActiveStoreNames = (currentCompany?.stores || []).filter((store) => store.status !== "archived").map((store) => store.name);
+      if (existingActiveStoreNames.length > 0) {
+        const confirmed = window.confirm(
+          `この会社にはすでに店舗が登録されています。新しい店舗を追加しますか？\n\n既存店舗：\n${existingActiveStoreNames.join("\n")}\n\n追加する店舗：\n${storeForm.name.trim()}\n\nOKで新しい別店舗として追加します。キャンセルすると追加は行われません。`
+        );
+        if (!confirmed) return;
+      }
+    }
     if (savingStoreRef.current) return;
     savingStoreRef.current = true;
 
@@ -2826,8 +2839,15 @@ function App() {
       persistTenantState(nextState);
       setStoreForm(createStoreFormDefaults());
       setStoreEditId("");
-      const successMessage = existingStore ? `${nextStore.name} を更新しました` : `${nextStore.name} を追加しました`;
-      setStoreFormStatus({ status: "saved", message: successMessage });
+      // 「店舗を切り替えただけ」なのか「新しい店舗を作成した」のかが紛らわしくならない
+      // よう、新規作成時は文言を明確に分ける(要件3)。フォーム近くのstoreFormStatusに加え、
+      // 見落としにくい画面上部のsetNoticeバナーでも同じ内容を出す。
+      if (existingStore) {
+        setStoreFormStatus({ status: "saved", message: `${nextStore.name} を更新しました` });
+      } else {
+        setStoreFormStatus({ status: "saved", message: `${nextStore.name} を新しい店舗として追加しました` });
+        setNotice(`${nextStore.name} を新しい店舗として追加しました`);
+      }
     } catch (error) {
       // console.error here (not just the UI notice) so the real cause is visible in devtools
       // even if a future UI change makes the notice easy to miss — this exact failure mode
@@ -3585,6 +3605,11 @@ function App() {
   });
 
   const handleDuplicateStore = async (store) => {
+    // 加盟店閲覧中の複製操作を明示的に拒否する(要件6: 加盟店を閲覧したことを理由にstore
+    // 作成を実行しない)。RLS(stores_insert_company_scoped)側でも閲覧者の会社idでは
+    // 通らないため実データは絶対に作られないが、それに任せると分かりにくい汎用エラーに
+    // なるだけなので、他の書き込みハンドラと同じ明示的な通知に揃える。
+    if (guardFranchiseReadOnly()) return;
     const duplicateName = `${store.name} コピー`;
     if (!isSupabaseConfigured) {
       const nextCompany = {
