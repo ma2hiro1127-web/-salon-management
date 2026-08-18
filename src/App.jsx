@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import {
   dailyFieldKeys,
@@ -155,6 +155,7 @@ import {
   setUserActiveState,
   refreshInviteState,
   loadFranchiseCompanyMetadata,
+  loadFranchiseStoresForCompanies,
   createFranchiseRequest,
   updateFranchiseRelationship,
   loadCompanyPartnerships,
@@ -1363,6 +1364,54 @@ function App() {
       .map((row) => ({ relationshipId: row.id, companyId: row.partner_company_id }));
   }, [companyPartnerships, appState.isViewingFranchise, appState.homeCompanyIdBeforeFranchiseView, appState.currentCompanyId]);
 
+  // 加盟店の個別店舗を「店舗切替」一覧に一緒に表示するためのフラットな店舗リスト
+  // (company_id別にグルーピングし直すのはfranchiseStoreDropdownGroupsで行う)。
+  const [franchiseStoresList, setFranchiseStoresList] = useState([]);
+  const viewableFranchiseCompanyIdsKey = viewableFranchisePartnerCompanies.map((item) => item.companyId).sort().join(",");
+  useEffect(() => {
+    const companyIds = viewableFranchiseCompanyIdsKey ? viewableFranchiseCompanyIdsKey.split(",") : [];
+    if (!companyIds.length) {
+      setFranchiseStoresList([]);
+      return;
+    }
+    let cancelled = false;
+    void loadFranchiseStoresForCompanies({ companyIds }).then((result) => {
+      if (!cancelled && result.ok) setFranchiseStoresList(result.data || []);
+    });
+    return () => { cancelled = true; };
+  }, [viewableFranchiseCompanyIdsKey]);
+
+  // 店舗切替一覧の「──── 加盟店 ────」以下に描画する、加盟店ごとのグループ
+  // (会社名＋「◯◯ 全店舗」疑似オプション＋個別店舗)。承認済み連携が無ければ空配列。
+  const franchiseStoreDropdownGroups = useMemo(() => {
+    return viewableFranchisePartnerCompanies.map(({ relationshipId, companyId }) => {
+      const company = (appState.companies || []).find((item) => item.id === companyId);
+      const stores = franchiseStoresList.filter((store) => store.company_id === companyId && store.status !== "archived");
+      return { relationshipId, companyId, companyName: company?.name || "（読み込み中）", stores };
+    });
+  }, [viewableFranchisePartnerCompanies, appState.companies, franchiseStoresList]);
+
+  // 店舗切替一覧の統合ハンドラ。value形式: 自社店舗は既存通り店舗名そのまま、加盟店は
+  // "__franchise_all__:companyId"(その加盟店の全店舗ビュー)または
+  // "__franchise_store__:companyId:storeId"(個別店舗)というマーカー付き値にして、
+  // 既存のhandleStoreSwitch(名前ベース)と衝突しないようにする。
+  const handleUnifiedStoreSwitch = async (value) => {
+    if (value.startsWith("__franchise_all__:")) {
+      const companyId = value.slice("__franchise_all__:".length);
+      await handleFranchiseView(companyId);
+      return;
+    }
+    if (value.startsWith("__franchise_store__:")) {
+      const [, companyId, storeId] = value.split(":");
+      await handleFranchiseView(companyId, storeId);
+      return;
+    }
+    if (appState.isViewingFranchise) {
+      await handleReturnToHomeCompany();
+    }
+    handleStoreSwitch(value);
+  };
+
   // 「加盟店追加」モーダルの候補一覧。system_adminはappState.companiesに全社が既に
   // ロード済み(loadTenantStateFromSupabaseのcompanyFilter=null)なので追加フェッチ不要。
   // 自社自身と、既にpending/approvedの相手は候補から除外する(要件8の重複防止)。
@@ -1398,6 +1447,7 @@ function App() {
   const handleRespondFranchiseRelationship = async (relationshipId, action) => {
     setFranchiseActionBusyId(relationshipId);
     try {
+      const relationship = companyPartnerships.find((row) => row.id === relationshipId);
       const result = await updateFranchiseRelationship({ relationshipId, action });
       if (!result.ok) {
         setNotice(getSupabaseErrorMessage(result.error));
@@ -1405,6 +1455,12 @@ function App() {
       }
       await refreshCompanyPartnerships();
       if (franchiseDetailRelationshipId === relationshipId) setFranchiseDetailRelationshipId("");
+      // 解除した加盟店を今まさに表示中だった場合、店舗切替一覧から消えるのを待たず即座に
+      // 自社へ戻す(「解除後はそれ以降親会社から加盟店データを閲覧できない」を、表示中の
+      // セッションにも即時反映するため)。
+      if (action === "disconnect" && appState.isViewingFranchise && relationship?.partner_company_id === appState.currentCompanyId) {
+        await handleReturnToHomeCompany();
+      }
     } finally {
       setFranchiseActionBusyId("");
     }
@@ -2866,8 +2922,21 @@ function App() {
   // 実データ取得を即座に(待ち時間・エラーをこの関数内でハンドリングできる形で)行う。
   // companySnapshots(applyCompanySnapshot)は使わない — 加盟店側のUI選択状態を自社の
   // companySnapshotsへ混ぜたくないため。
-  const handleFranchiseView = async (partnerCompanyId) => {
-    if (!partnerCompanyId || appState.currentCompanyId === partnerCompanyId) return;
+  // targetStoreIdを省略すると「◯◯ 全店舗」(ALL_STORES_VALUE)、指定するとその加盟店内の
+  // 特定店舗を選択した状態で入る。既に同じ加盟店会社を表示中の場合は再取得・再hydrateせず、
+  // 選択中の店舗だけを切り替える(店舗切替一覧内で同じ加盟店の別店舗へ移るケース)。
+  const handleFranchiseView = async (partnerCompanyId, targetStoreId) => {
+    if (!partnerCompanyId) return;
+    if (appState.currentCompanyId === partnerCompanyId) {
+      const company = (appState.companies || []).find((item) => item.id === partnerCompanyId);
+      const store = targetStoreId ? company?.stores?.find((item) => item.id === targetStoreId) : null;
+      setAppState((prev) => ({
+        ...prev,
+        selectedStore: store ? store.name : ALL_STORES_VALUE,
+        selectedStoreId: store ? store.id : "",
+      }));
+      return;
+    }
     setFranchiseViewBusy(true);
     try {
       const result = await loadFranchiseCompanyMetadata({ companyId: partnerCompanyId });
@@ -2880,14 +2949,15 @@ function App() {
       const nextCompanies = alreadyPresent
         ? (appState.companies || []).map((company) => (company.id === partnerCompanyId ? { ...company, ...result.company } : company))
         : [...(appState.companies || []), result.company];
+      const targetStore = targetStoreId ? result.company.stores.find((item) => item.id === targetStoreId) : null;
       const nextState = {
         ...appState,
         companies: nextCompanies,
         currentCompanyId: partnerCompanyId,
         isViewingFranchise: true,
         homeCompanyIdBeforeFranchiseView: homeCompanyId,
-        selectedStore: ALL_STORES_VALUE,
-        selectedStoreId: "",
+        selectedStore: targetStore ? targetStore.name : ALL_STORES_VALUE,
+        selectedStoreId: targetStore ? targetStore.id : "",
       };
       setAppState(nextState);
       writeAppState(nextState);
@@ -5651,30 +5721,34 @@ function App() {
           </div>
 
           <div className="filters">
-            {/* 加盟店ピッカー: 既存の店舗<select>とは別の独立した要素にする(要件4: 自社と
-                加盟店を混在させない)。自社の承認済み連携が1件以上あるときだけ表示する。
-                「自社」を選ぶとhandleReturnToHomeCompanyで戻る。 */}
-            {viewableFranchisePartnerCompanies.length > 0 ? (
-              <label>
-                加盟店
-                <select
-                  value={appState.isViewingFranchise ? appState.currentCompanyId : ""}
-                  onChange={(event) => (event.target.value ? handleFranchiseView(event.target.value) : handleReturnToHomeCompany())}
-                  disabled={franchiseViewBusy}
-                >
-                  <option value="">自社</option>
-                  {viewableFranchisePartnerCompanies.map(({ relationshipId, companyId }) => {
-                    const company = (appState.companies || []).find((item) => item.id === companyId);
-                    return <option key={relationshipId} value={companyId}>{company?.name || "（読み込み中）"}</option>;
-                  })}
-                </select>
-              </label>
-            ) : null}
+            {/* 店舗切替一覧: 自社店舗と加盟店(承認済みのみ)を同じ<select>から選べるように
+                する(要件: 別々のセレクタに分けない)。加盟店側は"──── 加盟店 ────"という
+                視覚的な区切り(optgroup)の下にまとめ、一目で自社と区別できるようにする。
+                加盟店の個別店舗はfranchiseStoreDropdownGroups(承認済み連携のみを反映)から
+                描画するため、pending/rejected/disconnectedの加盟店はここに一切出てこない。 */}
             <label>
               店舗
-              <select value={selectedStore} onChange={(event) => handleStoreSwitch(event.target.value)}>
+              <select
+                value={appState.isViewingFranchise
+                  ? (selectedStoreId ? `__franchise_store__:${appState.currentCompanyId}:${selectedStoreId}` : `__franchise_all__:${appState.currentCompanyId}`)
+                  : selectedStore}
+                onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
+                disabled={franchiseViewBusy}
+              >
                 {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
                 {visibleStores.length ? visibleStores.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
+                {franchiseStoreDropdownGroups.length > 0 ? (
+                  <optgroup label="──── 加盟店 ────">
+                    {franchiseStoreDropdownGroups.map((group) => (
+                      <Fragment key={group.relationshipId}>
+                        <option value={`__franchise_all__:${group.companyId}`}>{group.companyName} 全店舗</option>
+                        {group.stores.map((store) => (
+                          <option key={store.id} value={`__franchise_store__:${group.companyId}:${store.id}`}>{group.companyName} {store.name}</option>
+                        ))}
+                      </Fragment>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
             </label>
             <button className="secondary-button" type="button" onClick={handleLogout}>ログアウト</button>
@@ -5967,9 +6041,27 @@ function App() {
                       <h3>基本情報</h3>
                       <label className="field">
                         <span>店舗</span>
-                        <select value={selectedStore} onChange={(event) => handleStoreSwitch(event.target.value)}>
+                        <select
+                          value={appState.isViewingFranchise
+                            ? (selectedStoreId ? `__franchise_store__:${appState.currentCompanyId}:${selectedStoreId}` : `__franchise_all__:${appState.currentCompanyId}`)
+                            : selectedStore}
+                          onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
+                          disabled={franchiseViewBusy}
+                        >
                           {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
                           {visibleStores.length ? visibleStores.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
+                          {franchiseStoreDropdownGroups.length > 0 ? (
+                            <optgroup label="──── 加盟店 ────">
+                              {franchiseStoreDropdownGroups.map((group) => (
+                                <Fragment key={group.relationshipId}>
+                                  <option value={`__franchise_all__:${group.companyId}`}>{group.companyName} 全店舗</option>
+                                  {group.stores.map((store) => (
+                                    <option key={store.id} value={`__franchise_store__:${group.companyId}:${store.id}`}>{group.companyName} {store.name}</option>
+                                  ))}
+                                </Fragment>
+                              ))}
+                            </optgroup>
+                          ) : null}
                         </select>
                       </label>
                       <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} disabled={dailyMode === "view"} />

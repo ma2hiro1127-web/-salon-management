@@ -781,6 +781,29 @@ export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
   }
 };
 
+// 店舗切替一覧に「加盟店」の個別店舗を一緒に表示するための軽量ローダー。承認済み(approved)の
+// 連携先company_idの一覧を渡すと、その全社分のstoresを1回のクエリでまとめて返す
+// (loadFranchiseCompanyMetadataは1社ずつだが、店舗切替一覧の描画には複数の加盟店を横断した
+// フラットな店舗リストが欲しいため専用に用意する)。RLSはstatus='approved'の連携がある
+// company_idにしかSELECTを許可しないため、渡したidの一部がまだpending/disconnectedでも
+// その分の店舗は自動的に0件で返ってくる(呼び出し側で状態を絞り込む必要はない)。
+export const loadFranchiseStoresForCompanies = async ({ companyIds }) => {
+  const ids = Array.isArray(companyIds) ? companyIds.filter(Boolean) : [];
+  if (!isSupabaseConfigured || !ids.length) return { ok: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("stores")
+      .select("id, company_id, name, code, status")
+      .in("company_id", ids)
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadFranchiseStoresForCompanies", table: "stores", error });
+    return { ok: false, error, data: [] };
+  }
+};
+
 export const createCompanyRecord = async ({ name, code, contractStatus }) => {
   const { data, error } = await supabase
     .from("companies")
