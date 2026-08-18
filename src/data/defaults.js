@@ -181,6 +181,10 @@ export const createInitialAppState = () => {
     storeHolidays: {},
     allStoresHolidays: {},
     dailyResults: {},
+    // まとめて入力(daily_batch_entries)。`${storeId}__${month}` -> [{startDate, endDate,
+    // totalSales, ...}] という配列。dailyResults(daily_sales由来、1日1件)には絶対に混ぜない
+    // — 日別データへ分割しないという要件そのものであり、この2つを分けて持つことがその保証。
+    dailyBatchEntries: {},
     // 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_sales(dailyResults)とは完全に
     // 別のマップ — `${storeId}__${month}` -> { [date]: {cashAmount, cashlessAmount, pointAmount} }。
     // 総売上・損益・月次集計のどの計算もこのフィールドを参照しないため、二重計上は構造的に

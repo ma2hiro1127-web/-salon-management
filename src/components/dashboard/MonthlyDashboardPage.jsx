@@ -35,14 +35,14 @@ export default function MonthlyDashboardPage({
   );
   const productivity = useMemo(
     () => (storeSummary ? getStaffProductivitySummary({
-      sales: storeSummary.sales, forecast: storeSummary.forecast,
+      sales: storeSummary.sales, forecast: storeSummary.displayForecast,
       staffCount: selectedStoreEntity?.staffCount, productivityStaffCount: selectedStoreEntity?.productivityStaffCount,
     }) : null),
     [storeSummary, selectedStoreEntity]
   );
   const previousProductivity = useMemo(
     () => (previousStoreSummary ? getStaffProductivitySummary({
-      sales: previousStoreSummary.sales, forecast: previousStoreSummary.forecast,
+      sales: previousStoreSummary.sales, forecast: previousStoreSummary.displayForecast,
       staffCount: selectedStoreEntity?.staffCount, productivityStaffCount: selectedStoreEntity?.productivityStaffCount,
     }) : null),
     [previousStoreSummary, selectedStoreEntity]

@@ -1477,6 +1477,105 @@ export const loadDailyCashBreakdownForCompanyRange = async ({ companyId, startDa
   }
 };
 
+// まとめて入力(daily_batch_entries)。daily_salesとは完全に別テーブル・別の保存経路 —
+// 未入力項目はnullのまま送る(Number(x || 0)にしない、これがdaily_sales側との決定的な
+// 違い)。start_date基準で範囲取得する(end_dateは常に同一月内、DBのCHECK制約で保証済み)。
+export const loadDailyBatchEntriesForCompanyRange = async ({ companyId, startDate, endDate }) => {
+  if (!isSupabaseConfigured || !companyId || !startDate || !endDate) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("daily_batch_entries")
+      .select("*")
+      .eq("company_id", companyId)
+      .gte("start_date", startDate)
+      .lte("start_date", endDate);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadDailyBatchEntriesForCompanyRange", table: "daily_batch_entries", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+const buildDailyBatchEntryRow = ({ companyId, storeId, entry }) => ({
+  company_id: companyId,
+  store_id: storeId,
+  start_date: entry.startDate,
+  end_date: entry.endDate,
+  sales_amount: entry.totalSales,
+  technical_sales_amount: entry.technicalSales,
+  retail_sales_amount: entry.retailSales,
+  other_sales_amount: entry.otherSales,
+  customer_count: entry.customers,
+  new_customer_count: entry.newCustomers,
+  repeat_customer_count: entry.repeatCustomers,
+  review_count: entry.reviewCount,
+  cash_amount: entry.cashAmount,
+  cashless_amount: entry.cashlessAmount,
+  point_amount: entry.pointAmount,
+  memo: entry.memo || null,
+});
+
+export const createDailyBatchEntry = async ({ companyId, storeId, userId, entry }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId, startDate: entry?.startDate, endDate: entry?.endDate });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "createDailyBatchEntry", table: "daily_batch_entries", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase
+      .from("daily_batch_entries")
+      .insert({ ...buildDailyBatchEntryRow({ companyId, storeId, entry }), created_by: userId, updated_by: userId })
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "createDailyBatchEntry", table: "daily_batch_entries", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const updateDailyBatchEntry = async ({ id, companyId, storeId, userId, entry }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ id, companyId, storeId, userId, startDate: entry?.startDate, endDate: entry?.endDate });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "updateDailyBatchEntry", table: "daily_batch_entries", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase
+      .from("daily_batch_entries")
+      .update({ ...buildDailyBatchEntryRow({ companyId, storeId, entry }), updated_by: userId, updated_at: new Date().toISOString() })
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "updateDailyBatchEntry", table: "daily_batch_entries", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+export const deleteDailyBatchEntry = async ({ id }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ id });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "deleteDailyBatchEntry", table: "daily_batch_entries", error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { error } = await supabase.from("daily_batch_entries").delete().eq("id", id);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteDailyBatchEntry", table: "daily_batch_entries", error });
+    return { ok: false, error };
+  }
+};
+
 // monthly_closings already existed in the schema (company-scoped RLS included) but the app's
 // month-closing toggle never actually wrote to it — it only lived in the tenant_snapshots
 // blob. This makes it a real per (company_id, store_id, year_month) row.

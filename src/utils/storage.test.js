@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -1959,4 +1959,270 @@ test("summarizeMonthlyCashBreakdown: 月間差額は日別差額の絶対値合�
   assert.equal(summary.salesTotal, 200000);
   // 日別の絶対値合計なら20000になるはずだが、正しくは相殺されて0
   assert.equal(summary.diffTotal, 0);
+});
+
+// ============================================================
+// まとめて入力(daily_batch_entries)
+// ============================================================
+
+test("parseNullableNumber: 空文字/undefined/nullはnull、それ以外は数値(未入力と0を区別する)", () => {
+  assert.equal(parseNullableNumber(""), null);
+  assert.equal(parseNullableNumber(undefined), null);
+  assert.equal(parseNullableNumber(null), null);
+  assert.equal(parseNullableNumber("0"), 0);
+  assert.equal(parseNullableNumber(0), 0);
+  assert.equal(parseNullableNumber("1500"), 1500);
+  assert.equal(parseNullableNumber("abc"), null);
+});
+
+test("dailyBatchEntryRowToEntry / buildBatchEntryStateFromRows: DB行のnullをそのままnullとして保持し、storeId__monthでキー化する", () => {
+  const rows = [
+    {
+      id: "batch-1", store_id: "store-a", start_date: "2026-08-01", end_date: "2026-08-10",
+      sales_amount: 1000000, technical_sales_amount: null, retail_sales_amount: null, other_sales_amount: null,
+      customer_count: null, new_customer_count: null, repeat_customer_count: null, review_count: null,
+      cash_amount: null, cashless_amount: null, point_amount: null, memo: "", updated_at: "2026-08-10T00:00:00Z",
+    },
+  ];
+  const { dailyBatchEntries } = buildBatchEntryStateFromRows(rows);
+  const key = buildMonthKey("store-a", "2026-08");
+  assert.equal(dailyBatchEntries[key].length, 1);
+  assert.equal(dailyBatchEntries[key][0].totalSales, 1000000);
+  assert.equal(dailyBatchEntries[key][0].customers, null);
+  assert.equal(dailyBatchEntries[key][0].cashAmount, null);
+
+  const directEntry = dailyBatchEntryRowToEntry(rows[0]);
+  assert.equal(directEntry.id, "batch-1");
+  assert.equal(directEntry.startDate, "2026-08-01");
+  assert.equal(directEntry.endDate, "2026-08-10");
+  assert.equal(directEntry.totalSales, 1000000);
+  assert.equal(directEntry.reviewCount, null);
+
+  const state = { dailyBatchEntries };
+  assert.deepEqual(getBatchEntriesForStoreMonth(state, "store-a", "2026-08"), dailyBatchEntries[key]);
+  assert.deepEqual(getBatchEntriesForStoreMonth(state, "store-a", "2026-09"), []);
+});
+
+test("buildDailyBatchEntryPayload: 未入力項目はnullのまま保存する(0にしない)", () => {
+  const fieldSettings = { fields: { technicalSales: true, retailSales: true, otherSales: false, customers: true, newCustomers: true, repeatCustomers: true, reviewCount: true } };
+  const payload = buildDailyBatchEntryPayload({
+    form: { startDate: "2026-08-01", endDate: "2026-08-10", totalSales: "500000", technicalSales: "500000", retailSales: "", customers: "", newCustomers: "", repeatCustomers: "", reviewCount: "" },
+    fieldSettings,
+  });
+  assert.equal(payload.totalSales, 500000);
+  assert.equal(payload.technicalSales, 500000);
+  assert.equal(payload.retailSales, null); // 空欄は0ではなくnull
+  assert.equal(payload.customers, null);
+  assert.equal(payload.newCustomers, null);
+});
+
+test("ケースA: 売上のみまとめ入力 → 売上だけ月間集計へ反映され、客数・口コミ・日計には影響しない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 1000000);
+  assert.equal(summary.customers, 0); // 客数はまとめ入力にも日次にも無いので0のまま(=未入力)
+  assert.equal(summary.reviewCount, 0);
+  // dailyResults(日別データ)には一切追加されていないことを確認(要件3: 日別データへ分割しない)。
+  assert.deepEqual(state.dailyResults[key] || [], []);
+});
+
+test("ケースB: 8/1〜8/10まとめ入力(売上+客数) + 8/11以降の通常日次入力 → 月間累計が正しく合算される", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 500000, technicalSales: null, retailSales: null, otherSales: null, customers: 50, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  state.dailyResults[key] = [
+    { date: "2026-08-11", totalSales: 100000, customers: 10 },
+    { date: "2026-08-12", totalSales: 120000, customers: 12 },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 720000); // 500000 + 100000 + 120000
+  assert.equal(summary.customers, 72); // 50 + 10 + 12
+});
+
+test("ケースC: 月途中利用開始(8/18〜) — 8/1〜8/17をまとめ入力、8/18以降を通常日次入力しても8月全体が正しく集計される", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-17", totalSales: 1700000, technicalSales: null, retailSales: null, otherSales: null, customers: 170, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  state.dailyResults[key] = [
+    { date: "2026-08-18", totalSales: 90000, customers: 9 },
+    { date: "2026-08-19", totalSales: 95000, customers: 10 },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 1885000); // 1700000 + 90000 + 95000
+  assert.equal(summary.customers, 189); // 170 + 9 + 10
+  // 契約開始日より前だから入力できない、という制限は無い(dailyBatchEntriesへの直接代入が
+  // 成功していること自体が「startDateに制約が無い」ことの確認)。
+});
+
+test("ケースD: 月1回(8/1〜8/31まとめ入力) → 月次売上は正常、日別売上を捏造しない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-31", totalSales: 3100000, technicalSales: null, retailSales: null, otherSales: null, customers: 310, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 3100000);
+  assert.equal(summary.customers, 310);
+  // dailyResultsは空のまま — 3100000を31日に均等配分するような日別レコードは一切作られない。
+  assert.deepEqual(state.dailyResults[key] || [], []);
+  assert.equal(summary.entries.length, 0);
+});
+
+test("ケースE: まとめ入力期間内に同じ項目(売上)の日次データを追加しようとすると重複警告", () => {
+  const batchEntries = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const dailyEntries = [];
+  const conflicts = detectBatchEntryFieldOverlap({ dailyEntries, batchEntries, startDate: "2026-08-05", endDate: "2026-08-05", fieldKeys: ["sales"] });
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].fieldKey, "sales");
+  assert.equal(conflicts[0].batchConflict, true);
+});
+
+test("ケースF: まとめ売上のみ存在する期間に口コミの日次入力をしても重複警告は出ない(項目単位で判定)", () => {
+  const batchEntries = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const conflicts = detectBatchEntryFieldOverlap({ dailyEntries: [], batchEntries, startDate: "2026-08-05", endDate: "2026-08-05", fieldKeys: ["reviewCount"] });
+  assert.equal(conflicts.length, 0);
+});
+
+test("逆ケース(要件8): 既存の日次売上がある期間に、まとめ売上を追加しようとすると重複警告", () => {
+  const dailyEntries = [{ date: "2026-08-03", totalSales: 50000, technicalSales: 50000 }];
+  const conflicts = detectBatchEntryFieldOverlap({ dailyEntries, batchEntries: [], startDate: "2026-08-01", endDate: "2026-08-10", fieldKeys: ["sales"] });
+  assert.equal(conflicts.length, 1);
+  assert.equal(conflicts[0].dailyConflict, true);
+});
+
+test("ケースG: まとめ入力を削除すると、その数字だけ月間集計から消える(他のデータは無事)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+    { id: "b2", startDate: "2026-08-11", endDate: "2026-08-20", totalSales: 800000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const beforeDelete = calculateMonthSummary(state, store, month);
+  assert.equal(beforeDelete.sales, 1800000);
+
+  // b1を削除した状態(削除操作自体はUI/DB層の責務なので、ここでは削除後のstateを模擬する)。
+  state.dailyBatchEntries[key] = state.dailyBatchEntries[key].filter((entry) => entry.id !== "b1");
+  const afterDelete = calculateMonthSummary(state, store, month);
+  assert.equal(afterDelete.sales, 800000);
+});
+
+test("ケースH: 目標設定済み店舗でまとめ入力しても目標値は一切変わらず、達成率だけが更新される", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.targets[key] = { targetSales: 2000000 };
+
+  const before = calculateMonthSummary(state, store, month);
+  assert.equal(before.target.targetSales, 2000000);
+  assert.equal(before.targetAchievement, 0);
+
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-31", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const after = calculateMonthSummary(state, store, month);
+  assert.equal(after.target.targetSales, 2000000); // 目標値は不変
+  assert.equal(after.targetAchievement, 50); // 達成率だけ更新される(1000000/2000000)
+});
+
+test("ケースI: 日計だけまとめ入力 → 売上・客数には一切影響しない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: null, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: 500000, cashlessAmount: null, pointAmount: null },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 0);
+  assert.equal(summary.customers, 0);
+  // 日計(cashBreakdownResults)には一切書き込まれていない(daily_cash_breakdownと同じく
+  // 完全に独立したデータ経路のまま)。
+  assert.deepEqual(state.cashBreakdownResults?.[key] || {}, {});
+});
+
+test("ケースJ: 客数はまとめ入力+日次入力の合算、新規/再来のどちらか片方だけまとめ入力しても他方を0にしない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: null, technicalSales: null, retailSales: null, otherSales: null, customers: 100, newCustomers: 30, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.customers, 100);
+  assert.equal(summary.newCustomers, 30);
+  assert.equal(summary.repeatCustomers, 0); // 未入力のまま、0で確定してよい(repeatCustomers自体を勝手に埋めない)
+});
+
+test("getBusinessDayDatesInRange: 明示的な店休日カレンダーが設定されている場合、その日付だけを除外する", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  state.storeHolidays[buildMonthKey(store, month)] = ["2026-08-03", "2026-08-04"];
+  const dates = getBusinessDayDatesInRange(state, store, "2026-08-01", "2026-08-05");
+  assert.deepEqual(dates, ["2026-08-01", "2026-08-02", "2026-08-05"]);
+});
+
+test("要件14・15: 日締めが1件も無い(completedDays=0)店舗でも、まとめ入力の実績があればforecast/averageDailySalesが0(異常値)にならない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  // 店休日カレンダーを設定して営業日数を確定させる(31日中、土日等の除外は無いのでbusinessDayCount=31のまま — 明示的な店休日を1件も設定しない場合の既存fallback)。
+  state.dailyBatchEntries[key] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  const summary = calculateMonthSummary(state, store, month);
+  // 日締めが無いので既存のpace/forecast/averageDailySalesは0のまま(変更しない、という要件)。
+  assert.equal(summary.completedDays, 0);
+  assert.equal(summary.forecast, 0);
+  assert.equal(summary.averageDailySales, 0);
+  // だが実績カバー日数(10日、まとめ入力の期間内営業日)を分母にした新フィールドは0円にならない。
+  assert.equal(summary.resultsCoverageBusinessDays, 10);
+  assert.equal(summary.averageSalesPerResultDay, 100000); // 1000000 / 10
+  assert.ok(summary.forecastByResults > 0);
+  // UI表示用のdisplayForecast/displayAverageDailySalesは、completedDaysが0でも実績があれば
+  // フォールバックし、既存のforecast/averageDailySales自体は変更しない。
+  assert.equal(summary.displayAverageDailySales, summary.averageSalesPerResultDay);
+  assert.equal(summary.displayForecast, summary.forecastByResults);
+});
+
+test("calculateAllStoresMonthSummary: 各店舗のまとめ入力を正しく合算し、resultsCoverageBusinessDaysも店舗横断で合算する", () => {
+  const state = createInitialAppState();
+  const company = {
+    id: "company-1",
+    stores: [{ id: "store-a", name: "A店" }, { id: "store-b", name: "B店" }],
+  };
+  const month = "2026-08";
+  state.dailyBatchEntries[buildMonthKey("store-a", month)] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-05", totalSales: 500000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+  state.dailyResults[buildMonthKey("store-b", month)] = [
+    { date: "2026-08-01", totalSales: 100000, customers: 10 },
+  ];
+  const summary = calculateAllStoresMonthSummary(state, company, month);
+  assert.equal(summary.sales, 600000);
 });

@@ -46,7 +46,12 @@
 // 強制表示する(setup.completeフラグではなく実際の店舗数を基準にする、店舗が1件でも
 // あれば二度と出ない)。「店舗を追加」時に既存店舗名との類似(全角半角・大文字小文字・
 // スペース・「本店」等の接尾辞違い)を検知した場合は警告文言を強める。
-const CACHE_NAME = 'salon-manager-cache-v16';
+// v17: 日次入力に「まとめて入力」を追加。毎日入力しない店舗向けに、期間(開始日〜終了日、
+// 単一暦月内)の合計を新テーブル(daily_batch_entries、全項目null許容)へ記録できる。
+// 未入力項目は0として保存せず、月間集計(calculateMonthSummary/calculateAllStoresMonthSummary)
+// にだけ非破壊的に加算する — 日別データ(dailyResults)・目標・営業日設定・日締めは一切
+// 変更しない。既存の日次入力機能自体は無変更。
+const CACHE_NAME = 'salon-manager-cache-v17';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

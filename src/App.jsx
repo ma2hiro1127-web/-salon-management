@@ -18,6 +18,11 @@ import {
   buildDailyEntryPayload,
   buildDailyStateFromRows,
   buildCashBreakdownStateFromRows,
+  buildBatchEntryStateFromRows,
+  buildDailyBatchEntryPayload,
+  dailyBatchEntryRowToEntry,
+  getBatchEntriesForStoreMonth,
+  detectBatchEntryFieldOverlap,
   dailySalesRowToEntry,
   buildMonthClosingStateFromRows,
   buildTargetStateFromRows,
@@ -75,7 +80,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -112,6 +117,10 @@ import {
   loadDailySalesForCompanyRange,
   upsertDailyCashBreakdown,
   loadDailyCashBreakdownForCompanyRange,
+  loadDailyBatchEntriesForCompanyRange,
+  createDailyBatchEntry,
+  updateDailyBatchEntry,
+  deleteDailyBatchEntry,
   upsertMonthlyClosingState,
   loadMonthlyClosingsForCompany,
   loadMonthlyTargetsForCompany,
@@ -787,6 +796,43 @@ function App() {
   // 月別日計一覧モーダルの開閉のみを持つ(月・店舗はモーダル側のローカルstateで完結させ、
   // 日次入力側のselectedMonth/dailyFormには一切影響しない)。
   const [showCashBreakdownMonthly, setShowCashBreakdownMonthly] = useState(false);
+
+  // まとめて入力。既存の日次入力(dailyForm/dailyMode/saveDailyEntry)は一切変更せず、
+  // 完全に独立したstate・保存経路として追加する — 「毎日入力」を選んでいる限り、これらの
+  // stateは一切参照されない。dailyInputModeが唯一の分岐点。
+  const [dailyInputMode, setDailyInputMode] = useState("daily");
+  const createBatchFormDefaults = () => ({
+    startDate: "", endDate: "",
+    totalSales: "", technicalSales: "", retailSales: "", otherSales: "",
+    customers: "", newCustomers: "", repeatCustomers: "", reviewCount: "",
+    cashAmount: "", cashlessAmount: "", pointAmount: "", memo: "",
+  });
+  const [batchForm, setBatchForm] = useState(createBatchFormDefaults());
+  const updateBatchField = (field, value) => {
+    setBatchForm((prev) => {
+      const next = { ...prev, [field]: value };
+      // 日次入力と同じ「総売上の自動計算」規約(要件2: 未入力項目は0として扱わない)。
+      // 技術・店販・その他のうち1つでも入力があれば合算し、全て空欄ならtotalSalesも
+      // 空欄のまま(nullとして保存され、0円確定にしない)。
+      if (totalSalesIsAutoCalculated && (field === "technicalSales" || field === "retailSales" || field === "otherSales")) {
+        const technicalRaw = field === "technicalSales" ? value : prev.technicalSales;
+        const retailRaw = field === "retailSales" ? value : prev.retailSales;
+        const otherRaw = showOtherSalesField ? (field === "otherSales" ? value : prev.otherSales) : "";
+        const hasAny = [technicalRaw, retailRaw, otherRaw].some((v) => String(v || "").trim() !== "");
+        next.totalSales = hasAny ? String(parseNumber(technicalRaw) + parseNumber(retailRaw) + parseNumber(otherRaw)) : "";
+      }
+      if (customersIsAutoCalculated && (field === "newCustomers" || field === "repeatCustomers")) {
+        const newRaw = field === "newCustomers" ? value : prev.newCustomers;
+        const repeatRaw = field === "repeatCustomers" ? value : prev.repeatCustomers;
+        const hasAny = [newRaw, repeatRaw].some((v) => String(v || "").trim() !== "");
+        next.customers = hasAny ? String(parseNumber(newRaw) + parseNumber(repeatRaw)) : "";
+      }
+      return next;
+    });
+  };
+  const [batchEditId, setBatchEditId] = useState("");
+  const [batchFormStatus, setBatchFormStatus] = useState({ status: "idle", message: "" });
+  const [batchFormBusy, setBatchFormBusy] = useState(false);
   // 加盟店連携(閲覧専用)関連のローカルstate。company_partnerships一覧はhydrate対象外
   // (companies等とは別の独立したテーブルのため)なので、ログイン後・会社切替後に個別に
   // 読み込む。franchiseViewBusyは会社切り替え中の二重クリック防止、franchiseRequestModal*
@@ -1559,6 +1605,9 @@ function App() {
     ? getAllStoresTargetForCompanyMonth(appState, appState.currentCompanyId, selectedMonth)
     : getTargetForStoreMonth(appState, selectedStoreId, selectedMonth);
   const dailyEntries = useMemo(() => getDailyResultsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  // まとめて入力の一覧(この店舗・この対象月分)。dailyEntriesとは別配列 — 日別データへは
+  // 一切混ぜない(要件3)。
+  const batchEntries = useMemo(() => getBatchEntriesForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を
@@ -1581,10 +1630,10 @@ function App() {
   // を使うだけで、月間目標や費用データの有無とは無関係に成立する。
   const staffProductivitySummary = useMemo(() => getStaffProductivitySummary({
     sales: summary.sales,
-    forecast: summary.forecast,
+    forecast: summary.displayForecast,
     staffCount: selectedStoreEntity?.staffCount,
     productivityStaffCount: selectedStoreEntity?.productivityStaffCount,
-  }), [summary.sales, summary.forecast, selectedStoreEntity]);
+  }), [summary.sales, summary.displayForecast, selectedStoreEntity]);
   const businessDaySettings = useMemo(() => getBusinessDaySettings(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const monthClosingStatus = useMemo(() => {
     const key = buildMonthKey(selectedStoreId, selectedMonth);
@@ -1684,7 +1733,7 @@ function App() {
   const hasAnyTarget = hasSalesTarget || hasCustomerTarget || hasReviewCountTarget;
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
-  const forecastVsTarget = summary.forecast - parseNumber(target.targetSales);
+  const forecastVsTarget = summary.displayForecast - parseNumber(target.targetSales);
   // KPIエリア(目標に対する数値)用。実績値は営業進捗カードに表示するため、ここには置かない
   // (数字を混在させない、という今回の整理方針)。目標未設定の項目は配列に入れない
   // (0円/0名として表示しない — 任意項目のご指示に基づく)。
@@ -2154,6 +2203,15 @@ function App() {
       }
       const cashBreakdownState = buildCashBreakdownStateFromRows(cashBreakdownResult.data);
 
+      // まとめて入力(daily_batch_entries)。daily_salesと同じ日付レンジで取得する
+      // (start_date基準、end_dateは常に同一月内)。dailyResultsには絶対に混ぜない — 集計時に
+      // calculateMonthSummary側で別途参照するだけの、完全に独立したstate。
+      const batchEntriesResult = await loadDailyBatchEntriesForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate });
+      if (!batchEntriesResult.ok) {
+        throw batchEntriesResult.error || new Error("まとめて入力データの取得に失敗しました");
+      }
+      const batchEntryState = buildBatchEntryStateFromRows(batchEntriesResult.data);
+
       // Same reasoning for monthly_closings: it's the authoritative table now (see
       // upsertMonthlyClosingState), so a fresh device/session needs this fetched directly
       // instead of only ever reflecting whatever was last embedded in a tenant_snapshots row.
@@ -2335,6 +2393,7 @@ function App() {
           dailyResults: dailySalesState.dailyResults,
           dayClosingStates: dailySalesState.dayClosingStates,
           dayClosingUpdatedAt: dailySalesState.dayClosingUpdatedAt,
+          dailyBatchEntries: batchEntryState.dailyBatchEntries,
           monthClosingStatus: monthClosingStatusOverlay,
           // saveHolidayCount/saveManualBusinessDayCount/resetBusinessDaySetting (the 営業日設定
           // quick-edit on the daily entry page) now persist to monthly_targets via
@@ -2409,12 +2468,26 @@ function App() {
           });
           prunedCashBreakdownResults[key] = nextDates;
         });
+        // まとめて入力(daily_batch_entries)。dailyResultsと同じ「取得済みレンジ内で
+        // Supabaseに存在しないものだけ削る」ロジックだが、1日単位ではなくid単位で判定する
+        // (まとめ入力は1レコード=1期間なので、日付ではなくidの有無で「今も存在するか」を
+        // 判定するのが自然)。
+        const prunedDailyBatchEntries = { ...merged.dailyBatchEntries };
+        Object.keys(prunedDailyBatchEntries).forEach((key) => {
+          if (!companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix))) return;
+          const freshBatchIds = new Set((batchEntryState.dailyBatchEntries[key] || []).map((entry) => entry.id));
+          prunedDailyBatchEntries[key] = (prunedDailyBatchEntries[key] || []).filter((entry) => {
+            const withinFetchedWindow = entry.startDate >= dailySalesRange.startDate && entry.startDate <= dailySalesRange.endDate;
+            return !withinFetchedWindow || freshBatchIds.has(entry.id);
+          });
+        });
         return {
           ...merged,
           dailyResults: prunedDailyResults,
           dayClosingStates: prunedDayClosingStates,
           dayClosingUpdatedAt: prunedDayClosingUpdatedAt,
           cashBreakdownResults: prunedCashBreakdownResults,
+          dailyBatchEntries: prunedDailyBatchEntries,
           targets: pruneStaleKeys(merged.targets, windowedExpectedKeys, targetStateOverlay.targets),
           allStoresTargets: pruneStaleKeys(merged.allStoresTargets, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresTargets),
           allStoresBusinessDaySettings: pruneStaleKeys(merged.allStoresBusinessDaySettings, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresBusinessDaySettings),
@@ -4625,6 +4698,161 @@ function App() {
     return { company, store };
   };
 
+  const BATCH_OVERLAP_FIELD_LABELS = {
+    sales: "売上",
+    customers: "客数",
+    newCustomers: "新規客数",
+    repeatCustomers: "再来客数",
+    reviewCount: "口コミ数",
+    cash: "現金",
+    cashless: "キャッシュレス",
+    point: "ポイント利用",
+  };
+
+  const resetBatchForm = () => {
+    setBatchForm(createBatchFormDefaults());
+    setBatchEditId("");
+  };
+
+  const handleEditBatchEntry = (entry) => {
+    setBatchEditId(entry.id);
+    setBatchForm({
+      startDate: entry.startDate || "",
+      endDate: entry.endDate || "",
+      totalSales: entry.totalSales === null ? "" : String(entry.totalSales),
+      technicalSales: entry.technicalSales === null ? "" : String(entry.technicalSales),
+      retailSales: entry.retailSales === null ? "" : String(entry.retailSales),
+      otherSales: entry.otherSales === null ? "" : String(entry.otherSales),
+      customers: entry.customers === null ? "" : String(entry.customers),
+      newCustomers: entry.newCustomers === null ? "" : String(entry.newCustomers),
+      repeatCustomers: entry.repeatCustomers === null ? "" : String(entry.repeatCustomers),
+      reviewCount: entry.reviewCount === null ? "" : String(entry.reviewCount),
+      cashAmount: entry.cashAmount === null ? "" : String(entry.cashAmount),
+      cashlessAmount: entry.cashlessAmount === null ? "" : String(entry.cashlessAmount),
+      pointAmount: entry.pointAmount === null ? "" : String(entry.pointAmount),
+      memo: entry.memo || "",
+    });
+  };
+
+  // まとめて入力の保存(要件1-9)。既存のsaveDailyEntry(日次入力)とは完全に独立した処理 —
+  // dailyForm/dailyResults/日締めのいずれにも触れない。未入力項目はbuildDailyBatchEntryPayload
+  // (parseNullableNumber経由)でnullのまま保存し、0として確定させない(要件2)。保存前に
+  // 項目単位の重複検知(要件7・8)で警告を挟むが、ブロックはしない — 承知の上での重複入力も
+  // 許可する。
+  const handleSaveBatchEntry = async () => {
+    if (guardFranchiseReadOnly()) return;
+    if (!selectedStore) {
+      setNotice("店舗を先に追加してください");
+      return;
+    }
+    if (!batchForm.startDate || !batchForm.endDate) {
+      setBatchFormStatus({ status: "error", message: "開始日・終了日は必須です" });
+      return;
+    }
+    if (batchForm.startDate > batchForm.endDate) {
+      setBatchFormStatus({ status: "error", message: "終了日は開始日以降にしてください" });
+      return;
+    }
+    if (batchForm.startDate.slice(0, 7) !== batchForm.endDate.slice(0, 7)) {
+      setBatchFormStatus({ status: "error", message: "まとめて入力は同じ月内の期間だけ指定できます(月をまたぐ期間は指定できません)" });
+      return;
+    }
+
+    const payload = buildDailyBatchEntryPayload({ form: batchForm, fieldSettings: activeDailyFieldSettings });
+    const hasAnyValue = [payload.totalSales, payload.technicalSales, payload.retailSales, payload.otherSales, payload.customers, payload.newCustomers, payload.repeatCustomers, payload.reviewCount, payload.cashAmount, payload.cashlessAmount, payload.pointAmount].some((value) => value !== null) || Boolean(payload.memo);
+    if (!hasAnyValue) {
+      setBatchFormStatus({ status: "error", message: "少なくとも1項目を入力してください" });
+      return;
+    }
+
+    // 実際に値が入っている項目だけを重複検知の対象にする(未入力項目は他の入力と競合しない)。
+    const filledFieldKeys = [];
+    if (payload.totalSales !== null || payload.technicalSales !== null || payload.retailSales !== null || payload.otherSales !== null) filledFieldKeys.push("sales");
+    if (payload.customers !== null) filledFieldKeys.push("customers");
+    if (payload.newCustomers !== null) filledFieldKeys.push("newCustomers");
+    if (payload.repeatCustomers !== null) filledFieldKeys.push("repeatCustomers");
+    if (payload.reviewCount !== null) filledFieldKeys.push("reviewCount");
+    if (payload.cashAmount !== null) filledFieldKeys.push("cash");
+    if (payload.cashlessAmount !== null) filledFieldKeys.push("cashless");
+    if (payload.pointAmount !== null) filledFieldKeys.push("point");
+
+    const conflicts = detectBatchEntryFieldOverlap({
+      dailyEntries,
+      batchEntries,
+      startDate: batchForm.startDate,
+      endDate: batchForm.endDate,
+      fieldKeys: filledFieldKeys,
+      excludeBatchEntryId: batchEditId,
+    });
+    if (conflicts.length > 0) {
+      const labels = conflicts.map((item) => BATCH_OVERLAP_FIELD_LABELS[item.fieldKey] || item.fieldKey).join("・");
+      const confirmed = window.confirm(`この期間には既に「${labels}」のデータがあります。重複計上になる可能性があります。\n\nこのまま保存しますか？`);
+      if (!confirmed) return;
+    }
+
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (isSupabaseConfigured && (!company?.id || !store?.id || !appState.currentUserId)) {
+      const message = "会社・店舗・ユーザー情報を確認できませんでした";
+      setBatchFormStatus({ status: "error", message });
+      setNotice(message);
+      return;
+    }
+
+    setBatchFormBusy(true);
+    setBatchFormStatus({ status: "saving", message: "保存中…" });
+    try {
+      const result = batchEditId
+        ? await updateDailyBatchEntry({ id: batchEditId, companyId: appState.currentCompanyId, storeId: store?.id, userId: appState.currentUserId, entry: payload })
+        : await createDailyBatchEntry({ companyId: appState.currentCompanyId, storeId: store?.id, userId: appState.currentUserId, entry: payload });
+      if (!result?.ok && !result?.skipped) {
+        throw result.error || new Error("保存に失敗しました");
+      }
+      const savedEntry = result.data
+        ? dailyBatchEntryRowToEntry(result.data)
+        : { id: batchEditId || `local-${Date.now()}`, ...payload };
+      const key = buildMonthKey(store?.id || selectedStoreId, batchForm.startDate.slice(0, 7));
+      setAppState((prev) => {
+        const currentList = (prev.dailyBatchEntries?.[key] || []).filter((item) => item.id !== savedEntry.id);
+        return {
+          ...prev,
+          dailyBatchEntries: { ...prev.dailyBatchEntries, [key]: [...currentList, savedEntry] },
+        };
+      });
+      const successMessage = batchEditId ? "まとめて入力の内容を更新しました" : "まとめて入力を保存しました";
+      setBatchFormStatus({ status: "saved", message: successMessage });
+      setNotice(successMessage);
+      resetBatchForm();
+    } catch (error) {
+      const reason = getSupabaseErrorMessage(error);
+      setBatchFormStatus({ status: "error", message: reason });
+      setNotice(`まとめて入力の保存に失敗しました: ${reason}`);
+    } finally {
+      setBatchFormBusy(false);
+    }
+  };
+
+  // まとめて入力の削除(要件22)。この1件だけをdailyBatchEntriesから取り除く — 日次入力・
+  // 目標データ・他のまとめ入力レコードには一切触れない。
+  const handleDeleteBatchEntry = async (entry) => {
+    if (guardFranchiseReadOnly()) return;
+    if (!window.confirm(`${entry.startDate}〜${entry.endDate}のまとめて入力を削除しますか？この操作は取り消せません。`)) return;
+    try {
+      const result = await deleteDailyBatchEntry({ id: entry.id });
+      if (!result?.ok && !result?.skipped) {
+        throw result.error || new Error("削除に失敗しました");
+      }
+      const key = buildMonthKey(selectedStoreId, String(entry.startDate).slice(0, 7));
+      setAppState((prev) => ({
+        ...prev,
+        dailyBatchEntries: { ...prev.dailyBatchEntries, [key]: (prev.dailyBatchEntries?.[key] || []).filter((item) => item.id !== entry.id) },
+      }));
+      setNotice("まとめて入力を削除しました");
+      if (batchEditId === entry.id) resetBatchForm();
+    } catch (error) {
+      setNotice(`削除に失敗しました: ${getSupabaseErrorMessage(error)}`);
+    }
+  };
+
   const getCashBreakdownAutoSaveSignature = (form) => JSON.stringify({
     cashAmount: form.cashAmount ?? "",
     cashlessAmount: form.cashlessAmount ?? "",
@@ -5953,7 +6181,7 @@ function App() {
                   <div><span>営業完了</span><strong>{businessDaySummary.completedDays}日</strong></div>
                   <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
                   <div><span>総売上</span><strong>{money(summary.sales)}</strong></div>
-                  <div><span>1日平均売上</span><strong>{money(summary.averageDailySales)}</strong></div>
+                  <div><span>1日平均売上</span><strong>{money(summary.displayAverageDailySales)}</strong></div>
                   <div><span>顧客数</span><strong>{number(summary.customers)}名</strong></div>
                 </div>
               </div>
@@ -5983,7 +6211,7 @@ function App() {
                 ) : null}
                 <MetricCard
                   label="月末着地予測"
-                  value={money(summary.forecast)}
+                  value={money(summary.displayForecast)}
                   hint={hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
                     : null}
@@ -6103,6 +6331,145 @@ function App() {
                 {selectedStoreEntity?.status === "suspended" && (
                   <div className="notice-box warning">この店舗は現在停止中です。新規の売上・日次入力はできません(過去のデータは引き続き確認できます)。「店舗管理」から運営を再開できます。</div>
                 )}
+                {/* 毎日入力しない店舗(週1・旬ごと・月1等)向けの「まとめて入力」への切替。
+                    canEditMonthlyData(system_admin/company_admin/store_manager)以外には
+                    このトグル自体を出さない — staffには従来通り毎日入力の画面だけを見せる
+                    (要件: 既存の日次入力は一切変更しない)。 */}
+                {canEditMonthlyData(currentRole) ? (
+                  <div className="button-row daily-input-mode-toggle">
+                    <button
+                      type="button"
+                      className={dailyInputMode === "daily" ? "primary-button" : "secondary-button"}
+                      onClick={() => setDailyInputMode("daily")}
+                    >
+                      毎日入力
+                    </button>
+                    <button
+                      type="button"
+                      className={dailyInputMode === "batch" ? "primary-button" : "secondary-button"}
+                      onClick={() => setDailyInputMode("batch")}
+                    >
+                      まとめて入力
+                    </button>
+                  </div>
+                ) : null}
+                {dailyInputMode === "batch" && canEditMonthlyData(currentRole) ? (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <p className="eyebrow">BATCH</p>
+                        <h2>まとめて入力</h2>
+                      </div>
+                    </div>
+                    <p className="helper-text">
+                      毎日入力しない店舗向けに、期間(開始日〜終了日)の合計をまとめて記録できます。8/1〜8/31を指定すれば月1入力として、8/1〜8/10のように区切って使うこともできます。
+                      入力した項目だけが月間集計に反映され、入力しなかった項目は0円・0人として扱われません。日別の実績データには一切変換されません。
+                    </p>
+                    <div className="daily-section-card">
+                      <h3>期間</h3>
+                      <div className="input-grid">
+                        <label className="field">
+                          <span>開始日</span>
+                          <input type="date" value={batchForm.startDate} onChange={(event) => updateBatchField("startDate", event.target.value)} />
+                        </label>
+                        <label className="field">
+                          <span>終了日</span>
+                          <input type="date" value={batchForm.endDate} onChange={(event) => updateBatchField("endDate", event.target.value)} />
+                        </label>
+                      </div>
+                      <p className="helper-text">開始日・終了日は同じ月内で指定してください(月をまたぐ期間は指定できません)。</p>
+                    </div>
+
+                    <div className="daily-section-card">
+                      <h3>売上</h3>
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={batchForm.technicalSales} onChange={(value) => updateBatchField("technicalSales", value)} suffix="円" placeholder="未入力" numeric /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={batchForm.retailSales} onChange={(value) => updateBatchField("retailSales", value)} suffix="円" placeholder="未入力" numeric /> : null}
+                      {showOtherSalesField ? <Field label="その他売上（税込）" value={batchForm.otherSales} onChange={(value) => updateBatchField("otherSales", value)} suffix="円" placeholder="未入力" numeric /> : null}
+                      {totalSalesIsAutoCalculated ? (
+                        <div className="summary-card compact">
+                          <span>総売上（税込・自動計算）</span>
+                          <strong>{batchForm.totalSales === "" ? "未入力" : money(parseNumber(batchForm.totalSales))}</strong>
+                        </div>
+                      ) : (
+                        <Field label="総売上（税込）" value={batchForm.totalSales} onChange={(value) => updateBatchField("totalSales", value)} suffix="円" placeholder="未入力" numeric />
+                      )}
+                    </div>
+
+                    {showCustomersField ? (
+                      <div className="daily-section-card">
+                        <h3>客数</h3>
+                        {showNewCustomersField ? <Field label="新規客数" value={batchForm.newCustomers} onChange={(value) => updateBatchField("newCustomers", value)} suffix="名" placeholder="未入力" numeric /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={batchForm.repeatCustomers} onChange={(value) => updateBatchField("repeatCustomers", value)} suffix="名" placeholder="未入力" numeric /> : null}
+                        {customersIsAutoCalculated ? (
+                          <div className="summary-card compact">
+                            <span>客数（自動計算）</span>
+                            <strong>{batchForm.customers === "" ? "未入力" : `${number(parseNumber(batchForm.customers))}名`}</strong>
+                          </div>
+                        ) : (
+                          <Field label="客数" value={batchForm.customers} onChange={(value) => updateBatchField("customers", value)} suffix="名" placeholder="未入力" numeric />
+                        )}
+                      </div>
+                    ) : null}
+
+                    {showReviewCountField ? (
+                      <div className="daily-section-card">
+                        <h3>口コミ</h3>
+                        <Field label="口コミ数" value={batchForm.reviewCount} onChange={(value) => updateBatchField("reviewCount", value)} suffix="件" placeholder="未入力" numeric />
+                      </div>
+                    ) : null}
+
+                    {useCashBreakdown ? (
+                      <div className="daily-section-card">
+                        <h3>日計</h3>
+                        <Field label="現金" value={batchForm.cashAmount} onChange={(value) => updateBatchField("cashAmount", value)} suffix="円" placeholder="未入力" numeric />
+                        <Field label="キャッシュレス" value={batchForm.cashlessAmount} onChange={(value) => updateBatchField("cashlessAmount", value)} suffix="円" placeholder="未入力" numeric />
+                        <Field label="ポイント利用" value={batchForm.pointAmount} onChange={(value) => updateBatchField("pointAmount", value)} suffix="円" placeholder="未入力" numeric />
+                      </div>
+                    ) : null}
+
+                    <div className="daily-section-card">
+                      <h3>メモ</h3>
+                      <label className="field">
+                        <span>メモ</span>
+                        <textarea value={batchForm.memo} onChange={(event) => setBatchForm((prev) => ({ ...prev, memo: event.target.value }))} rows={2} />
+                      </label>
+                    </div>
+
+                    {batchFormStatus.message ? <div className={`notice-box ${batchFormStatus.status === "error" ? "warning" : ""}`}>{batchFormStatus.message}</div> : null}
+                    <div className="button-row">
+                      <button className="primary-button" type="button" onClick={handleSaveBatchEntry} disabled={batchFormBusy}>
+                        {batchFormBusy ? "保存中…" : batchEditId ? "まとめて入力を更新" : "まとめて入力を保存"}
+                      </button>
+                      {batchEditId ? <button className="secondary-button" type="button" onClick={resetBatchForm}>編集をキャンセル</button> : null}
+                    </div>
+
+                    <div className="daily-section-card">
+                      <h3>{formatMonthLabel(selectedMonth)}のまとめて入力一覧</h3>
+                      {batchEntries.length ? (
+                        <div className="stack">
+                          {[...batchEntries].sort((a, b) => String(a.startDate).localeCompare(String(b.startDate))).map((entry) => (
+                            <div key={entry.id} className="preview-card">
+                              <strong>{entry.startDate} 〜 {entry.endDate}（まとめて入力）</strong>
+                              <small>
+                                {entry.totalSales !== null ? `総売上 ${money(entry.totalSales)} ` : ""}
+                                {entry.customers !== null ? `客数 ${entry.customers}名 ` : ""}
+                                {entry.reviewCount !== null ? `口コミ ${entry.reviewCount}件 ` : ""}
+                                {entry.cashAmount !== null || entry.cashlessAmount !== null || entry.pointAmount !== null ? "日計あり" : ""}
+                              </small>
+                              <div className="button-row">
+                                <button className="text-button" type="button" onClick={() => handleEditBatchEntry(entry)}>編集</button>
+                                <button className="text-button" type="button" onClick={() => handleDeleteBatchEntry(entry)}>削除</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="helper-text">この月のまとめて入力はまだありません。</p>
+                      )}
+                    </div>
+                  </section>
+                ) : null}
+                {dailyInputMode === "daily" || !canEditMonthlyData(currentRole) ? (
                 <section className="panel">
                   <div className="panel-heading">
                     <div>
@@ -6340,6 +6707,7 @@ function App() {
                     />
                   </div>
                 </section>
+                ) : null}
 
                 {showCashBreakdownMonthly ? (
                   <MonthlyCashBreakdownModal

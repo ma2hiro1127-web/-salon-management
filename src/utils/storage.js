@@ -23,6 +23,17 @@ export const parseNumber = (value) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+// まとめて入力専用。既存のparseNumberは空欄/未入力を必ず0に丸める(daily_salesが「未入力」
+// という概念を持たず、常に確定した数値を保存する設計のため) — まとめ入力は逆に「未入力」と
+// 「0」を区別しなければならない(要件)ので、空欄/undefined/nullは0ではなくnullのまま返す
+// 専用のパーサーを別に用意する。既存のparseNumberは一切変更しない(daily_sales側の保存が
+// これに依存しているため)。
+export const parseNullableNumber = (value) => {
+  if (value === "" || value === null || value === undefined) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 // <input type="number"> has a well-known browser quirk: once the typed content isn't a
 // strictly valid HTML floating-point number (e.g. full-width Japanese digits like "４" from an
 // IME — very common on Japanese keyboards/numpads), the DOM reports an EMPTY string via
@@ -314,6 +325,133 @@ export const buildDailyStateFromRows = (rows = []) => {
   });
 
   return { dailyResults, dayClosingStates, dayClosingUpdatedAt };
+};
+
+// まとめて入力(daily_batch_entries)。daily_salesとは完全に別のテーブル・別のstateキー
+// (dailyBatchEntries)として持つ — 日別データ(dailyResults)へは絶対に混ぜない(要件3:
+// まとめ入力は日別データへ分割しない)。dailySalesRowToEntry/buildDailyStateFromRowsと
+// 対になる関数だが、決定的な違いとして各項目はparseNumber(常に数値、未入力は0)ではなく
+// row由来のnullをそのまま通す — 「未入力」と「0」を区別するのがこの機能の核なので、ここで
+// 0に丸めてしまうと以降の集計で区別できなくなる。
+export const dailyBatchEntryRowToEntry = (row = {}) => ({
+  id: row.id,
+  startDate: row.start_date,
+  endDate: row.end_date,
+  totalSales: row.sales_amount === null || row.sales_amount === undefined ? null : Number(row.sales_amount),
+  technicalSales: row.technical_sales_amount === null || row.technical_sales_amount === undefined ? null : Number(row.technical_sales_amount),
+  retailSales: row.retail_sales_amount === null || row.retail_sales_amount === undefined ? null : Number(row.retail_sales_amount),
+  otherSales: row.other_sales_amount === null || row.other_sales_amount === undefined ? null : Number(row.other_sales_amount),
+  customers: row.customer_count === null || row.customer_count === undefined ? null : Number(row.customer_count),
+  newCustomers: row.new_customer_count === null || row.new_customer_count === undefined ? null : Number(row.new_customer_count),
+  repeatCustomers: row.repeat_customer_count === null || row.repeat_customer_count === undefined ? null : Number(row.repeat_customer_count),
+  reviewCount: row.review_count === null || row.review_count === undefined ? null : Number(row.review_count),
+  cashAmount: row.cash_amount === null || row.cash_amount === undefined ? null : Number(row.cash_amount),
+  cashlessAmount: row.cashless_amount === null || row.cashless_amount === undefined ? null : Number(row.cashless_amount),
+  pointAmount: row.point_amount === null || row.point_amount === undefined ? null : Number(row.point_amount),
+  memo: row.memo || "",
+  createdBy: row.created_by || "",
+  updatedAt: row.updated_at || "",
+});
+
+// state.dailyBatchEntries[storeId__month] = [...entries]。まとめ入力は必ず単一暦月内
+// (DBのCHECK制約でも強制済み)なので、buildMonthKeyのキー1つに必ず収まる。
+export const buildBatchEntryStateFromRows = (rows = []) => {
+  const dailyBatchEntries = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.store_id || !row.start_date) return;
+    const month = String(row.start_date).slice(0, 7);
+    const key = buildMonthKey(row.store_id, month);
+    dailyBatchEntries[key] = [...(dailyBatchEntries[key] || []), dailyBatchEntryRowToEntry(row)];
+  });
+  return { dailyBatchEntries };
+};
+
+export const getBatchEntriesForStoreMonth = (state, storeId, monthValue) =>
+  state.dailyBatchEntries?.[buildMonthKey(storeId, monthValue)] || [];
+
+// buildDailyEntryPayloadと対だが、未入力は0ではなくnullのまま送る(parseNullableNumber)。
+// 既存のbuildDailyEntryPayloadは変更しない(daily_sales側の挙動に一切影響させないため)。
+// 日次と同じ「総売上は単一の情報源」規約(storage.js内buildDailyEntryPayloadのコメント参照)
+// を踏襲するが、まとめ入力では総売上欄自体が未入力ならnullのまま(技術+店販が両方未入力の
+// ときに0円確定させない)。
+export const buildDailyBatchEntryPayload = ({ form, fieldSettings } = {}) => {
+  const fields = fieldSettings?.fields || {};
+  const showTechnical = Boolean(fields.technicalSales);
+  const showRetail = Boolean(fields.retailSales);
+  const showOther = Boolean(fields.otherSales);
+  const showCustomers = Boolean(fields.customers);
+  const showNewCustomers = showCustomers && Boolean(fields.newCustomers);
+  const showRepeatCustomers = showCustomers && Boolean(fields.repeatCustomers);
+  const showReviewCount = Boolean(fields.reviewCount);
+
+  return {
+    startDate: form.startDate,
+    endDate: form.endDate,
+    totalSales: parseNullableNumber(form.totalSales),
+    technicalSales: showTechnical ? parseNullableNumber(form.technicalSales) : null,
+    retailSales: showRetail ? parseNullableNumber(form.retailSales) : null,
+    otherSales: showOther ? parseNullableNumber(form.otherSales) : null,
+    customers: showCustomers ? parseNullableNumber(form.customers) : null,
+    newCustomers: showNewCustomers ? parseNullableNumber(form.newCustomers) : null,
+    repeatCustomers: showRepeatCustomers ? parseNullableNumber(form.repeatCustomers) : null,
+    reviewCount: showReviewCount ? parseNullableNumber(form.reviewCount) : null,
+    cashAmount: parseNullableNumber(form.cashAmount),
+    cashlessAmount: parseNullableNumber(form.cashlessAmount),
+    pointAmount: parseNullableNumber(form.pointAmount),
+    memo: form.memo || "",
+  };
+};
+
+// 項目単位の重複検知(要件7・8)。日次入力側は「その項目の値が入っている(0より大きい)日が
+// 範囲内にあるか」で判定する — daily_salesは未入力/0を区別できないため、実質的な入力の
+// 有無をこの近似で判定する(0円と明示入力された日を誤検知することはあるが、安全側に倒す)。
+// まとめ入力側は「同じ項目がnullでない既存レコードの期間と重なるか」で判定する。ブロックは
+// せず、警告対象の項目キー一覧を返すだけの純粋関数(呼び出し側でwindow.confirm等に使う)。
+const BATCH_OVERLAP_FIELD_TO_DAILY_KEYS = {
+  sales: ["totalSales", "technicalSales"],
+  customers: ["customers"],
+  newCustomers: ["newCustomers"],
+  repeatCustomers: ["repeatCustomers"],
+  reviewCount: ["reviewCount"],
+  cash: ["cashAmount"],
+  cashless: ["cashlessAmount"],
+  point: ["pointAmount"],
+};
+const BATCH_OVERLAP_FIELD_TO_BATCH_KEYS = {
+  sales: ["totalSales", "technicalSales", "retailSales", "otherSales"],
+  customers: ["customers"],
+  newCustomers: ["newCustomers"],
+  repeatCustomers: ["repeatCustomers"],
+  reviewCount: ["reviewCount"],
+  cash: ["cashAmount"],
+  cashless: ["cashlessAmount"],
+  point: ["pointAmount"],
+};
+const rangesOverlap = (aStart, aEnd, bStart, bEnd) => aStart <= bEnd && bStart <= aEnd;
+
+export const detectBatchEntryFieldOverlap = ({ dailyEntries = [], batchEntries = [], startDate, endDate, fieldKeys = [], excludeBatchEntryId = "" } = {}) => {
+  const conflicts = [];
+  fieldKeys.forEach((fieldKey) => {
+    const dailyKeys = BATCH_OVERLAP_FIELD_TO_DAILY_KEYS[fieldKey] || [];
+    const batchKeys = BATCH_OVERLAP_FIELD_TO_BATCH_KEYS[fieldKey] || [];
+
+    const dailyConflict = dailyEntries.some((entry) => {
+      const date = String(entry?.date || "");
+      if (!date || date < startDate || date > endDate) return false;
+      return dailyKeys.some((key) => parseNumber(entry?.[key]) > 0);
+    });
+
+    const batchConflict = batchEntries.some((entry) => {
+      if (excludeBatchEntryId && entry.id === excludeBatchEntryId) return false;
+      if (!rangesOverlap(startDate, endDate, entry.startDate, entry.endDate)) return false;
+      return batchKeys.some((key) => entry[key] !== null && entry[key] !== undefined);
+    });
+
+    if (dailyConflict || batchConflict) {
+      conflicts.push({ fieldKey, dailyConflict, batchConflict });
+    }
+  });
+  return conflicts;
 };
 
 // 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_cash_breakdownは完全に独立したテーブル
@@ -747,6 +885,10 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   dayClosingStates: mergeDayClosingStatesMap(localState.dayClosingStates, remoteState.dayClosingStates, localState.dayClosingUpdatedAt, remoteState.dayClosingUpdatedAt),
   dayClosingUpdatedAt: mergeDayClosingUpdatedAtMap(localState.dayClosingUpdatedAt, remoteState.dayClosingUpdatedAt),
   dailyResultBackups: mergeItemArrayMap(localState.dailyResultBackups, remoteState.dailyResultBackups),
+  // まとめて入力(daily_batch_entries)もfixedCosts/variableCosts等と同じ「idを持つ配列を
+  // storeId__monthでキー化したマップ」構造 — 同じmergeItemArrayMapで、フェッチ範囲外の
+  // store/monthのローカルキャッシュを消さずに保持する(dailyResultsと同じ理由)。
+  dailyBatchEntries: mergeItemArrayMap(localState.dailyBatchEntries, remoteState.dailyBatchEntries),
   fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
@@ -878,6 +1020,27 @@ export const getBusinessDayDates = (monthValue, holidayDates = []) => {
   }
 
   return list;
+};
+
+// まとめて入力の期間内の「営業日数」を数えるための日付一覧(要件14・15: カレンダー日数では
+// なく営業日数で平均を出す)。getBusinessDayDates(上)とは違い週末を一律除外しない — これは
+// getBusinessDaySummaryのbusinessDayCountが「明示的な店休日カレンダー(getStoreHolidayDates)
+// が設定されていればそれだけを除外する、無ければ除外しない」という既存の定義そのものに
+// 合わせるため(週末を勝手に除外すると、月全体のbusinessDayCountの定義と食い違ってしまう)。
+// startDate〜endDateは常に単一暦月内(DBのCHECK制約で保証済み)。
+export const getBusinessDayDatesInRange = (state, storeId, startDate, endDate) => {
+  if (!startDate || !endDate) return [];
+  const monthValue = String(startDate).slice(0, 7);
+  const holidaySet = new Set(getStoreHolidayDates(state, storeId, monthValue));
+  const dates = [];
+  let cursor = new Date(`${startDate}T00:00:00`);
+  const end = new Date(`${endDate}T00:00:00`);
+  while (cursor <= end) {
+    const iso = formatLocalDate(cursor);
+    if (!holidaySet.has(iso)) dates.push(iso);
+    cursor = new Date(cursor.getFullYear(), cursor.getMonth(), cursor.getDate() + 1);
+  }
+  return dates;
 };
 
 export const normalizeObjectMap = (value) => {
@@ -1244,14 +1407,44 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const selectedCurrentMonth = monthValue === `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const effectiveEntries = entries;
 
-  const sales = effectiveEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0);
-  const technicalSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.technicalSales || 0), 0);
-  const retailSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.retailSales || 0), 0);
-  const otherSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.otherSales || 0), 0);
-  const customers = effectiveEntries.reduce((total, item) => total + parseNumber(item.customers || 0), 0);
-  const newCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.newCustomers || 0), 0);
-  const repeatCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.repeatCustomers || 0), 0);
-  const reviewCount = effectiveEntries.reduce((total, item) => total + parseNumber(item.reviewCount || 0), 0);
+  // まとめて入力(daily_batch_entries)。日別データ(dailyResults)には一切混ぜず、月次集計の
+  // 合算にだけ加える(要件3・9)。未入力(null)の項目はここで足さない — 0として集計に影響
+  // させないことがこの機能の核となる要件。
+  const batchEntries = getBatchEntriesForStoreMonth(state, storeId, monthValue);
+  const sumNullableBatchField = (getField) => batchEntries.reduce((total, item) => {
+    const value = getField(item);
+    return value === null || value === undefined ? total : total + Number(value);
+  }, 0);
+  const batchSales = sumNullableBatchField((item) => item.totalSales ?? item.technicalSales ?? null);
+  const batchTechnicalSales = sumNullableBatchField((item) => item.technicalSales);
+  const batchRetailSales = sumNullableBatchField((item) => item.retailSales);
+  const batchOtherSales = sumNullableBatchField((item) => item.otherSales);
+  const batchCustomers = sumNullableBatchField((item) => item.customers);
+  const batchNewCustomers = sumNullableBatchField((item) => item.newCustomers);
+  const batchRepeatCustomers = sumNullableBatchField((item) => item.repeatCustomers);
+  const batchReviewCount = sumNullableBatchField((item) => item.reviewCount);
+
+  const sales = effectiveEntries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0) + batchSales;
+  const technicalSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.technicalSales || 0), 0) + batchTechnicalSales;
+  const retailSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.retailSales || 0), 0) + batchRetailSales;
+  const otherSales = effectiveEntries.reduce((total, item) => total + parseNumber(item.otherSales || 0), 0) + batchOtherSales;
+  const customers = effectiveEntries.reduce((total, item) => total + parseNumber(item.customers || 0), 0) + batchCustomers;
+  const newCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.newCustomers || 0), 0) + batchNewCustomers;
+  const repeatCustomers = effectiveEntries.reduce((total, item) => total + parseNumber(item.repeatCustomers || 0), 0) + batchRepeatCustomers;
+  const reviewCount = effectiveEntries.reduce((total, item) => total + parseNumber(item.reviewCount || 0), 0) + batchReviewCount;
+
+  // 「実績が存在する営業日数」(要件14・15の平均・月末着地予測用)。既存のcompletedDays
+  // (日締め済みの日だけ)とは別の並行概念 — 日次入力がある日(日締め有無は問わない) ∪
+  // まとめ入力期間のうち売上系項目が1つでも入っているものの営業日、を重複なく数える。
+  // pace/forecast/completedDays/averageDailySales(既存フィールド)はこの下で一切変更しない。
+  const dailyEntryDateSet = new Set(effectiveEntries.map((entry) => String(entry?.date || "")).filter(Boolean));
+  const salesResultDateSet = new Set(dailyEntryDateSet);
+  batchEntries.forEach((batchEntry) => {
+    const hasSalesData = batchEntry.totalSales !== null || batchEntry.technicalSales !== null || batchEntry.retailSales !== null || batchEntry.otherSales !== null;
+    if (!hasSalesData) return;
+    getBusinessDayDatesInRange(state, storeId, batchEntry.startDate, batchEntry.endDate).forEach((date) => salesResultDateSet.add(date));
+  });
+  const resultsCoverageBusinessDays = salesResultDateSet.size;
 
   // 費用入力(fixedCosts)・過去の月締め項目(closingItems)・過去の変動費(variableCosts)を
   // 1つに結合し、category_key基準で集計する。カテゴリは費用名の文字列ではなく、費用登録時に
@@ -1342,6 +1535,19 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // 割る既存値、pace/forecastが使う)とは別の新規フィールドで、既存のaverageSales/pace/forecast
   // の計算には一切手を入れない。
   const averageDailySales = completedDays > 0 ? sales / completedDays : 0;
+  // まとめて入力を使っている店舗向けの並行フィールド(要件14・15)。日締めは一切いじらない
+  // 仕様(要件19)のためcompletedDaysは0のままになりうるが、その場合pace/forecast/
+  // averageDailySalesは0(異常値)になってしまう。実績が存在する営業日数(上のresults
+  // CoverageBusinessDays)で割った値を別途用意し、UI側はcompletedDaysが0でも実績がある
+  // 場合だけこちらを表示に使う(displayForecast/displayAverageDailySales) — 既存の
+  // forecast/averageDailySales自体は変更しない。
+  const averageSalesPerResultDay = resultsCoverageBusinessDays > 0 ? sales / resultsCoverageBusinessDays : 0;
+  const forecastByResults = resultsCoverageBusinessDays > 0 && businessDaySummary.businessDayCount
+    ? averageSalesPerResultDay * businessDaySummary.businessDayCount
+    : 0;
+  const useResultsFallback = completedDays === 0 && resultsCoverageBusinessDays > 0;
+  const displayForecast = useResultsFallback ? forecastByResults : forecast;
+  const displayAverageDailySales = useResultsFallback ? averageSalesPerResultDay : averageDailySales;
   const remainingAverageSales = remainingBusinessDays ? remainingSalesTarget / remainingBusinessDays : 0;
   const todayActual = effectiveEntries.filter((entry) => entry.date === todayIso).reduce((sum, item) => sum + parseNumber(item.totalSales || item.technicalSales || 0), 0);
   const todayTarget = targetPerDay;
@@ -1441,6 +1647,12 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     progressRate,
     averageSales,
     averageDailySales,
+    resultsCoverageBusinessDays,
+    averageSalesPerResultDay,
+    forecastByResults,
+    displayForecast,
+    displayAverageDailySales,
+    batchEntries,
     remainingAverageSales,
     customerTarget,
     customerAchievement,
@@ -1534,10 +1746,15 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   // summary.sales(入力済み全件)と基準が食い違い、ダッシュボードとランキングとで違う数字に
   // 見える不具合の一因になっていた。
   let closedSales = 0;
+  // まとめて入力の合算(要件9・24)。日別データには混ぜず、店舗ごとにcalculateMonthSummary
+  // と同じロジックで加算する。resultsCoverageBusinessDaysも店舗横断で合算し、全店舗版の
+  // 着地予測フォールバックに使う(下記)。
+  let resultsCoverageBusinessDays = 0;
 
   stores.forEach((store) => {
     const entries = getDailyResultsForStoreMonth(state, store.id, monthValue);
     const closedDateSet = new Set(getBusinessDaySummary(state, store.id, monthValue).closedDates || []);
+    const batchEntries = getBatchEntriesForStoreMonth(state, store.id, monthValue);
     entries.forEach((entry) => {
       const amount = parseNumber(entry.totalSales || entry.technicalSales || 0);
       sales += amount;
@@ -1552,6 +1769,23 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
         closedSales += amount;
       }
     });
+    const storeSalesResultDateSet = new Set(entries.map((entry) => String(entry?.date || "")).filter(Boolean));
+    batchEntries.forEach((batchEntry) => {
+      const batchTotal = batchEntry.totalSales ?? batchEntry.technicalSales ?? null;
+      if (batchTotal !== null) sales += Number(batchTotal);
+      if (batchEntry.technicalSales !== null) technicalSales += Number(batchEntry.technicalSales);
+      if (batchEntry.retailSales !== null) retailSales += Number(batchEntry.retailSales);
+      if (batchEntry.otherSales !== null) otherSales += Number(batchEntry.otherSales);
+      if (batchEntry.customers !== null) customers += Number(batchEntry.customers);
+      if (batchEntry.newCustomers !== null) newCustomers += Number(batchEntry.newCustomers);
+      if (batchEntry.repeatCustomers !== null) repeatCustomers += Number(batchEntry.repeatCustomers);
+      if (batchEntry.reviewCount !== null) reviewCount += Number(batchEntry.reviewCount);
+      const hasSalesData = batchEntry.totalSales !== null || batchEntry.technicalSales !== null || batchEntry.retailSales !== null || batchEntry.otherSales !== null;
+      if (hasSalesData) {
+        getBusinessDayDatesInRange(state, store.id, batchEntry.startDate, batchEntry.endDate).forEach((date) => storeSalesResultDateSet.add(date));
+      }
+    });
+    resultsCoverageBusinessDays += storeSalesResultDateSet.size;
   });
 
   const completedDays = businessDaySummary.completedDays;
@@ -1567,6 +1801,16 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   // 1日平均売上 = 全店舗の確定済み総売上 ÷ 全店舗として営業完了した日数。paceと同じ理由で
   // 未確定の当日を分母に混ぜないよう、salesではなくclosedSalesを使う。
   const averageDailySales = completedDays > 0 ? closedSales / completedDays : 0;
+  // 個別店舗版と同じフォールバック(要件14・15)。まとめ入力を使っている店舗を含む全店舗
+  // ビューでcompletedDaysが0のままでも、resultsCoverageBusinessDaysがあれば異常値(0円)を
+  // 出さない。
+  const averageSalesPerResultDay = resultsCoverageBusinessDays > 0 ? sales / resultsCoverageBusinessDays : 0;
+  const forecastByResults = resultsCoverageBusinessDays > 0 && businessDaySummary.businessDayCount
+    ? averageSalesPerResultDay * businessDaySummary.businessDayCount
+    : 0;
+  const useResultsFallback = completedDays === 0 && resultsCoverageBusinessDays > 0;
+  const displayForecast = useResultsFallback ? forecastByResults : forecast;
+  const displayAverageDailySales = useResultsFallback ? averageSalesPerResultDay : averageDailySales;
   const averageSpend = customers ? sales / customers : 0;
 
   const customerTarget = parseNumber(target.targetCustomers);
@@ -1603,6 +1847,11 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
     progressRate,
     averageSales: averageDailySales,
     averageDailySales,
+    resultsCoverageBusinessDays,
+    averageSalesPerResultDay,
+    forecastByResults,
+    displayForecast,
+    displayAverageDailySales,
     customerTarget,
     customerAchievement,
     remainingCustomersTarget,
@@ -1693,11 +1942,11 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
     const summary = calculateMonthSummary(state, store.id, monthValue, { useInventoryTracking, hiddenCategories });
     const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, { useInventoryTracking, hiddenCategories });
     const productivity = getStaffProductivitySummary({
-      sales: summary.sales, forecast: summary.forecast,
+      sales: summary.sales, forecast: summary.displayForecast,
       staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
     });
     const previousProductivity = getStaffProductivitySummary({
-      sales: previousSummary.sales, forecast: previousSummary.forecast,
+      sales: previousSummary.sales, forecast: previousSummary.displayForecast,
       staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
     });
     const effectiveStaffCount = parseNumber(store.productivityStaffCount) > 0
