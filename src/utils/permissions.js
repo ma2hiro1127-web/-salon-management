@@ -30,20 +30,22 @@ export const NAV_ITEMS_BY_ROLE = {
   // "franchise"(加盟店連携)はsystem_admin/company_adminだけに追加する — 加盟店連携リクエスト
   // の送信(system_admin限定)・承認/拒否・閲覧切替はどちらのロールにも関係するが、
   // store_manager/staffには加盟店データを一切見せない(要件10)ため含めない。
-  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings"],
-  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings"],
+  // "faq"(使い方・FAQ)は全ロールに追加する — AI機能とは無関係の通常機能で、ログインして
+  // いる全ユーザーが閲覧できる(要件: AI契約・設定を前提としない)。
+  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings", "faq"],
+  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings", "faq"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
   // branch in App.jsx. No "companies" (店舗管理会社), and no monthly-target-adjacent company-wide
   // settings beyond their own store.
-  store_manager: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
+  store_manager: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings", "faq"],
   // 月次経営ダッシュボードは店舗横断比較・会社全体集計を含むため、staffには意図的に含めない。
   // 店舗管理("stores")も同様にstaffの通常業務範囲外のため含めない — この配列がURLの
   // 存在しないこのSPAにおける唯一の認可ゲート(canAccessPage)なので、ここから外すことが
-  // そのままURL直接アクセスの拒否にもなる。
-  staff: ["dashboard", "daily"],
-  owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings"],
-  admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings"],
+  // そのままURL直接アクセスの拒否にもなる。faqだけは例外的に全ロール共通で追加する。
+  staff: ["dashboard", "daily", "faq"],
+  owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings", "faq"],
+  admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings", "faq"],
 };
 
 export const canAccessPage = (role, page) => {
@@ -116,6 +118,7 @@ const NAV_ITEM_CATEGORY = {
   companies: "management",
   franchise: "management",
   settings: "other",
+  faq: "other",
 };
 
 export const getVisibleNavItems = (role) => {
@@ -134,6 +137,7 @@ export const getVisibleNavItems = (role) => {
       users: "ユーザー管理",
       franchise: "加盟店連携",
       settings: "設定",
+      faq: "使い方・FAQ",
     }[page] || page,
   }));
 };

@@ -81,3 +81,12 @@ test("「franchise」ナビ項目追加後もresolveDefaultPage(先頭は常にd
   assert.ok(!getVisibleNavItems("store_manager").map((item) => item.id).includes("franchise"));
   assert.ok(!getVisibleNavItems("staff").map((item) => item.id).includes("franchise"));
 });
+
+test("「使い方・FAQ」はAI機能とは無関係に全ロール(system_admin/company_admin/store_manager/staff)からアクセスできる", () => {
+  ["system_admin", "company_admin", "store_manager", "staff"].forEach((role) => {
+    assert.equal(canAccessPage(role, "faq"), true, `${role} should be able to access faq`);
+    assert.ok(getVisibleNavItems(role).map((item) => item.id).includes("faq"), `${role} nav should include faq`);
+  });
+  // 先頭は引き続きdashboardのまま(faqが初期表示ページになってしまわないこと)。
+  assert.equal(resolveDefaultPage("staff"), "dashboard");
+});

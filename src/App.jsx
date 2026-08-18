@@ -170,6 +170,7 @@ import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
+import FaqPage from "./components/faq/FaqPage.jsx";
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
@@ -5711,7 +5712,7 @@ function App() {
             </button>
             <div>
               <p className="eyebrow">SALON MANAGEMENT</p>
-              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : activePage === "franchise" ? "加盟店連携" : "設定"}</h1>
+              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : activePage === "franchise" ? "加盟店連携" : activePage === "faq" ? "使い方・FAQ" : "設定"}</h1>
               {currentUser ? (
                 <div className="user-role-badge" style={{ marginTop: 6 }}>
                   {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
@@ -7755,6 +7756,8 @@ function App() {
             </div>
           );
         })() : null}
+
+        {activePage === "faq" && <FaqPage />}
 
         {activePage === "settings" && (
           <div className="stack settings-stack">
