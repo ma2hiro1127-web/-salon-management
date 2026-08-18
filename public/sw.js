@@ -20,7 +20,9 @@
 // 変更してバイト差分を作ることで、ブラウザに新しいService Workerの install/activate
 // (=古いCache Storageの破棄)を確実に発火させ、次の起動・再読み込み時に最新版が
 // 表示されやすくする。
-const CACHE_NAME = 'salon-manager-cache-v8';
+// v9: 加盟店を開いた後、店舗プルダウンから自社へ戻れなくなる不具合の修正(hydrateFromSupabase
+// が加盟店自身の過去スナップショットからisViewingFranchiseを誤って引き継いでいたバグ)。
+const CACHE_NAME = 'salon-manager-cache-v9';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

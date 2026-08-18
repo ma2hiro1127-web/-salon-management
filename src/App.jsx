@@ -1223,6 +1223,14 @@ function App() {
             // session viewing, say, next month's fixed costs would silently snap back to the
             // current month on every refresh/re-login. Prefer the device's own cached month.
             selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+            // セッション復元(ページ再読み込み・再ログイン)は常に自社(本来のcompany_id)から
+            // 始める、という意図的な単純化(加盟店の閲覧状態はセッションをまたいで保持しない)。
+            // ここで明示的にfalse/""へ戻さないと、直前のlocalStorageキャッシュに残っている
+            // isViewingFranchise: true(...localRecoveredStateの展開経由)が生き残ってしまい、
+            // currentCompanyIdは正しく自社へ戻っているのにisViewingFranchiseだけtrueのまま、
+            // という不整合な状態でページが再開してしまう。
+            isViewingFranchise: false,
+            homeCompanyIdBeforeFranchiseView: "",
           };
           writeAppState(reconciledState);
           setAppState(reconciledState);
@@ -1754,6 +1762,9 @@ function App() {
           selectedStore: loginPreferredSelectedStore,
           selectedStoreId: loginPreferredSelectedStoreId,
           selectedMonth: loginLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+          // ログインは常に自社から始める(加盟店の閲覧状態は引き継がない)。
+          isViewingFranchise: false,
+          homeCompanyIdBeforeFranchiseView: "",
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: Boolean(session || sessionData?.session), authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1864,6 +1875,8 @@ function App() {
           selectedStore: invitePreferredSelectedStore,
           selectedStoreId: invitePreferredSelectedStoreId,
           selectedMonth: inviteLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+          isViewingFranchise: false,
+          homeCompanyIdBeforeFranchiseView: "",
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1920,6 +1933,8 @@ function App() {
           selectedStore: signupPreferredSelectedStore,
           selectedStoreId: signupPreferredSelectedStoreId,
           selectedMonth: signupLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+          isViewingFranchise: false,
+          homeCompanyIdBeforeFranchiseView: "",
         });
         await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -1996,6 +2011,8 @@ function App() {
         selectedStore: recoverSelectedStore,
         selectedStoreId: recoverSelectedStoreId,
         selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+        isViewingFranchise: false,
+        homeCompanyIdBeforeFranchiseView: "",
       });
       await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
       window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
@@ -2427,6 +2444,11 @@ function App() {
             currentCompanyId: companyIdOverride || profile?.company_id || prev.currentCompanyId || companyId,
             currentUserId: profile?.id || prev.currentUserId || "",
             currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
+            // 同じ理由(下のhas-snapshot分岐と同じコメント参照)でisViewingFranchise/
+            // homeCompanyIdBeforeFranchiseViewも明示的にtenantState由来を優先させる —
+            // ...fallbackStateのローカルキャッシュ由来の値に依存しない。
+            isViewingFranchise: Boolean(tenantState?.isViewingFranchise),
+            homeCompanyIdBeforeFranchiseView: tenantState?.isViewingFranchise ? (tenantState?.homeCompanyIdBeforeFranchiseView || "") : "",
           });
           merged = applyDailySalesOverlay(merged);
           writeAppState(merged);
@@ -2485,6 +2507,16 @@ function App() {
         selectedStore: resolvedSelectedStore,
         selectedStoreId: resolvedSelectedStoreId,
         selectedMonth: resolvedSelectedMonth,
+        // 同じクラスのバグ: isViewingFranchise/homeCompanyIdBeforeFranchiseViewもtenant_snapshots
+        // の生ペイロード由来のremoteStateへ含めていなかったため、上の"...remoteState"展開経由で
+        // 加盟店(閲覧対象)自身の過去のスナップショット(その会社のユーザーが普段使っている
+        // 状態なので、当然isViewingFranchise: falseが埋め込まれている)にこの2フィールドが
+        // 上書きされてしまい、「加盟店を開いた直後にisViewingFranchiseがfalseへ戻り、
+        // 店舗プルダウンが自社ではなくcurrentCompanyId(=加盟店)の店舗一覧を表示してしまう」
+        // 不具合の直接の原因になっていた。呼び出し元が明示的に渡したtenantStateの値を
+        // 必ず優先させる。
+        isViewingFranchise: Boolean(tenantState?.isViewingFranchise),
+        homeCompanyIdBeforeFranchiseView: tenantState?.isViewingFranchise ? (tenantState?.homeCompanyIdBeforeFranchiseView || "") : "",
       };
       const remoteSnapshotSignature = JSON.stringify({
         ...nextRemoteState,
