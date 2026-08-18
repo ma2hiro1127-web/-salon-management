@@ -724,6 +724,63 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   };
 };
 
+// 加盟店連携(閲覧専用)で、対象の加盟店会社1社分のcompanies/stores基本情報だけを取得する
+// 軽量版ローダー。loadTenantStateFromSupabaseと同じ正規化(company.stores[].settings等)を
+// 使うが、store_input_settings等の上書きはApp.jsx側のhydrateFromSupabase(companyIdOverride
+// 付き)が後続で行うため、ここでは基本情報だけ返せば十分。RLS側はcurrent_user_can_view_
+// franchise_company()が承認済み(approved)の連携がある場合だけSELECTを許可する — 未承認の
+// 会社を指定した場合は空(0行)で返る。
+export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: false, error: new Error("companyId is required") };
+  try {
+    const [{ data: companyRow, error: companyError }, { data: storesData, error: storesError }] = await Promise.all([
+      supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, created_at, updated_at").eq("id", companyId).maybeSingle(),
+      supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").eq("company_id", companyId).order("created_at", { ascending: true }),
+    ]);
+    if (companyError) throw companyError;
+    if (storesError) throw storesError;
+    if (!companyRow) {
+      return { ok: false, error: new Error("加盟店の会社情報を取得できませんでした（連携が承認されていない可能性があります）") };
+    }
+
+    const company = {
+      id: companyRow.id,
+      name: companyRow.name,
+      code: companyRow.code,
+      isActive: companyRow.is_active !== false,
+      contractStatus: companyRow.contract_status || "trial",
+      freeReason: companyRow.free_reason || "",
+      deletedAt: companyRow.deleted_at || "",
+      startedAt: companyRow.created_at || new Date().toISOString(),
+      lastUpdatedAt: companyRow.updated_at || new Date().toISOString(),
+      setup: { company: true, store: true, admin: true, settings: true, complete: true },
+      settings: createDefaultCompanySettings(),
+      stores: (storesData || []).map((store) => ({
+        id: store.id,
+        name: store.name,
+        code: store.code,
+        companyId: companyRow.id,
+        postalCode: "",
+        address: "",
+        phone: "",
+        managerName: "",
+        openingDate: "",
+        openingHour: "09:00",
+        closingHour: "20:00",
+        closedDays: "月",
+        isActive: store.is_active !== false,
+        status: store.status || "active",
+        settings: { ...createDefaultStoreSettings(), dailyFieldSettings: normalizeDailyFieldSettings(store.daily_field_settings) },
+      })),
+    };
+
+    return { ok: true, company };
+  } catch (error) {
+    logSupabaseError({ operation: "loadFranchiseCompanyMetadata", table: "companies", companyId, error });
+    return { ok: false, error };
+  }
+};
+
 export const createCompanyRecord = async ({ name, code, contractStatus }) => {
   const { data, error } = await supabase
     .from("companies")
@@ -767,6 +824,79 @@ export const updateCompanyContractStatus = async ({ companyId, targetStatus, fre
     return { ok: false, error: new Error(data.error) };
   }
   return { ok: true, status: data?.status || "", freeReason: data?.freeReason };
+};
+
+// 加盟店連携リクエストの送信 — create-franchise-request Edge Function(service-role)経由。
+// system_admin限定。company_id・既存データには一切触れず、company_partnershipsの1行を
+// pending状態で作成(または過去に拒否/解除された行をpendingへ再利用)する。
+export const createFranchiseRequest = async ({ parentCompanyId, partnerCompanyId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("create-franchise-request", {
+    body: { parentCompanyId, partnerCompanyId },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, id: data?.id || "", status: data?.status || "pending" };
+};
+
+// 加盟店連携リクエストの承認/拒否/解除/再申請 — update-franchise-relationship Edge Function
+// (service-role)経由。承認はrelationshipのpartner_company_id側のcompany_admin(または
+// system_admin)のみ、解除・再申請はparent_company_id側のcompany_admin(またはsystem_admin)
+// のみ行える(サーバー側で再検証)。
+export const updateFranchiseRelationship = async ({ relationshipId, action }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("update-franchise-relationship", {
+    body: { relationshipId, action },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, id: data?.id || "", status: data?.status || "" };
+};
+
+// company_partnerships の一覧取得。RLS(company_partnerships_select)により、system_adminは
+// 全件、それ以外は自社がparent/partnerどちらかの行だけが返る — クライアント側でのフィルタは
+// 不要(取得できた時点で見てよい行だけになっている)。
+export const loadCompanyPartnerships = async () => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true, data: [] };
+  try {
+    // 送信元/送信先の会社名をこの1回のクエリで一緒に取得する(通知バナー・詳細画面で
+    // 「〇〇株式会社から」を表示するため)。RLS(companies_select_company_scoped、
+    // 20260823010000で追加した分岐)がpending/approvedの関係にある相手の会社名だけを
+    // company_adminに許可しているので、業務データが漏れることはない。
+    const { data, error } = await supabase
+      .from("company_partnerships")
+      .select(
+        "id, parent_company_id, partner_company_id, relationship_type, status, joined_at, can_view_sales, can_view_daily, can_view_dashboard, can_view_pl, can_view_costs, requested_by, responded_by, responded_at, created_at, updated_at, parent_company:companies!company_partnerships_parent_company_id_fkey(id, name, code), partner_company:companies!company_partnerships_partner_company_id_fkey(id, name, code)"
+      )
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadCompanyPartnerships", table: "company_partnerships", error });
+    return { ok: false, error, data: [] };
+  }
 };
 
 // 会社の論理削除・復元 — soft-delete-company Edge Function(service-role)経由。system_admin

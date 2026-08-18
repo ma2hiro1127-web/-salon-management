@@ -27,8 +27,11 @@ export const NAV_ITEMS_BY_ROLE = {
   // それに加えてsystem_admin専用の会社管理("companies")が使える(要件: system_adminを
   // 専用画面に切り替えるのではなく、通常権限のスーパーセットとして扱う)。RLS側もこれに
   // 合わせてsystem_adminの業務データアクセスを維持している(20260818000000で復元)。
-  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "settings"],
-  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
+  // "franchise"(加盟店連携)はsystem_admin/company_adminだけに追加する — 加盟店連携リクエスト
+  // の送信(system_admin限定)・承認/拒否・閲覧切替はどちらのロールにも関係するが、
+  // store_manager/staffには加盟店データを一切見せない(要件10)ため含めない。
+  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings"],
+  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
   // branch in App.jsx. No "companies" (店舗管理会社), and no monthly-target-adjacent company-wide
@@ -39,8 +42,8 @@ export const NAV_ITEMS_BY_ROLE = {
   // 存在しないこのSPAにおける唯一の認可ゲート(canAccessPage)なので、ここから外すことが
   // そのままURL直接アクセスの拒否にもなる。
   staff: ["dashboard", "daily"],
-  owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "settings"],
-  admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings"],
+  owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings"],
+  admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings"],
 };
 
 export const canAccessPage = (role, page) => {
@@ -95,6 +98,11 @@ export const getInvitableRoles = (role) => {
 // でスコープする — calculateAllStoresMonthSummary/getAllStoresBusinessDaySummary等を参照)。
 export const canViewAllStores = (role) => normalizeRole(role) === "company_admin" || normalizeRole(role) === "system_admin";
 
+// 加盟店連携(閲覧専用)関連の画面・操作にアクセスできるか。store_manager/staffは常にfalse
+// (要件10)。リクエストの新規送信自体はさらにsystem_admin限定(App.jsx側で個別にチェックする)。
+export const canManageFranchisePartnerships = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
+export const canCreateFranchiseRequest = (role) => normalizeRole(role) === "system_admin";
+
 // サイドメニューの余白区切り用のグループ分け(表示専用、権限ロジックには使わない)。
 // 「売上」ページ名と紛らわしくなるため見出し文字は出さず、グループの切れ目に余白を
 // 空けるためだけに使う(App.jsxのnav-group-start判定)。
@@ -106,6 +114,7 @@ const NAV_ITEM_CATEGORY = {
   stores: "management",
   users: "management",
   companies: "management",
+  franchise: "management",
   settings: "other",
 };
 
@@ -123,6 +132,7 @@ export const getVisibleNavItems = (role) => {
       companies: "会社管理",
       stores: "店舗管理",
       users: "ユーザー管理",
+      franchise: "加盟店連携",
       settings: "設定",
     }[page] || page,
   }));

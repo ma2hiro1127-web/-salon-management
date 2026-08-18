@@ -164,6 +164,12 @@ export const createInitialAppState = () => {
     selectedStore: "",
     selectedStoreId: "",
     selectedMonth,
+    // 加盟店連携(閲覧専用)。isViewingFranchiseがtrueの間、currentCompanyIdは加盟店の会社を
+    // 指し、homeCompanyIdBeforeFranchiseViewが「本社に戻る」で復元する自社company_id。
+    // ページを再読み込みすると常にfalse/空へリセットされる(常に自社から始まる、意図的な
+    // 単純化)。
+    isViewingFranchise: false,
+    homeCompanyIdBeforeFranchiseView: "",
     targets: {},
     // 「全店舗」専用の目標値・営業日設定(company_id__target_monthでキー化、店舗には紐づかない)。
     // 各店舗のtargets/businessDaySettingsとは完全に別管理で、実店舗の目標を書き換えない。

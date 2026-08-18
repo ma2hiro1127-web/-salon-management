@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole } from "./permissions.js";
+import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage } from "./permissions.js";
 
 test("system and company admins can access all stores in their company", () => {
   assert.deepEqual(getAllowedStoreIdsForRole({ role: "system_admin", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s1"] }), ["s1", "s2"]);
@@ -52,4 +52,32 @@ test("hard-deleting a store is system_admin only — company_admin can suspend/a
   assert.equal(canHardDeleteStore("company_admin"), false);
   assert.equal(canHardDeleteStore("store_manager"), false);
   assert.equal(canHardDeleteStore("staff"), false);
+});
+
+test("加盟店連携(閲覧専用): system_admin/company_adminだけがアクセス可能、store_manager/staffは不可(要件10)", () => {
+  assert.equal(canManageFranchisePartnerships("system_admin"), true);
+  assert.equal(canManageFranchisePartnerships("company_admin"), true);
+  assert.equal(canManageFranchisePartnerships("store_manager"), false);
+  assert.equal(canManageFranchisePartnerships("staff"), false);
+  assert.equal(canAccessPage("system_admin", "franchise"), true);
+  assert.equal(canAccessPage("company_admin", "franchise"), true);
+  assert.equal(canAccessPage("store_manager", "franchise"), false);
+  assert.equal(canAccessPage("staff", "franchise"), false);
+});
+
+test("加盟店連携リクエストの新規送信はsystem_admin限定(company_adminは受信・承認・拒否のみ)", () => {
+  assert.equal(canCreateFranchiseRequest("system_admin"), true);
+  assert.equal(canCreateFranchiseRequest("company_admin"), false);
+  assert.equal(canCreateFranchiseRequest("store_manager"), false);
+});
+
+test("「franchise」ナビ項目追加後もresolveDefaultPage(先頭は常にdashboard)は変わらない", () => {
+  assert.equal(resolveDefaultPage("system_admin"), "dashboard");
+  assert.equal(resolveDefaultPage("company_admin"), "dashboard");
+  const systemAdminNav = getVisibleNavItems("system_admin").map((item) => item.id);
+  const companyAdminNav = getVisibleNavItems("company_admin").map((item) => item.id);
+  assert.ok(systemAdminNav.includes("franchise"));
+  assert.ok(companyAdminNav.includes("franchise"));
+  assert.ok(!getVisibleNavItems("store_manager").map((item) => item.id).includes("franchise"));
+  assert.ok(!getVisibleNavItems("staff").map((item) => item.id).includes("franchise"));
 });

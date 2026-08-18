@@ -75,7 +75,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
@@ -154,6 +154,10 @@ import {
   updateUserEmail,
   setUserActiveState,
   refreshInviteState,
+  loadFranchiseCompanyMetadata,
+  createFranchiseRequest,
+  updateFranchiseRelationship,
+  loadCompanyPartnerships,
 } from "./utils/supabase.js";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
@@ -778,6 +782,18 @@ function App() {
   // 月別日計一覧モーダルの開閉のみを持つ(月・店舗はモーダル側のローカルstateで完結させ、
   // 日次入力側のselectedMonth/dailyFormには一切影響しない)。
   const [showCashBreakdownMonthly, setShowCashBreakdownMonthly] = useState(false);
+  // 加盟店連携(閲覧専用)関連のローカルstate。company_partnerships一覧はhydrate対象外
+  // (companies等とは別の独立したテーブルのため)なので、ログイン後・会社切替後に個別に
+  // 読み込む。franchiseViewBusyは会社切り替え中の二重クリック防止、franchiseRequestModal*
+  // は「加盟店追加」モーダル、franchiseDetailRelationshipIdは通知バナー/詳細確認用。
+  const [companyPartnerships, setCompanyPartnerships] = useState([]);
+  const [franchiseViewBusy, setFranchiseViewBusy] = useState(false);
+  const [showFranchiseRequestModal, setShowFranchiseRequestModal] = useState(false);
+  const [franchiseRequestSearch, setFranchiseRequestSearch] = useState("");
+  const [franchiseRequestTargetId, setFranchiseRequestTargetId] = useState("");
+  const [franchiseRequestStatus, setFranchiseRequestStatus] = useState({ status: "idle", message: "" });
+  const [franchiseDetailRelationshipId, setFranchiseDetailRelationshipId] = useState("");
+  const [franchiseActionBusyId, setFranchiseActionBusyId] = useState("");
   const [fixedForm, setFixedForm] = useState(() => ({ ...defaultFixedCostItem, startMonth: new Date().toISOString().slice(0, 7) }));
   const [notice, setNotice] = useState("");
   const [businessDayInput, setBusinessDayInput] = useState("");
@@ -1301,6 +1317,98 @@ function App() {
   useEffect(() => {
     setFixedForm((prev) => (prev.id ? prev : { ...prev, startMonth: selectedMonth }));
   }, [selectedMonth]);
+
+  // 加盟店連携リクエスト一覧の読み込み。company_partnershipsはhydrateFromSupabaseの対象外
+  // (companies等とは別の独立したテーブル)なので、ログイン確立後に個別に取得する。
+  // RLS(company_partnerships_select)により、system_adminは全件、それ以外は自社がparent/
+  // partnerどちらかの行だけが返るため、クライアント側での追加フィルタは不要。
+  const refreshCompanyPartnerships = async () => {
+    const result = await loadCompanyPartnerships();
+    if (result.ok) {
+      setCompanyPartnerships(result.data || []);
+    }
+  };
+
+  useEffect(() => {
+    if (authMode !== "app" || !isSupabaseConfigured || !currentUser?.authUserId) return;
+    void refreshCompanyPartnerships();
+  }, [authMode, currentUser?.authUserId, appState.currentCompanyId]);
+
+  // 加盟店閲覧中でも常に「自社の本当のcompany_id」を指す(閲覧中はcurrentCompanyIdが
+  // 加盟店側を指しているため、そのままでは通知バナー・受信リクエスト一覧の対象を
+  // 見失う)。
+  const myCompanyId = appState.isViewingFranchise ? appState.homeCompanyIdBeforeFranchiseView : appState.currentCompanyId;
+  const normalizedCurrentRoleForFranchise = normalizeRole(currentRole);
+  const incomingPendingFranchiseRequests = useMemo(
+    () => companyPartnerships.filter((row) => row.status === "pending" && (normalizedCurrentRoleForFranchise === "system_admin" || row.partner_company_id === myCompanyId)),
+    [companyPartnerships, myCompanyId, normalizedCurrentRoleForFranchise]
+  );
+  const approvedFranchisePartnerships = useMemo(
+    () => companyPartnerships.filter((row) => row.status === "approved" && (normalizedCurrentRoleForFranchise === "system_admin" || row.parent_company_id === myCompanyId)),
+    [companyPartnerships, myCompanyId, normalizedCurrentRoleForFranchise]
+  );
+  // 送信済み・承認待ち(自社がparent側)の一覧。相手が未対応なだけで、こちらからは
+  // まだ何も操作できない(承認/拒否は相手側のみ)ため、情報表示のみ。
+  const outgoingPendingFranchiseRequests = useMemo(
+    () => companyPartnerships.filter((row) => row.status === "pending" && row.parent_company_id === myCompanyId),
+    [companyPartnerships, myCompanyId]
+  );
+  // トップバーの加盟店ピッカー用: 自社がparentの承認済み連携だけ(system_adminも含め、
+  // 「今アクティブな会社」がparent側になっている連携に絞る — system_adminが他社を閲覧中に
+  // さらに別の加盟店へ切り替えるという複雑な入れ子は今回サポートしない)。
+  const viewableFranchisePartnerCompanies = useMemo(() => {
+    const baseCompanyId = appState.isViewingFranchise ? appState.homeCompanyIdBeforeFranchiseView : appState.currentCompanyId;
+    return companyPartnerships
+      .filter((row) => row.status === "approved" && row.parent_company_id === baseCompanyId)
+      .map((row) => ({ relationshipId: row.id, companyId: row.partner_company_id }));
+  }, [companyPartnerships, appState.isViewingFranchise, appState.homeCompanyIdBeforeFranchiseView, appState.currentCompanyId]);
+
+  // 「加盟店追加」モーダルの候補一覧。system_adminはappState.companiesに全社が既に
+  // ロード済み(loadTenantStateFromSupabaseのcompanyFilter=null)なので追加フェッチ不要。
+  // 自社自身と、既にpending/approvedの相手は候補から除外する(要件8の重複防止)。
+  const franchiseCandidateCompanies = useMemo(() => {
+    const query = franchiseRequestSearch.trim().toLowerCase();
+    if (!query) return [];
+    const excludedIds = new Set([
+      appState.currentCompanyId,
+      ...companyPartnerships.filter((row) => row.parent_company_id === appState.currentCompanyId && (row.status === "pending" || row.status === "approved")).map((row) => row.partner_company_id),
+    ]);
+    return (appState.companies || [])
+      .filter((company) => !company.deletedAt && !excludedIds.has(company.id))
+      .filter((company) => company.name?.toLowerCase().includes(query) || company.code?.toLowerCase().includes(query))
+      .slice(0, 20);
+  }, [franchiseRequestSearch, appState.companies, appState.currentCompanyId, companyPartnerships]);
+
+  const handleSubmitFranchiseRequest = async () => {
+    if (!franchiseRequestTargetId) return;
+    setFranchiseRequestStatus({ status: "saving", message: "" });
+    const result = await createFranchiseRequest({ parentCompanyId: appState.currentCompanyId, partnerCompanyId: franchiseRequestTargetId });
+    if (!result.ok) {
+      setFranchiseRequestStatus({ status: "error", message: getSupabaseErrorMessage(result.error) });
+      return;
+    }
+    setFranchiseRequestStatus({ status: "idle", message: "" });
+    setShowFranchiseRequestModal(false);
+    setFranchiseRequestSearch("");
+    setFranchiseRequestTargetId("");
+    await refreshCompanyPartnerships();
+    setNotice("加盟店連携リクエストを送信しました");
+  };
+
+  const handleRespondFranchiseRelationship = async (relationshipId, action) => {
+    setFranchiseActionBusyId(relationshipId);
+    try {
+      const result = await updateFranchiseRelationship({ relationshipId, action });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+      await refreshCompanyPartnerships();
+      if (franchiseDetailRelationshipId === relationshipId) setFranchiseDetailRelationshipId("");
+    } finally {
+      setFranchiseActionBusyId("");
+    }
+  };
 
   useEffect(() => {
     // 別の店舗に切り替えるたびに読み込み直す。保存していない変更は切り替え時に破棄される
@@ -1852,7 +1960,12 @@ function App() {
   const canAccessCurrentPage = canAccessPage(currentRole, activePage);
   const isAdminUser = isAdminRole(currentRole);
 
-  const hydrateFromSupabase = async ({ authUser, profile, tenantState }) => {
+  // companyIdOverride: 加盟店連携(閲覧専用)で、自社のprofile.company_idではなく明示的に
+  // 指定した別会社のデータを取得するための差し替え。company_adminのprofile.company_idは
+  // 常に自社IDでtruthyなため、この引数が無いと絶対に自社データしか取得できない
+  // (system_adminだけprofile.company_idがnullなので、たまたま既存の会社切替が機能していた)。
+  // 未指定時は既存の全呼び出し箇所と完全に同じ挙動(profile.company_id優先)のまま。
+  const hydrateFromSupabase = async ({ authUser, profile, tenantState, companyIdOverride }) => {
     if (!isSupabaseConfigured || !profile?.company_id || !authUser?.id) return;
     // このシグネチャの時点で「自分が最新の呼び出しである」ことを確定させる — 以降、
     // setAppStateで結果を適用する直前に hydrateRequestRef.current === requestId を確認し、
@@ -1862,12 +1975,12 @@ function App() {
       console.info("[sync-hydrate] start", {
         authUserId: authUser?.id,
         profileId: profile?.id,
-        companyId: profile?.company_id,
+        companyId: companyIdOverride || profile?.company_id,
         selectedStore: tenantState?.selectedStore,
         selectedMonth: tenantState?.selectedMonth,
       });
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
-      const companyId = profile.company_id || tenantState?.currentCompanyId || "";
+      const companyId = companyIdOverride || profile.company_id || tenantState?.currentCompanyId || "";
       const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
 
       // AI分析ON/OFF(companies.ai_analysis_enabled)はこの関数の対象外 — 独立した
@@ -2233,7 +2346,7 @@ function App() {
             // why letting a cached list win here silently breaks store_id resolution.
             companies: noSnapshotCompanies,
             users: tenantState?.users?.length ? tenantState.users : (fallbackState.users || []),
-            currentCompanyId: profile?.company_id || prev.currentCompanyId || companyId,
+            currentCompanyId: companyIdOverride || profile?.company_id || prev.currentCompanyId || companyId,
             currentUserId: profile?.id || prev.currentUserId || "",
             currentAuthUserId: profile?.auth_user_id || authUser.id || prev.currentAuthUserId || "",
           });
@@ -2279,7 +2392,7 @@ function App() {
         companies: applyStoreInputSettingsToCompanies(tenantState?.companies?.length ? tenantState.companies : (remoteState.companies || [])),
         users: tenantState?.users?.length ? tenantState.users : (remoteState.users || []),
         companySnapshots: remoteState.companySnapshots || (tenantState?.companySnapshots || {}),
-        currentCompanyId: remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
+        currentCompanyId: companyIdOverride || remoteState.currentCompanyId || tenantState?.currentCompanyId || companyId || "",
         // currentUserId/currentAuthUserId must ALWAYS be this session's own identity — never the
         // snapshot's. tenant_snapshots is a company-wide blob that whichever user last saved
         // wrote, embedding *their* currentUserId; preferring remoteState.currentUserId here (as
@@ -2321,7 +2434,7 @@ function App() {
       // was the exact "open screen → state is empty → autosave fires → overwrites real
       // Supabase data → THEN the real fetch finally lands" race this app was vulnerable to.
       // Leaving it false blocks all outgoing writes until a hydrate genuinely succeeds.
-      logSupabaseError({ operation: "hydrateFromSupabase", table: "tenant_snapshots", userId: authUser?.id, companyId: profile?.company_id, storeId: tenantState?.selectedStore, error });
+      logSupabaseError({ operation: "hydrateFromSupabase", table: "tenant_snapshots", userId: authUser?.id, companyId: companyIdOverride || profile?.company_id, storeId: tenantState?.selectedStore, error });
       const reason = getSupabaseErrorMessage(error);
       setSyncStatus({ status: "error", message: `同期エラー: ${reason}`, timestamp: new Date().toISOString(), error: true });
       if (hydrateRetryTimerRef.current) {
@@ -2331,7 +2444,7 @@ function App() {
       hydrateRetryCountRef.current = attempt;
       const delayMs = Math.min(3000 * attempt, 15000);
       hydrateRetryTimerRef.current = window.setTimeout(() => {
-        void hydrateFromSupabase({ authUser, profile, tenantState });
+        void hydrateFromSupabase({ authUser, profile, tenantState, companyIdOverride });
       }, delayMs);
     }
   };
@@ -2464,6 +2577,7 @@ function App() {
   };
 
   const handleSaveStore = async () => {
+    if (guardFranchiseReadOnly()) return;
     const companyId = appState.currentCompanyId;
     const existingStore = currentCompany?.stores?.find((store) => store.id === storeEditId) || null;
     // Creating/deleting/archiving stores stays company_admin/system_admin-only
@@ -2745,6 +2859,87 @@ function App() {
     if (!targetCompany) return;
     const nextState = applyCompanySnapshot({ ...appState, currentCompanyId: companyId }, companyId);
     persistTenantState(nextState);
+  };
+
+  // 加盟店連携(閲覧専用)への切り替え。system_adminのhandleCompanySwitchとは意図的に別関数
+  // にする — こちらはcompanyIdOverride付きでhydrateFromSupabaseを明示的に呼び、加盟店の
+  // 実データ取得を即座に(待ち時間・エラーをこの関数内でハンドリングできる形で)行う。
+  // companySnapshots(applyCompanySnapshot)は使わない — 加盟店側のUI選択状態を自社の
+  // companySnapshotsへ混ぜたくないため。
+  const handleFranchiseView = async (partnerCompanyId) => {
+    if (!partnerCompanyId || appState.currentCompanyId === partnerCompanyId) return;
+    setFranchiseViewBusy(true);
+    try {
+      const result = await loadFranchiseCompanyMetadata({ companyId: partnerCompanyId });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+      const homeCompanyId = appState.isViewingFranchise ? appState.homeCompanyIdBeforeFranchiseView : appState.currentCompanyId;
+      const alreadyPresent = (appState.companies || []).some((company) => company.id === partnerCompanyId);
+      const nextCompanies = alreadyPresent
+        ? (appState.companies || []).map((company) => (company.id === partnerCompanyId ? { ...company, ...result.company } : company))
+        : [...(appState.companies || []), result.company];
+      const nextState = {
+        ...appState,
+        companies: nextCompanies,
+        currentCompanyId: partnerCompanyId,
+        isViewingFranchise: true,
+        homeCompanyIdBeforeFranchiseView: homeCompanyId,
+        selectedStore: ALL_STORES_VALUE,
+        selectedStoreId: "",
+      };
+      setAppState(nextState);
+      writeAppState(nextState);
+      if (currentUser?.authUserId && currentUser?.profileId) {
+        await hydrateFromSupabase({
+          authUser: { id: currentUser.authUserId, email: currentUser.email },
+          profile: { id: currentUser.profileId, company_id: partnerCompanyId, role: currentRole },
+          tenantState: nextState,
+          companyIdOverride: partnerCompanyId,
+        });
+      }
+    } finally {
+      setFranchiseViewBusy(false);
+    }
+  };
+
+  const handleReturnToHomeCompany = async () => {
+    if (!appState.isViewingFranchise) return;
+    const homeCompanyId = appState.homeCompanyIdBeforeFranchiseView || appState.currentCompanyId;
+    setFranchiseViewBusy(true);
+    try {
+      const nextState = {
+        ...appState,
+        currentCompanyId: homeCompanyId,
+        isViewingFranchise: false,
+        homeCompanyIdBeforeFranchiseView: "",
+        selectedStore: ALL_STORES_VALUE,
+        selectedStoreId: "",
+      };
+      setAppState(nextState);
+      writeAppState(nextState);
+      if (currentUser?.authUserId && currentUser?.profileId) {
+        await hydrateFromSupabase({
+          authUser: { id: currentUser.authUserId, email: currentUser.email },
+          profile: { id: currentUser.profileId, company_id: homeCompanyId, role: currentRole },
+          tenantState: nextState,
+        });
+      }
+    } finally {
+      setFranchiseViewBusy(false);
+    }
+  };
+
+  // 加盟店連携(閲覧専用)中の書き込みガード。system_adminは元々全社に対して正規の読み書き
+  // 権限を持つため対象外(既存挙動そのまま)。実際のセキュリティ境界はRLS(加盟店データへの
+  // INSERT/UPDATE/DELETEポリシーは一切追加していない)であり、これはUX目的の早期returnに
+  // すぎない — 保存ハンドラの先頭で呼び、trueが返れば以降の処理を中断する。
+  const isFranchiseReadOnlyForCurrentUser = () => appState.isViewingFranchise && normalizeRole(currentRole) !== "system_admin";
+  const guardFranchiseReadOnly = () => {
+    if (!isFranchiseReadOnlyForCurrentUser()) return false;
+    setNotice("加盟店データは閲覧のみです（編集・保存はできません）");
+    return true;
   };
 
   const handleStoreSwitch = (storeName) => {
@@ -3457,6 +3652,7 @@ function App() {
   };
 
   const handleSaveDailyFieldSettings = async () => {
+    if (guardFranchiseReadOnly()) return;
     if (!selectedStore) {
       setNotice("店舗を先に追加してください");
       return;
@@ -3515,6 +3711,7 @@ function App() {
   };
 
   const handleSaveMonthlyTargetFieldSettings = async () => {
+    if (guardFranchiseReadOnly()) return;
     if (!selectedStore) {
       setNotice("店舗を先に追加してください");
       return;
@@ -3551,6 +3748,7 @@ function App() {
   // 「在庫管理を使う」トグル(店舗単位、store_input_settings.use_inventory_tracking)。単一の
   // ON/OFFなので他の項目設定のようなdraft/dirty管理は持たず、切り替え次第すぐ保存する。
   const handleToggleInventoryTracking = async (checked) => {
+    if (guardFranchiseReadOnly()) return;
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
       setNotice("店舗情報を確認できませんでした");
@@ -3580,6 +3778,7 @@ function App() {
   // 同じ単純なON/OFFなのでdraft/dirty管理は持たず、切り替え次第すぐ保存する。初期値は必ず
   // OFF(createStoreSettingsDefaults参照)。
   const handleToggleCashBreakdown = async (checked) => {
+    if (guardFranchiseReadOnly()) return;
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
       setNotice("店舗情報を確認できませんでした");
@@ -3781,6 +3980,12 @@ function App() {
 
   useEffect(() => {
     if (authMode !== "app" || !currentUser?.authUserId || !syncInitialized) return;
+    // 加盟店連携(閲覧専用)を表示中は、自動保存(tenant_snapshots書き込み)を完全にスキップ
+    // する。RLSは既にこの書き込みを拒否する(company_adminのcurrent_user_company_ids()には
+    // 加盟店のcompany_idが含まれないため)が、RLS拒否に任せると「同期に失敗しました」という
+    // ユーザー向けエラーが閲覧中ずっと表示され続けてしまう — ここで明示的にスキップして
+    // そもそもその失敗リクエスト自体を発生させない。
+    if (appState.isViewingFranchise) return;
 
     const safeState = {
       ...appState,
@@ -4074,6 +4279,10 @@ function App() {
   });
 
   const saveDailyEntry = async ({ silent = false, force = false, autoSave = false, switchToView = false } = {}) => {
+    if (isFranchiseReadOnlyForCurrentUser()) {
+      if (!silent) setNotice("加盟店データは閲覧のみです（編集・保存はできません）");
+      return { ok: false, skipped: true };
+    }
     if (!selectedStore) {
       if (!silent) {
         setNotice("店舗を先に追加してください");
@@ -4231,6 +4440,7 @@ function App() {
   // (要件13)。差額があっても・未入力でも保存自体は妨げない(要件6・7) — 3項目とも
   // 未入力の場合は何もしない(空のdaily_cash_breakdown行を作らない)。
   const saveCashBreakdown = async () => {
+    if (isFranchiseReadOnlyForCurrentUser()) return { ok: false, skipped: true };
     if (dailyMode === "view") return { ok: true, skipped: true };
     if (!dailyForm.date) return { ok: true, skipped: true };
     const hasAnyValue = [cashBreakdownForm.cashAmount, cashBreakdownForm.cashlessAmount, cashBreakdownForm.pointAmount].some((value) => parseNumber(value) > 0);
@@ -4400,6 +4610,10 @@ function App() {
   };
 
   const persistMonthlyTarget = async ({ silent = false } = {}) => {
+    if (isFranchiseReadOnlyForCurrentUser()) {
+      if (!silent) setNotice("加盟店データは閲覧のみです（編集・保存はできません）");
+      return { ok: false, skipped: true };
+    }
     if (!selectedStore) {
       if (!silent) setNotice("店舗を先に追加してください");
       return { ok: false, skipped: true };
@@ -4609,6 +4823,7 @@ function App() {
   // そのまま使い、終了月は常に空にする。期間限定の場合だけ開始月・終了月を必須にする。
   const submitFixedCost = async (event) => {
     event.preventDefault();
+    if (guardFranchiseReadOnly()) return;
     const isEditing = Boolean(fixedForm.id);
     if (!fixedForm.name) {
       setNotice("費用名は必須です");
@@ -4708,6 +4923,7 @@ function App() {
   };
 
   const removeFixedCost = async (itemId) => {
+    if (guardFranchiseReadOnly()) return;
     if (!window.confirm("この費用を削除しますか？")) {
       return;
     }
@@ -4741,6 +4957,7 @@ function App() {
   // 対象月ごとの費用金額(cost_monthly_amounts)を1件upsertする。新規登録時の初回金額保存と、
   // 月次一覧のインライン保存(saveCostAmountFor)の両方から共通で呼ぶ。
   const persistCostMonthlyAmount = async ({ costItemId, targetMonth, amount }) => {
+    if (guardFranchiseReadOnly()) return false;
     const { company, store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured) {
       if (!company?.id || !store?.id) {
@@ -4815,6 +5032,7 @@ function App() {
   // upsertする共通ヘルパー — 「期首在庫」は選択月の前月分として、「当月末在庫」は選択月
   // そのものとして同じテーブルに保存する(getPreviousMonthInventoryBalanceが前者を読む)。
   const persistInventoryBalance = async (targetMonth, amount) => {
+    if (guardFranchiseReadOnly()) return false;
     const { company, store } = resolveTargetCompanyAndStore();
     if (!company?.id || !store?.id) {
       setNotice("店舗情報を確認できませんでした");
@@ -5073,6 +5291,7 @@ function App() {
   };
 
   const toggleMonthClosing = async () => {
+    if (guardFranchiseReadOnly()) return;
     if (!selectedStore) {
       setNotice("店舗を選択してください");
       return;
@@ -5131,6 +5350,7 @@ function App() {
   };
 
   const toggleDayClosing = async () => {
+    if (guardFranchiseReadOnly()) return;
     if (!selectedStore || !dailyForm.date) {
       setNotice("締め対象の日付を入力してください");
       return;
@@ -5421,7 +5641,7 @@ function App() {
             </button>
             <div>
               <p className="eyebrow">SALON MANAGEMENT</p>
-              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : "設定"}</h1>
+              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : activePage === "franchise" ? "加盟店連携" : "設定"}</h1>
               {currentUser ? (
                 <div className="user-role-badge" style={{ marginTop: 6 }}>
                   {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
@@ -5431,6 +5651,25 @@ function App() {
           </div>
 
           <div className="filters">
+            {/* 加盟店ピッカー: 既存の店舗<select>とは別の独立した要素にする(要件4: 自社と
+                加盟店を混在させない)。自社の承認済み連携が1件以上あるときだけ表示する。
+                「自社」を選ぶとhandleReturnToHomeCompanyで戻る。 */}
+            {viewableFranchisePartnerCompanies.length > 0 ? (
+              <label>
+                加盟店
+                <select
+                  value={appState.isViewingFranchise ? appState.currentCompanyId : ""}
+                  onChange={(event) => (event.target.value ? handleFranchiseView(event.target.value) : handleReturnToHomeCompany())}
+                  disabled={franchiseViewBusy}
+                >
+                  <option value="">自社</option>
+                  {viewableFranchisePartnerCompanies.map(({ relationshipId, companyId }) => {
+                    const company = (appState.companies || []).find((item) => item.id === companyId);
+                    return <option key={relationshipId} value={companyId}>{company?.name || "（読み込み中）"}</option>;
+                  })}
+                </select>
+              </label>
+            ) : null}
             <label>
               店舗
               <select value={selectedStore} onChange={(event) => handleStoreSwitch(event.target.value)}>
@@ -5445,6 +5684,29 @@ function App() {
             </label>
           </div>
         </header>
+
+        {appState.isViewingFranchise ? (
+          <div className="franchise-viewing-banner">
+            <span>🏢 {(appState.companies || []).find((c) => c.id === appState.currentCompanyId)?.name || "加盟店"} を表示中（加盟店・閲覧専用）</span>
+            <button type="button" className="secondary-button" onClick={handleReturnToHomeCompany} disabled={franchiseViewBusy}>本社に戻る</button>
+          </div>
+        ) : null}
+
+        {!appState.isViewingFranchise && normalizedCurrentRoleForFranchise === "company_admin" && incomingPendingFranchiseRequests.length > 0 ? (
+          <div className="franchise-request-banner">
+            <span>
+              {incomingPendingFranchiseRequests[0]?.parent_company?.name || "会社"}から加盟店連携リクエストが届いています
+              {incomingPendingFranchiseRequests.length > 1 ? `（他${incomingPendingFranchiseRequests.length - 1}件）` : ""}
+            </span>
+            <button
+              type="button"
+              className="primary-button"
+              onClick={() => { setActivePage("franchise"); setFranchiseDetailRelationshipId(incomingPendingFranchiseRequests[0].id); }}
+            >
+              内容を確認
+            </button>
+          </div>
+        ) : null}
 
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
         {/* このnoticeは「成功しました」等の完了通知には使わない — 画面上部にはエラーのみ
@@ -6401,6 +6663,15 @@ function App() {
                   会社データを削除
                 </button>
               )}
+              {/* 「会社追加」(サロンマネージャー内に新規会社を作成)とは明確に別の操作 —
+                  「加盟店追加」は既に利用中の別会社へ閲覧専用の連携リクエストを送るだけで、
+                  新しい会社レコードは一切作らない(要件1)。system_admin限定。本部側は現在
+                  会社切替セレクタで選択中の会社(appState.currentCompanyId)になる。 */}
+              {canCreateFranchiseRequest(currentRole) ? (
+                <button className="secondary-button" type="button" onClick={() => { setFranchiseRequestTargetId(""); setFranchiseRequestSearch(""); setFranchiseRequestStatus({ status: "idle", message: "" }); setShowFranchiseRequestModal(true); }}>
+                  加盟店追加
+                </button>
+              ) : null}
             </div>
             {(appState.companies || []).filter((company) => !company.deletedAt).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).length ? (
               <div className="card-grid">
@@ -6574,7 +6845,10 @@ function App() {
               </div>
             </div>
             <p className="management-help">店舗名を登録するだけで、日次売上・月間目標・費用・月締め・スタッフ所属・権限・店舗ランキング等を店舗ごとに紐づけて管理できます。</p>
-            {canEditStoreName(currentRole) && (
+            {isFranchiseReadOnlyForCurrentUser() ? (
+              <div className="empty-card">加盟店の店舗情報は閲覧専用です（登録・編集・各種設定の変更はできません）。</div>
+            ) : null}
+            {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (
             <div className="setup-card" ref={storeFormSectionRef}>
               <div className="panel-heading compact">
                 <div>
@@ -6774,7 +7048,7 @@ function App() {
                   const summary = computeStoreSummary(store, { staffCount: store.staffIds?.length || store.staffCount || 0 });
                   const statusLabel = store.status === "archived" ? "アーカイブ" : store.status === "suspended" ? "停止中" : "運営中";
                   const statusTone = store.status === "archived" ? "warning" : store.status === "suspended" ? "error" : "saved";
-                  const canOperate = canChangeStoreLifecycle(currentRole);
+                  const canOperate = canChangeStoreLifecycle(currentRole) && !isFranchiseReadOnlyForCurrentUser();
                   return (
                     <div key={store.id} className="info-card store-info-card">
                       <div className="info-card-head">
@@ -6799,7 +7073,7 @@ function App() {
                       </div>
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleStoreSwitch(store.name)}>選択</button>
-                        {canEditStoreName(currentRole) && (canManageStores(currentRole) || allowedStoreIds.includes(store.id)) && (
+                        {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (canManageStores(currentRole) || allowedStoreIds.includes(store.id)) && (
                           <button className="text-button" type="button" onClick={() => handleEditStore(store)}>編集</button>
                         )}
                         {canOperate && store.status === "archived" && (
@@ -6845,7 +7119,9 @@ function App() {
               </div>
             </div>
             <p className="management-help">店舗ごと・権限ごとにユーザーを確認できます。招待後は7日間有効で、期限切れ時は再送できます。</p>
-            {!canViewUserManagement(currentRole) ? (
+            {isFranchiseReadOnlyForCurrentUser() ? (
+              <div className="empty-card">加盟店のスタッフ情報は表示されません（別会社として独立して管理されています）。</div>
+            ) : !canViewUserManagement(currentRole) ? (
               <div className="empty-card">この権限ではユーザー管理を操作できません。</div>
             ) : (
               <>
@@ -7205,6 +7481,188 @@ function App() {
             </div>
           );
         })()}
+
+        {activePage === "franchise" && canManageFranchisePartnerships(currentRole) && (
+          <div className="stack">
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">FRANCHISE</p>
+                  <h2>受信した連携リクエスト</h2>
+                </div>
+              </div>
+              {incomingPendingFranchiseRequests.length ? (
+                <div className="card-grid">
+                  {incomingPendingFranchiseRequests.map((row) => (
+                    <div key={row.id} className="info-card">
+                      <div className="info-card-head">
+                        <div>
+                          <strong>{row.parent_company?.name || "会社"}</strong>
+                          <small>申請日時: {row.created_at ? new Date(row.created_at).toLocaleString("ja-JP") : "-"}</small>
+                        </div>
+                      </div>
+                      <p className="helper-text">
+                        この会社があなたの会社を加盟店として連携をリクエストしています。承認すると、この会社があなたの会社の売上・KPI等のデータを閲覧できるようになります（あなたの会社から相手のデータが見えるようにはなりません）。承認前はどのデータも一切閲覧されません。
+                      </p>
+                      <div className="row-actions">
+                        <button className="secondary-button" type="button" disabled={franchiseActionBusyId === row.id} onClick={() => handleRespondFranchiseRelationship(row.id, "reject")}>拒否</button>
+                        <button className="primary-button" type="button" disabled={franchiseActionBusyId === row.id} onClick={() => handleRespondFranchiseRelationship(row.id, "approve")}>承認</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty-card">受信したリクエストはありません</div>
+              )}
+            </section>
+
+            {outgoingPendingFranchiseRequests.length ? (
+              <section className="panel">
+                <div className="panel-heading">
+                  <div>
+                    <p className="eyebrow">FRANCHISE</p>
+                    <h2>送信済み・承認待ち</h2>
+                  </div>
+                </div>
+                <div className="card-grid">
+                  {outgoingPendingFranchiseRequests.map((row) => (
+                    <div key={row.id} className="info-card">
+                      <div className="info-card-head">
+                        <div>
+                          <strong>{row.partner_company?.name || "会社"}</strong>
+                          <small>申請日時: {row.created_at ? new Date(row.created_at).toLocaleString("ja-JP") : "-"}</small>
+                        </div>
+                      </div>
+                      <p className="helper-text">相手会社の承認待ちです。承認されるまでこちらからはデータを閲覧できません。</p>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <p className="eyebrow">FRANCHISE</p>
+                  <h2>連携中の加盟店</h2>
+                </div>
+                {canCreateFranchiseRequest(currentRole) ? (
+                  <button className="secondary-button" type="button" onClick={() => { setFranchiseRequestTargetId(""); setFranchiseRequestSearch(""); setFranchiseRequestStatus({ status: "idle", message: "" }); setShowFranchiseRequestModal(true); }}>
+                    加盟店を追加
+                  </button>
+                ) : null}
+              </div>
+              {approvedFranchisePartnerships.length ? (
+                <div className="card-grid">
+                  {approvedFranchisePartnerships.map((row) => {
+                    const partner = (appState.companies || []).find((c) => c.id === row.partner_company_id);
+                    const canDisconnect = normalizeRole(currentRole) === "system_admin" || row.parent_company_id === myCompanyId;
+                    return (
+                      <div key={row.id} className="info-card">
+                        <div className="info-card-head">
+                          <div>
+                            <strong>{row.partner_company?.name || partner?.name || "会社"}</strong>
+                            <small>加盟日: {row.joined_at || "-"}</small>
+                          </div>
+                        </div>
+                        <div className="row-actions">
+                          <button className="secondary-button" type="button" disabled={franchiseViewBusy} onClick={() => handleFranchiseView(row.partner_company_id)}>表示する</button>
+                          {canDisconnect ? (
+                            <button
+                              className="text-button danger"
+                              type="button"
+                              disabled={franchiseActionBusyId === row.id}
+                              onClick={() => {
+                                if (window.confirm("この加盟店連携を解除しますか？解除後は本部からこの会社のデータを閲覧できなくなります（加盟店側のデータは一切削除されません、後から再申請もできます）。")) {
+                                  void handleRespondFranchiseRelationship(row.id, "disconnect");
+                                }
+                              }}
+                            >
+                              連携を解除
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="empty-card">連携中の加盟店はありません</div>
+              )}
+            </section>
+          </div>
+        )}
+
+        {showFranchiseRequestModal ? (
+          <div className="modal-overlay" onClick={() => setShowFranchiseRequestModal(false)}>
+            <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">FRANCHISE REQUEST</p>
+                  <h3>加盟店追加</h3>
+                </div>
+              </div>
+              <p className="helper-text">
+                本部「{(appState.companies || []).find((c) => c.id === appState.currentCompanyId)?.name || ""}」として、既にサロンマネージャーを利用中の別会社へ加盟店連携リクエストを送信します。新しい会社は作成されません。
+              </p>
+              <label className="field">
+                <span>会社名・会社コードで検索</span>
+                <input
+                  value={franchiseRequestSearch}
+                  onChange={(event) => { setFranchiseRequestSearch(event.target.value); setFranchiseRequestTargetId(""); }}
+                  placeholder="会社名または会社コードを入力"
+                />
+              </label>
+              {franchiseRequestSearch.trim() && !franchiseRequestTargetId ? (
+                <div className="card-grid" style={{ maxHeight: 220, overflowY: "auto" }}>
+                  {franchiseCandidateCompanies.length ? franchiseCandidateCompanies.map((company) => (
+                    <button key={company.id} type="button" className="list-row" onClick={() => setFranchiseRequestTargetId(company.id)}>
+                      <strong>{company.name}</strong> <small>{company.code}</small>
+                    </button>
+                  )) : <div className="empty-card">該当する会社が見つかりません</div>}
+                </div>
+              ) : null}
+              {franchiseRequestTargetId ? (
+                <div className="notice-box">
+                  「{(appState.companies || []).find((c) => c.id === franchiseRequestTargetId)?.name || ""}」へ加盟店連携リクエストを送信しますか？
+                </div>
+              ) : null}
+              {franchiseRequestStatus.message ? <div className={`notice-box ${franchiseRequestStatus.status === "error" ? "error" : ""}`}>{franchiseRequestStatus.message}</div> : null}
+              <div className="button-row">
+                <button className="secondary-button" type="button" onClick={() => setShowFranchiseRequestModal(false)}>キャンセル</button>
+                <button className="primary-button" type="button" disabled={!franchiseRequestTargetId || franchiseRequestStatus.status === "saving"} onClick={handleSubmitFranchiseRequest}>
+                  {franchiseRequestStatus.status === "saving" ? "送信中…" : "リクエストを送信"}
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {franchiseDetailRelationshipId ? (() => {
+          const row = companyPartnerships.find((item) => item.id === franchiseDetailRelationshipId);
+          if (!row) return null;
+          return (
+            <div className="modal-overlay" onClick={() => setFranchiseDetailRelationshipId("")}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">FRANCHISE REQUEST</p>
+                    <h3>加盟店連携リクエスト</h3>
+                  </div>
+                </div>
+                <p><strong>申請元会社:</strong> {row.parent_company?.name || "会社"}</p>
+                <p><strong>申請日時:</strong> {row.created_at ? new Date(row.created_at).toLocaleString("ja-JP") : "-"}</p>
+                <p className="helper-text">
+                  承認すると、この会社があなたの会社の売上・日次データ・月間目標・損益・費用等を閲覧できるようになります（本部側の全店舗集計・売上・損益には一切合算されません）。あなたの会社から相手のデータが見えるようにはなりません。拒否した場合、連携は成立しません。
+                </p>
+                <div className="button-row">
+                  <button className="secondary-button" type="button" disabled={franchiseActionBusyId === row.id} onClick={() => handleRespondFranchiseRelationship(row.id, "reject")}>拒否</button>
+                  <button className="primary-button" type="button" disabled={franchiseActionBusyId === row.id} onClick={() => handleRespondFranchiseRelationship(row.id, "approve")}>承認</button>
+                </div>
+              </div>
+            </div>
+          );
+        })() : null}
 
         {activePage === "settings" && (
           <div className="stack settings-stack">
