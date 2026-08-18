@@ -30,7 +30,10 @@
 // ビューでは利用できません」で弾かれていた不具合の修正。店舗プルダウンの加盟店欄を
 // 会社単位1行から店舗単位に展開し、選択すると必ず実店舗が選ばれた状態(isAllStoresView
 // にならない状態)になるようにした。
-const CACHE_NAME = 'salon-manager-cache-v12';
+// v13: 総合監査での修正 — 加盟店閲覧中の店舗設定(日次入力項目/月間目標項目/在庫管理/
+// 日計管理)トグルが、保存時にはguardFranchiseReadOnlyで拒否される一方、見た目は編集
+// 可能なままだった不整合を修正(既存の読み取り専用表示分岐に合流)。
+const CACHE_NAME = 'salon-manager-cache-v13';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
