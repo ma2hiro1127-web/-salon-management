@@ -1868,9 +1868,18 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
       }
     });
     const storeSalesResultDateSet = new Set(entries.map((entry) => String(entry?.date || "")).filter(Boolean));
+    // calculateMonthSummary(単一店舗版)のclosedSales += batchSalesと同じ理由: まとめ入力の
+    // 日もclosedDateSet(≒completedDays)に含まれる(getBusinessDaySummaryがgetBatchAllocated
+    // DatesSetを合算しているため)。ここでbatchSalesをclosedSalesに足さないと、分子
+    // (closedSales)には入らないのに分母(completedDays)には入るため、全店舗ビューのpace/
+    // forecast/averageDailySalesだけが個別店舗版より不当に低く出る不具合になっていた(修正)。
+    let storeBatchSales = 0;
     batchEntries.forEach((batchEntry) => {
       const batchTotal = batchEntry.totalSales ?? batchEntry.technicalSales ?? null;
-      if (batchTotal !== null) sales += Number(batchTotal);
+      if (batchTotal !== null) {
+        sales += Number(batchTotal);
+        storeBatchSales += Number(batchTotal);
+      }
       if (batchEntry.technicalSales !== null) technicalSales += Number(batchEntry.technicalSales);
       if (batchEntry.retailSales !== null) retailSales += Number(batchEntry.retailSales);
       if (batchEntry.otherSales !== null) otherSales += Number(batchEntry.otherSales);
@@ -1883,6 +1892,7 @@ export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
         getBusinessDayDatesInRange(state, store.id, batchEntry.startDate, batchEntry.endDate).forEach((date) => storeSalesResultDateSet.add(date));
       }
     });
+    closedSales += storeBatchSales;
     resultsCoverageBusinessDays += storeSalesResultDateSet.size;
   });
 

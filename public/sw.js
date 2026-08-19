@@ -77,7 +77,18 @@
 // フォールバックも入力欄と同じ10%に揃えた。営業利益・粗利益を基準にした条件分岐(赤字なら
 // 引当額を0にする等)は元から存在せず、今回も追加していない。表示名「消費税引当率（%）」を
 // 「消費税率（%）」に変更(名称のみ、値・保存先は無変更)。
-const CACHE_NAME = 'salon-manager-cache-v21';
+// v22: テスト運用前・拡張性総点検。(1) 全店舗ビューのclosedSales(pace/forecast分子)に
+// まとめて入力分が加算されておらず、個別店舗版よりpace/forecastが不当に低く出る不具合を
+// 修正(completedDaysには入るのにclosedSalesには入らないという不整合)。(2) 日締め操作が
+// 常にdailyForm(その日を開いた時点のスナップショット)ごと売上を上書き保存しており、
+// 別端末が直前に保存した最新の売上を日締めのタイミングで静かに古い値へ戻してしまう
+// 不具合を修正(既存の行を閉じる場合はis_day_closed等の締めカラムだけを更新し、
+// 売上カラムには触れないようにした)。(3) App全体を包む最上位エラーバウンダリを追加
+// (未捕捉の描画例外で白画面のまま固まるのを防ぎ、再読み込み導線を出す)。(4) DB側で
+// company_id/store_id等の検索・RLSフィルタに使われるのにインデックスが無かった
+// profiles.company_id/tenant_snapshots.company_id・store_id/user_stores.store_idへ
+// インデックスを追加(既存データ・既存の挙動には影響しない)。
+const CACHE_NAME = 'salon-manager-cache-v22';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

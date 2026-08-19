@@ -2292,6 +2292,34 @@ test("calculateAllStoresMonthSummary: 各店舗のまとめ入力を正しく合
   assert.equal(summary.sales, 600000);
 });
 
+test("全店舗ビューでのpace/forecast不具合の修正: まとめ入力の日はcompletedDays(分母)に含まれるのに、その売上がclosedSales(分子)に足されておらず、個別店舗版より不当にpace/forecastが低く出ていた", () => {
+  const state = createInitialAppState();
+  const company = {
+    id: "company-1",
+    stores: [{ id: "store-a", name: "A店" }],
+  };
+  const month = "2026-08";
+  // まとめ入力のみ(実日次データは無い) — 単一店舗版のcalculateMonthSummaryと同じ入力で、
+  // 全店舗版でも同じ考え方(closedSales += batchSales)になっているかを比較する。
+  state.dailyBatchEntries[buildMonthKey("store-a", month)] = [
+    { id: "b1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+  ];
+
+  const singleStoreSummary = calculateMonthSummary(state, "store-a", month);
+  const allStoresSummary = calculateAllStoresMonthSummary(state, company, month);
+
+  assert.equal(allStoresSummary.sales, 1000000);
+  // 修正前はここが0のままで、forecast/averageDailySales(内部のpaceに依存)が異常に低い
+  // 値になっていた(closedSalesが0なのにcompletedDaysだけ10になっていたため)。
+  assert.equal(allStoresSummary.closedSales, 1000000);
+  assert.equal(allStoresSummary.completedDays, singleStoreSummary.completedDays); // どちらも10
+  assert.equal(allStoresSummary.averageDailySales, 100000); // 1000000 / 10
+  // 1店舗だけの会社なので、全店舗版のaverageDailySales/forecastは個別店舗版と一致するはず。
+  assert.equal(allStoresSummary.averageDailySales, singleStoreSummary.averageDailySales);
+  assert.equal(allStoresSummary.forecast, singleStoreSummary.forecast);
+  assert.ok(allStoresSummary.forecast > 0);
+});
+
 // ============================================================
 // まとめて入力: 日別配分(getBatchAllocatedEntries) — カレンダー連動・店休日再配分
 // ============================================================

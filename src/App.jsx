@@ -5906,12 +5906,21 @@ function App() {
     }
 
     persistSaveStatus("saving", "保存中…", false);
+    // 同時利用時のデータ上書き事故防止: dailyForm.idが既にある(=このレンジは既に保存済みの
+    // 行を開いてview中)場合、entryにdailyFormを渡すとupdateDailySalesClosingStateが
+    // sales_amount等をこのdailyForm(その日を開いた時点のスナップショットで、以後同期し
+    // 直さない)の値で丸ごと上書きしてしまい、開いてから閉じるまでの間に別端末が保存した
+    // 最新の売上を静かに古い値へ戻してしまう(dailyMode==="view"の間、saveDailyEntryは
+    // 手前で何もしないため、ここが実質的な唯一の書き込み経路になっていた)。dailyForm.idが
+    // 既にある場合はentry:nullを渡し、is_day_closed等の締め関連カラムだけを更新する
+    // UPDATE専用分岐を使う(売上カラムには一切触れない)。dailyForm.idが無い(=まだ一度も
+    // 保存されていない新規行)場合だけ、従来通りentry付きでupsertし、締めと同時に行を作る。
     const remoteResult = await updateDailySalesClosingState({
       companyId: appState.currentCompanyId,
       storeId: store?.id,
       businessDate: dailyForm.date,
       userId: appState.currentUserId,
-      entry: dailyForm,
+      entry: dailyForm.id ? null : dailyForm,
       isClosed: nextClosed,
     });
 
