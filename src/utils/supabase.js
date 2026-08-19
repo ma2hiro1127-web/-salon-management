@@ -2010,14 +2010,18 @@ export const upsertCostMonthlyAmountToSupabase = async ({ costItemId, companyId,
   }
 };
 
-export const loadCostMonthlyAmountsForCompany = async ({ companyId, yearMonths = [] }) => {
-  if (!isSupabaseConfigured || !companyId || !yearMonths.length) return { ok: true, skipped: true, data: [] };
+// 継続費用は「その月から有効になる金額」を履歴として持ち、対象月に直接一致する行が無ければ
+// 対象月以前で最も新しい行の金額を引き継ぐ(getCostMonthlyAmount参照、費用入力の金額引き継ぎ
+// 仕様)。この「以前の履歴」は現在月から見て3か月より前の場合もあるため、fixed_costsと同じ
+// 理由でyearMonthsによる絞り込みはできない — 会社の全cost_monthly_amountsを取得する
+// (件数は「費用項目数 × これまでに金額変更した回数」程度で、fixed_costsと同様に小さい)。
+export const loadCostMonthlyAmountsForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
   try {
     const { data, error } = await supabase
       .from("cost_monthly_amounts")
       .select("*")
-      .eq("company_id", companyId)
-      .in("target_month", yearMonths);
+      .eq("company_id", companyId);
     if (error) throw error;
     return { ok: true, data: data || [] };
   } catch (error) {

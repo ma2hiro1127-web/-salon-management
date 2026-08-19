@@ -101,7 +101,15 @@
 // を表示し、取得中の数字がそれと分からず表示され続けないようにした。既存のselectedMonthを
 // 単一の共有状態として扱う設計(App.jsx全体で既に統一済みだった)・store/company別データ
 // 分離・損益表の月別費用計算ロジックは変更していない。
-const CACHE_NAME = 'salon-manager-cache-v23';
+// v24: 費用入力「継続」の金額引き継ぎ。継続費用(および期間限定費用)は、対象月にちょうど
+// 保存された金額が無ければ、対象月以前で最も新しく保存されている金額を自動的に引き継いで
+// 表示・損益反映するようにした(毎月同じ固定費を再入力する必要がなくなる)。金額変更は
+// 「その月から有効」な履歴として保存され、過去月の確定済み金額は書き換わらない。この
+// 引き継ぎ計算はcost_monthly_amountsの全履歴を必要とするため、取得を直近3か月の窓から
+// fixed_costsと同じ会社全体の取得に変更した(件数は小さく、性能への影響は無い想定)。
+// 月締め後の再確認判定(needsMonthReconfirmation)も、対象月に固有の金額行が無く継続費用
+// から引き継いでいる場合、引き継ぎ元の行の更新日時を見るよう連動して修正した。
+const CACHE_NAME = 'salon-manager-cache-v24';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

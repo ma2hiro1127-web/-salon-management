@@ -2286,9 +2286,10 @@ function App() {
       }
       const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data);
 
-      // cost_monthly_amounts (費用の対象月ごとの金額) — direct month lookup, no carry-forward
-      // (see getCostMonthlyAmount), so windowed the same as variable_costs/monthly_closings below.
-      const costMonthlyAmountsResult = await loadCostMonthlyAmountsForCompany({ companyId, yearMonths: closingMonths });
+      // cost_monthly_amounts (費用の対象月ごとの金額)。継続費用は「その月から有効になる金額」を
+      // 履歴として引き継ぐ(getCostMonthlyAmount参照)ため、fixed_costsと同じ理由で3か月窓には
+      // 絞れない(遡って参照する可能性のある行が窓の外にあり得る) — 会社の全件を取得する。
+      const costMonthlyAmountsResult = await loadCostMonthlyAmountsForCompany({ companyId });
       if (!costMonthlyAmountsResult.ok) {
         throw costMonthlyAmountsResult.error || new Error("費用の月次金額データの取得に失敗しました");
       }
@@ -2388,11 +2389,15 @@ function App() {
       const unboundedExpectedKeysFor = (mergedMap) => new Set(
         Object.keys(mergedMap || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)))
       );
-      // cost_monthly_amounts is fetched windowed by target_month (like variable_costs), but keyed
-      // by cost item id rather than store id — so its expected-key set has to be built from
-      // whichever cost item ids belong to this company (from the just-merged fixedCosts map)
-      // crossed with the fetched month window, not from companyStoreIdPrefixes/windowedExpectedKeys.
-      const costMonthlyAmountsExpectedKeysFor = (mergedFixedCosts) => {
+      // cost_monthly_amounts is now fetched unbounded per company, like fixed_costs (see
+      // loadCostMonthlyAmountsForCompany) — a continuing cost item's amount can carry forward
+      // from any earlier month (getCostMonthlyAmount), so pruning to only the closingMonths
+      // window would silently delete exactly the history that carry-forward depends on the next
+      // time this device hydrates. Mirror unboundedExpectedKeysFor's pattern instead: since the
+      // fetch is now fully authoritative for the company, every key already present in the
+      // merged map (for a still-valid cost item id) is "expected" — pruneStaleKeys then only
+      // drops a key if the fresh fetch confirms it no longer exists in Supabase.
+      const costMonthlyAmountsExpectedKeysFor = (mergedFixedCosts, mergedCostMonthlyAmounts) => {
         const costItemIds = new Set();
         Object.entries(mergedFixedCosts || {}).forEach(([key, items]) => {
           if (!companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix))) return;
@@ -2400,11 +2405,9 @@ function App() {
             if (item.id) costItemIds.add(item.id);
           });
         });
-        const expected = new Set();
-        costItemIds.forEach((itemId) => {
-          closingMonths.forEach((month) => expected.add(`${itemId}__${month}`));
-        });
-        return expected;
+        return new Set(
+          Object.keys(mergedCostMonthlyAmounts || {}).filter((key) => costItemIds.has(key.split("__")[0]))
+        );
       };
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
@@ -2515,8 +2518,8 @@ function App() {
           // costMonthlyAmounts keys are `${costItemId}__${targetMonth}`, not `${storeId}__${month}`,
           // so windowedExpectedKeys (built from store ids) can't be reused here — build the
           // expected set from this company's own cost item ids (just resolved via the fixedCosts
-          // merge above) crossed with the fetched month window instead.
-          costMonthlyAmounts: pruneStaleKeys(merged.costMonthlyAmounts, costMonthlyAmountsExpectedKeysFor(merged.fixedCosts), costMonthlyAmountsOverlay.costMonthlyAmounts),
+          // merge above), unbounded across every month (see costMonthlyAmountsExpectedKeysFor).
+          costMonthlyAmounts: pruneStaleKeys(merged.costMonthlyAmounts, costMonthlyAmountsExpectedKeysFor(merged.fixedCosts, merged.costMonthlyAmounts), costMonthlyAmountsOverlay.costMonthlyAmounts),
           // storeInventoryBalances keys are `${storeId}__${targetMonth}` — the same shape
           // windowedExpectedKeys already uses, so it can be reused directly (unlike costMonthlyAmounts).
           storeInventoryBalances: pruneStaleKeys(merged.storeInventoryBalances, windowedExpectedKeys, storeInventoryBalancesOverlay.storeInventoryBalances),

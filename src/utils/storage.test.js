@@ -448,6 +448,27 @@ test("needsMonthReconfirmation: 確定後にデータが変更されていなけ
   assert.equal(needsMonthReconfirmation(state, store, month), false);
 });
 
+test("needsMonthReconfirmation: 確定済みの月に固有のcostMonthlyAmounts行が無く、継続費用の金額を別の月(過去)で引き継いでいる場合、その引き継ぎ元の行のupdatedAtが確定日時より新しければtrue(費用入力「継続」の金額引き継ぎ仕様との連動)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-09";
+  const key = `${store}__2026-08`;
+  // 9月を確定済みにする(9月自身には金額の行が無く、8月の金額を引き継いでいる状態)。
+  state.monthClosingStatus = { [buildMonthKey(store, month)]: { closed: true, lockedAt: "2026-09-20T00:00:00.000Z" } };
+  state.fixedCosts[key] = [{ id: "fc-rent", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: "2026-08", updatedAt: "2026-08-01T00:00:00.000Z" }];
+  state.costMonthlyAmounts = { "fc-rent__2026-08": { amount: 300000, updatedAt: "2026-08-01T00:00:00.000Z" } };
+
+  // 確定時点でまだ8月の金額(2026-08-01更新)しか無い→確定日時(9/20)より古いのでfalse。
+  assert.equal(needsMonthReconfirmation(state, store, month), false);
+
+  // 確定後に、8月の金額を変更(9月自身の行ではなく、引き継ぎ元である8月の行を編集)。
+  state.costMonthlyAmounts["fc-rent__2026-08"] = { amount: 320000, updatedAt: "2026-09-25T00:00:00.000Z" };
+
+  // 9月自身の行は無いままだが、9月が実質的に使っている金額(引き継ぎ元の8月の行)が確定後に
+  // 変更されているため、再確認が必要と判定される。
+  assert.equal(needsMonthReconfirmation(state, store, month), true);
+});
+
 test("getPreviousMonthAmountByNameAndCategory: 前月に同名・同カテゴリの単月項目があればその金額を返す", () => {
   const state = createInitialAppState();
   const store = "横浜店";
@@ -1293,6 +1314,103 @@ test("対象月統一修正・要件8-13の総合ケース: 2026年8月に登録
   assert.equal(calculateMonthSummary(state, store, "2026-05").fixedCost, 0);
 });
 
+test("費用入力「継続」の金額引き継ぎ仕様・ユーザー指定の総合ケース: 8月¥300,000で登録→9月・10月は自動的に¥300,000を表示、10月で¥320,000へ変更→11月以降は¥320,000、9月へ戻ると¥300,000のまま、損益表も各月正しい金額のみ反映", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const key = `${store}__2026-08`;
+  state.fixedCosts = {
+    [key]: [{ id: "fc-rent", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: "2026-08", endMonth: "" }],
+  };
+  // 8月に¥300,000で登録(その月の初回金額として1件だけ保存される、submitFixedCostと同じ形)。
+  state.costMonthlyAmounts = { "fc-rent__2026-08": { amount: 300000 } };
+
+  // 9月・10月は明示的な保存が無くても、直近(8月)の金額を自動的に引き継ぐ(要件1・2)。
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-09"), 300000);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-10"), 300000);
+  assert.equal(calculateMonthSummary(state, store, "2026-09").fixedCost, 300000);
+  assert.equal(calculateMonthSummary(state, store, "2026-10").fixedCost, 300000);
+
+  // 10月に¥320,000へ変更(10月の行を新規保存するだけ — 8月の行は一切変更しない)。
+  state.costMonthlyAmounts["fc-rent__2026-10"] = { amount: 320000 };
+
+  // 11月・12月は10月以降の最新金額(¥320,000)を引き継ぐ(要件3)。
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-11"), 320000);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-12"), 320000);
+  assert.equal(calculateMonthSummary(state, store, "2026-11").fixedCost, 320000);
+
+  // 9月(10月より前)へ戻ると、引き続き8月時点の¥300,000のまま — 10月の変更が過去へ
+  // 遡って適用されることはない(要件3・4「過去月の金額まで勝手に変更しない」)。
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-09"), 300000);
+  assert.equal(calculateMonthSummary(state, store, "2026-09").fixedCost, 300000);
+  // 8月自身も当然変わらない。
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-08"), 300000);
+
+  // 二重計上されない — この項目はfixedCosts配列に1件しか含まれず、月ごとの金額もこの1件から
+  // しか解決されない(要件5)。
+  const octSummary = calculateMonthSummary(state, store, "2026-10");
+  assert.equal(octSummary.fixedCosts.length, 1);
+  assert.equal(octSummary.fixedCost, 320000);
+});
+
+test("費用入力「継続」の金額引き継ぎ: 期間限定費用も範囲内では金額を引き継ぐが、範囲外(開始月より前・終了月より後)には一切表示・反映しない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const key = `${store}__2026-09`;
+  // 2026年9月〜11月の期間限定「広告キャンペーン」、9月に¥50,000で登録。
+  state.fixedCosts = {
+    [key]: [{ id: "fc-ad", name: "広告キャンペーン", categoryKey: "advertising", periodType: "limited", startMonth: "2026-09", endMonth: "2026-11" }],
+  };
+  state.costMonthlyAmounts = { "fc-ad__2026-09": { amount: 50000 } };
+
+  // 範囲内(9〜11月)は明示保存が無い月(10月・11月)でも同じ金額を引き継いで表示・反映する。
+  ["2026-09", "2026-10", "2026-11"].forEach((month) => {
+    const items = getFixedCostsForStoreMonth(state, store, month);
+    assert.equal(items.length, 1, `${month} should show the item`);
+    assert.equal(getCostMonthlyAmount(state, "fc-ad", month), 50000);
+    assert.equal(calculateMonthSummary(state, store, month).adCost, 50000);
+  });
+
+  // 範囲外(8月・12月)は項目自体が表示されず、損益表にも一切反映しない(要件7)。
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-08").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-12").length, 0);
+  assert.equal(calculateMonthSummary(state, store, "2026-08").adCost, 0);
+  assert.equal(calculateMonthSummary(state, store, "2026-12").adCost, 0);
+});
+
+test("費用入力「継続」の金額引き継ぎ: 単月費用はその月にしか表示・反映されない(引き継ぎの影響を受けない)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const key = `${store}__2026-08`;
+  state.fixedCosts = {
+    [key]: [{ id: "fc-repair", name: "設備修理", categoryKey: "other", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" }],
+  };
+  state.costMonthlyAmounts = { "fc-repair__2026-08": { amount: 100000 } };
+
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-08").length, 1);
+  assert.equal(calculateMonthSummary(state, store, "2026-08").fixedCost, 100000);
+  // 7月・9月には表示・反映されない(要件6)。
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-07").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-09").length, 0);
+  assert.equal(calculateMonthSummary(state, store, "2026-07").fixedCost, 0);
+  assert.equal(calculateMonthSummary(state, store, "2026-09").fixedCost, 0);
+});
+
+test("費用入力「継続」の金額引き継ぎ: 店舗が異なれば同名の継続費用でも金額は混ざらない(company_id/store_id分離の維持・要件9)", () => {
+  const state = createInitialAppState();
+  state.fixedCosts = {
+    "store-a__2026-08": [{ id: "fc-rent-a", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: "2026-08", endMonth: "" }],
+    "store-b__2026-08": [{ id: "fc-rent-b", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: "2026-08", endMonth: "" }],
+  };
+  state.costMonthlyAmounts = {
+    "fc-rent-a__2026-08": { amount: 300000 },
+    "fc-rent-b__2026-08": { amount: 500000 },
+  };
+
+  // 9月(明示保存なし)でも、店舗ごとに別々のcostItemIdで引き継がれるため金額が混ざらない。
+  assert.equal(calculateMonthSummary(state, "store-a", "2026-09").fixedCost, 300000);
+  assert.equal(calculateMonthSummary(state, "store-b", "2026-09").fixedCost, 500000);
+});
+
 test("buildCostMonthlyAmountsStateFromRows builds a costItemId__targetMonth -> amount lookup from cost_monthly_amounts rows", () => {
   const rows = [
     { id: "cma-1", cost_item_id: "fc-rent", target_month: "2026-08", amount: 150000, updated_at: "2026-08-01T00:00:00.000Z" },
@@ -1303,9 +1421,12 @@ test("buildCostMonthlyAmountsStateFromRows builds a costItemId__targetMonth -> a
 
   assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-08"), 150000);
   assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-09"), 160000);
-  // A month nobody has entered/copied an amount for yet is undefined (not 0) — the UI uses this
-  // to show an empty/未入力 field instead of a silently-carried-forward guess.
-  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-10"), undefined);
+  // A month with no row of its own carries forward the most recent saved amount at or before it
+  // (費用入力「継続」の金額引き継ぎ仕様) — 2026-10's own row doesn't exist, so it inherits
+  // 2026-09's 160000, not 2026-08's 150000 (the *latest* applicable row wins).
+  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-10"), 160000);
+  // A month before any row exists at all is still genuinely undefined (nothing to inherit from).
+  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-07"), undefined);
 });
 
 test("getPreviousMonthCostAmount reads the prior month's saved amount for the copy button, and is undefined when nothing was ever saved for it", () => {
@@ -1317,23 +1438,24 @@ test("getPreviousMonthCostAmount reads the prior month's saved amount for the co
   assert.equal(getPreviousMonthCostAmount(state, "fc-rent", "2026-08"), undefined);
 });
 
-test("calculateMonthSummary: an ongoing cost item with no cost_monthly_amounts row for the selected month contributes 0, not its old master amount", () => {
+test("calculateMonthSummary: an ongoing cost item with no cost_monthly_amounts row for the selected month automatically carries forward its most recent saved amount (費用入力「継続」の金額引き継ぎ仕様・要件1・5)", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   const month = "2026-09";
   const key = `${store}__2026-08`;
 
   // Registered in August as ongoing (継続) — still eligible in September (see
-  // getFixedCostsForStoreMonth), but nobody has entered/copied a September amount yet.
+  // getFixedCostsForStoreMonth), and nobody has entered/copied a September amount, but the
+  // August amount should carry forward automatically without needing a "保存" click in September.
   state.fixedCosts = {
-    [key]: [{ id: "fc-rent", name: "家賃", periodType: "ongoing", startMonth: "2026-08", endMonth: "" }],
+    [key]: [{ id: "fc-rent", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: "2026-08", endMonth: "" }],
   };
   state.costMonthlyAmounts = { "fc-rent__2026-08": { amount: 150000 } };
 
   const summary = calculateMonthSummary(state, store, month);
 
-  assert.equal(summary.fixedCost, 0);
-  assert.equal(summary.fixedCosts[0].amount, 0);
+  assert.equal(summary.fixedCost, 150000);
+  assert.equal(summary.fixedCosts[0].amount, 150000);
 });
 
 test("buildVariableCostsStateFromRows: direct month lookup, no carry-forward to a later month", () => {

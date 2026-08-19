@@ -1420,13 +1420,36 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
 // uses (no periodType recorded + no end_month = 継続として扱う).
 export const getCostPatternLabel = (item) => item?.periodType || (item?.endMonth ? "limited" : "ongoing");
 
-// 対象月ごとの金額(cost_monthly_amounts)。その月にまだ入力/コピー保存されていない費用は
-// undefined(=未入力)を返す — 0円ではなく「未確定」であることを呼び出し側が区別できるように
-// する。損益集計ではこれを0として扱う(getCostMonthlyAmount(...) ?? 0)。
-export const getCostMonthlyAmount = (state, costItemId, monthValue) => {
+// 対象月に今まさに反映されている行そのもの(amount/updatedAt)を返す — getCostMonthlyAmount
+// (金額だけ欲しい呼び出し元向け)とneedsMonthReconfirmation(月締め後の変更検知にupdatedAtが
+// 要る)の両方が、この1か所だけを基準にする。対象月にちょうど保存された行があればそれを
+// 最優先で使い(明示的にその月の金額を変更した場合)、無ければ対象月以前で最も新しく保存
+// されている行を「引き継いだ金額」として返す(未来の変更を過去へ遡って適用することは絶対に
+// しない — rowMonth > monthValueの行は候補から除外する)。一度もその項目の金額が保存された
+// ことが無い(対象月以前に1件も行が無い)場合だけundefinedを返す。
+const resolveEffectiveCostMonthlyAmountRow = (state, costItemId, monthValue) => {
   if (!costItemId) return undefined;
-  return state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`]?.amount;
+  const exactRow = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
+  if (exactRow && exactRow.amount !== undefined) return exactRow;
+  let latestMonth = null;
+  let latestRow;
+  Object.entries(state.costMonthlyAmounts || {}).forEach(([key, row]) => {
+    const [rowCostItemId, rowMonth] = key.split("__");
+    if (rowCostItemId !== costItemId || !rowMonth) return;
+    if (rowMonth > monthValue) return;
+    if (!latestMonth || rowMonth > latestMonth) {
+      latestMonth = rowMonth;
+      latestRow = row;
+    }
+  });
+  return latestRow;
 };
+
+// 対象月ごとの金額(cost_monthly_amounts)。継続費用・期間限定費用とも「その月から有効になる
+// 金額」を履歴として持つ仕様(費用入力「継続」の金額引き継ぎ仕様、要件1-4)。損益集計では
+// undefinedを0として扱う(getCostMonthlyAmount(...) ?? 0)。
+export const getCostMonthlyAmount = (state, costItemId, monthValue) =>
+  resolveEffectiveCostMonthlyAmountRow(state, costItemId, monthValue)?.amount;
 
 // 「前月の金額をコピー」用。前月に金額が保存されていなければundefined。
 export const getPreviousMonthCostAmount = (state, costItemId, monthValue) =>
@@ -1803,7 +1826,10 @@ export const needsMonthReconfirmation = (state, storeId, monthValue) => {
   const fixedCosts = getFixedCostsForStoreMonth(state, storeId, monthValue);
   const timestamps = [
     ...fixedCosts.map((item) => item.updatedAt || ""),
-    ...fixedCosts.map((item) => state.costMonthlyAmounts?.[`${item.id}__${monthValue}`]?.updatedAt || ""),
+    // 対象月に直接保存された行だけでなく、継続費用が引き継いでいる行(この月に固有の行が無い
+    // 場合)のupdatedAtも見る — そうしないと、月締め後に「別の月の」継続費用金額を変更した
+    // ことで、確定済みの月の実質的な金額が変わっているのに再確認を促せなくなる。
+    ...fixedCosts.map((item) => resolveEffectiveCostMonthlyAmountRow(state, item.id, monthValue)?.updatedAt || ""),
     ...getClosingItemsForStoreMonth(state, storeId, monthValue).map((item) => item.updatedAt || ""),
     state.storeInventoryBalances?.[`${storeId}__${monthValue}`]?.updatedAt || "",
   ].filter(Boolean);
