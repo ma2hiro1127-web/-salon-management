@@ -1,0 +1,63 @@
+name: Database Backup
+
+# 毎日04:00 JST(=19:00 UTC 前日)、利用の少ない深夜帯に自動実行する(要件4)。
+# workflow_dispatchで手動実行もできるようにしておく(動作確認・緊急バックアップ用)。
+on:
+  schedule:
+    - cron: "0 19 * * *"
+  workflow_dispatch: {}
+
+# このワークフローは既存アプリ(Vercelデプロイ・Supabase本体)から完全に独立しており、
+# 失敗してもサロンマネージャー本体の動作には一切影響しない(スケジュール実行の別ジョブとして
+# 動くだけで、デプロイパイプラインの一部ではない)。
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    # データ取得(pg_dump相当)のみで、リポジトリへの書き込みはbackupリポジトリ側のみ。
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (for backup scripts)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            scripts/backup
+          sparse-checkout-cone-mode: false
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Run backup (dump + verify)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          chmod +x scripts/backup/*.sh
+          ./scripts/backup/run_backup.sh "$RUNNER_TEMP/dump"
+
+      - name: Checkout private backup repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.BACKUP_REPO }}
+          token: ${{ secrets.BACKUP_REPO_TOKEN }}
+          path: backup-repo
+
+      - name: Store new generation + prune old ones
+        run: |
+          chmod +x scripts/backup/store_and_prune.sh
+          ./scripts/backup/store_and_prune.sh "$RUNNER_TEMP/dump" backup-repo
+
+      - name: Commit and push
+        working-directory: backup-repo
+        run: |
+          set -euo pipefail
+          git config user.name "salon-manager-backup-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit (unexpected — a new daily generation should always differ)."
+          else
+            git commit -m "backup: $(date -u +%Y-%m-%d) $(date -u +%H:%M) UTC"
+            git push
+          fi
