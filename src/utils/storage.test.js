@@ -1862,6 +1862,38 @@ test("店舗数が増減しても店舗名・店舗数をハードコードせ�
   assert.ok(result.closedDates.includes(dateIso));
 });
 
+test("実データ再現ケース: 5店舗がまとめて入力で8/1〜8/18を完了、1店舗(横浜)だけ通常日次入力へ切り替えて8/16までしか締めていない場合、1〜16日(店休日の11日含む)は緑、17・18日は緑にならない(判定ロジックの誤りではなく、横浜のデータが実際に無いことを正しく反映している)", () => {
+  const month = "2026-08";
+  const state = createInitialAppState();
+
+  // 原宿・吉祥寺・柏・八戸・池袋: まとめて入力で8/1〜8/18を1件で登録済み(実データと同じ形)。
+  ["原宿", "吉祥寺", "柏", "八戸", "池袋"].forEach((name) => {
+    state.dailyBatchEntries[buildMonthKey(name, month)] = [
+      { id: `batch-${name}`, startDate: "2026-08-01", endDate: "2026-08-18", totalSales: 1000000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+    ];
+  });
+
+  // 横浜: 通常の日次入力で1〜10・12〜16日を日締め済み、11日は店休日、17・18日はまだ未入力
+  // (実際のDBの状態そのまま — daily_batch_entriesは7月分のみで8月分は無い)。
+  const yokohamaClosedDates = ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "12", "13", "14", "15", "16"].map((d) => `2026-08-${d}`);
+  state.dailyResults[buildMonthKey("横浜", month)] = yokohamaClosedDates.map((date) => ({ date, totalSales: 100000 }));
+  state.dayClosingStates[buildMonthKey("横浜", month)] = Object.fromEntries(yokohamaClosedDates.map((date) => [date, true]));
+  state.storeHolidays[buildMonthKey("横浜", month)] = ["2026-08-11"];
+
+  const stores = ["原宿", "横浜", "柏", "八戸", "吉祥寺", "池袋"];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", stores, month);
+
+  // 1〜10日・12〜16日(横浜が日締め済み)と11日(横浜の店休日で判定対象外)は緑になる。
+  ["01", "02", "03", "04", "05", "06", "07", "08", "09", "10", "11", "12", "13", "14", "15", "16"].forEach((d) => {
+    const iso = `2026-08-${d}`;
+    assert.ok(result.closedDates.includes(iso), `${iso} should be green`);
+  });
+  // 17・18日は横浜がまとめ入力・日次入力のどちらでも未完了(実データが無い)ため、緑にならない
+  // — これは判定ロジックの不具合ではなく、横浜のデータが実際に未入力であることの正しい反映。
+  assert.ok(!result.closedDates.includes("2026-08-17"), "2026-08-17 should NOT be green (横浜 has no data at all for this date)");
+  assert.ok(!result.closedDates.includes("2026-08-18"), "2026-08-18 should NOT be green (横浜 has no data at all for this date)");
+});
+
 test("calculateAllStoresMonthSummary: sales reflects every entered day immediately (not just closed days), while closedSales/averageDailySales and 営業完了日数 stay confirmed-only", () => {
   const state = buildAllStoresTestState();
   const summary = calculateAllStoresMonthSummary(state, allStoresTestCompany, "2026-08");
