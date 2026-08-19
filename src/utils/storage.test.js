@@ -1306,12 +1306,16 @@ test("対象月統一修正・要件8-13の総合ケース: 2026年8月に登録
   assert.equal(calculateMonthSummary(state, store, "2026-07").fixedCost, 300000);
   assert.equal(calculateMonthSummary(state, store, "2026-06").fixedCost, 300000);
 
-  // さらに過去(登録月より前で、まだ金額を保存していない2026-05)は項目は表示されるが、
-  // 金額は未入力(undefined)のまま — 勝手に0や現在月の値で確定させない(要件11)。
+  // さらに過去(どの月の金額も保存されていない2026-05)は、項目は表示され、保存されている
+  // 中で最も古い(=最初に登録された)金額(2026-06の300000)を暫定的に表示する — 継続費用は
+  // 初めて登録した月より前から実際には発生し続けている固定費という前提のため、「未入力」に
+  // しない(不具合修正)。あくまで表示・集計上の解決であり、2026-05へ新しい行を書き込む
+  // (確定させる)ことはしない。
   const mayItems = getFixedCostsForStoreMonth(state, store, "2026-05");
   assert.equal(mayItems.length, 1);
-  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-05"), undefined);
-  assert.equal(calculateMonthSummary(state, store, "2026-05").fixedCost, 0);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-05"), 300000);
+  assert.equal(calculateMonthSummary(state, store, "2026-05").fixedCost, 300000);
+  assert.equal(state.costMonthlyAmounts["fc-rent__2026-05"], undefined, "2026-05へ新しい行を書き込んではいけない");
 });
 
 test("費用入力「継続」の金額引き継ぎ仕様・ユーザー指定の総合ケース: 8月¥300,000で登録→9月・10月は自動的に¥300,000を表示、10月で¥320,000へ変更→11月以降は¥320,000、9月へ戻ると¥300,000のまま、損益表も各月正しい金額のみ反映", () => {
@@ -1329,6 +1333,13 @@ test("費用入力「継続」の金額引き継ぎ仕様・ユーザー指定�
   assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-10"), 300000);
   assert.equal(calculateMonthSummary(state, store, "2026-09").fixedCost, 300000);
   assert.equal(calculateMonthSummary(state, store, "2026-10").fixedCost, 300000);
+
+  // 8月より過去(7月)へ変更しても、登録済みの継続金額(300000)が表示され、未入力にならない
+  // (今回の不具合修正の中心 — 「現在選択月より前に保存された金額だけ探す」ロジックだけでは
+  // 7月時点で行が1件も無いため未入力になってしまっていた)。損益表(fixedCost)にも同じ値が
+  // 反映される — 費用入力画面・損益表とも同じgetCostMonthlyAmountを共有しているため。
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-07"), 300000);
+  assert.equal(calculateMonthSummary(state, store, "2026-07").fixedCost, 300000);
 
   // 10月に¥320,000へ変更(10月の行を新規保存するだけ — 8月の行は一切変更しない)。
   state.costMonthlyAmounts["fc-rent__2026-10"] = { amount: 320000 };
@@ -1425,17 +1436,25 @@ test("buildCostMonthlyAmountsStateFromRows builds a costItemId__targetMonth -> a
   // (費用入力「継続」の金額引き継ぎ仕様) — 2026-10's own row doesn't exist, so it inherits
   // 2026-09's 160000, not 2026-08's 150000 (the *latest* applicable row wins).
   assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-10"), 160000);
-  // A month before any row exists at all is still genuinely undefined (nothing to inherit from).
-  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-07"), undefined);
+  // A month before any row exists at all falls back to the earliest recorded amount (2026-08's
+  // 150000) rather than showing 未入力 — a continuing cost is assumed to already have existed
+  // before the month it happened to first get entered into the app (不具合修正).
+  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-07"), 150000);
+  // A cost item with no rows saved at all (different id) is still genuinely undefined.
+  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-nonexistent", "2026-07"), undefined);
 });
 
-test("getPreviousMonthCostAmount reads the prior month's saved amount for the copy button, and is undefined when nothing was ever saved for it", () => {
+test("getPreviousMonthCostAmount reads the prior month's effective amount for the copy button, falling back to the earliest recorded amount if the item didn't exist yet that far back, and is undefined only when nothing was ever saved for it at all", () => {
   const rows = [{ id: "cma-1", cost_item_id: "fc-rent", target_month: "2026-08", amount: 150000 }];
   const { costMonthlyAmounts } = buildCostMonthlyAmountsStateFromRows(rows);
   const state = { costMonthlyAmounts };
 
   assert.equal(getPreviousMonthCostAmount(state, "fc-rent", "2026-09"), 150000);
-  assert.equal(getPreviousMonthCostAmount(state, "fc-rent", "2026-08"), undefined);
+  // 2026-08の1つ前(2026-07)は2026-08より前で行が無いが、2026-08の金額を暫定的に引き継ぐ
+  // (不具合修正 — 継続費用は登録月より前でも「未入力」にしない)。
+  assert.equal(getPreviousMonthCostAmount(state, "fc-rent", "2026-08"), 150000);
+  // その項目自体が1件も保存されたことが無ければ、依然としてundefined。
+  assert.equal(getPreviousMonthCostAmount(state, "fc-nonexistent", "2026-08"), undefined);
 });
 
 test("calculateMonthSummary: an ongoing cost item with no cost_monthly_amounts row for the selected month automatically carries forward its most recent saved amount (費用入力「継続」の金額引き継ぎ仕様・要件1・5)", () => {
@@ -1716,14 +1735,14 @@ test("getStoreDashboardRows: 1店舗1行で当月・前月・カテゴリ別入�
   // 前月(2026-07)は1件データがあるのでhasPrevious:true
   assert.equal(storeA.previous.hasPrevious, true);
   assert.equal(storeA.previous.sales, 400000);
-  assert.equal(storeA.previous.operatingProfit, 400000); // 前月は費用データ無し→原価0・費用0
+  // 家賃(rent)は継続費用として登録されているため、登録月(2026-08)より前の前月(2026-07)
+  // でも項目自体は存在する扱いになる(要件8)。金額もその月に固有の保存が無い場合、保存されて
+  // いる中で最も古い(=このケースでは唯一の)金額100,000円を暫定的に引き継ぐ(費用継続金額の
+  // 引き継ぎ不具合修正 — 登録月より過去でも「未入力」にしない)。
+  assert.equal(storeA.previous.operatingProfit, 300000); // 400000 - 100000(引き継いだ家賃)
   // 前月は人件費・材料/発注費とも未登録(hasPrevious:trueでも費用面は別軸で判定する)
   assert.equal(storeA.previous.hasLaborData, false);
   assert.equal(storeA.previous.hasPurchaseData, false);
-  // 家賃(rent)は継続費用として登録されているため、登録月(2026-08)より前の前月(2026-07)
-  // でも項目自体は存在する扱いになる(対象月統一修正・要件8: 継続費用は登録月より過去の
-  // 対象月でも項目を表示する)。金額はその月の分が未保存なら0円のまま(下のfixedCost/
-  // operatingProfitには影響しない、別テストのcalculateMonthSummaryケースで確認済み)。
   assert.equal(storeA.previous.hasFixedCostData, true);
   assert.equal(storeA.previous.isProvisionalProfit, true);
 

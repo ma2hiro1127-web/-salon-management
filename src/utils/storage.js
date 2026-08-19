@@ -1422,27 +1422,39 @@ export const getCostPatternLabel = (item) => item?.periodType || (item?.endMonth
 
 // 対象月に今まさに反映されている行そのもの(amount/updatedAt)を返す — getCostMonthlyAmount
 // (金額だけ欲しい呼び出し元向け)とneedsMonthReconfirmation(月締め後の変更検知にupdatedAtが
-// 要る)の両方が、この1か所だけを基準にする。対象月にちょうど保存された行があればそれを
-// 最優先で使い(明示的にその月の金額を変更した場合)、無ければ対象月以前で最も新しく保存
-// されている行を「引き継いだ金額」として返す(未来の変更を過去へ遡って適用することは絶対に
-// しない — rowMonth > monthValueの行は候補から除外する)。一度もその項目の金額が保存された
-// ことが無い(対象月以前に1件も行が無い)場合だけundefinedを返す。
+// 要る)の両方が、この1か所だけを基準にする(費用入力画面・損益表とも同じロジックを共有する
+// ための唯一の実装)。優先順位:
+//   1. 対象月にちょうど保存された行があればそれを最優先(明示的にその月の金額を変更した場合)。
+//   2. 無ければ、対象月以前で最も新しく保存されている行を「引き継いだ金額」として使う(通常の
+//      継続費用の引き継ぎ — 未来の変更を過去へ遡って適用することは絶対にしない)。
+//   3. それも無い(=対象月より前に1件も行が無い)場合、対象月より後で最も古い行を使う。継続
+//      費用は「初めてシステムに登録した月」より前から実際には発生し続けている固定費という
+//      前提のため、登録月より過去の対象月を見た時に「未入力」になってしまうのを避ける
+//      (例: 8月に初めて登録した家賃¥300,000を7月で見ても¥300,000を表示する)。この場合も、
+//      あくまで表示・集計上の解決であり、過去月へ新しい行を書き込む(確定させる)ことはしない。
+//   4. その項目の金額が1件も保存されたことが無ければundefined。
 const resolveEffectiveCostMonthlyAmountRow = (state, costItemId, monthValue) => {
   if (!costItemId) return undefined;
   const exactRow = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
   if (exactRow && exactRow.amount !== undefined) return exactRow;
-  let latestMonth = null;
-  let latestRow;
+  let latestMonthAtOrBefore = null;
+  let latestRowAtOrBefore;
+  let earliestMonthAfter = null;
+  let earliestRowAfter;
   Object.entries(state.costMonthlyAmounts || {}).forEach(([key, row]) => {
     const [rowCostItemId, rowMonth] = key.split("__");
     if (rowCostItemId !== costItemId || !rowMonth) return;
-    if (rowMonth > monthValue) return;
-    if (!latestMonth || rowMonth > latestMonth) {
-      latestMonth = rowMonth;
-      latestRow = row;
+    if (rowMonth <= monthValue) {
+      if (!latestMonthAtOrBefore || rowMonth > latestMonthAtOrBefore) {
+        latestMonthAtOrBefore = rowMonth;
+        latestRowAtOrBefore = row;
+      }
+    } else if (!earliestMonthAfter || rowMonth < earliestMonthAfter) {
+      earliestMonthAfter = rowMonth;
+      earliestRowAfter = row;
     }
   });
-  return latestRow;
+  return latestRowAtOrBefore || earliestRowAfter;
 };
 
 // 対象月ごとの金額(cost_monthly_amounts)。継続費用・期間限定費用とも「その月から有効になる

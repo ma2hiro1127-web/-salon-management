@@ -109,7 +109,17 @@
 // fixed_costsと同じ会社全体の取得に変更した(件数は小さく、性能への影響は無い想定)。
 // 月締め後の再確認判定(needsMonthReconfirmation)も、対象月に固有の金額行が無く継続費用
 // から引き継いでいる場合、引き継ぎ元の行の更新日時を見るよう連動して修正した。
-const CACHE_NAME = 'salon-manager-cache-v24';
+// v25: 2件の追加修正。(1) 継続費用の金額引き継ぎで、対象月より前に1件も保存行が無い場合
+// (=登録月より過去へ遡った場合)は依然「未入力」になっていた不具合を修正 —
+// 対象月以前に行が無ければ、対象月より後で最も古い(=最初に登録された)行の金額を暫定的に
+// 使うようにした(継続費用は初めて登録した月より前から発生し続けている固定費という前提)。
+// 費用入力画面・損益表とも同じgetCostMonthlyAmount/resolveEffectiveCostMonthlyAmountRowを
+// 共有しているため、両方に同時に反映される。(2) 対象月選択UI(MonthPicker)がヘッダー右側で
+// 画面右端・下端へはみ出し、1月〜12月の一部がクリックできなくなっていた不具合を修正 —
+// パネルをdocument.body直下へportalで描画し、開いた瞬間にトリガー・パネル自身の実測サイズを
+// 基準にviewport内へ収まるよう位置を自動計算する(右端に近ければ左方向へ、下端に近ければ
+// 上方向へ表示を反転)ようにした。
+const CACHE_NAME = 'salon-manager-cache-v25';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
