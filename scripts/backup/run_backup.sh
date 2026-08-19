@@ -37,35 +37,42 @@ echo "[backup] verifying dump integrity..."
 for f in roles.sql schema.sql data.sql; do
   path="$OUT_DIR/$f"
   if [ ! -s "$path" ]; then
-    echo "::error::$path is missing or empty — treating backup as failed" >&2
+    echo "::error::VERIFY-FAIL(empty-file): $path is missing or empty — treating backup as failed" >&2
     exit 1
   fi
 done
 
-# 不具合修正: 以前はここに「業務で使用中の全23テーブル」を固定配列でハードコードし、
-# data.sql(--data-only)側に COPY public.<table> という行が無いテーブルを一律で失敗にしていた。
-# しかし supabase db dump --data-only は、行が1件も無い(空の)テーブルについてはCOPYブロック
-# 自体を出力しない(空のCOPY public.x (...) FROM stdin; \.という空ブロックにはならず、
-# テーブルへの言及自体が無くなる)。variable_costs・monthly_closings・store_status_audit_log
-# 等、本番でまだ0件のテーブルがあると、そのテーブル名がdata.sqlに一切現れないため「欠落」と
-# 誤検知して失敗していた——これが今回のエラーの直接の原因。
-#
-# 修正後の方式(要件どおりschema.sqlとdata.sqlで役割を分ける):
-#   - 「テーブルが存在するか」は毎回このダンプ自身が作ったschema.sqlを基準に動的に判定する
-#     (過去のテーブル名を固定リストで持たない — 追加/削除/改名してもここの更新は不要)。
-#   - schema.sqlに1つもCREATE TABLEが無ければ、ダンプ自体が壊れているとみなし必ず失敗する。
-#   - 「本当に必要な主要テーブル」だけは、今後も存在し続けることが前提の最小限のセーフティ
-#     ネットとして固定リストで持ち、schema.sqlから欠落していたら必ず失敗する(スキーマダンプ
-#     自体の欠落・権限不足等、本物の異常を見逃さないため)。
-#   - data.sql側は「行があるテーブルの一覧」を出すだけで、空テーブル(=data.sqlに現れない)は
-#     正常として扱う。data.sqlにあるのにschema.sqlに存在しないテーブルがあれば、スキーマと
-#     データの整合性が壊れている証拠なので失敗する。
-SCHEMA_TABLES=$(grep -oE '^CREATE TABLE( IF NOT EXISTS)? public\.[A-Za-z0-9_]+' "$OUT_DIR/schema.sql" \
-  | sed -E 's/^CREATE TABLE( IF NOT EXISTS)? public\.//' | sort -u)
-SCHEMA_TABLE_COUNT=$(echo "$SCHEMA_TABLES" | grep -c . || true)
+# 不具合修正の経緯:
+#  1回目: 「業務で使用中の全23テーブル」を固定配列でハードコードし、data.sql側にCOPY行が
+#    無いテーブルを一律で失敗にしていた。supabase db dumpは行が1件も無い(空の)テーブルには
+#    COPYブロック自体を出力しないため、本番の空テーブル(variable_costs等)で誤検知していた。
+#  2回目(今回): 1回目の修正で固定配列は撤去したが、CREATE TABLE/COPY行を抽出する
+#    grep -oE '...' | sed ... | sort -u という一連のパイプラインを、コマンド置換
+#    (VAR=$(...))の中でset -eo pipefail下に置いたままにしていた。grepは「1件もマッチしない」
+#    場合に終了コード1を返す仕様のため、pipefail下ではそのパイプライン全体の終了コードが1に
+#    なり、代入文の実行中にset -eが働いて、こちらの::error::メッセージを一切出さないまま
+#    スクリプトがその場で終了していた(実際のGitHub Actionsログで「verifying dump
+#    integrity...」の直後に何のメッセージも無くexit code 1になっていたのはこれが原因)。
+#    さらに、正規表現自体もpublic.<table>という完全一致だけを想定しており、実際のsupabase db
+#    dump出力がスキーマ名を省略する・識別子をダブルクォートで囲む、等の書式差異があった場合に
+#    1件もマッチしない可能性があった。
+#  今回の対策: (a) 該当なしを正常に起こりうる結果として明示的に || true で受け止め、
+#    このスクリプト自身がset -eで落ちないようにする。(b) 正規表現を
+#    "public."有無・ダブルクォート有無のどちらにも一致する形に緩和する。
+#    (c) 各判定の結果を必ずログへ出力し、失敗時は「どの条件で失敗したか」を明示する。
+echo "[backup]   extracting table names from schema.sql..."
+SCHEMA_TABLES=$(grep -oE '^CREATE TABLE( IF NOT EXISTS)? [^(]+' "$OUT_DIR/schema.sql" \
+  | sed -E 's/^CREATE TABLE( IF NOT EXISTS)? //; s/"//g; s/^public\.//; s/[[:space:]]+$//' \
+  | sort -u || true)
+SCHEMA_TABLE_COUNT=0
+if [ -n "$SCHEMA_TABLES" ]; then
+  SCHEMA_TABLE_COUNT=$(printf '%s\n' "$SCHEMA_TABLES" | grep -c . || true)
+fi
+echo "[backup]   found $SCHEMA_TABLE_COUNT table(s) in schema.sql"
 
 if [ "$SCHEMA_TABLE_COUNT" -eq 0 ]; then
-  echo "::error::schema.sql contains no 'CREATE TABLE public.*' statements — the schema dump looks broken" >&2
+  echo "::error::VERIFY-FAIL(no-tables-in-schema): schema.sql contains no 'CREATE TABLE ...' statements matched by the verifier — the schema dump looks broken, or its format changed. First 20 lines of schema.sql for debugging:" >&2
+  head -20 "$OUT_DIR/schema.sql" >&2
   exit 1
 fi
 
@@ -74,28 +81,40 @@ fi
 CRITICAL_TABLES=(companies stores profiles daily_sales)
 missing_critical=()
 for table in "${CRITICAL_TABLES[@]}"; do
-  if ! echo "$SCHEMA_TABLES" | grep -qx "$table"; then
+  if ! printf '%s\n' "$SCHEMA_TABLES" | grep -qx "$table"; then
     missing_critical+=("$table")
   fi
 done
 if [ "${#missing_critical[@]}" -gt 0 ]; then
-  echo "::error::critical table(s) missing from schema dump: ${missing_critical[*]} — this should never happen and indicates a broken/partial dump" >&2
+  echo "::error::VERIFY-FAIL(missing-critical-table): critical table(s) missing from schema dump: ${missing_critical[*]} — this should never happen and indicates a broken/partial dump. Tables actually found: $SCHEMA_TABLES" >&2
   exit 1
 fi
+echo "[backup]   all critical tables present: ${CRITICAL_TABLES[*]}"
 
-DATA_TABLES=$(grep -oE '^COPY public\.[A-Za-z0-9_]+' "$OUT_DIR/data.sql" | sed -E 's/^COPY public\.//' | sort -u)
+echo "[backup]   extracting table names with rows from data.sql..."
+DATA_TABLES=$(grep -oE '^COPY [^(]+\(' "$OUT_DIR/data.sql" \
+  | sed -E 's/^COPY //; s/"//g; s/^public\.//; s/[[:space:](]+$//' \
+  | sort -u || true)
+DATA_TABLE_COUNT=0
+if [ -n "$DATA_TABLES" ]; then
+  DATA_TABLE_COUNT=$(printf '%s\n' "$DATA_TABLES" | grep -c . || true)
+fi
+echo "[backup]   found $DATA_TABLE_COUNT table(s) with rows in data.sql"
 
 # data.sqlに現れるテーブルは、必ずschema.sqlにも存在するはず(存在しなければスキーマと
-# データの取得が食い違っている=本物の異常)。
+# データの取得が食い違っている=本物の異常)。data.sqlに1件もCOPY行が無いこと自体は失敗では
+# ない(会社作成直後で全テーブルが空、等でも起こりうる)。
 extra_in_data=()
-while IFS= read -r table; do
-  [ -z "$table" ] && continue
-  if ! echo "$SCHEMA_TABLES" | grep -qx "$table"; then
-    extra_in_data+=("$table")
-  fi
-done <<< "$DATA_TABLES"
+if [ -n "$DATA_TABLES" ]; then
+  while IFS= read -r table; do
+    [ -z "$table" ] && continue
+    if ! printf '%s\n' "$SCHEMA_TABLES" | grep -qx "$table"; then
+      extra_in_data+=("$table")
+    fi
+  done <<< "$DATA_TABLES"
+fi
 if [ "${#extra_in_data[@]}" -gt 0 ]; then
-  echo "::error::data dump references table(s) not found in schema dump: ${extra_in_data[*]}" >&2
+  echo "::error::VERIFY-FAIL(data-schema-mismatch): data dump references table(s) not found in schema dump: ${extra_in_data[*]}" >&2
   exit 1
 fi
 
@@ -104,13 +123,13 @@ fi
 empty_tables=()
 while IFS= read -r table; do
   [ -z "$table" ] && continue
-  if ! echo "$DATA_TABLES" | grep -qx "$table"; then
+  if [ -z "$DATA_TABLES" ] || ! printf '%s\n' "$DATA_TABLES" | grep -qx "$table"; then
     empty_tables+=("$table")
   fi
 done <<< "$SCHEMA_TABLES"
 
 echo "[backup] OK — $(du -sh "$OUT_DIR" | cut -f1) across $SCHEMA_TABLE_COUNT tables in schema dump"
-echo "[backup]   $(echo "$DATA_TABLES" | grep -c . || true) table(s) have rows in data dump"
+echo "[backup]   $DATA_TABLE_COUNT table(s) have rows in data dump"
 if [ "${#empty_tables[@]}" -gt 0 ]; then
   echo "[backup]   ${#empty_tables[@]} table(s) currently empty (present in schema, no rows to copy — normal): ${empty_tables[*]}"
 fi

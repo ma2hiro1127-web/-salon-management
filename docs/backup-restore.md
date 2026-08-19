@@ -15,6 +15,22 @@
 **守らないもの**: Supabaseプロジェクト自体の消失、およびSupabase Auth(`auth`スキーマ、
 ログイン用のユーザー・パスワードハッシュ・セッション)。理由と対処は「Authとの整合性」の章を参照。
 
+**循環外部キー(companies ⇔ profiles)について**: `companies`と`profiles`の間には循環する
+外部キー制約がある(`profiles.company_id → companies.id`、`companies`側の一部カラムが
+`profiles.id`を参照)。dump時にpg_dumpが`circular foreign-key constraints`という警告を出すが、
+これは正常・想定内で、dump自体は問題なく完了する(警告はダンプ失敗の判定には一切使っていない)。
+**ただし復元時は要注意**: `data.sql`を素朴に上から順に`COPY`していくと、どちらのテーブルを
+先に入れても相手側の未挿入行を参照するタイミングが発生し、外部キー制約違反になることがある。
+復元時は`data.sql`を流す**前**に、そのセッションだけ外部キー制約(トリガー経由で実装されている)
+を一時的に無効化すること:
+```sql
+SET session_replication_role = replica;  -- data.sql流し込みの直前に実行
+-- ここで data.sql を実行(psql -f data.sql 等)
+SET session_replication_role = DEFAULT;  -- 完了後に必ず戻す
+```
+(`pg_restore --disable-triggers`と同じ効果を、プレーンSQLの`psql`実行でも得るための操作。
+スーパーユーザー権限が必要 — Supabaseのpostgresロールでは通常問題ない。)
+
 ---
 
 ## 1. 初回セットアップ(手動で1回だけ必要)
@@ -96,14 +112,21 @@ Actions タブ → 「Database Backup」ワークフロー → 「Run workflow�
    ```
 
 6. **データを復元する**
+   `companies`⇔`profiles`間の循環外部キー(上記「循環外部キーについて」参照)により、
+   `data.sql`をそのまま流すと外部キー制約違反になることがあるため、**必ずトリガーを一時的に
+   無効化してから**実行する:
+   ```sql
+   SET session_replication_role = replica;
+   ```
    - **新規の空DBへの復元の場合**: そのまま実行してよい。
      ```bash
-     psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=1 -f data.sql
+     psql "$RESTORE_TARGET_URL" -v ON_ERROR_STOP=1 -c "SET session_replication_role = replica;" -f data.sql -c "SET session_replication_role = DEFAULT;"
      ```
    - **既にデータが入っている本番DBへ「特定テーブルだけ」戻す場合**: `data.sql`を丸ごと流すと
      主キー重複エラーになる。対象テーブルだけ`TRUNCATE ... CASCADE`してから、そのテーブルの
      `COPY`ブロックだけを抽出して流す(全テーブルを一括で戻すのは事故のリスクが高いため、
-     原則として影響範囲を最小限にする)。
+     原則として影響範囲を最小限にする)。この場合も`session_replication_role = replica`を
+     忘れずに設定し、完了後は`DEFAULT`へ戻すこと。
 
 7. **migration状態を確認する**
    本番相当のDBへ復元した場合、`supabase migration list --linked`で、リポジトリの
