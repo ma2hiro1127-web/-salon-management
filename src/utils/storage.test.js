@@ -1662,6 +1662,206 @@ test("getAllStoresBusinessDaySummary: with no registered stores, completedDays i
   assert.equal(result.businessDayCount, 27);
 });
 
+// ============================================================
+// 全店舗カレンダー「緑」判定の不具合修正: その日の営業対象店舗(店休日の店舗を除く)だけで
+// 完了判定する。5〜6店舗の実データに近い構成で、報告の確認ケース1〜10をすべて検証する。
+// ============================================================
+const SIX_STORE_NAMES = ["原宿", "横浜", "柏", "八戸", "吉祥寺", "池袋"];
+const FIVE_STORE_NAMES = ["店A", "店B", "店C", "店D", "店E"];
+
+// storeCloseMap: { 店舗名: true|false } — trueなら日締め済み(=完了)の実日次データを1件用意する。
+const buildStoresWithClosingState = (storeNames, month, dateIso, storeCloseMap) => {
+  const state = createInitialAppState();
+  storeNames.forEach((name) => {
+    const key = buildMonthKey(name, month);
+    if (storeCloseMap[name]) {
+      state.dailyResults[key] = [{ date: dateIso, totalSales: 100000, customers: 5 }];
+      state.dayClosingStates[key] = { [dateIso]: true };
+    }
+  });
+  return state;
+};
+
+test("ケース1: 5店舗すべて営業・5店舗すべて入力完了 → 緑(closedDatesに含まれる)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: true, 店B: true, 店C: true, 店D: true, 店E: true,
+  });
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(result.closedDates.includes(dateIso));
+});
+
+test("ケース2: 5店舗すべて営業・4店舗完了/1店舗未入力 → 通常色(closedDatesに含まれない)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: true, 店B: true, 店C: true, 店D: true, 店E: false,
+  });
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!result.closedDates.includes(dateIso));
+});
+
+test("ケース3(報告の再現例そのもの): 5店舗中1店舗店休日・残り4店舗すべて完了 → 緑(不具合修正の中心ケース)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    // 店Aは店休日にするので実データは用意しない(=完了データが無い状態)。
+    店A: false, 店B: true, 店C: true, 店D: true, 店E: true,
+  });
+  state.storeHolidays[buildMonthKey("店A", month)] = [dateIso];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  // 修正前は店Aの未完了(店休日で当然データが無い)につられてclosedDatesに入らなかった。
+  assert.ok(result.closedDates.includes(dateIso), "店休日の店舗を除いた営業店舗が全完了なら緑になるべき");
+});
+
+test("ケース4: 5店舗中2店舗店休日・残り3店舗中1店舗未入力 → 通常色", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: false, 店B: false, 店C: true, 店D: true, 店E: false, // 店Eが営業日なのに未入力
+  });
+  state.storeHolidays[buildMonthKey("店A", month)] = [dateIso];
+  state.storeHolidays[buildMonthKey("店B", month)] = [dateIso];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!result.closedDates.includes(dateIso), "営業対象の店Eが未入力なので緑にしてはいけない");
+});
+
+test("ケース5-a: 会社共通で宣言された全店舗店休日(company_all_stores_holidays)は、従来どおり赤(closedDatesにもbusinessDayCountにも含めない)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: true, 店B: true, 店C: true, 店D: true, 店E: true,
+  });
+  state.allStoresHolidays[buildCompanyMonthKey("company-1", month)] = [dateIso];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!result.closedDates.includes(dateIso));
+  assert.ok(result.holidayDates.includes(dateIso));
+});
+
+test("ケース5-b: 会社共通の宣言が無くても、5店舗全店が個別に店休日なら、その日は営業対象店舗が1つも無いため緑にならない(赤相当の除外)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: false, 店B: false, 店C: false, 店D: false, 店E: false,
+  });
+  FIVE_STORE_NAMES.forEach((name) => {
+    state.storeHolidays[buildMonthKey(name, month)] = [dateIso];
+  });
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!result.closedDates.includes(dateIso), "営業対象店舗が0件の日を緑にしてはいけない");
+});
+
+test("ケース6(報告の実データ相当): 全店舗まとめ入力1日〜18日、途中に店舗ごとの店休日が混在していても、営業している店舗がすべてまとめ入力済みなら該当営業日はすべて緑になる", () => {
+  const month = "2026-08";
+  const state = createInitialAppState();
+  SIX_STORE_NAMES.forEach((name) => {
+    state.dailyBatchEntries[buildMonthKey(name, month)] = [
+      { id: `batch-${name}`, startDate: "2026-08-01", endDate: "2026-08-18", totalSales: 900000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+    ];
+  });
+  // 報告の例そのもの: 8/11は原宿だけ店休日。
+  state.storeHolidays[buildMonthKey("原宿", month)] = ["2026-08-11"];
+
+  const result = getAllStoresBusinessDaySummary(state, "company-1", SIX_STORE_NAMES, month);
+  for (let day = 1; day <= 18; day += 1) {
+    const dateIso = `2026-08-${String(day).padStart(2, "0")}`;
+    assert.ok(result.closedDates.includes(dateIso), `${dateIso} should be green (all operating stores covered by batch entries)`);
+  }
+});
+
+test("ケース6の対比(報告の8/17の例): まとめ入力ではなく通常の日次入力を使う店舗のうち1店舗でも未入力なら、その日は緑にならない(店休日の店舗は除外したうえで判定)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-17";
+  const state = createInitialAppState();
+  // 原宿・横浜: 入力完了。柏: 未入力。八戸: 店休日(判定対象外)。吉祥寺・池袋も完了。
+  const closed = { 原宿: true, 横浜: true, 柏: false, 吉祥寺: true, 池袋: true };
+  Object.entries(closed).forEach(([name, isClosed]) => {
+    const key = buildMonthKey(name, month);
+    if (isClosed) {
+      state.dailyResults[key] = [{ date: dateIso, totalSales: 100000 }];
+      state.dayClosingStates[key] = { [dateIso]: true };
+    }
+  });
+  state.storeHolidays[buildMonthKey("八戸", month)] = [dateIso];
+
+  const result = getAllStoresBusinessDaySummary(state, "company-1", SIX_STORE_NAMES, month);
+  assert.ok(!result.closedDates.includes(dateIso), "柏が営業日かつ未入力なので8/17は通常色のまま");
+});
+
+test("ケース7: まとめ入力済みで緑だった日を、後からその日だけ店休日に変更 → 残りの営業店舗が全完了なら緑を維持する(状態変更に自動追従、追加のキャッシュ更新処理は不要)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-05";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: true, 店B: true, 店C: true, 店D: true, 店E: false, // 店Eだけ未入力 → 通常色のはず
+  });
+  const before = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!before.closedDates.includes(dateIso));
+
+  // 未入力だった店Eをこの日だけ店休日に変更(店舗設定変更を模す)。
+  state.storeHolidays[buildMonthKey("店E", month)] = [dateIso];
+  const after = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(after.closedDates.includes(dateIso), "未入力店舗を店休日に変更した後は、残りの営業店舗が全完了のため緑になるべき");
+});
+
+test("ケース8: 緑だった日の店休日を解除して営業日に戻す → その店舗に入力が無ければ緑から通常色へ戻る", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = buildStoresWithClosingState(FIVE_STORE_NAMES, month, dateIso, {
+    店A: false, 店B: true, 店C: true, 店D: true, 店E: true,
+  });
+  state.storeHolidays[buildMonthKey("店A", month)] = [dateIso];
+  const before = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(before.closedDates.includes(dateIso));
+
+  // 店休日を解除(配列から取り除く)。店Aには相変わらず入力が無い。
+  state.storeHolidays[buildMonthKey("店A", month)] = [];
+  const after = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!after.closedDates.includes(dateIso), "店休日を解除して営業日に戻したのに入力が無いままなら緑を維持してはいけない");
+});
+
+test("ケース9: まとめ入力を削除して営業店舗に未入力が発生 → 緑が解除される(画面表示だけ緑のまま残らない)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-05";
+  const state = createInitialAppState();
+  FIVE_STORE_NAMES.forEach((name) => {
+    state.dailyBatchEntries[buildMonthKey(name, month)] = [
+      { id: `batch-${name}`, startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 500000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null },
+    ];
+  });
+  const before = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(before.closedDates.includes(dateIso));
+
+  // 店Eのまとめ入力だけ削除(配列から取り除く、submitFixedCost系ハンドラの削除と同じ操作)。
+  state.dailyBatchEntries[buildMonthKey("店E", month)] = [];
+  const after = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(!after.closedDates.includes(dateIso), "まとめ入力削除で店Eが未入力に戻ったのだから緑を解除するべき");
+});
+
+test("ケース10: 売上0円を正式に日締め済みで保存している場合、未入力扱いにせず完了として数える(金額の大小では判定しない)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  const state = createInitialAppState();
+  FIVE_STORE_NAMES.forEach((name) => {
+    const key = buildMonthKey(name, month);
+    // 全店舗とも意図的に0円で日締め済み(閑散日などを正しく記録したケースを想定)。
+    state.dailyResults[key] = [{ date: dateIso, totalSales: 0, customers: 0 }];
+    state.dayClosingStates[key] = { [dateIso]: true };
+  });
+  const result = getAllStoresBusinessDaySummary(state, "company-1", FIVE_STORE_NAMES, month);
+  assert.ok(result.closedDates.includes(dateIso), "0円でも日締め済みなら完了として扱うべき(売上金額の有無で判定しない)");
+});
+
+test("店舗数が増減しても店舗名・店舗数をハードコードせず、渡されたstoresInputだけを基準に動的判定する(店舗追加への対応)", () => {
+  const month = "2026-08";
+  const dateIso = "2026-08-11";
+  // 8店舗(SIX_STORE_NAMESに新規2店舗を追加した想定)全店が完了。
+  const eightStores = [...SIX_STORE_NAMES, "新宿", "渋谷"];
+  const state = buildStoresWithClosingState(eightStores, month, dateIso, Object.fromEntries(eightStores.map((name) => [name, true])));
+  const result = getAllStoresBusinessDaySummary(state, "company-1", eightStores, month);
+  assert.ok(result.closedDates.includes(dateIso));
+});
+
 test("calculateAllStoresMonthSummary: sales reflects every entered day immediately (not just closed days), while closedSales/averageDailySales and 営業完了日数 stay confirmed-only", () => {
   const state = buildAllStoresTestState();
   const summary = calculateAllStoresMonthSummary(state, allStoresTestCompany, "2026-08");

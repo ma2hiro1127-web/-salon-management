@@ -1004,17 +1004,26 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storesInput, mo
   }
 
   const perStoreClosedDateSets = stores.map((store) => new Set(getBusinessDaySummary(state, store.id, monthValue).closedDates || []));
+  // 全店舗カレンダーの「緑」判定不具合の修正: 各店舗自身の店休日(store_business_holidays、
+  // 会社共通のholidayDateSetとは別物)を、その日の「営業対象店舗」から除外するために必要。
+  // これが無いと、ある店舗がその日だけ個別に店休日でも、その店舗には当然完了データが
+  // 存在しない(closedDatesに入らない)ため、他の全店舗が入力済みでも「1店舗でも未完了」
+  // として扱われ、緑にならなかった。
+  const perStoreHolidayDateSets = stores.map((store) => new Set(getStoreHolidayDates(state, store.id, monthValue) || []));
 
-  // 日付ごとに判定する(要件10・26): 全店舗の店休日は対象外、かつその日にまだ開店していない
-  // 店舗(openingDateが未来)は「未締め店舗」として扱わない — 新店舗を追加しても過去日の
-  // 営業完了数が突然減らないようにする。
+  // 日付ごとに判定する(要件10・26): 全店舗共通の休業日(holidayDateSet)は対象外、その日に
+  // まだ開店していない店舗(openingDateが未来)は「未締め店舗」として扱わない(新店舗を
+  // 追加しても過去日の営業完了数が突然減らないようにする)、そして各店舗自身の店休日の
+  // 店舗もその日の判定対象から除外する — 「その日に営業対象となっている店舗だけ」で判定する。
   const closedDateList = [];
   for (let day = 1; day <= monthInfo.daysInMonth; day += 1) {
     const dateIso = `${monthValue}-${String(day).padStart(2, "0")}`;
     if (holidayDateSet.has(dateIso)) continue;
     const applicableIndexes = [];
     stores.forEach((store, index) => {
-      if (!store.openingDate || store.openingDate <= dateIso) applicableIndexes.push(index);
+      const hasOpened = !store.openingDate || store.openingDate <= dateIso;
+      const isStoreHoliday = perStoreHolidayDateSets[index].has(dateIso);
+      if (hasOpened && !isStoreHoliday) applicableIndexes.push(index);
     });
     if (!applicableIndexes.length) continue;
     const allClosed = applicableIndexes.every((index) => perStoreClosedDateSets[index].has(dateIso));

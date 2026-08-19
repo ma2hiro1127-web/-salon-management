@@ -160,7 +160,15 @@
 // Safariの下部バー分はenv(safe-area-inset-bottom)で回避)に切り替える。開閉・年月選択の
 // ロジックはPC/モバイルで完全共通。対象月のstate管理(selectedMonth/handleMonthSwitch)は
 // 今回も変更していない。
-const CACHE_NAME = 'salon-manager-cache-v29';
+// v30: 全店舗カレンダーの「緑=完了」判定の不具合修正。getAllStoresBusinessDaySummaryは、
+// その日にまだ開店していない店舗(openingDateが未来)だけを判定対象から除外しており、店舗
+// 個別の店休日(store_business_holidays)にある店舗は除外していなかった。そのため、ある店舗
+// がその日だけ店休日でも、他の営業店舗が全員入力完了していても「1店舗でも未完了」扱いされ、
+// 緑にならなかった。各店舗自身の店休日をその日の営業対象店舗から正しく除外するよう修正し、
+// 「その日に営業している店舗だけ」で完了判定するようにした。日次入力・まとめて入力どちらも
+// 既存のgetBusinessDaySummary(単一店舗版)のclosedDatesをそのまま使っており、判定ロジックは
+// 完全に共通のまま(まとめ入力専用の別ロジックは無い)。店舗別カレンダー側の判定は無変更。
+const CACHE_NAME = 'salon-manager-cache-v30';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
