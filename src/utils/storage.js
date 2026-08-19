@@ -959,7 +959,13 @@ export const getBusinessDaySummary = (state, storeId, monthValue) => {
   // getBatchAllocatedEntries自体が店休日・既存の実日次データを既に除外して計算するため、
   // ここで追加のフィルタは不要 — 単純に和集合を取るだけでよい。まとめ入力を使っていない
   // 店舗はこの集合が常に空なので、既存店舗のcompletedDays/progressRateは一切変わらない。
+  // 未来日は緑(完了)にしない(要件9)。日次入力の日締めは既にUI側(toggleDayClosing)で
+  // 未来日を拒否しているため通常は起こらないが、まとめて入力(daily_batch_entries)は
+  // 終了日に未来日制限が無く、期間終了日の指定次第では配分結果(getBatchAllocatedDatesSet)
+  // に未来日が含まれ得る — ここで一律に遮断し、入力経路によらず「未来日は未完了」を保証する。
+  const todayIso = formatLocalDate(new Date());
   const closedDateList = [...new Set([...closingBasedClosedDates, ...getBatchAllocatedDatesSet(state, storeId, monthValue)])]
+    .filter((date) => date <= todayIso)
     .sort((a, b) => a.localeCompare(b));
 
   return {
@@ -1010,25 +1016,36 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storesInput, mo
   // 存在しない(closedDatesに入らない)ため、他の全店舗が入力済みでも「1店舗でも未完了」
   // として扱われ、緑にならなかった。
   const perStoreHolidayDateSets = stores.map((store) => new Set(getStoreHolidayDates(state, store.id, monthValue) || []));
+  // 未来日は「入力データ・まとめ入力の有無」に関わらず絶対に緑(営業完了)にしない(要件9)。
+  // まとめて入力(daily_batch_entries)の期間終了日には未来日制限が無いため、理論上は
+  // 未来日にも配分結果(getBatchAllocatedDatesSet)が存在し得る — この関数側で必ず遮断する。
+  const todayIso = formatLocalDate(new Date());
 
-  // 日付ごとに判定する(要件10・26): 全店舗共通の休業日(holidayDateSet)は対象外、その日に
-  // まだ開店していない店舗(openingDateが未来)は「未締め店舗」として扱わない(新店舗を
-  // 追加しても過去日の営業完了数が突然減らないようにする)、そして各店舗自身の店休日の
-  // 店舗もその日の判定対象から除外する — 「その日に営業対象となっている店舗だけ」で判定する。
+  // 日付ごとに判定する(要件2・3・5・10・26): 全店舗共通の休業日(holidayDateSet)は対象外、
+  // 各店舗の開店前(openingDate)・その店舗自身の店休日・その日付時点で停止/アーカイブ済み
+  // だった店舗は、その日の「営業対象店舗」から除外する — isStoreApplicableOnDateへ集約
+  // (getUnclosedStoresForDateと共通)。「その日に営業対象となっている店舗だけ」で判定し、
+  // 営業対象店舗が1件も無い日(全店舗が個別店休日 or 全店舗停止中等)は「全店舗の店休日」
+  // (赤)として扱う(要件5) — holidayDatesへ合流させる。
   const closedDateList = [];
+  const computedAllOffDates = [];
   for (let day = 1; day <= monthInfo.daysInMonth; day += 1) {
     const dateIso = `${monthValue}-${String(day).padStart(2, "0")}`;
     if (holidayDateSet.has(dateIso)) continue;
     const applicableIndexes = [];
     stores.forEach((store, index) => {
-      const hasOpened = !store.openingDate || store.openingDate <= dateIso;
-      const isStoreHoliday = perStoreHolidayDateSets[index].has(dateIso);
-      if (hasOpened && !isStoreHoliday) applicableIndexes.push(index);
+      if (isStoreApplicableOnDate(state, store, dateIso, perStoreHolidayDateSets[index])) applicableIndexes.push(index);
     });
-    if (!applicableIndexes.length) continue;
+    if (!applicableIndexes.length) {
+      computedAllOffDates.push(dateIso);
+      continue;
+    }
+    if (dateIso > todayIso) continue;
     const allClosed = applicableIndexes.every((index) => perStoreClosedDateSets[index].has(dateIso));
     if (allClosed) closedDateList.push(dateIso);
   }
+
+  const combinedHolidayDates = [...new Set([...holidayDates, ...computedAllOffDates])].sort((a, b) => a.localeCompare(b));
 
   return {
     businessDayCount,
@@ -1036,7 +1053,35 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storesInput, mo
     remainingBusinessDays: Math.max(businessDayCount - closedDateList.length, 0),
     progressRate: businessDayCount ? (closedDateList.length / Math.max(businessDayCount, 1)) * 100 : null,
     closedDates: closedDateList,
-    holidayDates,
+    holidayDates: combinedHolidayDates,
+  };
+};
+
+// ある1日について、営業対象なのにまだ日締めが完了していない店舗名を返す(要件13:
+// 「全店舗締めたと思っていたが、実際には1店舗だけ未締めだった」を即座に特定できるように
+// する管理性改善)。判定基準はgetAllStoresBusinessDaySummaryと完全に同じ
+// isStoreApplicableOnDateを共有するため、カレンダーの緑判定とこの内訳表示が食い違うことは
+// ない(要件12)。
+export const getUnclosedStoresForDate = (state, companyId, storesInput, monthValue, dateIso) => {
+  const stores = (storesInput || [])
+    .map((item) => (typeof item === "string" ? { id: item, name: item, openingDate: "" } : item))
+    .filter((item) => item && item.id);
+  const holidayDateSet = new Set(getAllStoresHolidayDates(state, companyId, monthValue));
+  if (holidayDateSet.has(dateIso)) {
+    return { applicableStoreNames: [], unclosedStoreNames: [], isAllStoresHoliday: false };
+  }
+  const applicableStores = stores.filter((store) => {
+    const storeHolidayDateSet = new Set(getStoreHolidayDates(state, store.id, monthValue));
+    return isStoreApplicableOnDate(state, store, dateIso, storeHolidayDateSet);
+  });
+  const unclosedStores = applicableStores.filter((store) => {
+    const closedDateSet = new Set(getBusinessDaySummary(state, store.id, monthValue).closedDates || []);
+    return !closedDateSet.has(dateIso);
+  });
+  return {
+    applicableStoreNames: applicableStores.map((store) => store.name || store.id),
+    unclosedStoreNames: unclosedStores.map((store) => store.name || store.id),
+    isAllStoresHoliday: applicableStores.length === 0,
   };
 };
 
@@ -1371,6 +1416,42 @@ export const getStoreHolidayDates = (state, storeId, monthValue) =>
 
 export const getAllStoresHolidayDates = (state, companyId, monthValue) =>
   state.allStoresHolidays?.[buildCompanyMonthKey(companyId, monthValue)] || [];
+
+// stores.statusは「現在」の状態しか持たない(履歴が無い)。過去の特定日時点でその店舗が
+// 営業対象だったかを正しく判定するには、store_status_audit_log(action: suspended/resumed/
+// archived/restored/deleted、created_at付き。停止/再開/アーカイブ/復元/削除の都度、
+// update-store-status・delete-store の各Edge Functionが必ず記録する)を遡って確認する
+// 必要がある。これが無いと「今日時点でsuspended」というだけの理由で、停止より前の
+// 過去日まで一律「営業対象外」として扱ってしまい、停止前にちゃんと日締めしていた日が
+// 全店舗カレンダーで急に未完了扱いへ変わってしまう(要件3で明示的に禁止されている壊れ方)。
+// 戻り値: "active" | "inactive" | null("null"はその店舗の変更履歴が1件も無い=この監査
+// ログ機能導入より前に状態変更されたなど、判定不能な場合。呼び出し側はstores.statusの
+// 現在値で代替判定する)。
+export const getStoreStatusAsOfDate = (state, storeId, dateIso) => {
+  const logs = (state.storeStatusAuditLog || []).filter((log) => log?.storeId === storeId);
+  if (!logs.length) return null;
+  const upToDate = logs
+    .filter((log) => String(log.createdAt || "").slice(0, 10) <= dateIso)
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+  if (!upToDate.length) return "active";
+  const latestAction = upToDate[upToDate.length - 1].action;
+  return (latestAction === "suspended" || latestAction === "archived" || latestAction === "deleted") ? "inactive" : "active";
+};
+
+// 全店舗判定における「その日にその店舗が営業対象かどうか」の統一判定(要件2・3・12):
+// 開店前(openingDate)・その店舗自身の店休日・その日付時点での状態(停止/アーカイブ済みか)、
+// この3条件をこの関数だけに集約する。getAllStoresBusinessDaySummary(カレンダー/営業進捗の
+// 緑判定)とgetUnclosedStoresForDate(未締め店舗の内訳表示)の両方がこれを呼ぶことで、
+// 2箇所の判定基準が将来ズレることを構造的に防ぐ。
+const isStoreApplicableOnDate = (state, store, dateIso, storeHolidayDateSet) => {
+  const hasOpened = !store.openingDate || store.openingDate <= dateIso;
+  if (!hasOpened) return false;
+  if (storeHolidayDateSet.has(dateIso)) return false;
+  const statusAsOf = getStoreStatusAsOfDate(state, store.id, dateIso);
+  if (statusAsOf === "inactive") return false;
+  if (statusAsOf === null && (store.status === "archived" || store.status === "suspended")) return false;
+  return true;
+};
 
 export const isHolidayDate = (holidayDates, dateIso) => (holidayDates || []).includes(dateIso);
 
@@ -1899,7 +1980,14 @@ export const getPreviousMonthAmountByNameAndCategory = (state, storeId, name, ca
 // KPI/営業進捗のみが対象で、損益表・費用入力・月締めは店舗ごとの機能のまま(要件範囲外)。
 export const calculateAllStoresMonthSummary = (state, company, monthValue) => {
   const companyId = company?.id || "";
-  const stores = (company?.stores || []).filter((store) => store?.id);
+  // App.jsx側の全店舗カレンダー(businessDaySummary、currentCompanyStoresを渡す)と必ず
+  // 同じ店舗集合にする(要件7): 以前はここがcompany.stores(archived含む)を使い、
+  // カレンダー側はarchived除外後のcurrentCompanyStoresを使っていたため、同じ月・同じ会社
+  // でも「カレンダーは16日完了、営業進捗は18日完了」のように営業日数・完了日数が食い違う
+  // 不具合になっていた。stores/openingDate/停止日基準の営業対象判定自体は
+  // getAllStoresBusinessDaySummary(isStoreApplicableOnDate)側に一本化済みのため、ここでは
+  // archived除外の粒度だけを揃えれば足りる。
+  const stores = (company?.stores || []).filter((store) => store?.id && store.status !== "archived");
   const target = getAllStoresTargetForCompanyMonth(state, companyId, monthValue);
   const businessDaySummary = getAllStoresBusinessDaySummary(state, companyId, stores, monthValue);
 

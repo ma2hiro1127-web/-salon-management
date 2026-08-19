@@ -167,6 +167,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .month-picker-close-button:hover { border-color: var(--accent); color: var(--accent); }
 
+/* 全店舗カレンダーの「未締め店舗」ポップオーバー(要件13)。MonthPickerと全く同じ理由・
+   同じ手法(document.bodyへportal、computeAnchoredPopoverPositionでJSがleft/top/max-heightを
+   与える、背景が透けないよう--surface-strongの不透明色のみを使う)。中身が店舗名の短い一覧
+   だけなので、MonthPickerのようなモバイル専用ボトムシートは設けず、PC・スマホとも同じ
+   トリガー起点ポップオーバーで統一する(popoverPosition.test.jsが375px等の狭い幅でも
+   viewport内に収まることを検証済み)。 */
+.unclosed-stores-popover-overlay { position: fixed; inset: 0; z-index: 59; background: rgba(15, 23, 42, 0.12); }
+.unclosed-stores-popover {
+  position: fixed; z-index: 60; width: 240px; max-width: calc(100vw - 24px); overflow-y: auto;
+  background: var(--surface-strong); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: var(--shadow); padding: 12px 14px; box-sizing: border-box;
+}
+.unclosed-stores-popover-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 0.85rem; }
+.unclosed-stores-popover-close {
+  border: none; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; padding: 2px 4px;
+}
+.unclosed-stores-popover-close:hover { color: var(--accent); }
+.unclosed-stores-popover-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.unclosed-stores-popover-list li { background: rgba(220, 38, 38, 0.1); color: var(--danger); border-radius: 8px; padding: 6px 8px; font-size: 0.85rem; font-weight: 600; }
+.unclosed-stores-popover-empty { margin: 8px 0 0; color: var(--muted); font-size: 0.8rem; }
+
 .panel, .empty-card, .summary-card, .ratio-card, .list-row, .toggle-panel, .metric-card, .ranking-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); }
 .panel { padding: 18px 18px 20px; backdrop-filter: blur(8px); }
 .panel-heading h2, .panel-heading h3 { margin: 0; }
@@ -685,7 +706,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 @media print {
   /* month-picker-overlay/panelはdocument.body直下へportalで描画されるため.topbarの子孫では
      ない — 個別に隠す(印刷実行時にたまたま開いていても紙面に出さない)。 */
-  .sidebar, .topbar, .dashboard-print-hide, .ai-floating-button, .month-picker-overlay, .month-picker-panel { display: none !important; }
+  .sidebar, .topbar, .dashboard-print-hide, .ai-floating-button, .month-picker-overlay, .month-picker-panel, .unclosed-stores-popover-overlay, .unclosed-stores-popover { display: none !important; }
   .app-shell, .main-content { display: block !important; background: #fff !important; padding: 0 !important; }
   .dashboard-print-area { display: block !important; }
   .dashboard-print-area .summary-grid,

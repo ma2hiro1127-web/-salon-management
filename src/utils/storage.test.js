@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -2276,6 +2276,160 @@ test("getAllStoresBusinessDaySummary: 開店日(openingDate)より前の日は�
   // 8/2はC店も開店済みで全店舗締めているので完了扱い。
   assert.deepEqual(result.closedDates, ["2026-08-01", "2026-08-02"]);
   assert.equal(result.completedDays, 2);
+});
+
+// 以下、「全店舗月カレンダー 周辺仕様・再発防止まとめ確認指示」対応分の回帰テスト
+// (要件2・3・5・7・9・13)。
+
+test("getStoreStatusAsOfDate: 履歴が無ければnull(判定不能)、履歴があればその日付時点で有効だった直近のactionを返す", () => {
+  const state = {
+    ...createInitialAppState(),
+    storeStatusAuditLog: [
+      { storeId: "横浜", action: "suspended", createdAt: "2026-08-16T00:00:00.000Z" },
+      { storeId: "横浜", action: "resumed", createdAt: "2026-08-20T00:00:00.000Z" },
+    ],
+  };
+  assert.equal(getStoreStatusAsOfDate(state, "存在しない店", "2026-08-10"), null);
+  assert.equal(getStoreStatusAsOfDate(state, "横浜", "2026-08-10"), "active"); // 停止より前
+  assert.equal(getStoreStatusAsOfDate(state, "横浜", "2026-08-16"), "inactive"); // 停止した当日から
+  assert.equal(getStoreStatusAsOfDate(state, "横浜", "2026-08-19"), "inactive"); // 停止中
+  assert.equal(getStoreStatusAsOfDate(state, "横浜", "2026-08-20"), "active"); // 再開した当日から
+});
+
+test("getAllStoresBusinessDaySummary: 店舗を月の途中で停止しても、停止前の過去日の完了状態は壊れず、停止後の日はその店舗を対象外にする(要件3)", () => {
+  const month = "2026-08";
+  const state = {
+    ...createInitialAppState(),
+    dayClosingStates: {
+      "A店__2026-08": { "2026-08-14": true, "2026-08-15": true },
+      "B店__2026-08": { "2026-08-14": true, "2026-08-15": true },
+    },
+    dailyResults: {
+      "A店__2026-08": [{ date: "2026-08-14", totalSales: 1000 }, { date: "2026-08-15", totalSales: 1000 }],
+      "B店__2026-08": [{ date: "2026-08-14", totalSales: 1000 }, { date: "2026-08-15", totalSales: 1000 }],
+    },
+    // B店は8/16に停止(監査ログに記録済み)。8/16以降はB店が新たに日締めすることはない。
+    storeStatusAuditLog: [{ storeId: "B店", action: "suspended", createdAt: "2026-08-16T00:00:00.000Z" }],
+  };
+  const stores = [
+    { id: "A店", name: "A店", openingDate: "", status: "active" },
+    { id: "B店", name: "B店", openingDate: "", status: "suspended" },
+  ];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", stores, month);
+  // 8/14・8/15はB店の停止より前 → B店も対象に含めて両店とも締めているので完了扱い(過去データは壊れない)。
+  assert.ok(result.closedDates.includes("2026-08-14"));
+  assert.ok(result.closedDates.includes("2026-08-15"));
+  // 8/16以降はB店が停止済み → B店は判定対象から除外され、A店だけが対象になる。A店は8/16以降
+  // 締めていないので緑にはならないが、B店の未締めのせいで永久にブロックされることもない
+  // (=8/16をA店が締めれば緑になり得る、という状態を確認する)。
+  assert.ok(!result.closedDates.includes("2026-08-16"));
+  const stateWithAClosed = {
+    ...state,
+    dayClosingStates: { ...state.dayClosingStates, "A店__2026-08": { ...state.dayClosingStates["A店__2026-08"], "2026-08-16": true } },
+    dailyResults: { ...state.dailyResults, "A店__2026-08": [...state.dailyResults["A店__2026-08"], { date: "2026-08-16", totalSales: 1000 }] },
+  };
+  const resultAfterAClosed = getAllStoresBusinessDaySummary(stateWithAClosed, "company-1", stores, month);
+  assert.ok(resultAfterAClosed.closedDates.includes("2026-08-16"), "B店の停止後は、残りの営業対象店舗(A店)だけが締めれば緑になるべき(B店に永久ブロックされない)");
+});
+
+test("getAllStoresBusinessDaySummary: 状態変更履歴が無い店舗は、現在stores.statusが停止/アーカイブ中なら安全側として判定対象から除外する(フォールバック)", () => {
+  const month = "2026-08";
+  const state = {
+    ...createInitialAppState(),
+    dayClosingStates: { "A店__2026-08": { "2026-08-01": true } },
+    dailyResults: { "A店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
+    storeStatusAuditLog: [], // 履歴機能導入前に停止した等、記録が無いケース
+  };
+  const stores = [
+    { id: "A店", name: "A店", openingDate: "", status: "active" },
+    { id: "B店", name: "B店", openingDate: "", status: "suspended" },
+  ];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", stores, month);
+  // B店の履歴が無くても、現在停止中なら判定対象から外れ、A店だけで完了判定できる。
+  assert.ok(result.closedDates.includes("2026-08-01"));
+});
+
+test("getAllStoresBusinessDaySummary: 全店舗が個別の店休日(会社共通の休業日設定とは別)で重なった日は、赤(holidayDates)として扱う(要件5)", () => {
+  const month = "2026-08";
+  const state = {
+    ...createInitialAppState(),
+    storeHolidays: {
+      "A店__2026-08": ["2026-08-11"],
+      "B店__2026-08": ["2026-08-11"],
+    },
+    // 会社共通の全店舗休業日(allStoresHolidays)は明示的に設定していない — それでも
+    // 「たまたま全店舗が個別に休みだった日」は赤扱いになるべき。
+  };
+  const stores = [
+    { id: "A店", name: "A店", openingDate: "" },
+    { id: "B店", name: "B店", openingDate: "" },
+  ];
+  const result = getAllStoresBusinessDaySummary(state, "company-1", stores, month);
+  assert.ok(result.holidayDates.includes("2026-08-11"));
+  assert.ok(!result.closedDates.includes("2026-08-11"));
+});
+
+test("getAllStoresBusinessDaySummary / getBusinessDaySummary: 未来日はデータ(まとめ入力含む)があっても緑にしない(要件9)", () => {
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const month = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}`;
+  const dateIso = `${month}-${String(tomorrow.getDate()).padStart(2, "0")}`;
+  const state = {
+    ...createInitialAppState(),
+    // まとめて入力は終了日に未来日制限が無いため、翌日を含む期間で登録されてしまうケースを再現。
+    dailyBatchEntries: {
+      [`A店__${month}`]: [{ id: "batch-1", startDate: `${month}-01`, endDate: dateIso, totalSales: 300000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null, cashAmount: null, cashlessAmount: null, pointAmount: null }],
+    },
+  };
+  const single = getBusinessDaySummary(state, "A店", month);
+  assert.ok(!single.closedDates.includes(dateIso), "単一店舗版: 未来日はまとめ入力があっても緑にしない");
+  const all = getAllStoresBusinessDaySummary(state, "company-1", [{ id: "A店", name: "A店", openingDate: "" }], month);
+  assert.ok(!all.closedDates.includes(dateIso), "全店舗版: 未来日はまとめ入力があっても緑にしない");
+});
+
+test("calculateAllStoresMonthSummary: アーカイブ済み店舗を除外する基準がgetAllStoresBusinessDaySummary呼び出し側(currentCompanyStores相当)と一致し、営業完了日数が食い違わない(要件7)", () => {
+  const month = "2026-08";
+  const state = {
+    ...createInitialAppState(),
+    dayClosingStates: { "A店__2026-08": { "2026-08-01": true } },
+    dailyResults: { "A店__2026-08": [{ date: "2026-08-01", totalSales: 1000 }] },
+  };
+  const company = {
+    id: "company-1",
+    stores: [
+      { id: "A店", name: "A店", openingDate: "" },
+      // B店はアーカイブ済み・データ無し。App.jsx側のcurrentCompanyStores
+      // (currentCompany.stores.filter(s => s.status !== "archived"))と同じ基準で除外されるべき。
+      { id: "B店", name: "B店", openingDate: "", status: "archived" },
+    ],
+  };
+  const summary = calculateAllStoresMonthSummary(state, company, month);
+  // App.jsx側が実際にgetAllStoresBusinessDaySummaryへ渡すのと同じ「archived除外後」の店舗リスト。
+  const currentCompanyStoresEquivalent = company.stores.filter((store) => store.status !== "archived");
+  const calendarSummary = getAllStoresBusinessDaySummary(state, "company-1", currentCompanyStoresEquivalent, month);
+  assert.equal(summary.completedDays, calendarSummary.completedDays, "営業進捗(summary)とカレンダー(businessDaySummary)の完了日数が一致しなければならない");
+  assert.equal(summary.completedDays, 1);
+});
+
+test("getUnclosedStoresForDate: 営業対象なのに未締めの店舗名だけを返す(要件13)。店休日店舗・開店前店舗・停止済み店舗は対象外", () => {
+  const month = "2026-08";
+  const state = {
+    ...createInitialAppState(),
+    dayClosingStates: { "A店__2026-08": { "2026-08-10": true } },
+    dailyResults: { "A店__2026-08": [{ date: "2026-08-10", totalSales: 1000 }] },
+    storeHolidays: { "C店__2026-08": ["2026-08-10"] },
+    storeStatusAuditLog: [{ storeId: "D店", action: "suspended", createdAt: "2026-08-05T00:00:00.000Z" }],
+  };
+  const stores = [
+    { id: "A店", name: "A店", openingDate: "" }, // 締め済み
+    { id: "B店", name: "B店", openingDate: "" }, // 未締め(営業対象)
+    { id: "C店", name: "C店", openingDate: "" }, // その日は店休日 → 対象外
+    { id: "D店", name: "D店", openingDate: "", status: "suspended" }, // 8/5に停止済み → 対象外
+    { id: "E店", name: "E店", openingDate: "2026-08-20" }, // まだ開店前 → 対象外
+  ];
+  const result = getUnclosedStoresForDate(state, "company-1", stores, month, "2026-08-10");
+  assert.deepEqual(result.applicableStoreNames.sort(), ["A店", "B店"]);
+  assert.deepEqual(result.unclosedStoreNames, ["B店"]);
+  assert.equal(result.isAllStoresHoliday, false);
 });
 
 test("getStoreHolidayDates / getAllStoresHolidayDates / isHolidayDate basic behavior", () => {

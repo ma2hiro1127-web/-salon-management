@@ -1920,6 +1920,27 @@ export const loadFixedCostsForCompany = async ({ companyId }) => {
   }
 };
 
+// store_status_audit_log — 店舗の停止/再開/アーカイブ/復元/削除の履歴(update-store-status・
+// delete-storeの各Edge Functionがservice-role経由でのみ書き込む、クライアントからは読み取り
+// 専用)。全店舗カレンダーの完了判定が「今のstores.statusだけ」ではなく「その日付時点で
+// 本当に営業対象だったか」を判定できるようにするために使う(storage.jsのgetStoreStatusAsOfDate
+// 参照)。fixed_costsと同じ理由で月ウィンドウを設けず会社全体を丸ごと取得する — 店舗の生涯で
+// 数件程度しか増えない、極めて小さいテーブルのため。
+export const loadStoreStatusAuditLogForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("store_status_audit_log")
+      .select("store_id, action, created_at")
+      .eq("company_id", companyId);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreStatusAuditLogForCompany", table: "store_status_audit_log", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
 export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryMonth, userId, item }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ id, companyId, storeId, entryMonth, userId });

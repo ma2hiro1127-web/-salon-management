@@ -161,6 +161,12 @@ export const createInitialAppState = () => {
 
   return {
     stores: [],
+    // store_status_audit_log由来。停止/再開/アーカイブ/復元/削除の履歴を{storeId, action,
+    // createdAt}の配列で保持する(company_id単位で丸ごと取得、month等でのキー化はしない —
+    // 件数が少なく、店舗の生涯で数件程度しか増えないため)。全店舗カレンダーの完了判定が
+    // 「今のstatusだけ」ではなく「その日付時点で本当に営業対象だったか」を判定できるように
+    // するためのもの(getStoreStatusAsOfDate参照、要件3)。
+    storeStatusAuditLog: [],
     selectedStore: "",
     selectedStoreId: "",
     selectedMonth,

@@ -180,7 +180,20 @@
 // 修正し、定期チェック間隔も30分→5分へ短縮した。デプロイ後も画面が更新されない場合は、
 // この不具合ではなくブラウザ/PWA側に古いバンドルがキャッシュされている可能性が高い
 // (ハードリロードやPWAの完全終了→再起動で解消するはず)。
-const CACHE_NAME = 'salon-manager-cache-v31';
+// v32: 全店舗カレンダー周辺仕様の再発防止まとめ(17日・18日not-green報告そのものは横浜店の
+// 未入力が原因で不具合ではなかったが、今後店舗数増加・停止/追加・加盟店混在でも判定が崩れない
+// よう周辺仕様を再点検・強化):
+//  (1) 営業対象店舗判定をisStoreApplicableOnDateへ一本化(開店前・個別店休日・停止/アーカイブ
+//      日を統一判定)、店舗停止をstore_status_audit_log(新規取得)の日付で判定し、停止前の
+//      過去日の完了状態を壊さず、停止後は永久ブロックしないよう修正。
+//  (2) calculateAllStoresMonthSummaryとgetAllStoresBusinessDaySummaryのアーカイブ店舗除外
+//      基準が食い違っていた(前者はarchived含む全店舗、後者はcurrentCompanyStoresでarchived
+//      除外済み)ため、カレンダーの完了日数と営業進捗の完了日数が食い違い得た不具合を修正。
+//  (3) 全店舗が個別の店休日で重なった日(会社共通の休業日宣言が無い場合)を赤表示に追加。
+//  (4) まとめて入力の終了日に未来日制限が無いため、未来日が緑になり得た穴を防ぐガードを追加。
+//  (5) 全店舗カレンダーで未締めの営業日をクリックすると、未締め店舗名を確認できるポップオーバー
+//      を追加(管理性改善)。
+const CACHE_NAME = 'salon-manager-cache-v32';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import "./App.css";
 import {
   dailyFieldKeys,
@@ -62,6 +63,7 @@ import {
   getAllStoresTargetForCompanyMonth,
   getAllStoresBusinessDaySettings,
   getAllStoresBusinessDaySummary,
+  getUnclosedStoresForDate,
   calculateAllStoresMonthSummary,
   buildAllStoresTargetStateFromRows,
   buildCompanyMonthKey,
@@ -84,6 +86,7 @@ import {
 } from "./utils/storage.js";
 import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
+import { computeAnchoredPopoverPosition } from "./utils/popoverPosition.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
 import {
@@ -138,6 +141,7 @@ import {
   upsertAllStoresHolidayToSupabase,
   deleteAllStoresHolidayFromSupabase,
   loadFixedCostsForCompany,
+  loadStoreStatusAuditLogForCompany,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
   loadCostMonthlyAmountsForCompany,
@@ -1644,6 +1648,32 @@ function App() {
       : getBusinessDaySummary(appState, selectedStoreId, selectedMonth)),
     [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
+  // 全店舗 月カレンダーで「まだ緑になっていない営業日」をクリックすると、どの店舗が未締めか
+  // 表示するポップオーバー(要件13)。{dateIso, anchorEl}か、閉じている間はnull。
+  const [unclosedStoresPopover, setUnclosedStoresPopover] = useState(null);
+  const unclosedStoresPopoverInfo = useMemo(
+    () => (unclosedStoresPopover
+      ? getUnclosedStoresForDate(appState, appState.currentCompanyId, currentCompanyStores, selectedMonth, unclosedStoresPopover.dateIso)
+      : null),
+    [appState, currentCompanyStores, selectedMonth, unclosedStoresPopover]
+  );
+  const handleAllStoresCalendarDayClick = (dateIso, event) => {
+    const isHoliday = (businessDaySummary.holidayDates || []).includes(dateIso);
+    const isClosed = (businessDaySummary.closedDates || []).includes(dateIso);
+    // 緑(締め済み)・赤(全店舗店休日)の日は「未締め店舗」という概念自体が無いため開かない
+    // (要件13は「営業日なのにまだ緑になっていない日」が対象)。
+    if (isHoliday || isClosed) {
+      setUnclosedStoresPopover(null);
+      return;
+    }
+    const anchorEl = event?.currentTarget || null;
+    setUnclosedStoresPopover((prev) => (prev && prev.dateIso === dateIso ? null : { dateIso, anchorEl }));
+  };
+  // 対象月切替・全店舗ビューからの離脱時は開いたままにしない(要件10: 別の月/画面の情報が
+  // 前の月のdateIso・anchorElのまま表示され続ける食い違いを防ぐ)。
+  useEffect(() => {
+    setUnclosedStoresPopover(null);
+  }, [selectedMonth, isAllStoresView]);
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
   // 損益表・費用入力を使っていない店舗でも使える独立指標。店舗単位の設定値(生産性計算人数)
   // を使うだけで、月間目標や費用データの有無とは無関係に成立する。
@@ -2287,6 +2317,17 @@ function App() {
       }
       const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data);
 
+      // store_status_audit_log(店舗の停止/再開/アーカイブ/復元/削除の履歴)。RLSでcompany_admin/
+      // system_admin以外には空配列が返る(store_manager/staffには非公開) — その場合
+      // getStoreStatusAsOfDateは常にnullを返し、呼び出し側は現在のstores.statusだけで代替
+      // 判定するため、失敗としては扱わない(結果を無視してよいベストエフォート情報)。
+      const storeStatusAuditLogResult = await loadStoreStatusAuditLogForCompany({ companyId });
+      const storeStatusAuditLogRows = (storeStatusAuditLogResult.data || []).map((row) => ({
+        storeId: row.store_id,
+        action: row.action,
+        createdAt: row.created_at,
+      }));
+
       // cost_monthly_amounts (費用の対象月ごとの金額)。継続費用は「その月から有効になる金額」を
       // 履歴として引き継ぐ(getCostMonthlyAmount参照)ため、fixed_costsと同じ理由で3か月窓には
       // 絞れない(遡って参照する可能性のある行が窓の外にあり得る) — 会社の全件を取得する。
@@ -2428,6 +2469,10 @@ function App() {
           allStoresBusinessDaySettings: allStoresTargetStateOverlay.allStoresBusinessDaySettings,
           storeHolidays: storeHolidaysOverlay.storeHolidays,
           allStoresHolidays: allStoresHolidaysOverlay.allStoresHolidays,
+          // company_id単位の単純な配列で、月ウィンドウ・pruneStaleKeysの対象外(fixedCostsの
+          // ような店舗+月キー構造ではないため) — 毎回の取得結果でそのまま置き換える
+          // (mergeRemoteAppStateの `...remoteState` 展開により自動的に「remote優先」になる)。
+          storeStatusAuditLog: storeStatusAuditLogRows,
           fixedCosts: fixedCostsOverlay.fixedCosts,
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
@@ -6386,12 +6431,19 @@ function App() {
                       <h3>全店舗 月カレンダー</h3>
                     </div>
                   </div>
-                  <p className="helper-text">緑=登録店舗すべての日締めが完了した日／赤=全店舗の店休日／通常色=まだ全店舗の日締めが揃っていない営業日。会社全体の営業状況確認用です。</p>
+                  <p className="helper-text">緑=その日の営業対象店舗すべての日締めが完了した日／赤=その日の営業対象店舗がすべて店休日／通常色=まだ営業対象店舗すべての日締めが揃っていない営業日(クリックで未締め店舗を確認できます)。</p>
                   <BusinessCalendarGrid
                     monthValue={selectedMonth}
                     closedDates={businessDaySummary.closedDates}
                     holidayDates={businessDaySummary.holidayDates}
                     todayIso={formatLocalDate(new Date())}
+                    onDayClick={handleAllStoresCalendarDayClick}
+                  />
+                  <UnclosedStoresPopover
+                    dateIso={unclosedStoresPopover?.dateIso || ""}
+                    anchorEl={unclosedStoresPopover?.anchorEl || null}
+                    info={unclosedStoresPopoverInfo}
+                    onClose={() => setUnclosedStoresPopover(null)}
                   />
                 </div>
               ) : null}
@@ -8531,7 +8583,7 @@ function BusinessCalendarGrid({ monthValue, closedDates = [], holidayDates = [],
           <div
             key={index}
             className={className}
-            onClick={onDayClick ? () => onDayClick(iso) : undefined}
+            onClick={onDayClick ? (event) => onDayClick(iso, event) : undefined}
             role={onDayClick ? "button" : undefined}
             tabIndex={onDayClick ? 0 : undefined}
             onKeyDown={onDayClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onDayClick(iso); } } : undefined}
@@ -8542,6 +8594,93 @@ function BusinessCalendarGrid({ monthValue, closedDates = [], holidayDates = [],
         );
       })}
     </div>
+  );
+}
+
+const POPOVER_VIEWPORT_MARGIN = 12;
+const POPOVER_TRIGGER_GAP = 8;
+
+// 全店舗カレンダーの「未締め店舗」ポップオーバー(要件13)。MonthPicker.jsxのPC/タブレット版
+// (トリガー起点+computeAnchoredPopoverPosition)と全く同じ位置計算ロジックを再利用する —
+// 独立した純粋関数として既にpopoverPosition.test.jsで画面幅375px等を含め検証済みのため、
+// ここで改めて手書きの位置計算をせず、実クリック確認ができない制約下でも位置ロジックの
+// 正しさをコードレベルで担保できる。クリックされた日付セル(anchorEl)を起点に表示し、
+// document.bodyへportalするため、カレンダーカードのoverflow/stacking contextの影響を
+// 受けない(MonthPickerの教訓と同じ)。
+function UnclosedStoresPopover({ dateIso, anchorEl, info, onClose }) {
+  const panelRef = useRef(null);
+  const [position, setPosition] = useState(null);
+  const isOpen = Boolean(dateIso && anchorEl);
+
+  useLayoutEffect(() => {
+    // isOpenがfalseの間はこのコンポーネント自体がnullを返す(下のearly return参照)ため、
+    // positionを明示的にリセットする必要は無い — 次に開いた時にrecomputeが必ず最新値へ
+    // 上書きする(MonthPicker.jsxの同型ロジックと同じ考え方)。
+    if (!isOpen) return undefined;
+    const recompute = () => {
+      const triggerRect = anchorEl?.getBoundingClientRect();
+      const panelRect = panelRef.current?.getBoundingClientRect();
+      if (!triggerRect || !panelRect) return;
+      setPosition(computeAnchoredPopoverPosition({
+        triggerRect,
+        panelWidth: panelRect.width,
+        panelHeight: panelRect.height,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        margin: POPOVER_VIEWPORT_MARGIN,
+        gap: POPOVER_TRIGGER_GAP,
+      }));
+    };
+    recompute();
+    window.addEventListener("resize", recompute);
+    window.addEventListener("scroll", recompute, true);
+    return () => {
+      window.removeEventListener("resize", recompute);
+      window.removeEventListener("scroll", recompute, true);
+    };
+  }, [isOpen, anchorEl, dateIso]);
+
+  useEffect(() => {
+    if (!isOpen) return undefined;
+    const handleKeyDown = (event) => { if (event.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
+  if (!isOpen || typeof document === "undefined") return null;
+
+  const unclosedNames = info?.unclosedStoreNames || [];
+
+  return createPortal(
+    <>
+      <div className="unclosed-stores-popover-overlay" onClick={onClose} />
+      <div
+        ref={panelRef}
+        className="unclosed-stores-popover"
+        role="dialog"
+        aria-label={`${dateIso}の未締め店舗`}
+        style={{
+          position: "fixed",
+          left: position ? `${position.left}px` : "-9999px",
+          top: position ? `${position.top}px` : "-9999px",
+          maxHeight: position ? `${position.maxHeight}px` : undefined,
+          visibility: position ? "visible" : "hidden",
+        }}
+      >
+        <div className="unclosed-stores-popover-heading">
+          <strong>{dateIso} 未締め店舗</strong>
+          <button type="button" className="unclosed-stores-popover-close" onClick={onClose} aria-label="閉じる">×</button>
+        </div>
+        {unclosedNames.length ? (
+          <ul className="unclosed-stores-popover-list">
+            {unclosedNames.map((name) => <li key={name}>{name}</li>)}
+          </ul>
+        ) : (
+          <p className="unclosed-stores-popover-empty">未締め店舗はありません(表示が最新でない可能性があります。再読み込みしてご確認ください)。</p>
+        )}
+      </div>
+    </>,
+    document.body
   );
 }
 
