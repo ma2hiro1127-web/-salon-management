@@ -62,23 +62,16 @@ export default function MonthPicker({ value, onChange, label = "対象月" }) {
     recomputePosition();
     window.addEventListener("resize", recomputePosition);
     window.addEventListener("scroll", recomputePosition, true);
-    const handlePointerDown = (event) => {
-      const target = event.target;
-      if (triggerRef.current?.contains(target)) return;
-      if (panelRef.current?.contains(target)) return;
-      setIsOpen(false);
-    };
+    // 「パネル外をクリックしたら閉じる」は下のmonth-picker-overlay(画面全体を覆う要素)の
+    // onClickが担う — documentへのmousedown監視には戻さない。overlayが背後の店舗ランキング等
+    // への誤クリックそのものを物理的に遮るため、閉じる判定とクリック遮断を1つの要素で両立できる。
     const handleKeyDown = (event) => {
       if (event.key === "Escape") setIsOpen(false);
     };
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("touchstart", handlePointerDown);
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("resize", recomputePosition);
       window.removeEventListener("scroll", recomputePosition, true);
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("touchstart", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, [isOpen]);
@@ -96,41 +89,48 @@ export default function MonthPicker({ value, onChange, label = "対象月" }) {
     setIsOpen(true);
   };
 
-  const panel = isOpen ? (
-    <div
-      ref={panelRef}
-      className="month-picker-panel"
-      role="dialog"
-      aria-label="対象月を選択"
-      style={{
-        position: "fixed",
-        left: position ? `${position.left}px` : "-9999px",
-        top: position ? `${position.top}px` : "-9999px",
-        visibility: position ? "visible" : "hidden",
-      }}
-    >
-      <div className="month-picker-year-nav">
-        <button type="button" className="month-picker-year-button" onClick={() => setBrowsingYear((year) => year - 1)} aria-label="前の年">‹</button>
-        <strong className="month-picker-year-label">{browsingYear}年</strong>
-        <button type="button" className="month-picker-year-button" onClick={() => setBrowsingYear((year) => year + 1)} aria-label="次の年">›</button>
+  // オーバーレイ(下のページ内容のクリックを物理的に遮る)+パネル、両方をportalで描画する。
+  // オーバーレイはパネルより低いz-indexで画面全体を覆い、クリックされたら閉じる — 店舗
+  // ランキング等、背後の要素への誤クリックを物理的に防ぐ(不自然に暗くしないよう、ごく薄い
+  // トーンのみ)。
+  const portalContent = isOpen ? (
+    <>
+      <div className="month-picker-overlay" onClick={() => setIsOpen(false)} />
+      <div
+        ref={panelRef}
+        className="month-picker-panel"
+        role="dialog"
+        aria-label="対象月を選択"
+        style={{
+          position: "fixed",
+          left: position ? `${position.left}px` : "-9999px",
+          top: position ? `${position.top}px` : "-9999px",
+          visibility: position ? "visible" : "hidden",
+        }}
+      >
+        <div className="month-picker-year-nav">
+          <button type="button" className="month-picker-year-button" onClick={() => setBrowsingYear((year) => year - 1)} aria-label="前の年">‹</button>
+          <strong className="month-picker-year-label">{browsingYear}年</strong>
+          <button type="button" className="month-picker-year-button" onClick={() => setBrowsingYear((year) => year + 1)} aria-label="次の年">›</button>
+        </div>
+        <div className="month-picker-grid">
+          {MONTH_LABELS.map((monthLabel, index) => {
+            const monthNumber = index + 1;
+            const isSelected = browsingYear === selectedYear && monthNumber === selectedMonthNumber;
+            return (
+              <button
+                key={monthLabel}
+                type="button"
+                className={isSelected ? "month-picker-month-button selected" : "month-picker-month-button"}
+                onClick={() => commitMonth(monthNumber)}
+              >
+                {monthLabel}
+              </button>
+            );
+          })}
+        </div>
       </div>
-      <div className="month-picker-grid">
-        {MONTH_LABELS.map((monthLabel, index) => {
-          const monthNumber = index + 1;
-          const isSelected = browsingYear === selectedYear && monthNumber === selectedMonthNumber;
-          return (
-            <button
-              key={monthLabel}
-              type="button"
-              className={isSelected ? "month-picker-month-button selected" : "month-picker-month-button"}
-              onClick={() => commitMonth(monthNumber)}
-            >
-              {monthLabel}
-            </button>
-          );
-        })}
-      </div>
-    </div>
+    </>
   ) : null;
 
   return (
@@ -146,7 +146,7 @@ export default function MonthPicker({ value, onChange, label = "対象月" }) {
       >
         {formatMonthLabel(value) || "月を選択"}
       </button>
-      {panel && typeof document !== "undefined" ? createPortal(panel, document.body) : null}
+      {portalContent && typeof document !== "undefined" ? createPortal(portalContent, document.body) : null}
     </div>
   );
 }

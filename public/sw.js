@@ -119,7 +119,14 @@
 // パネルをdocument.body直下へportalで描画し、開いた瞬間にトリガー・パネル自身の実測サイズを
 // 基準にviewport内へ収まるよう位置を自動計算する(右端に近ければ左方向へ、下端に近ければ
 // 上方向へ表示を反転)ようにした。
-const CACHE_NAME = 'salon-manager-cache-v25';
+// v26: 対象月選択UI(MonthPicker)の重なり・クリック不能の修正。パネル内の月ボタン・
+// 年送りボタンが半透明のCSS変数(--surface/--accent-soft、他の場所では不透明な親カード上での
+// 装飾を前提にしている)を使っていたため、body直下にportal表示すると下の店舗ランキング等が
+// 透けて見えていた不具合を修正 — 常に不透明な色のみを使うようにした。また、パネルの外側
+// (背後のページ全体)を覆う薄いオーバーレイを追加し、パネルが開いている間は背後の要素への
+// クリックを物理的に遮る(クリックしたら閉じる)ようにした。位置計算・年月選択のロジック
+// 自体は前回のportal化から変更していない。
+const CACHE_NAME = 'salon-manager-cache-v26';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
