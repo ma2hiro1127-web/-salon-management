@@ -150,7 +150,17 @@
 // 経由しない。内側のボタン類は不透明な配色のみを使用(背景コンテンツが透けない)。
 // 対象月の状態管理(selectedMonth/handleMonthSwitch、月変更で他の月へ戻らない仕組み)は
 // 変更していない — 再監査した結果、現在月への意図しないリセット処理は見つからなかった。
-const CACHE_NAME = 'salon-manager-cache-v28';
+// v29: 対象月選択UI(MonthPicker)をPC/タブレット向けに再びトリガー起点のポップオーバーへ
+// 戻し(v28の画面中央固定モーダルは、営業進捗カード等の主要コンテンツに大きく重なる問題が
+// あったため廃止)、位置計算だけを独立した純粋関数(src/utils/popoverPosition.js)へ切り出した
+// — 1440/1280/1024/768/430/390/375px相当を含む多数のケースを自動テストで検証済み
+// (popoverPosition.test.js)。トリガー右端揃えを基本とし、画面右端・左端・下端・上端いずれも
+// margin以上確保、上下どちらにも収まらない場合は広い方を採用してパネル内スクロールにする。
+// スマホ幅(<=640px)ではPC版と同じ位置計算を使わず、画面下部からのボトムシート(左右16px余白、
+// Safariの下部バー分はenv(safe-area-inset-bottom)で回避)に切り替える。開閉・年月選択の
+// ロジックはPC/モバイルで完全共通。対象月のstate管理(selectedMonth/handleMonthSwitch)は
+// 今回も変更していない。
+const CACHE_NAME = 'salon-manager-cache-v29';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

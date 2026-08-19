@@ -103,13 +103,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 44px; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface-strong); color: var(--text);
 }
 
-/* 対象月選択(MonthPicker)。過去3回、トリガーボタンの位置を基準にした浮遊パネル方式で
-   「画面端でのはみ出し」「背景コンテンツとの重なり」の修正を試みたが直らなかったため、今回は
-   その方式自体をやめ、画面中央に固定表示する完全に独立したモーダルへ作り直した(詳細は
-   MonthPicker.jsx冒頭のコメント参照)。position:fixed + top/left:50% + transform:
-   translate(-50%,-50%)を、幅・高さともviewport基準の相対単位で決めることで、トリガーの
-   位置やページのスクロール位置に一切関係なく、幾何学的に必ずviewport内に収まる —
-   getBoundingClientRectによる位置計算・resize/scrollリスナーは完全に排除した。
+/* 対象月選択(MonthPicker)。経緯(詳細はMonthPicker.jsx冒頭のコメント参照): ネイティブ
+   input→浮遊ポップオーバー(はみ出し・重なりが解消せず)→画面中央固定モーダル(はみ出しは
+   解消したが主要カードに重なった)ときて、今回はPC/タブレットではトリガー起点のポップオーバー
+   方式に戻し、位置計算だけ独立した純粋関数(popoverPosition.js、多数のviewport幅で自動
+   テスト済み)に置き換えた。スマホ幅(<=640px)では別レイアウト(下からのボトムシート)に
+   切り替える — 同じ.month-picker-panelクラスに.mobile修飾子を付けるだけで、開閉ロジック
+   ・年月選択ロジックはPC/モバイルで完全に共通(コンポーネントを分けない)。
    オーバーレイ・パネルともdocument.body直下へportalで描画するため、App.jsx側の親要素
    (ヘッダー等)のoverflow/transform/filter/opacity/stacking contextを一切経由しない。
    内側のボタン類には--surface/--accent-soft(半透明トークン、他の場所では不透明な親カード
@@ -125,13 +125,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .month-picker-trigger:hover { border-color: var(--accent); }
 /* 画面全体を覆い、パネルの外側のクリックを物理的に遮る(店舗ランキング等への誤クリック
    防止)。不自然に暗くしないよう、ごく薄いトーンのみ。パネルより低いz-indexにする。 */
-.month-picker-overlay { position: fixed; inset: 0; z-index: 59; background: rgba(15, 23, 42, 0.28); }
+.month-picker-overlay { position: fixed; inset: 0; z-index: 59; background: rgba(15, 23, 42, 0.12); }
+/* PC/タブレット版(既定): 位置(left/top/max-height)はJS(computeAnchoredPopoverPosition)が
+   inline styleで与える。ここでは見た目とサイズだけを決める — 幅は固定320px
+   (popoverPosition.test.jsのPANEL_WIDTHと一致させている)。 */
 .month-picker-panel {
-  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 60;
-  width: min(320px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto;
+  position: fixed; z-index: 60; width: 320px; max-width: calc(100vw - 24px); overflow-y: auto;
   background: var(--surface-strong); border: 1px solid var(--border); border-radius: 16px;
   box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 12px;
   box-sizing: border-box;
+}
+/* スマホ版: JSはleft/top/max-heightを一切与えない(panelStyleがundefinedになる)。位置は
+   すべてCSSで完結させ、画面下部からのボトムシートにする — 狭い画面でトリガー起点の
+   ポップオーバーを出すと操作しづらいため(要件4)。Safariの下部バー等が被らないよう
+   env(safe-area-inset-bottom)を余白に加える。左右は要件通り16px。 */
+.month-picker-panel.mobile {
+  left: 16px; right: 16px; bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: auto; max-width: none; max-height: min(75vh, calc(100vh - 32px));
+  border-radius: 20px;
 }
 .month-picker-year-nav { display: flex; align-items: center; justify-content: space-between; }
 .month-picker-year-label { font-size: 1rem; }
