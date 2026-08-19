@@ -103,6 +103,46 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 44px; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface-strong); color: var(--text);
 }
 
+/* 対象月選択(MonthPicker)。ネイティブ<input type="month">の置き換え — 年月の完全な組み
+   合わせが確定した時だけonChangeを呼ぶ(中間値でのフォールバックが起きない)。トリガーは
+   他の.filtersラベルと高さを揃え、パネルはPCではトリガー直下に浮かせ、iPhone等の狭い画面
+   では画面中央に固定表示してはみ出しを防ぐ(要件16)。 */
+.month-picker { position: relative; display: flex; flex-direction: column; gap: 6px; }
+.month-picker-label { color: var(--muted); font-size: 0.85rem; }
+.month-picker-trigger {
+  min-height: 44px; border: 1px solid var(--border); border-radius: 12px; padding: 10px 14px;
+  background: var(--surface-strong); color: var(--text); font-weight: 700; font-size: 0.9rem;
+  text-align: left; cursor: pointer; white-space: nowrap;
+}
+.month-picker-trigger:hover { border-color: var(--accent); }
+.month-picker-panel {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 40; width: 260px;
+  background: var(--surface-strong); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px;
+}
+.month-picker-year-nav { display: flex; align-items: center; justify-content: space-between; }
+.month-picker-year-label { font-size: 0.95rem; }
+.month-picker-year-button {
+  border: 0; border-radius: 10px; width: 36px; height: 36px; font-size: 1.1rem; font-weight: 700;
+  background: var(--accent-soft); color: var(--accent); cursor: pointer;
+}
+.month-picker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.month-picker-month-button {
+  border: 1px solid var(--border); border-radius: 10px; min-height: 44px; background: var(--surface);
+  color: var(--text); font-weight: 700; font-size: 0.88rem; cursor: pointer;
+}
+.month-picker-month-button:hover { border-color: var(--accent); }
+.month-picker-month-button.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+@media (max-width: 640px) {
+  .month-picker-panel {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: min(320px, calc(100vw - 32px)); max-height: calc(100vh - 64px); overflow-y: auto;
+  }
+  .month-picker-grid { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .month-picker-month-button { min-height: 48px; font-size: 0.92rem; }
+}
+
 .panel, .empty-card, .summary-card, .ratio-card, .list-row, .toggle-panel, .metric-card, .ranking-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); }
 .panel { padding: 18px 18px 20px; backdrop-filter: blur(8px); }
 .panel-heading h2, .panel-heading h3 { margin: 0; }

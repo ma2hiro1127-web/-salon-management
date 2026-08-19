@@ -88,7 +88,20 @@
 // company_id/store_id等の検索・RLSフィルタに使われるのにインデックスが無かった
 // profiles.company_id/tenant_snapshots.company_id・store_id/user_stores.store_idへ
 // インデックスを追加(既存データ・既存の挙動には影響しない)。
-const CACHE_NAME = 'salon-manager-cache-v22';
+// v23: 対象月の統一・不具合修正。(1) 継続費用がstartMonth(登録月)より過去の対象月では
+// 項目自体が表示されなくなっていた不具合を修正(getFixedCostsForStoreMonth — startMonthは
+// 記録として残すのみで表示の絞り込みには使わない)。月ごとの金額はcostMonthlyAmounts側で
+// 元々独立管理されており、過去月の金額を勝手に書き換える・現在月の値を過去月へ混入させる
+// といった問題は無いことを確認済み(既存設計のまま)。(2) ヘッダーの対象月選択を、ネイティブ
+// <input type="month">(年/月を編集中に空文字などの中間値でonChangeが発火し、
+// 「対象月を変更しても一瞬で現在月へ戻る」不具合の原因になっていた)から、年→月の2ステップ
+// でしか確定しない自前のMonthPicker(年月選択UI、日付選択なし)へ置き換え。表示は
+// 「2026年8月」のような日本語形式(内部値は引き続き2026-08形式)。PC・iPhoneどちらでも
+// はみ出さないレイアウトに対応。(3) 対象月・店舗切替時のデータ取得中に「データを更新中です」
+// を表示し、取得中の数字がそれと分からず表示され続けないようにした。既存のselectedMonthを
+// 単一の共有状態として扱う設計(App.jsx全体で既に統一済みだった)・store/company別データ
+// 分離・損益表の月別費用計算ロジックは変更していない。
+const CACHE_NAME = 'salon-manager-cache-v23';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

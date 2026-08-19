@@ -1188,7 +1188,7 @@ test("buildFixedCostsStateFromRows rebuilds fixedCosts per store from fixed_cost
   assert.deepEqual(fixedCosts["store-honten__2026-08"], [{ id: "fc-2", name: "臨時費用", category: "その他", categoryKey: "uncategorized", memo: "", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08", updatedAt: "" }]);
 });
 
-test("buildFixedCostsStateFromRows: a continuing (ongoing) item entered in an earlier month is still visible via getFixedCostsForStoreMonth in a later month it was never directly saved under", () => {
+test("buildFixedCostsStateFromRows: a continuing (ongoing) item entered in an earlier month is still visible via getFixedCostsForStoreMonth in a later month it was never directly saved under, AND when looking further back before it was registered (対象月統一修正: 継続費用は登録月より過去の対象月でも項目自体を表示する)", () => {
   const rows = [
     { id: "fc-rent", store_id: "store-honten", entry_month: "2026-06", name: "家賃", category: "家賃", memo: "", period_type: "ongoing", start_month: "", end_month: "" },
   ];
@@ -1202,8 +1202,13 @@ test("buildFixedCostsStateFromRows: a continuing (ongoing) item entered in an ea
   assert.equal(augustItems.length, 1);
   assert.equal(augustItems[0].id, "fc-rent");
 
+  // 登録月(2026-06)より前の対象月(2026-05)へ遡っても、継続費用は項目自体が消えない
+  // (不具合修正前はここが0件だった — 過去月へ遡ると継続費用が表示されなくなる不具合)。
+  // 金額はgetCostMonthlyAmount側で別管理されるため、この時点ではまだ未入力(undefined)。
   const mayItems = getFixedCostsForStoreMonth(state, "store-honten", "2026-05");
-  assert.equal(mayItems.length, 0);
+  assert.equal(mayItems.length, 1);
+  assert.equal(mayItems[0].id, "fc-rent");
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-05"), undefined);
 });
 
 test("getFixedCostsForStoreMonth: a single-month limited item (start_month === end_month) never carries into later months", () => {
@@ -1231,7 +1236,7 @@ test("getFixedCostsForStoreMonth: a limited period item (start_month < end_month
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-11").length, 0);
 });
 
-test("getFixedCostsForStoreMonth: a row with no explicit start_month falls back to entry_month as its start (entry_month is NOT NULL, so this is always available) and, with no end_month or period_type either, is treated as ongoing", () => {
+test("getFixedCostsForStoreMonth: a row with no explicit start_month falls back to entry_month as its start (entry_month is NOT NULL, so this is always available) and, with no end_month or period_type either, is treated as ongoing (visible in every month, before and after)", () => {
   const rows = [
     { id: "fc-legacy", store_id: "store-honten", entry_month: "2026-06", name: "旧データ", category: "その他", memo: "", start_month: "", end_month: "" },
   ];
@@ -1240,7 +1245,52 @@ test("getFixedCostsForStoreMonth: a row with no explicit start_month falls back 
 
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-06").length, 1);
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-05").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-05").length, 1);
+});
+
+test("対象月統一修正・要件8-13の総合ケース: 2026年8月に登録した継続費用「家賃」は7月・6月へ遡っても項目が表示され、月ごとの金額は独立して保持され、8月の金額を変更しても過去月の保存済み金額は書き換わらない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const key = `${store}__2026-08`;
+  state.fixedCosts = {
+    [key]: [{ id: "fc-rent", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: "2026-08", endMonth: "" }],
+  };
+  // 6月・7月は既に確定済みの金額があり、8月は当初300,000円だった想定。
+  state.costMonthlyAmounts = {
+    "fc-rent__2026-06": { amount: 300000 },
+    "fc-rent__2026-07": { amount: 300000 },
+    "fc-rent__2026-08": { amount: 300000 },
+  };
+
+  // 8月時点で見えるのは当然として、登録月(8月)より過去の7月・6月でも項目自体が表示される。
+  ["2026-08", "2026-07", "2026-06"].forEach((month) => {
+    const items = getFixedCostsForStoreMonth(state, store, month);
+    assert.equal(items.length, 1, `${month} should still show the item`);
+    assert.equal(items[0].id, "fc-rent");
+  });
+  // 各月の金額はそれぞれ独立して読める。
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-06"), 300000);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-07"), 300000);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-08"), 300000);
+
+  // 8月の金額だけを320,000円へ変更しても、7月・6月の確定済み金額は変わらない(要件10)。
+  state.costMonthlyAmounts["fc-rent__2026-08"] = { amount: 320000 };
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-08"), 320000);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-07"), 300000);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-06"), 300000);
+
+  // 損益表(calculateMonthSummary)は各対象月とも自分の月の金額だけを使い、二重計上や
+  // 現在月の金額の混入は起きない(要件13)。
+  assert.equal(calculateMonthSummary(state, store, "2026-08").fixedCost, 320000);
+  assert.equal(calculateMonthSummary(state, store, "2026-07").fixedCost, 300000);
+  assert.equal(calculateMonthSummary(state, store, "2026-06").fixedCost, 300000);
+
+  // さらに過去(登録月より前で、まだ金額を保存していない2026-05)は項目は表示されるが、
+  // 金額は未入力(undefined)のまま — 勝手に0や現在月の値で確定させない(要件11)。
+  const mayItems = getFixedCostsForStoreMonth(state, store, "2026-05");
+  assert.equal(mayItems.length, 1);
+  assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-05"), undefined);
+  assert.equal(calculateMonthSummary(state, store, "2026-05").fixedCost, 0);
 });
 
 test("buildCostMonthlyAmountsStateFromRows builds a costItemId__targetMonth -> amount lookup from cost_monthly_amounts rows", () => {
@@ -1545,10 +1595,14 @@ test("getStoreDashboardRows: 1店舗1行で当月・前月・カテゴリ別入�
   assert.equal(storeA.previous.hasPrevious, true);
   assert.equal(storeA.previous.sales, 400000);
   assert.equal(storeA.previous.operatingProfit, 400000); // 前月は費用データ無し→原価0・費用0
-  // 前月は人件費・材料/発注費・固定費とも未登録(hasPrevious:trueでも費用面は別軸で判定する)
+  // 前月は人件費・材料/発注費とも未登録(hasPrevious:trueでも費用面は別軸で判定する)
   assert.equal(storeA.previous.hasLaborData, false);
   assert.equal(storeA.previous.hasPurchaseData, false);
-  assert.equal(storeA.previous.hasFixedCostData, false);
+  // 家賃(rent)は継続費用として登録されているため、登録月(2026-08)より前の前月(2026-07)
+  // でも項目自体は存在する扱いになる(対象月統一修正・要件8: 継続費用は登録月より過去の
+  // 対象月でも項目を表示する)。金額はその月の分が未保存なら0円のまま(下のfixedCost/
+  // operatingProfitには影響しない、別テストのcalculateMonthSummaryケースで確認済み)。
+  assert.equal(storeA.previous.hasFixedCostData, true);
   assert.equal(storeA.previous.isProvisionalProfit, true);
 
   assert.equal(storeB.sales, 100000);

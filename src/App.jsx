@@ -178,6 +178,7 @@ import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
+import MonthPicker from "./components/MonthPicker.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
 import FaqPage from "./components/faq/FaqPage.jsx";
 
@@ -192,7 +193,6 @@ const monthlyTabs = [
   { id: "pnl", label: "損益表" },
 ];
 
-const ensureMonthValue = (value) => value || new Date().toISOString().slice(0, 7);
 const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
 // error.messageをそのまま画面表示に使ってよいかを判定する薄いヘルパー。JWT/セッションの
 // タイミング起因エラー(クロックスキュー等)は生のまま出さず、再ログイン案内に差し替える
@@ -6234,10 +6234,7 @@ function App() {
               </select>
             </label>
             <button className="secondary-button" type="button" onClick={handleLogout}>ログアウト</button>
-            <label>
-              対象月
-              <input type="month" value={ensureMonthValue(selectedMonth)} onChange={(event) => handleMonthSwitch(event.target.value)} />
-            </label>
+            <MonthPicker value={selectedMonth} onChange={handleMonthSwitch} />
           </div>
         </header>
 
@@ -6258,6 +6255,12 @@ function App() {
         ) : null}
 
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
+        {/* 対象月・店舗の切替直後、hydrateFromSupabaseがまだ進行中の間は「その月のデータ」が
+            appStateへ反映しきっていない可能性がある。従来はsyncStatusをどこにも表示していな
+            かったため、この間に古い月の数字が一瞬残ったり¥0が見えたりしても利用者には何も
+            伝わらなかった(要件7)。データ取得中であることだけを軽く知らせる — 表示自体を
+            隠す/ブロックする作りにはしない(既存の各パネルの表示条件・計算ロジックは無変更)。 */}
+        {syncStatus.status === "syncing" ? <div className="notice-box">データを更新中です…</div> : null}
         {/* このnoticeは「成功しました」等の完了通知には使わない — 画面上部にはエラーのみ
             表示する(誤操作でデータを失わないための警告や、対応が必要な保存失敗など)。
             成功・完了の確認は、各操作の近く(保存ステータスチップ・ボタンラベル等)に留める。 */}

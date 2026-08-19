@@ -1394,9 +1394,14 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
       const endMonth = item.endMonth || "";
       return monthValue >= startMonth && (!endMonth || monthValue <= endMonth);
     }
-    // "ongoing" (or any legacy row without a recognized periodType) always carries forward from
-    // startMonth, regardless of whatever endMonth may still be sitting on the row.
-    return monthValue >= startMonth;
+    // "ongoing"(継続、または旧データでperiodTypeが記録されていない行)は店舗に継続して
+    // 存在する費用項目そのものなので、startMonth(登録された月)より前の対象月へ遡っても
+    // 項目自体は表示する(不具合修正: 以前はmonthValue >= startMonthで絞っていたため、
+    // 登録月より過去の対象月では継続費用の項目そのものが消えてしまっていた)。startMonthは
+    // 「いつ登録されたか」の記録として保持するだけで、表示の絞り込みには使わない。金額は
+    // 月ごとにcostMonthlyAmounts側で別管理されるため(getCostMonthlyAmount)、ここで対象月を
+    // 絞らなくても過去月の金額を勝手に確定させることにはならない。
+    return true;
   });
 
   // Editing an item can move it between local month-key buckets (see submitFixedCost); dedupe
