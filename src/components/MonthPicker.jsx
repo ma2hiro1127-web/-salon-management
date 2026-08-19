@@ -1,79 +1,38 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { formatMonthLabel } from "../utils/storage.js";
 
 const MONTH_LABELS = ["1月", "2月", "3月", "4月", "5月", "6月", "7月", "8月", "9月", "10月", "11月", "12月"];
-const VIEWPORT_MARGIN = 8;
-const TRIGGER_GAP = 6;
 
 const parseYear = (monthValue) => {
   const year = Number(String(monthValue || "").slice(0, 4));
   return Number.isFinite(year) && year ? year : new Date().getFullYear();
 };
 
-// 対象月選択UI。ネイティブの<input type="month">は、年/月どちらかのセグメントを編集中に
-// onChangeが空文字や未確定値で発火することがあり(特にiOSのホイールUIで顕著)、その中間値を
-// そのままselectedMonthへ書き込むと表示が一瞬「今日の月」へフォールバックして見える不具合の
-// 原因になっていた。ここでは日付選択は一切扱わず、「年を選んでから月ボタンを押す」という
-// 2ステップの単純な操作にすることで、必ず完全な年月の組み合わせでしかonChangeを呼ばない
-// (中間状態が存在しない)。呼び出し側の状態管理(App.jsxのselectedMonth/handleMonthSwitch)
-// は変更していない — 完全な年月が確定した瞬間にonChangeを1回呼ぶだけの、既存の
-// value/onChange契約に沿ったプレーンな置き換え。
+// 対象月選択UI。これまで3回、トリガーボタンの位置を基準にした浮遊パネル(getBoundingClientRect
+// で計算したposition:fixedの座標をトリガー直下に置き、はみ出す場合だけ反転させる方式)で
+// 「画面端でのはみ出し」「背景コンテンツとの重なり」の修正を試みたが、直らなかった。今回は
+// その方式自体をやめ、画面中央に固定表示する完全に独立したモーダルへ作り直した。
 //
-// パネルはdocument.body直下へportalで描画する(親要素のoverflow/position/z-indexの影響を
-// 一切受けない)。開いた直後にトリガーボタン・パネル自身のgetBoundingClientRect()を測って、
-// viewportの右端・下端をはみ出す場合は左方向・上方向へ自動的に位置を反転させる — ボタンが
-// 画面右側にあっても、パネルの右端を基準に左側へ収まる。
+// 中央固定にした理由: トリガー相対の位置計算は、ヘッダーのレイアウト・スクロール位置・
+// ボタンの実際の描画位置など複数の外部要因に依存し続けるため、CSSの微調整だけでは
+// 「絶対にviewport内に収まる」ことを保証できない。画面中央固定(position:fixed +
+// top/left:50% + transform:translate(-50%,-50%))は、パネル自身の幅・高さをviewport基準の
+// 相対単位(min(320px, calc(100vw - 24px))等)で決めておけば、トリガーの位置やページの
+// スクロール位置に一切関係なく、幾何学的に必ずviewport内に収まる — 位置計算用のJS
+// (getBoundingClientRect・resize/scrollリスナー等)を完全に削除でき、その分のバグの余地も
+// 無くなる。年月グリッドは3列×4行のCSS Gridで固定し、個別の月をabsolute配置しない。
 export default function MonthPicker({ value, onChange, label = "対象月" }) {
   const [isOpen, setIsOpen] = useState(false);
   const [browsingYear, setBrowsingYear] = useState(() => parseYear(value));
-  const [position, setPosition] = useState(null);
-  const triggerRef = useRef(null);
-  const panelRef = useRef(null);
 
-  useLayoutEffect(() => {
-    // isOpenがfalseの間はpanelが描画されないため(下のpanel算出を参照)、positionを明示的に
-    // リセットする必要は無い — 次に開いた時にrecomputePositionが必ず最新値へ上書きする。
+  useEffect(() => {
     if (!isOpen) return undefined;
-
-    const recomputePosition = () => {
-      const triggerRect = triggerRef.current?.getBoundingClientRect();
-      const panelRect = panelRef.current?.getBoundingClientRect();
-      if (!triggerRect || !panelRect) return;
-      const viewportWidth = window.innerWidth;
-      const viewportHeight = window.innerHeight;
-      const maxLeft = Math.max(VIEWPORT_MARGIN, viewportWidth - VIEWPORT_MARGIN - panelRect.width);
-      // 基本はボタンの左端に揃えるが、それだとパネルが右端をはみ出す場合はボタンの右端に
-      // パネルの右端を揃える(=右方向へは絶対に伸ばさない)。最後にviewport内へ必ずクランプする。
-      const preferredLeft = triggerRect.left + panelRect.width > viewportWidth - VIEWPORT_MARGIN
-        ? triggerRect.right - panelRect.width
-        : triggerRect.left;
-      const left = Math.min(Math.max(preferredLeft, VIEWPORT_MARGIN), maxLeft);
-
-      const maxTop = Math.max(VIEWPORT_MARGIN, viewportHeight - VIEWPORT_MARGIN - panelRect.height);
-      const belowTop = triggerRect.bottom + TRIGGER_GAP;
-      const fitsBelow = belowTop + panelRect.height <= viewportHeight - VIEWPORT_MARGIN;
-      const preferredTop = fitsBelow ? belowTop : triggerRect.top - TRIGGER_GAP - panelRect.height;
-      const top = Math.min(Math.max(preferredTop, VIEWPORT_MARGIN), maxTop);
-
-      setPosition({ left, top });
-    };
-
-    recomputePosition();
-    window.addEventListener("resize", recomputePosition);
-    window.addEventListener("scroll", recomputePosition, true);
-    // 「パネル外をクリックしたら閉じる」は下のmonth-picker-overlay(画面全体を覆う要素)の
-    // onClickが担う — documentへのmousedown監視には戻さない。overlayが背後の店舗ランキング等
-    // への誤クリックそのものを物理的に遮るため、閉じる判定とクリック遮断を1つの要素で両立できる。
     const handleKeyDown = (event) => {
       if (event.key === "Escape") setIsOpen(false);
     };
     document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("resize", recomputePosition);
-      window.removeEventListener("scroll", recomputePosition, true);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
+    return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen]);
 
   const selectedYear = parseYear(value);
@@ -89,25 +48,13 @@ export default function MonthPicker({ value, onChange, label = "対象月" }) {
     setIsOpen(true);
   };
 
-  // オーバーレイ(下のページ内容のクリックを物理的に遮る)+パネル、両方をportalで描画する。
-  // オーバーレイはパネルより低いz-indexで画面全体を覆い、クリックされたら閉じる — 店舗
-  // ランキング等、背後の要素への誤クリックを物理的に防ぐ(不自然に暗くしないよう、ごく薄い
-  // トーンのみ)。
+  // オーバーレイ(背後のページ内容へのクリックを物理的に遮る)+パネル、両方をdocument.body
+  // 直下へportalで描画する。App.jsx側の親要素(ヘッダー等)のoverflow/transform/filter/
+  // opacity/stacking contextを一切経由しないため、それらの影響を受けない。
   const portalContent = isOpen ? (
     <>
       <div className="month-picker-overlay" onClick={() => setIsOpen(false)} />
-      <div
-        ref={panelRef}
-        className="month-picker-panel"
-        role="dialog"
-        aria-label="対象月を選択"
-        style={{
-          position: "fixed",
-          left: position ? `${position.left}px` : "-9999px",
-          top: position ? `${position.top}px` : "-9999px",
-          visibility: position ? "visible" : "hidden",
-        }}
-      >
+      <div className="month-picker-panel" role="dialog" aria-modal="true" aria-label="対象月を選択">
         <div className="month-picker-year-nav">
           <button type="button" className="month-picker-year-button" onClick={() => setBrowsingYear((year) => year - 1)} aria-label="前の年">‹</button>
           <strong className="month-picker-year-label">{browsingYear}年</strong>
@@ -129,6 +76,7 @@ export default function MonthPicker({ value, onChange, label = "対象月" }) {
             );
           })}
         </div>
+        <button type="button" className="month-picker-close-button" onClick={() => setIsOpen(false)}>閉じる</button>
       </div>
     </>
   ) : null;
@@ -137,7 +85,6 @@ export default function MonthPicker({ value, onChange, label = "対象月" }) {
     <div className="month-picker">
       <span className="month-picker-label">{label}</span>
       <button
-        ref={triggerRef}
         type="button"
         className="month-picker-trigger"
         onClick={() => (isOpen ? setIsOpen(false) : openPicker())}

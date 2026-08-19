@@ -137,7 +137,20 @@
 // 更新のみでlocalStorageへ同期反映しておらず、削除直後に(hydrateが一度も走らないまま)
 // 再読み込みすると古いスナップショットが復元されてしまう経路も修正(writeAppStateを追加)。
 // 継続・単月/期間限定どちらの費用項目でも同じロジックで削除が正しく反映される。
-const CACHE_NAME = 'salon-manager-cache-v27';
+// v28: 対象月選択UI(MonthPicker)を根本から作り直し。過去3回、トリガーボタンの位置を基準に
+// した浮遊パネル(getBoundingClientRectで位置計算し、はみ出す場合だけ反転させる方式)で
+// 修正を試みたが、画面端でのはみ出し・背景コンテンツとの重なりが解消しなかったため、その
+// 方式自体を廃止し、画面中央に固定表示する完全に独立したモーダルへ再設計した。
+// position:fixed + top/left:50% + transform:translate(-50%,-50%)を、幅・高さともviewport
+// 基準の相対単位(min(320px, calc(100vw-24px))等)で決めることで、トリガーの位置やページの
+// スクロール位置に一切関係なく、幾何学的に必ずviewport内に収まる — 位置計算用のJS
+// (getBoundingClientRect・resize/scrollリスナー)は完全に削除した。年月グリッドは3列×4行の
+// CSS Gridで固定(個別の月はabsolute配置しない)。オーバーレイ・パネルともdocument.body直下
+// へportalで描画し、App.jsx側の親要素のoverflow/transform/filter/stacking contextを一切
+// 経由しない。内側のボタン類は不透明な配色のみを使用(背景コンテンツが透けない)。
+// 対象月の状態管理(selectedMonth/handleMonthSwitch、月変更で他の月へ戻らない仕組み)は
+// 変更していない — 再監査した結果、現在月への意図しないリセット処理は見つからなかった。
+const CACHE_NAME = 'salon-manager-cache-v28';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

@@ -103,17 +103,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 44px; border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; background: var(--surface-strong); color: var(--text);
 }
 
-/* 対象月選択(MonthPicker)。ネイティブ<input type="month">の置き換え — 年月の完全な組み
-   合わせが確定した時だけonChangeを呼ぶ(中間値でのフォールバックが起きない)。オーバーレイ・
-   パネルともdocument.body直下へportalで描画し、position:fixedの座標をJS側でtrigger/panel
-   自身のgetBoundingClientRect()から計算して与える(App.jsx/親要素のoverflow・stacking
-   contextの影響を一切受けない)。トリガーがviewport右端付近にあってもパネルの右端を基準に
-   左側へ自動的に収まり、下端をはみ出す場合は上方向へ表示を反転する(画面右端・下端に絶対に
-   はみ出さない)。
-   注意: 内側のボタン類には--surface/--accent-soft(半透明トークン、他の場所では不透明な
-   親カード上での薄い装飾として使われている)を使わない — portal先はページ本体の任意のDOM
-   (店舗ランキング等)の真上に浮くため、半透明だと下の内容が透けて見え、視覚的にも操作的にも
-   紛らわしくなる(不具合修正)。ここは常に不透明な--surface-strong/--accentのみを使う。 */
+/* 対象月選択(MonthPicker)。過去3回、トリガーボタンの位置を基準にした浮遊パネル方式で
+   「画面端でのはみ出し」「背景コンテンツとの重なり」の修正を試みたが直らなかったため、今回は
+   その方式自体をやめ、画面中央に固定表示する完全に独立したモーダルへ作り直した(詳細は
+   MonthPicker.jsx冒頭のコメント参照)。position:fixed + top/left:50% + transform:
+   translate(-50%,-50%)を、幅・高さともviewport基準の相対単位で決めることで、トリガーの
+   位置やページのスクロール位置に一切関係なく、幾何学的に必ずviewport内に収まる —
+   getBoundingClientRectによる位置計算・resize/scrollリスナーは完全に排除した。
+   オーバーレイ・パネルともdocument.body直下へportalで描画するため、App.jsx側の親要素
+   (ヘッダー等)のoverflow/transform/filter/opacity/stacking contextを一切経由しない。
+   内側のボタン類には--surface/--accent-soft(半透明トークン、他の場所では不透明な親カード
+   上での薄い装飾として使われている)を使わない — 半透明だと下の内容が透けて見えるため、
+   ここは常に不透明な--surface-strong/--accentのみを使う。 */
 .month-picker { display: flex; flex-direction: column; gap: 6px; }
 .month-picker-label { color: var(--muted); font-size: 0.85rem; }
 .month-picker-trigger {
@@ -124,33 +125,36 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .month-picker-trigger:hover { border-color: var(--accent); }
 /* 画面全体を覆い、パネルの外側のクリックを物理的に遮る(店舗ランキング等への誤クリック
    防止)。不自然に暗くしないよう、ごく薄いトーンのみ。パネルより低いz-indexにする。 */
-.month-picker-overlay { position: fixed; inset: 0; z-index: 59; background: rgba(15, 23, 42, 0.06); }
+.month-picker-overlay { position: fixed; inset: 0; z-index: 59; background: rgba(15, 23, 42, 0.28); }
 .month-picker-panel {
-  z-index: 60; width: min(280px, calc(100vw - 16px)); max-height: calc(100vh - 16px); overflow-y: auto;
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 60;
+  width: min(320px, calc(100vw - 24px)); max-height: calc(100vh - 24px); overflow-y: auto;
   background: var(--surface-strong); border: 1px solid var(--border); border-radius: 16px;
-  box-shadow: var(--shadow); padding: 12px; display: flex; flex-direction: column; gap: 10px;
-  box-sizing: border-box; opacity: 1;
+  box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  box-sizing: border-box;
 }
 .month-picker-year-nav { display: flex; align-items: center; justify-content: space-between; }
-.month-picker-year-label { font-size: 0.95rem; }
+.month-picker-year-label { font-size: 1rem; }
 .month-picker-year-button {
-  border: 1px solid var(--border); border-radius: 10px; width: 36px; height: 36px; font-size: 1.1rem; font-weight: 700;
-  background: var(--surface-strong); color: var(--accent); cursor: pointer;
+  border: 1px solid var(--border); border-radius: 10px; width: 40px; height: 40px; font-size: 1.2rem; font-weight: 700;
+  background: var(--surface-strong); color: var(--accent); cursor: pointer; flex-shrink: 0;
 }
 .month-picker-year-button:hover { border-color: var(--accent); }
-.month-picker-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+/* 要件1: 3列×4行のCSS Grid固定。個別の月はabsolute配置しない。列・行とも同じ幅・高さになる
+   よう1frで揃え、gridなのでどの画面幅でもズレない。 */
+.month-picker-grid { display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; }
 .month-picker-month-button {
-  border: 1px solid var(--border); border-radius: 10px; min-height: 44px; background: var(--surface-strong);
-  color: var(--text); font-weight: 700; font-size: 0.88rem; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 10px; min-height: 48px; background: var(--surface-strong);
+  color: var(--text); font-weight: 700; font-size: 0.92rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
 }
 .month-picker-month-button:hover { border-color: var(--accent); }
 .month-picker-month-button.selected { background: var(--accent); border-color: var(--accent); color: #fff; }
-
-@media (max-width: 640px) {
-  .month-picker-grid { gap: 10px; }
-  .month-picker-month-button { min-height: 48px; font-size: 0.92rem; }
-  .month-picker-year-button { width: 44px; height: 44px; font-size: 1.2rem; }
+.month-picker-close-button {
+  min-height: 44px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-strong);
+  color: var(--muted); font-weight: 700; font-size: 0.85rem; cursor: pointer;
 }
+.month-picker-close-button:hover { border-color: var(--accent); color: var(--accent); }
 
 .panel, .empty-card, .summary-card, .ratio-card, .list-row, .toggle-panel, .metric-card, .ranking-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); }
 .panel { padding: 18px 18px 20px; backdrop-filter: blur(8px); }
