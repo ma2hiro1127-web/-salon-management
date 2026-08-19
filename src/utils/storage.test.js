@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -1573,6 +1573,46 @@ test("pruneStaleKeys drops any expected key Supabase no longer has a row for, le
   const freshMap = { "本店__2026-08": { targetSales: 100000 } }; // 本店__2026-07's target was deleted from Supabase
   const pruned = pruneStaleKeys(merged, expectedKeys, freshMap);
   assert.deepEqual(Object.keys(pruned).sort(), ["フィーネ横浜__2026-08", "本店__2026-08"]);
+});
+
+test("pruneDeletedItemsFromItemArrayMap: 削除した費用項目(fixed_costs)は、同じキーに他の項目が残っていても正しく取り除かれる(費用削除不具合の修正 — pruneStaleKeysはキー単位でしか判定できず、これができなかった)", () => {
+  const merged = {
+    "store-a__2026-08": [
+      { id: "fc-rent", name: "家賃" },
+      { id: "fc-shahan", name: "社販" }, // 誤って登録し、削除したはずの項目
+    ],
+    "store-b__2026-08": [{ id: "fc-other", name: "他店舗の費用" }],
+  };
+  // Supabase側は既に「社販」が削除済み(fresh側に存在しない) — 家賃だけが残っている。
+  const fresh = {
+    "store-a__2026-08": [{ id: "fc-rent", name: "家賃" }],
+    "store-b__2026-08": [{ id: "fc-other", name: "他店舗の費用" }],
+  };
+  const pruned = pruneDeletedItemsFromItemArrayMap(merged, fresh, ["store-a__", "store-b__"]);
+
+  assert.deepEqual(pruned["store-a__2026-08"].map((item) => item.id), ["fc-rent"]);
+  // 削除していない他店舗のデータには一切影響しない(company_id/store_id分離の維持)。
+  assert.deepEqual(pruned["store-b__2026-08"].map((item) => item.id), ["fc-other"]);
+});
+
+test("pruneDeletedItemsFromItemArrayMap: keyPrefixesに一致しないキー(取得対象外の会社・店舗)は一切変更しない", () => {
+  const merged = { "other-company-store__2026-08": [{ id: "fc-x" }] };
+  const fresh = {}; // このキーはそもそも今回の取得範囲外(会社が違う等)
+  const pruned = pruneDeletedItemsFromItemArrayMap(merged, fresh, ["store-a__"]);
+  assert.deepEqual(pruned["other-company-store__2026-08"].map((item) => item.id), ["fc-x"]);
+});
+
+test("pruneDeletedItemsFromItemArrayMap: 継続費用・単月/期間限定費用のどちらでも同様に削除が反映される(periodTypeに関わらずidだけで判定するため)", () => {
+  const merged = {
+    "store-a__2026-08": [
+      { id: "fc-ongoing", name: "継続費用", periodType: "ongoing" },
+      { id: "fc-limited", name: "単月費用", periodType: "limited" },
+    ],
+  };
+  // 両方とも削除済み(freshに1件も無い)。
+  const fresh = { "store-a__2026-08": [] };
+  const pruned = pruneDeletedItemsFromItemArrayMap(merged, fresh, ["store-a__"]);
+  assert.deepEqual(pruned["store-a__2026-08"], []);
 });
 
 // 「全店舗」(company_admin専用の仮想集計ビュー)関連のテスト。実店舗を新規作成せず、

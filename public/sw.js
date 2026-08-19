@@ -126,7 +126,18 @@
 // (背後のページ全体)を覆う薄いオーバーレイを追加し、パネルが開いている間は背後の要素への
 // クリックを物理的に遮る(クリックしたら閉じる)ようにした。位置計算・年月選択のロジック
 // 自体は前回のportal化から変更していない。
-const CACHE_NAME = 'salon-manager-cache-v26';
+// v27: 費用項目(fixed_costs)の削除が再取得後に復活する不具合の修正。DELETE自体はSupabase/
+// RLSとも正常に動作していた(company_admin/store_managerとも1行削除をライブ確認済み)が、
+// (1) fixedCostsのマージがidベースの単純union(mergeItemArrayMap)で、削除済み項目が
+// ローカル/localStorageに残っている限り、次のhydrate(月変更・再読み込み・再ログイン等)
+// のたびに復活していた(既存のpruneStaleKeysはキー単位でしか判定できず、同じキーに他の
+// 項目が残っていると削除済みの項目ごと配列を素通りさせてしまっていた) — 会社全体を無制限
+// 取得しているfixedCostsについて、fresh側のidセットで配列の中身自体を絞り込む新しい
+// 突き合わせ処理(pruneDeletedItemsFromItemArrayMap)を追加。(2) 削除処理がReact stateの
+// 更新のみでlocalStorageへ同期反映しておらず、削除直後に(hydrateが一度も走らないまま)
+// 再読み込みすると古いスナップショットが復元されてしまう経路も修正(writeAppStateを追加)。
+// 継続・単月/期間限定どちらの費用項目でも同じロジックで削除が正しく反映される。
+const CACHE_NAME = 'salon-manager-cache-v27';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

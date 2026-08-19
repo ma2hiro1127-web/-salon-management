@@ -774,6 +774,27 @@ export const pruneStaleKeys = (mergedMap, expectedKeys, freshMap) => {
   return pruned;
 };
 
+// pruneStaleKeysの限界を補うためのもの: 配列値マップ(1キー = 複数の項目、例:
+// fixedCosts["storeId__month"] = [item, item, ...])では、キー自体は生き続けたまま配列の
+// 中の特定の1件だけが削除される(例: 費用項目の削除)ことがある。pruneStaleKeysはキー単位
+// でしか要不要を判定できないため、同じキーに他の項目が1件でも残っていると、削除済みの項目
+// ごと配列全体をそのまま素通りさせてしまう — これが「削除したのに再取得すると復活する」
+// 不具合の原因だった(削除後もローカル/localStorageに残っていた項目が、次回のhydrate時に
+// mergeItemArrayMapのidベースunionマージで復活していた)。
+// このため、対象ドメインが無制限(会社全体)取得である場合に限り、各キーの配列を「fresh側の
+// idセットに実在する項目だけ」へ絞り込む — fresh側はその会社について完全な情報を持つため、
+// fresh側に無いid(=Supabase上で既に削除済み)は安全に除外できる。keyPrefixesに一致しない
+// キー(例: 他社の会社切り替え前の残留データ等、今回の取得対象外)は一切変更しない。
+export const pruneDeletedItemsFromItemArrayMap = (mergedMap, freshMap, keyPrefixes) => {
+  const pruned = { ...(mergedMap || {}) };
+  Object.keys(pruned).forEach((key) => {
+    if (!keyPrefixes.some((prefix) => key.startsWith(prefix))) return;
+    const freshIds = new Set((freshMap?.[key] || []).map((item) => item?.id));
+    pruned[key] = (pruned[key] || []).filter((item) => freshIds.has(item?.id));
+  });
+  return pruned;
+};
+
 const mergeDailyResultsMap = (localMap = {}, remoteMap = {}) => {
   const safeLocal = localMap && typeof localMap === "object" ? localMap : {};
   const safeRemote = remoteMap && typeof remoteMap === "object" ? remoteMap : {};

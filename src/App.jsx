@@ -33,6 +33,7 @@ import {
   buildCompanySettingsFromRow,
   buildStoreProfilesByStoreId,
   pruneStaleKeys,
+  pruneDeletedItemsFromItemArrayMap,
   buildMonthKey,
   calculateMonthSummary,
   deduplicateDailyEntries,
@@ -2384,19 +2385,18 @@ function App() {
       // ここで期待キーを明示してpruneStaleKeysの対象に含める。
       const companyMonthExpectedKeys = new Set(closingMonths.map((month) => buildCompanyMonthKey(companyId, month)));
       // fixed_costs has no month window (see above) — every key belonging to one of this
-      // company's stores is inside the just-fetched, fully authoritative set.
+      // company's stores is inside the just-fetched, fully authoritative set. Used below for
+      // fixedCosts' own per-item reconciliation (prunedFixedCosts) and by
+      // costMonthlyAmountsExpectedKeysFor.
       const companyStoreIdPrefixes = (company?.stores || []).map((store) => `${store.id}__`);
-      const unboundedExpectedKeysFor = (mergedMap) => new Set(
-        Object.keys(mergedMap || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)))
-      );
       // cost_monthly_amounts is now fetched unbounded per company, like fixed_costs (see
       // loadCostMonthlyAmountsForCompany) — a continuing cost item's amount can carry forward
       // from any earlier month (getCostMonthlyAmount), so pruning to only the closingMonths
       // window would silently delete exactly the history that carry-forward depends on the next
-      // time this device hydrates. Mirror unboundedExpectedKeysFor's pattern instead: since the
-      // fetch is now fully authoritative for the company, every key already present in the
-      // merged map (for a still-valid cost item id) is "expected" — pruneStaleKeys then only
-      // drops a key if the fresh fetch confirms it no longer exists in Supabase.
+      // time this device hydrates. Since the fetch is now fully authoritative for the company,
+      // every key already present in the merged map (for a still-valid cost item id) is
+      // "expected" — pruneStaleKeys then only drops a key if the fresh fetch confirms it no
+      // longer exists in Supabase.
       const costMonthlyAmountsExpectedKeysFor = (mergedFixedCosts, mergedCostMonthlyAmounts) => {
         const costItemIds = new Set();
         Object.entries(mergedFixedCosts || {}).forEach(([key, items]) => {
@@ -2502,6 +2502,15 @@ function App() {
             return !withinFetchedWindow || freshBatchIds.has(entry.id);
           });
         });
+        // fixed_costs(費用項目、継続/単月・期間限定とも)。会社全体を無制限取得しているため
+        // (loadFixedCostsForCompany参照)、このキー(店舗)に属するものは常にidベースで「今も
+        // Supabaseに存在するか」を判定できる。これが無いと、削除した費用項目がローカル/
+        // localStorageに残っている限り、次回以降のhydrate(月変更・再読み込み・再ログイン等)の
+        // たびにmergeItemArrayMapのunionマージで復活し続けてしまう不具合になっていた
+        // (pruneStaleKeysはキー(店舗+月)全体の要不要しか判定できず、同じキーの配列内に他の
+        // 項目が1件でも残っていると、削除済みの項目ごと配列全体をそのまま素通りさせてしまう
+        // ため — 不具合修正、詳細はpruneDeletedItemsFromItemArrayMap参照)。
+        const prunedFixedCosts = pruneDeletedItemsFromItemArrayMap(merged.fixedCosts, fixedCostsOverlay.fixedCosts, companyStoreIdPrefixes);
         return {
           ...merged,
           dailyResults: prunedDailyResults,
@@ -2514,7 +2523,7 @@ function App() {
           allStoresBusinessDaySettings: pruneStaleKeys(merged.allStoresBusinessDaySettings, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresBusinessDaySettings),
           storeHolidays: pruneStaleKeys(merged.storeHolidays, windowedExpectedKeys, storeHolidaysOverlay.storeHolidays),
           allStoresHolidays: pruneStaleKeys(merged.allStoresHolidays, companyMonthExpectedKeys, allStoresHolidaysOverlay.allStoresHolidays),
-          fixedCosts: pruneStaleKeys(merged.fixedCosts, unboundedExpectedKeysFor(merged.fixedCosts), fixedCostsOverlay.fixedCosts),
+          fixedCosts: prunedFixedCosts,
           // costMonthlyAmounts keys are `${costItemId}__${targetMonth}`, not `${storeId}__${month}`,
           // so windowedExpectedKeys (built from store ids) can't be reused here — build the
           // expected set from this company's own cost item ids (just resolved via the fixedCosts
@@ -5442,24 +5451,30 @@ function App() {
         return;
       }
     }
-    setAppState((prev) => {
-      // Same reasoning as submitFixedCost above: the item being removed may live under a
-      // different month-key than whichever month is currently on screen (it could be a
-      // continuing cost carried forward from an earlier startMonth).
-      const nextFixedCosts = { ...prev.fixedCosts };
-      Object.keys(nextFixedCosts).forEach((existingKey) => {
-        if (existingKey.startsWith(`${prev.selectedStoreId}__`)) {
-          nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).filter((item) => item.id !== itemId);
-        }
-      });
-      // Its cost_monthly_amounts rows cascade-delete in Supabase (FK on delete cascade); drop the
-      // matching local entries too so a deleted item's old amounts don't linger in memory.
-      const nextCostMonthlyAmounts = { ...prev.costMonthlyAmounts };
-      Object.keys(nextCostMonthlyAmounts).forEach((existingKey) => {
-        if (existingKey.startsWith(`${itemId}__`)) delete nextCostMonthlyAmounts[existingKey];
-      });
-      return { ...prev, fixedCosts: nextFixedCosts, costMonthlyAmounts: nextCostMonthlyAmounts };
+    // Same reasoning as submitFixedCost above: the item being removed may live under a
+    // different month-key than whichever month is currently on screen (it could be a
+    // continuing cost carried forward from an earlier startMonth).
+    const nextFixedCosts = { ...appState.fixedCosts };
+    Object.keys(nextFixedCosts).forEach((existingKey) => {
+      if (existingKey.startsWith(`${appState.selectedStoreId}__`)) {
+        nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).filter((item) => item.id !== itemId);
+      }
     });
+    // Its cost_monthly_amounts rows cascade-delete in Supabase (FK on delete cascade); drop the
+    // matching local entries too so a deleted item's old amounts don't linger in memory.
+    const nextCostMonthlyAmounts = { ...appState.costMonthlyAmounts };
+    Object.keys(nextCostMonthlyAmounts).forEach((existingKey) => {
+      if (existingKey.startsWith(`${itemId}__`)) delete nextCostMonthlyAmounts[existingKey];
+    });
+    const nextState = { ...appState, fixedCosts: nextFixedCosts, costMonthlyAmounts: nextCostMonthlyAmounts };
+    // 不具合修正: setAppStateだけだとlocalStorageへ同期反映されず、この後Supabaseへの再取得
+    // (hydrateFromSupabase)が一度も走らないまま再読み込みされた場合、readAppState()が削除前の
+    // 古いlocalStorageスナップショットを復元してしまう。そのスナップショットが次回の
+    // hydrateでmergeItemArrayMap(idベースのunionマージ)の「local」側として使われると、
+    // 削除済みの項目がまた復活してしまっていた(要件: 再読み込み後も削除状態を維持)。
+    // handleStoreSwitch/handleMonthSwitchと同じくwriteAppStateで同期的に書き込む。
+    writeAppState(nextState);
+    setAppState(nextState);
   };
 
   // 対象月ごとの費用金額(cost_monthly_amounts)を1件upsertする。新規登録時の初回金額保存と、
