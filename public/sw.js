@@ -168,7 +168,19 @@
 // 「その日に営業している店舗だけ」で完了判定するようにした。日次入力・まとめて入力どちらも
 // 既存のgetBusinessDaySummary(単一店舗版)のclosedDatesをそのまま使っており、判定ロジックは
 // 完全に共通のまま(まとめ入力専用の別ロジックは無い)。店舗別カレンダー側の判定は無変更。
-const CACHE_NAME = 'salon-manager-cache-v30';
+// v31: 対象月選択UI(MonthPicker)の全面再監査。CSS/JSを全文検索した結果、v29で画面中央固定
+// モーダルへ変更した際のtransform/top/left:50%等は既にv30(ba60aef)で完全に削除されており、
+// 現在のApp.css/MonthPicker.jsxには重複・競合する古いルールは存在しないことを確認した
+// (本番ビルドをダウンロードして直接バイト内容も確認済み — .month-picker-panelにtransformは
+// 存在せず、backgroundも常に不透明なvar(--surface-strong))。コード側に新たな不具合は
+// 見つからなかったため、今回は実際に見つかった唯一のギャップ — Service Workerの更新チェックが
+// visibilitychangeとloadだけで、pageshow(bfcache復帰時にvisibilitychangeより先に、または
+// それ単独で発火することがある。App.jsx側のhydrate再取得トリガーは既にこの理由でpageshowを
+// 併用済みだったが、Service Worker本体の更新チェック側には無かった)を監視していなかった点を
+// 修正し、定期チェック間隔も30分→5分へ短縮した。デプロイ後も画面が更新されない場合は、
+// この不具合ではなくブラウザ/PWA側に古いバンドルがキャッシュされている可能性が高い
+// (ハードリロードやPWAの完全終了→再起動で解消するはず)。
+const CACHE_NAME = 'salon-manager-cache-v31';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

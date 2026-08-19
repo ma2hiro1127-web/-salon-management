@@ -36,9 +36,18 @@ if ('serviceWorker' in navigator) {
           registration.update().catch(() => {});
         }
       });
+      // pageshowはbfcache(ブラウザ内メモリ上のページ復帰)からの復帰時に、visibilitychange/
+      // focusより先に、あるいはそれらが発火しないまま単独で発火することがある(特にPWAの
+      // ウィンドウ切り替え・タブ復帰) — App.jsx側のhydrateFromSupabase再取得トリガーで既に
+      // 同じ理由でpageshowを併用しているのと同じ抜け漏れが、Service Worker本体の更新
+      // チェック側にもあった。これが無いと、対象月選択UI等をデプロイしても、開きっぱなしの
+      // PWA/タブが更新チェックのタイミングを逃し、古いバンドルのまま動き続けることがある。
+      window.addEventListener('pageshow', () => {
+        registration.update().catch(() => {});
+      });
       window.setInterval(() => {
         registration.update().catch(() => {});
-      }, 30 * 60 * 1000);
+      }, 5 * 60 * 1000);
     }).catch(() => {
       // Service worker registration can fail in some environments, but the app still works.
     })
