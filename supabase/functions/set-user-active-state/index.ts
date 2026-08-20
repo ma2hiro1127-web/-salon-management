@@ -113,7 +113,14 @@ Deno.serve(async (req) => {
       }
     }
 
-    const { error: profileUpdateError } = await admin.from("profiles").update({ is_active: isActive }).eq("id", target.id);
+    // .select()でUPDATE後の実際の行を読み戻す(要件: クライアントへは「送った値の
+    // エコーバック」ではなく「実際にDBへ書き込まれた値」を返す)。
+    const { data: updatedProfile, error: profileUpdateError } = await admin
+      .from("profiles")
+      .update({ is_active: isActive })
+      .eq("id", target.id)
+      .select("is_active")
+      .single();
     if (profileUpdateError) throw profileUpdateError;
 
     if (target.auth_user_id) {
@@ -129,7 +136,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ ok: true });
+    return json({ ok: true, isActive: updatedProfile.is_active });
   } catch (error) {
     const message = error instanceof Error ? error.message : "状態の変更に失敗しました";
     logStage("unhandled_error", { profileId, message });

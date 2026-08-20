@@ -126,12 +126,18 @@ Deno.serve(async (req) => {
       if (currentStatus !== "free") {
         return json({ error: "無料利用理由は「無料利用」状態の会社にのみ設定できます" }, 409);
       }
-      const { error: reasonOnlyError } = await admin
+      // .select()でUPDATE後の実際の行を読み戻す(要件: 「送った値をそのまま返す」のではなく
+      // 「実際にDBへ書き込まれた値」をクライアントへ返す)。これが無いと、UPDATE自体は成功
+      // したがトリガー等で意図しない値になっていた場合でも、クライアントは自分が送った値
+      // (=期待値)をそのまま信じて画面のstateを更新してしまう。
+      const { data: reasonOnlyRow, error: reasonOnlyError } = await admin
         .from("companies")
         .update({ free_reason: freeReason ?? null, updated_at: new Date().toISOString() })
-        .eq("id", companyId);
+        .eq("id", companyId)
+        .select("contract_status, free_reason")
+        .single();
       if (reasonOnlyError) throw reasonOnlyError;
-      return json({ ok: true, status: currentStatus, freeReason: freeReason ?? null });
+      return json({ ok: true, status: reasonOnlyRow.contract_status, freeReason: reasonOnlyRow.free_reason });
     }
 
     if (currentStatus === targetStatus) {
@@ -143,17 +149,20 @@ Deno.serve(async (req) => {
 
     // company_id・関連データには一切触れない。契約状態(と無料利用理由)の列を更新するだけ。
     // free以外へ遷移する場合は理由を自動的にクリアする(古い理由が残り続けないように)。
-    const { error: updateError } = await admin
+    // 同じ理由でここも.select()して実際にDBへ入った値を返す(上のコメント参照)。
+    const { data: updatedRow, error: updateError } = await admin
       .from("companies")
       .update({
         contract_status: targetStatus,
         free_reason: targetStatus === "free" ? (freeReason ?? null) : null,
         updated_at: new Date().toISOString(),
       })
-      .eq("id", companyId);
+      .eq("id", companyId)
+      .select("contract_status, free_reason")
+      .single();
     if (updateError) throw updateError;
 
-    return json({ ok: true, status: targetStatus });
+    return json({ ok: true, status: updatedRow.contract_status, freeReason: updatedRow.free_reason });
   } catch (error) {
     const message = error instanceof Error ? error.message : "会社の契約状態変更に失敗しました";
     logStage("unhandled_error", { companyId, targetStatus, message });

@@ -223,7 +223,14 @@
 // (send-invite-emailの既存の同種処理と同じ方法)。ユーザー管理画面のmanageableUsersも
 // system_admin含め常にcurrentCompanyでの絞り込みを行うよう修正(他社ユーザーが会社ラベル
 // 無しで一覧に混在していた)。
-const CACHE_NAME = 'salon-manager-cache-v35';
+// v36: 保存・削除・停止・招待などの操作後、DB保存完了を「送ったつもりの値」で信じるのでは
+// なく、実際にDBへ書き込まれた値で画面stateを更新するよう修正。update-store-status /
+// update-company-status / set-user-active-stateの各Edge Functionが、UPDATE後に.select()で
+// 読み戻した値をレスポンスへ含めるようになり(以前はリクエストされた値をそのままエコーバック
+// していた)、App.jsx側の各ハンドラもその確認済みの値でappStateを更新するよう修正した。
+// ページ再読込・店舗切替・会社切替時に古いキャッシュが残らないことは既存のhydrateFromSupabase
+// (ログイン時の全件取得)・store/company切替時の再同期effectで担保済みであることを確認した。
+const CACHE_NAME = 'salon-manager-cache-v36';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

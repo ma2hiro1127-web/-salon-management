@@ -107,10 +107,15 @@ Deno.serve(async (req) => {
       return json({ error: `この店舗は現在「${store.status}」のため、この操作は行えません` }, 409);
     }
 
-    const { error: updateError } = await admin
+    // .select()でUPDATE後の実際の行を読み戻す(要件: クライアントへは「送った値の
+    // エコーバック」ではなく「実際にDBへ書き込まれた値」を返す——保存後にクライアント側で
+    // 再度整合性確認できるようにするため)。
+    const { data: updatedStore, error: updateError } = await admin
       .from("stores")
       .update({ status: transition.toStatus, updated_at: new Date().toISOString() })
-      .eq("id", storeId);
+      .eq("id", storeId)
+      .select("status")
+      .single();
     if (updateError) throw updateError;
 
     const { error: logError } = await admin.from("store_status_audit_log").insert({
@@ -128,7 +133,7 @@ Deno.serve(async (req) => {
       logStage("audit_log_insert_failed", { storeId, action, message: logError.message });
     }
 
-    return json({ ok: true, status: transition.toStatus });
+    return json({ ok: true, status: updatedStore.status });
   } catch (error) {
     const message = error instanceof Error ? error.message : "店舗の状態変更に失敗しました";
     logStage("unhandled_error", { storeId, action, message });

@@ -3459,6 +3459,9 @@ function App() {
 
     setEditUserSaving(true);
     setEditUserError("");
+    // 送ったつもりの値(editUserDraft.isActive)ではなく、set-user-active-state Edge Functionが
+    // 実際にDBへ書き込んだ値(下で埋める)でローカルstateを更新する。
+    let confirmedIsActive = editUserDraft.isActive;
     try {
       if (isSupabaseConfigured) {
         // メールアドレスが実際に変わる場合は、専用のupdate-user-email Edge Function(service-
@@ -3476,8 +3479,9 @@ function App() {
         if (editUserDraft.isActive !== targetUser.isActive) {
           const activeStateResult = await setUserActiveState({ profileId: targetUser.id, isActive: editUserDraft.isActive });
           if (!activeStateResult?.ok) throw activeStateResult.error || new Error("状態の変更に失敗しました");
+          confirmedIsActive = typeof activeStateResult?.data?.isActive === "boolean" ? activeStateResult.data.isActive : editUserDraft.isActive;
         }
-        const detailsResult = await updateProfileDetails({ profileId: targetUser.id, name: editUserDraft.name.trim(), email: normalizedEmail, isActive: editUserDraft.isActive });
+        const detailsResult = await updateProfileDetails({ profileId: targetUser.id, name: editUserDraft.name.trim(), email: normalizedEmail, isActive: confirmedIsActive });
         if (!detailsResult?.ok && !detailsResult?.skipped) throw detailsResult.error || new Error("保存に失敗しました");
         if (nextRole !== targetUser.role) {
           const roleResult = await updateProfileRole({ profileId: targetUser.id, role: nextRole });
@@ -3492,7 +3496,7 @@ function App() {
       const nextState = {
         ...appState,
         users: (appState.users || []).map((user) => (user.id === targetUser.id
-          ? { ...user, name: editUserDraft.name.trim(), email: normalizedEmail, role: nextRole, storeIds: nextStoreIds, primaryStoreId: nextPrimaryStoreId, isActive: editUserDraft.isActive }
+          ? { ...user, name: editUserDraft.name.trim(), email: normalizedEmail, role: nextRole, storeIds: nextStoreIds, primaryStoreId: nextPrimaryStoreId, isActive: confirmedIsActive }
           : user)),
       };
       persistTenantState(nextState);
@@ -3828,14 +3832,20 @@ function App() {
     const meta = STORE_LIFECYCLE_ACTIONS[action];
     if (!meta) return;
     if (!window.confirm(meta.confirmMessage(store.name))) return;
+    // meta.nextStatus(このアプリが「送ったつもり」の値)をそのまま画面へ反映するのではなく、
+    // update-store-status Edge Functionが.select()で読み戻した実際のDB値(result.status)を
+    // 使う——保存操作後は「送った値」ではなく「実際に保存された値」でstateを更新し、両者が
+    // 食い違うケース(トリガー・競合更新等)でも画面が誤った状態のまま進まないようにする。
+    let confirmedStatus = meta.nextStatus;
     if (isSupabaseConfigured) {
       const result = await updateStoreStatus({ storeId: store.id, action });
       if (!result.ok) {
         setNotice(`${meta.failureMessage}: ${getSupabaseErrorMessage(result.error)}`);
         return;
       }
+      confirmedStatus = result.status || meta.nextStatus;
     }
-    applyStoreStatusLocally(store.id, meta.nextStatus);
+    applyStoreStatusLocally(store.id, confirmedStatus);
   };
 
   // handleSaveStore keeps companySnapshots[companyId].stores (the legacy display-name array —
@@ -3923,6 +3933,9 @@ function App() {
     if (!window.confirm(`${user.name} を${user.isActive ? "利用停止" : "再開"}しますか？`)) return;
     if (togglingStatusUserId === user.id) return;
     const nextActive = !user.isActive;
+    // 送ったつもりの値(nextActive)をそのまま反映するのではなく、set-user-active-state
+    // Edge Functionが.select()で読み戻した実際のDB値(result.data.isActive)で更新する。
+    let confirmedActive = nextActive;
     setTogglingStatusUserId(user.id);
     try {
       if (isSupabaseConfigured) {
@@ -3934,10 +3947,11 @@ function App() {
           setNotice(`状態の変更に失敗しました: ${getSupabaseErrorMessage(result?.error)}`);
           return;
         }
+        confirmedActive = typeof result?.data?.isActive === "boolean" ? result.data.isActive : nextActive;
       }
       const nextState = {
         ...appState,
-        users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: nextActive } : item),
+        users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: confirmedActive } : item),
       };
       persistTenantState(nextState);
     } finally {
