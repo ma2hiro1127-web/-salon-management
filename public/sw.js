@@ -193,7 +193,18 @@
 //  (4) まとめて入力の終了日に未来日制限が無いため、未来日が緑になり得た穴を防ぐガードを追加。
 //  (5) 全店舗カレンダーで未締めの営業日をクリックすると、未締め店舗名を確認できるポップオーバー
 //      を追加(管理性改善)。
-const CACHE_NAME = 'salon-manager-cache-v32';
+// v33: 全ユーザー共通の「更新中・画面点滅」無限ループ不具合を修正。根本原因はApp.jsxの自動
+// 保存effect(tenant_snapshotsへの書き込み判定)が、比較対象2つの「形」が最初から一致し得ない
+// 設計だったこと — hydrate完了時の比較用シグネチャは日次売上・目標・固定費等のoverlay適用前
+// (nextRemoteState)から作っていたのに対し、実際の書き込み判定はoverlay適用後の本物のappState
+// から作っていたため、hydrateのたびに必ず「変化あり」と誤検知していた。誤検知→
+// tenant_snapshotsへ書き込み→Supabase Realtimeが自分自身の書き込みを検知して再hydrate→
+// また誤検知……という自己増殖ループになり、「更新中」バナーが点滅し続けていた(日次売上等を
+// 頻繁に編集する実ユーザーほど発生しやすく、ほとんど編集しない管理者アカウントでは目立たな
+// かったと考えられる)。比較用シグネチャを常に実際のappStateと同じ形から作るよう統一し
+// (storage.jsのbuildPersistenceComparableState)、加えて配列・オブジェクトの並び順の違いだけ
+// では「変化あり」と判定しないよう正規化してから比較する(canonicalStringifyForComparison)。
+const CACHE_NAME = 'salon-manager-cache-v33';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

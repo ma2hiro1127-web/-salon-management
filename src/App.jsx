@@ -73,6 +73,8 @@ import {
   buildStoreHolidaysStateFromRows,
   buildAllStoresHolidaysStateFromRows,
   mergeRemoteAppState,
+  buildPersistenceComparableState,
+  canonicalStringifyForComparison,
   money,
   moneyDiff,
   number,
@@ -2700,23 +2702,22 @@ function App() {
         isViewingFranchise: Boolean(tenantState?.isViewingFranchise),
         homeCompanyIdBeforeFranchiseView: tenantState?.isViewingFranchise ? (tenantState?.homeCompanyIdBeforeFranchiseView || "") : "",
       };
-      const remoteSnapshotSignature = JSON.stringify({
-        ...nextRemoteState,
-        companySnapshots: Object.fromEntries(Object.entries(nextRemoteState.companySnapshots || {}).map(([key, value]) => [key, {
-          ...(value || {}),
-          companySnapshots: undefined,
-        }])),
-      });
       if (hydrateRequestRef.current !== requestId) return;
-      setAppState((prev) => {
-        const merged = applyDailySalesOverlay(mergeRemoteAppState(prev, nextRemoteState));
-        writeAppState(merged);
-        return merged;
-      });
-      // Recorded against the *fetched* (pre-merge) snapshot, not the merged result: if the
-      // merge pulled in local-only data the snapshot didn't have, appState will now diverge
-      // from this signature, which is what makes the autosave effect push that data back up.
-      lastPersistedRef.current = remoteSnapshotSignature;
+      // 「更新中」無限点滅バグの根本原因(修正済み、詳細はstorage.jsのbuildPersistenceComparable
+      // State/canonicalStringifyForComparisonのコメント参照): ここは以前、比較用シグネチャを
+      // overlay適用前のnextRemoteStateから作っていたため、実際にappStateへ入るmerged(overlay
+      // 適用後、常により多くのデータを含む)とは構造的に一致し得ず、hydrateのたびに自動保存
+      // effectが「変化あり」と誤検知→tenant_snapshotsへ書き込み→Realtimeが自分の書き込みを
+      // 検知して再hydrate→また誤検知……という自己増殖ループになっていた。
+      //
+      // setAppStateへ関数(updater)ではなく値を直接渡す形に変更した——updater関数の中身は
+      // Reactが次のレンダー時に呼ぶため呼び出し時点では実行されず、直後にmergedを参照する
+      // ことができない(このeffect自身、focus/pageshow再取得、Realtime再取得の各所が既に
+      // 採用している「appStateRef.current(常に最新)をprev代わりに使う」パターンと合わせる)。
+      const merged = applyDailySalesOverlay(mergeRemoteAppState(appStateRef.current, nextRemoteState));
+      writeAppState(merged);
+      setAppState(merged);
+      lastPersistedRef.current = canonicalStringifyForComparison(buildPersistenceComparableState(merged));
       setSyncStatus({ status: "loaded", message: "同期データを読み込みました", timestamp: new Date().toISOString(), error: false });
       hydrateRetryCountRef.current = 0;
       setSyncInitialized(true);
@@ -4332,14 +4333,11 @@ function App() {
     // そもそもその失敗リクエスト自体を発生させない。
     if (appState.isViewingFranchise) return;
 
-    const safeState = {
-      ...appState,
-      companySnapshots: Object.fromEntries(Object.entries(appState.companySnapshots || {}).map(([key, value]) => [key, {
-        ...(value || {}),
-        companySnapshots: undefined,
-      }]))
-    };
-    const snapshot = JSON.stringify(safeState);
+    // buildPersistenceComparableState + canonicalStringifyForComparison を、hydrateFromSupabase
+    // 完了時(lastPersistedRef.currentへの代入箇所)と必ず同じ組み合わせで使う——「更新中」
+    // 無限点滅バグの根本原因(比較対象の形が食い違っていたこと)の再発防止そのものなので、
+    // この2箇所以外で直接JSON.stringify(appState)のような比較を新たに作らないこと。
+    const snapshot = canonicalStringifyForComparison(buildPersistenceComparableState(appState));
     if (lastPersistedRef.current === snapshot) {
       return;
     }

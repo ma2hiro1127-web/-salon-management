@@ -894,6 +894,54 @@ const mergeShallowMap = (localMap = {}, remoteMap = {}) => ({
   ...(remoteMap && typeof remoteMap === "object" ? remoteMap : {}),
 });
 
+// 「更新中」表示が無限に点滅し続けた不具合(全ユーザー共通の根本原因)の修正で追加。
+//
+// 根本原因: appStateの自動保存(persist)effectは「前回persistした内容と今のappStateが
+// 同じかどうか」をJSON.stringifyの文字列比較だけで判定していたが、比較対象の2つの値の
+// 「形」自体が最初から一致しない設計になっていた——hydrateFromSupabase完了時にセットする
+// 比較用シグネチャは、日次売上・目標・固定費等の各専用テーブルからの取得結果(overlay)を
+// 反映する前のnextRemoteState(tenant_snapshotsの生payload相当)から作っていたのに対し、
+// persist effect側は実際のappState(overlay適用後のmerged結果、常により多くのデータを含む)
+// から作っていた。この2つは構造的に同じ内容になり得ないため、hydrateのたびに「変化あり」と
+// 誤検知してtenant_snapshotsへ書き込み→Supabase Realtimeが自分自身の書き込みを検知して
+// 再hydrate→また「変化あり」と誤検知……という自己増殖ループになっていた(書き込みのたびに
+// 「更新中」バナーが点滅する)。日次売上等を編集した実ユーザー(=このoverlayの差分が大きい)
+// ほど発生しやすく、ほとんど編集をしないsystem_admin自身の検証アカウントでは目立たなかった
+// と考えられる。加えて、各テーブルのSELECTにORDER BYが無く行の物理順序がUPDATE後に変わり
+// 得ること(例: 日締めのUPDATE)も、たとえ内容が同一でも配列の並び順だけで別内容と誤判定
+// される追加の誤検知要因になっていた。
+//
+// 修正方針: (1)比較に使う「形」を1箇所に集約し、hydrate側・persist側が必ず同じ変換を通す
+// ようにする(buildPersistenceComparableState)。(2)配列・オブジェクトの並び順の違いだけでは
+// 「変化あり」と判定しないよう、キー・配列要素を正規化してから比較する
+// (canonicalStringifyForComparison)。どちらか一方だけでは再発し得るため両方セットで直す —
+// (1)だけでは配列の並び順ゆらぎで誤検知が残り、(2)だけでは形自体が違う2つを比較しても
+// 意味が無い。
+export const canonicalStringifyForComparison = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalStringifyForComparison(item)).sort().join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value)
+      .filter((key) => value[key] !== undefined && typeof value[key] !== "function")
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalStringifyForComparison(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+};
+
+// hydrate完了直後の比較用シグネチャ(App.jsx側)と、自動保存effectの比較(同じくApp.jsx側)を
+// 必ず同じ「形」から作るための共通の下ごしらえ。companySnapshots内の入れ子companySnapshots
+// (自己参照的に肥大化するだけで比較に意味が無い)を取り除く点だけを行う——それ以外は
+// 呼び出し側がappStateそのもの(hydrate後のmerged結果、または現在のappState)を渡す。
+export const buildPersistenceComparableState = (state = {}) => ({
+  ...state,
+  companySnapshots: Object.fromEntries(Object.entries(state.companySnapshots || {}).map(([key, value]) => [key, {
+    ...(value || {}),
+    companySnapshots: undefined,
+  }])),
+});
+
 // Combines a freshly-fetched Supabase snapshot into the in-memory app state without
 // discarding store/month data the snapshot's payload doesn't happen to include: every
 // snapshot row embeds the *entire* multi-store app state as of whichever save produced

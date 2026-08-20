@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3089,4 +3089,64 @@ test("getBusinessDaySummary: まとめ入力を使わない店舗の既存挙動
   assert.equal(summary.businessDayCount, 29);
   assert.equal(summary.completedDays, 1);
   assert.equal(summary.remainingBusinessDays, 28);
+});
+
+// 「全店舗共通『更新中・画面点滅』不具合 根本修正」対応分の回帰テスト。
+//
+// 根本原因は、appStateの自動保存(persist)effectが「前回persistした内容と今のappStateが
+// 同じか」をJSON.stringifyの文字列比較だけで判定していたが、比較していた2つの値の「形」
+// そのものが最初から一致し得ない設計だったこと: hydrate完了時にセットする比較用シグネチャは
+// overlay(日次売上・目標・固定費等の専用テーブル取得結果)適用前のnextRemoteStateから作って
+// いたのに対し、persist effect側は実際のappState(overlay適用後、常により多くのデータを含む)
+// から作っていたため、hydrateのたびに必ず「変化あり」と誤検知していた。加えて、各テーブルの
+// SELECTにORDER BYが無く、内容が同一でも配列の並び順だけで別内容と誤判定される要因も
+// 重なっていた。結果、書き込み→Supabase Realtimeが自分自身の書き込みを検知して再hydrate→
+// また誤検知→書き込み……という自己増殖ループになり、「更新中」バナーが点滅し続けていた。
+test("canonicalStringifyForComparison: 配列要素の並び順が違うだけの内容は同じ文字列になる(更新中無限点滅バグの直接の原因だった誤検知を防ぐ)", () => {
+  const a = { dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }, { id: "2", date: "2026-08-02" }] } };
+  const b = { dailyResults: { "A店__2026-08": [{ id: "2", date: "2026-08-02" }, { id: "1", date: "2026-08-01" }] } };
+  assert.equal(canonicalStringifyForComparison(a), canonicalStringifyForComparison(b));
+});
+
+test("canonicalStringifyForComparison: オブジェクトのキー順が違うだけの内容は同じ文字列になる", () => {
+  const a = { currentCompanyId: "c1", selectedStore: "A店", selectedMonth: "2026-08" };
+  const b = { selectedMonth: "2026-08", currentCompanyId: "c1", selectedStore: "A店" };
+  assert.equal(canonicalStringifyForComparison(a), canonicalStringifyForComparison(b));
+});
+
+test("canonicalStringifyForComparison: 実際に内容が違う場合は違う文字列になる(誤って『変化なし』と握りつぶさない)", () => {
+  const a = { selectedStore: "A店" };
+  const b = { selectedStore: "B店" };
+  assert.notEqual(canonicalStringifyForComparison(a), canonicalStringifyForComparison(b));
+  const c = { dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }] } };
+  const d = { dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }, { id: "2", date: "2026-08-02" }] } };
+  assert.notEqual(canonicalStringifyForComparison(c), canonicalStringifyForComparison(d));
+});
+
+test("buildPersistenceComparableState: companySnapshots内の入れ子companySnapshotsだけを取り除き、それ以外はそのまま保持する", () => {
+  const state = {
+    selectedStore: "A店",
+    companySnapshots: {
+      "company-1": { selectedStore: "A店", companySnapshots: { "company-1": { selectedStore: "古い値" } } },
+    },
+  };
+  const result = buildPersistenceComparableState(state);
+  assert.equal(result.selectedStore, "A店");
+  assert.equal(result.companySnapshots["company-1"].selectedStore, "A店");
+  assert.equal(result.companySnapshots["company-1"].companySnapshots, undefined);
+});
+
+test("回帰再現: overlay適用前(nextRemoteState相当、日次売上等のフィールドを含まない)と適用後(merged相当、含む)を同じ変換で比較すると『違う』と正しく判定され、hydrate直後は必ず1回だけ再同期が必要と判定できる一方、2回目以降(mergedどうしの比較)は内容が同じなら『同じ』と判定され、無限ループへ発展しない", () => {
+  const nextRemoteStateShaped = { selectedStore: "A店", currentCompanyId: "c1" }; // overlay(dailyResults等)適用前
+  const mergedShaped = { selectedStore: "A店", currentCompanyId: "c1", dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }] } }; // overlay適用後
+  // 修正前の実装が比較していた2つの値: 形が違うため必ず「違う」と判定され続けていた。
+  const oldSignature = canonicalStringifyForComparison(buildPersistenceComparableState(nextRemoteStateShaped));
+  const persistSignature = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
+  assert.notEqual(oldSignature, persistSignature, "修正前の形の食い違いを再現(このズレ自体が誤検知の原因だった)");
+
+  // 修正後: 両方ともmerged相当(実際にappStateへ入る形)から作るため、内容が同じなら2回目以降は
+  // 一致し、書き込み→Realtime再取得→書き込み……のループが発生しない。
+  const hydrateSignature = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
+  const persistEffectSignatureNextTick = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
+  assert.equal(hydrateSignature, persistEffectSignatureNextTick, "修正後は同じ形どうしを比較するため、内容が同じなら一致し、無限ループへ発展しない");
 });

@@ -1932,7 +1932,12 @@ export const loadStoreStatusAuditLogForCompany = async ({ companyId }) => {
     const { data, error } = await supabase
       .from("store_status_audit_log")
       .select("store_id, action, created_at")
-      .eq("company_id", companyId);
+      .eq("company_id", companyId)
+      // ORDER BY無しだとPostgreSQLの行の物理順序(UPDATE等で変わり得る)に依存し、同じ内容でも
+      // 取得のたびに配列の並びが変わり得る。これ自体は「更新中」無限点滅バグの根本原因では
+      // 無くなった(比較側をcanonicalStringifyForComparisonで並び順非依存にしたため)が、念の為
+      // ここでも決定的な順序にしておく。
+      .order("created_at", { ascending: true });
     if (error) throw error;
     return { ok: true, data: data || [] };
   } catch (error) {
