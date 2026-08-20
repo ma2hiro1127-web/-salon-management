@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3149,4 +3149,170 @@ test("回帰再現: overlay適用前(nextRemoteState相当、日次売上等の�
   const hydrateSignature = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
   const persistEffectSignatureNextTick = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
   assert.equal(hydrateSignature, persistEffectSignatureNextTick, "修正後は同じ形どうしを比較するため、内容が同じなら一致し、無限ループへ発展しない");
+});
+
+// 「月次レビュー機能」対応分のテスト。
+
+test("getMonthlyReviewSummary(単一店舗): 前月データが無い場合はhasPrevious:falseになり、全ての比較項目のdiffがnull(『比較データなし』)になる(0/NaN/Infinityを絶対に出さない)", () => {
+  const state = createInitialAppState();
+  const store = "A店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ id: "e1", date: "2026-08-01", totalSales: 100000, technicalSales: 80000, retailSales: 20000, customers: 10, newCustomers: 4, repeatCustomers: 6 }];
+  state.dayClosingStates[key] = { "2026-08-01": true };
+  // 前月(2026-07)は日次入力が1件も無い。
+
+  const summary = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+  assert.equal(summary.hasPrevious, false);
+  assert.equal(summary.sales.current, 100000);
+  assert.equal(summary.sales.previous, null);
+  assert.equal(summary.sales.diff, null);
+  assert.equal(summary.customers.diff, null);
+  assert.equal(summary.averageSpend.diff, null);
+  assert.equal(summary.newCustomers.diff, null);
+  assert.equal(summary.repeatCustomers.diff, null);
+  // Number.isFinite(null)はfalseなので、diffがnullである以上NaN/Infinityが紛れ込む余地は無い。
+  assert.ok(!Number.isFinite(summary.sales.diff));
+});
+
+test("getMonthlyReviewSummary(単一店舗): 前月に実データ(0円の日を含む)があれば、0は『未入力』ではなく実際の値として比較に使われる(要件12)", () => {
+  const state = createInitialAppState();
+  const store = "A店";
+  const month = "2026-08";
+  const currentKey = `${store}__${month}`;
+  const previousKey = `${store}__2026-07`;
+  state.dailyResults[currentKey] = [{ id: "e1", date: "2026-08-01", totalSales: 110000, customers: 11 }];
+  state.dayClosingStates[currentKey] = { "2026-08-01": true };
+  // 前月: 実際に日次入力はあるが売上0円で確定登録された日(臨時休業等で0円を正式入力したケース)。
+  state.dailyResults[previousKey] = [{ id: "e0", date: "2026-07-01", totalSales: 0, customers: 0 }];
+  state.dayClosingStates[previousKey] = { "2026-07-01": true };
+
+  const summary = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+  assert.equal(summary.hasPrevious, true, "前月に実データ(0円でも)が1件あるので比較対象になる");
+  assert.equal(summary.sales.previous, 0);
+  // diffPercent自体はprevious===0の場合nullを返す仕様(0除算を避けるため) — これは意図的な
+  // 「0からの伸び率は定義できない」という既存仕様(diffPercentのコメント参照)であり、
+  // 「未入力を0として集計した」こととは別の話。
+  assert.equal(summary.sales.diff, null);
+});
+
+test("getMonthlyReviewSummary(単一店舗): 目標売上・達成率(要件1)。目標が未設定の場合はtargetAchievementもnullにする", () => {
+  const state = createInitialAppState();
+  const store = "A店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ id: "e1", date: "2026-08-01", totalSales: 500000, customers: 20 }];
+  state.dayClosingStates[key] = { "2026-08-01": true };
+  state.targets[key] = { targetSales: 1000000 };
+
+  const withTarget = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+  assert.equal(withTarget.hasSalesTarget, true);
+  assert.equal(withTarget.targetSales, 1000000);
+  assert.equal(withTarget.targetAchievement, 50);
+
+  delete state.targets[key];
+  const withoutTarget = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+  assert.equal(withoutTarget.hasSalesTarget, false);
+  assert.equal(withoutTarget.targetAchievement, null);
+});
+
+test("getMonthlyReviewSummary(単一店舗): 目標口コミ数がONの店舗だけreviewCountを表示し、OFFの店舗はnullにする", () => {
+  const state = createInitialAppState();
+  const store = "A店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ id: "e1", date: "2026-08-01", totalSales: 100000, customers: 10, reviewCount: 3 }];
+  state.dayClosingStates[key] = { "2026-08-01": true };
+  state.targets[key] = { targetReviewCount: 5 };
+
+  const storeWithReviewOn = { id: store, name: store, settings: { monthlyTargetFields: { fields: { targetReviewCount: true } } } };
+  const onResult = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: storeWithReviewOn }, month);
+  assert.equal(onResult.showReviewCountTarget, true);
+  assert.equal(onResult.reviewCount.current, 3);
+  assert.equal(onResult.targetReviewCount, 5);
+  assert.equal(onResult.reviewCountAchievement, 60);
+
+  const storeWithReviewOff = { id: store, name: store, settings: { monthlyTargetFields: { fields: { targetReviewCount: false } } } };
+  const offResult = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: storeWithReviewOff }, month);
+  assert.equal(offResult.showReviewCountTarget, false);
+  assert.equal(offResult.reviewCount, null);
+  assert.equal(offResult.targetReviewCount, null);
+});
+
+test("getMonthlyReviewSummary(単一店舗): スタッフ数・生産性計算人数のどちらも未設定の店舗はproductivity:null(要件: 利用している店舗だけ表示)", () => {
+  const state = createInitialAppState();
+  const store = "A店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ id: "e1", date: "2026-08-01", totalSales: 300000, customers: 10 }];
+  state.dayClosingStates[key] = { "2026-08-01": true };
+
+  const noStaff = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+  assert.equal(noStaff.hasStaffProductivity, false);
+  assert.equal(noStaff.productivity, null);
+
+  const withStaff = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store, staffCount: 5 } }, month);
+  assert.equal(withStaff.hasStaffProductivity, true);
+  assert.equal(withStaff.productivity.current, 60000);
+});
+
+test("getMonthlyReviewSummary(全店舗ビュー): 加盟店を混ぜず自社店舗だけを集計する(company.storesは呼び出し元が自社分だけを渡す既存の仕様に従う)", () => {
+  const state = createInitialAppState();
+  const month = "2026-08";
+  ["原宿", "吉祥寺"].forEach((store) => {
+    const key = `${store}__${month}`;
+    state.dailyResults[key] = [{ id: `e-${store}`, date: "2026-08-01", totalSales: 100000, customers: 10 }];
+    state.dayClosingStates[key] = { "2026-08-01": true };
+  });
+  const company = { id: "company-1", stores: [{ id: "原宿", name: "原宿" }, { id: "吉祥寺", name: "吉祥寺" }] };
+
+  const summary = getMonthlyReviewSummary(state, { isAllStoresView: true, company, companyStores: company.stores }, month);
+  // 2店舗分(10万円×2)だけが合算され、加盟店等の外部データは一切混ざらない。
+  assert.equal(summary.sales.current, 200000);
+  assert.equal(summary.customers.current, 20);
+  assert.equal(summary.hasStaffProductivity, false, "全店舗ビューではスタッフ生産性セクションは表示しない");
+});
+
+test("getMonthlyReviewSummary: 利益・営業利益・利益率にあたるフィールドは戻り値に一切含まれない(要件13)", () => {
+  const state = createInitialAppState();
+  const store = "A店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.dailyResults[key] = [{ id: "e1", date: "2026-08-01", totalSales: 100000, customers: 10 }];
+  state.dayClosingStates[key] = { "2026-08-01": true };
+  const summary = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+  const forbiddenKeys = ["operatingProfit", "operatingMargin", "grossProfit", "profit", "laborCost", "expenseCost", "costOfGoodsSold"];
+  forbiddenKeys.forEach((forbiddenKey) => {
+    assert.ok(!(forbiddenKey in summary), `${forbiddenKey} は月次レビューのサマリーに含めてはいけない`);
+  });
+});
+
+test("buildMonthlyReviewKey: storeId指定時は店舗別キー、未指定時は会社全体キーになる(要件6: 店舗Aと店舗Bと全社のレビューが混ざらない)", () => {
+  assert.equal(buildMonthlyReviewKey("company-1", "store-a", "2026-08"), "store-a__2026-08");
+  assert.equal(buildMonthlyReviewKey("company-1", "store-b", "2026-08"), "store-b__2026-08");
+  assert.equal(buildMonthlyReviewKey("company-1", "", "2026-08"), "company-1__2026-08");
+  assert.notEqual(buildMonthlyReviewKey("company-1", "store-a", "2026-08"), buildMonthlyReviewKey("company-1", "store-b", "2026-08"));
+});
+
+test("buildMonthlyReviewStateFromRows / getMonthlyReviewText: DB行から店舗別・全社別のマップを正しく再構築し、対象月を変更して戻ってもレビュー文章が復元される", () => {
+  const rows = [
+    { company_id: "company-1", store_id: "store-a", target_month: "2026-08", reflection: "店舗Aの8月振り返り", challenges: "", improvements: "", next_actions: "", updated_at: "2026-08-20T00:00:00Z" },
+    { company_id: "company-1", store_id: "store-a", target_month: "2026-07", reflection: "店舗Aの7月振り返り", challenges: "", improvements: "", next_actions: "", updated_at: "2026-07-20T00:00:00Z" },
+    { company_id: "company-1", store_id: null, target_month: "2026-08", reflection: "全社の8月振り返り", challenges: "", improvements: "", next_actions: "", updated_at: "2026-08-20T00:00:00Z" },
+  ];
+  const { monthlyReviews } = buildMonthlyReviewStateFromRows(rows);
+  const state = { monthlyReviews };
+
+  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08").reflection, "店舗Aの8月振り返り");
+  // 2026-08 → 2026-07 → 2026-08 と対象月を切り替えても、それぞれ正しい文章が復元される。
+  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-07").reflection, "店舗Aの7月振り返り");
+  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08").reflection, "店舗Aの8月振り返り");
+  // 全社レビューは店舗Aのレビューと混ざらない。
+  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "" }, "2026-08").reflection, "全社の8月振り返り");
+});
+
+test("getMonthlyReviewText: 未保存の月は空文字のフォームを返す(存在しないキーでも例外を投げない)", () => {
+  const state = createInitialAppState();
+  const result = getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08");
+  assert.deepEqual(result, { reflection: "", challenges: "", improvements: "", next_actions: "", updatedAt: "" });
 });

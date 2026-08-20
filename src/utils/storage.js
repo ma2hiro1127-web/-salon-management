@@ -961,6 +961,7 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
+  monthlyReviews: mergeShallowMap(localState.monthlyReviews, remoteState.monthlyReviews),
   cashBreakdownResults: mergeShallowMap(localState.cashBreakdownResults, remoteState.cashBreakdownResults),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
@@ -2434,6 +2435,136 @@ export const getCompanyDashboardSummary = (state, company, monthValue) => {
     },
     storeRows,
   };
+};
+
+// 月次レビュー用の{current, previous, diff}組み立て。sales/customers等、比較可能な項目は
+// 必ずこの1つのヘルパーだけを通す(要件2: 「同じ計算ロジックを使用」「前月が0の場合の処理も
+// 共通化」) — diffPercentが「前月データなし」(hasPrevious:false)と「前月が0」の両方を
+// 一律nullで返すため、呼び出し側(UI)はnullなら常に「比較データなし」を表示するだけでよく、
+// 0除算・NaN・Infinityが表示されることは構造的に無い。
+const buildMonthlyReviewMetric = (current, previous, hasPrevious) => ({
+  current,
+  previous: hasPrevious ? previous : null,
+  diff: diffPercent(current, previous, hasPrevious),
+});
+
+// 月次レビュー(利益管理ではない、店舗・会社全体で共有するためのシンプルな数字サマリー)。
+// 既存のcalculateMonthSummary/calculateAllStoresMonthSummary(全店舗ビュー)をそのまま呼ぶだけで、
+// 売上・客数等の集計ロジック自体は一切再実装しない(要件16)。利益・営業利益・利益率は
+// 意図的にこの関数の戻り値に含めない(要件13) — calculateMonthSummary内部では計算されて
+// いるが、ここで拾わなければ月次レビュー側のUIに表示しようがない、という構造で担保する。
+//
+// storeEntity: 対象月レビューの店舗オブジェクト(company.stores[i]相当、settings/staffCount/
+// productivityStaffCountを含む)。全店舗ビュー(isAllStoresView:true)の場合はnullでよい
+// (代わりにcompanyStoresを渡す)。
+export const getMonthlyReviewSummary = (state, { storeId, isAllStoresView, company, storeEntity, companyStores } = {}, monthValue) => {
+  const previousMonthValue = getMonthOffset(monthValue, -1);
+
+  if (isAllStoresView) {
+    // 加盟店を混ぜない・自社店舗のみ集計、という既存仕様はcalculateAllStoresMonthSummary
+    // (呼び出し元がcompany.storesを渡す時点で加盟店データを含めない設計)にそのまま従う——
+    // ここで別途フィルタし直さない(要件5・16: 全店舗ビューの集計ロジックを新規に作らない)。
+    const stores = (Array.isArray(companyStores) ? companyStores : company?.stores || []).filter((store) => store?.id && store.status !== "archived");
+    const current = calculateAllStoresMonthSummary(state, company, monthValue);
+    const previous = calculateAllStoresMonthSummary(state, company, previousMonthValue);
+    // 全店舗版のhasPrevious: getStoreDashboardRowsの店舗別hasPrevious(前月の日次入力が
+    // 1件でもあるか)と同じ判定基準を、店舗横断でsomeを取るだけ(要件12: 未入力を0として
+    // 勝手に集計しない、の会社全体版)。
+    const hasPrevious = stores.some((store) => calculateMonthSummary(state, store.id, previousMonthValue).entries.length > 0);
+    const showReviewCountTarget = stores.some((store) => Boolean(store.settings?.monthlyTargetFields?.fields?.targetReviewCount));
+    const targetSales = parseNumber(current.target?.targetSales);
+    return {
+      hasPrevious,
+      showReviewCountTarget,
+      hasStaffProductivity: false,
+      sales: buildMonthlyReviewMetric(current.sales, previous.sales, hasPrevious),
+      hasSalesTarget: targetSales > 0,
+      targetSales,
+      targetAchievement: targetSales > 0 ? current.targetAchievement : null,
+      technicalSales: buildMonthlyReviewMetric(current.technicalSales, previous.technicalSales, hasPrevious),
+      retailSales: buildMonthlyReviewMetric(current.retailSales, previous.retailSales, hasPrevious),
+      customers: buildMonthlyReviewMetric(current.customers, previous.customers, hasPrevious),
+      averageSpend: buildMonthlyReviewMetric(current.averageSpend, previous.averageSpend, hasPrevious),
+      newCustomers: buildMonthlyReviewMetric(current.newCustomers, previous.newCustomers, hasPrevious),
+      repeatCustomers: buildMonthlyReviewMetric(current.repeatCustomers, previous.repeatCustomers, hasPrevious),
+      reviewCount: showReviewCountTarget ? buildMonthlyReviewMetric(current.reviewCount, previous.reviewCount, hasPrevious) : null,
+      targetReviewCount: showReviewCountTarget ? parseNumber(current.target?.targetReviewCount) : null,
+      reviewCountAchievement: showReviewCountTarget && parseNumber(current.target?.targetReviewCount) > 0 ? current.reviewCountAchievement : null,
+      productivity: null,
+    };
+  }
+
+  const hiddenCategories = storeEntity?.settings?.hiddenClosingCategories || [];
+  const useInventoryTracking = Boolean(storeEntity?.settings?.useInventoryTracking);
+  const current = calculateMonthSummary(state, storeId, monthValue, { useInventoryTracking, hiddenCategories });
+  const previous = calculateMonthSummary(state, storeId, previousMonthValue, { useInventoryTracking, hiddenCategories });
+  // 単一店舗版のhasPrevious: getStoreDashboardRowsと全く同じ基準(前月の日次入力が1件でも
+  // あるか)。まとめ入力だけの月も、calculateMonthSummary内部でentries自体はdaily_sales由来の
+  // ままなので、まとめ入力オンリーの前月は「比較データなし」寄りに倒れる——将来まとめ入力の
+  // 実績有無も見るよう拡張する場合は、この1箇所を直せば月次レビュー・既存ダッシュボード
+  // 双方に一貫して反映される。
+  const hasPrevious = previous.entries.length > 0;
+  const showReviewCountTarget = Boolean(storeEntity?.settings?.monthlyTargetFields?.fields?.targetReviewCount);
+  const productivity = getStaffProductivitySummary({
+    sales: current.sales, forecast: current.displayForecast,
+    staffCount: storeEntity?.staffCount, productivityStaffCount: storeEntity?.productivityStaffCount,
+  });
+  const previousProductivity = getStaffProductivitySummary({
+    sales: previous.sales, forecast: previous.displayForecast,
+    staffCount: storeEntity?.staffCount, productivityStaffCount: storeEntity?.productivityStaffCount,
+  });
+  const targetSales = parseNumber(current.target?.targetSales);
+
+  return {
+    hasPrevious,
+    showReviewCountTarget,
+    hasStaffProductivity: productivity.hasStaffCount,
+    sales: buildMonthlyReviewMetric(current.sales, previous.sales, hasPrevious),
+    hasSalesTarget: targetSales > 0,
+    targetSales,
+    targetAchievement: targetSales > 0 ? current.targetAchievement : null,
+    technicalSales: buildMonthlyReviewMetric(current.technicalSales, previous.technicalSales, hasPrevious),
+    retailSales: buildMonthlyReviewMetric(current.retailSales, previous.retailSales, hasPrevious),
+    customers: buildMonthlyReviewMetric(current.customers, previous.customers, hasPrevious),
+    averageSpend: buildMonthlyReviewMetric(current.averageSpend, previous.averageSpend, hasPrevious),
+    newCustomers: buildMonthlyReviewMetric(current.newCustomers, previous.newCustomers, hasPrevious),
+    repeatCustomers: buildMonthlyReviewMetric(current.repeatCustomers, previous.repeatCustomers, hasPrevious),
+    reviewCount: showReviewCountTarget ? buildMonthlyReviewMetric(current.reviewCount, previous.reviewCount, hasPrevious) : null,
+    targetReviewCount: showReviewCountTarget ? parseNumber(current.target?.targetReviewCount) : null,
+    reviewCountAchievement: showReviewCountTarget && parseNumber(current.target?.targetReviewCount) > 0 ? current.reviewCountAchievement : null,
+    productivity: productivity.hasStaffCount ? buildMonthlyReviewMetric(productivity.current, previousProductivity.current, hasPrevious) : null,
+  };
+};
+
+// 月次レビューの自由記述4項目。company_id・store_id(全店舗はnull)・target_monthの3つで
+// 一意に定まる(要件6)。storeIdが空文字/未指定なら全店舗(会社全体)レビューのキーを使う——
+// buildMonthKey/buildCompanyMonthKeyは既存の他機能(店休日・目標設定等)と全く同じキー生成
+// 関数を再利用しているだけで、月次レビュー専用の新しいキー形式は作らない。
+export const buildMonthlyReviewKey = (companyId, storeId, monthValue) =>
+  storeId ? buildMonthKey(storeId, monthValue) : buildCompanyMonthKey(companyId, monthValue);
+
+export const getMonthlyReviewText = (state, { companyId, storeId }, monthValue) => {
+  const key = buildMonthlyReviewKey(companyId, storeId, monthValue);
+  return state.monthlyReviews?.[key] || { reflection: "", challenges: "", improvements: "", next_actions: "", updatedAt: "" };
+};
+
+export const monthlyReviewRowToEntry = (row = {}) => ({
+  id: row.id,
+  reflection: row.reflection || "",
+  challenges: row.challenges || "",
+  improvements: row.improvements || "",
+  next_actions: row.next_actions || "",
+  updatedAt: row.updated_at || "",
+});
+
+export const buildMonthlyReviewStateFromRows = (rows = []) => {
+  const monthlyReviews = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.company_id || !row.target_month) return;
+    const key = buildMonthlyReviewKey(row.company_id, row.store_id, row.target_month);
+    monthlyReviews[key] = monthlyReviewRowToEntry(row);
+  });
+  return { monthlyReviews };
 };
 
 // 文字列シードから安定したインデックスを作るだけの軽量ハッシュ。同じシードなら常に同じ

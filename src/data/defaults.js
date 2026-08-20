@@ -161,6 +161,11 @@ export const createInitialAppState = () => {
 
   return {
     stores: [],
+    // 月次レビュー(利益管理ではない自由記述4項目)。`${storeId}__${month}`(店舗ごと)または
+    // `${companyId}__${month}`(store_id=null、全店舗ビューの会社全体レビュー)でキー化する
+    // ——他の店舗別/全社別データ(storeHolidays/allStoresHolidays等)と同じ2系統のキー形式を
+    // そのまま流用している(buildMonthlyReviewKey参照)。
+    monthlyReviews: {},
     // store_status_audit_log由来。停止/再開/アーカイブ/復元/削除の履歴を{storeId, action,
     // createdAt}の配列で保持する(company_id単位で丸ごと取得、month等でのキー化はしない —
     // 件数が少なく、店舗の生涯で数件程度しか増えないため)。全店舗カレンダーの完了判定が

@@ -64,6 +64,11 @@ import {
   getAllStoresBusinessDaySettings,
   getAllStoresBusinessDaySummary,
   getUnclosedStoresForDate,
+  getMonthlyReviewSummary,
+  getMonthlyReviewText,
+  buildMonthlyReviewStateFromRows,
+  buildMonthlyReviewKey,
+  monthlyReviewRowToEntry,
   calculateAllStoresMonthSummary,
   buildAllStoresTargetStateFromRows,
   buildCompanyMonthKey,
@@ -145,6 +150,8 @@ import {
   deleteAllStoresHolidayFromSupabase,
   loadFixedCostsForCompany,
   loadStoreStatusAuditLogForCompany,
+  loadMonthlyReviewsForCompany,
+  upsertMonthlyReview,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
   loadCostMonthlyAmountsForCompany,
@@ -189,6 +196,7 @@ import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.js
 import MonthPicker from "./components/MonthPicker.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
 import FaqPage from "./components/faq/FaqPage.jsx";
+import MonthlyReviewPage from "./components/monthlyReview/MonthlyReviewPage.jsx";
 
 const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
 
@@ -1675,6 +1683,89 @@ function App() {
       : getBusinessDaySummary(appState, selectedStoreId, selectedMonth)),
     [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
+  // 月次レビュー(利益管理ではない、店舗・会社全体で共有するための数字サマリー+自由記述)。
+  // 数字はgetMonthlyReviewSummary(既存のcalculateMonthSummary/calculateAllStoresMonthSummaryを
+  // そのまま再利用、重複計算ロジックを作らない)、対象は「今表示中の店舗/全店舗ビュー」——
+  // このページ専用の別の店舗選択UIは持たず、ヘッダーの既存の店舗切替とそのまま連動する
+  // (要件16: 同じコンポーネント・取得処理を使う)。
+  const monthlyReviewSummary = useMemo(
+    () => getMonthlyReviewSummary(appState, {
+      storeId: selectedStoreId,
+      isAllStoresView,
+      company: currentCompany,
+      storeEntity: selectedStoreEntity,
+      companyStores: currentCompanyStores,
+    }, selectedMonth),
+    [appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth]
+  );
+  const monthlyReviewKeyStoreId = isAllStoresView ? "" : selectedStoreId;
+  const monthlyReviewText = useMemo(
+    () => getMonthlyReviewText(appState, { companyId: appState.currentCompanyId, storeId: monthlyReviewKeyStoreId }, selectedMonth),
+    [appState, monthlyReviewKeyStoreId, selectedMonth]
+  );
+  const [monthlyReviewSaveStatus, setMonthlyReviewSaveStatus] = useState({ status: "idle", message: "" });
+  const monthlyReviewSaveTimerRef = useRef(null);
+  const canEditMonthlyReview = canEditMonthlyData(currentRole) && !isFranchiseReadOnlyForCurrentUser();
+  // 保存直後にDBが実際に保存した値でappStateを更新する(「送ったつもりの値」で信じない、
+  // 直近の保存/削除/停止/招待の各修正と同じ方針)。company_id・store_id・target_monthの
+  // 3つで一意に定まるため、店舗Aと店舗B、全店舗ビューのレビューが混ざることは無い(要件6)。
+  const performMonthlyReviewSave = async (companyId, storeId, targetMonth, fields) => {
+    setMonthlyReviewSaveStatus({ status: "saving", message: "保存中…" });
+    try {
+      if (isSupabaseConfigured) {
+        const result = await upsertMonthlyReview({ companyId, storeId, targetMonth, userId: appState.currentUserId, fields });
+        if (!result.ok) throw result.error || new Error("保存に失敗しました");
+        const confirmedRow = result.data;
+        const key = buildMonthlyReviewKey(companyId, storeId, targetMonth);
+        setAppState((prev) => ({
+          ...prev,
+          monthlyReviews: {
+            ...prev.monthlyReviews,
+            [key]: confirmedRow
+              ? monthlyReviewRowToEntry(confirmedRow)
+              : { reflection: fields.reflection, challenges: fields.challenges, improvements: fields.improvements, next_actions: fields.next_actions, updatedAt: new Date().toISOString() },
+          },
+        }));
+      } else {
+        const key = buildMonthlyReviewKey(companyId, storeId, targetMonth);
+        setAppState((prev) => ({
+          ...prev,
+          monthlyReviews: { ...prev.monthlyReviews, [key]: { reflection: fields.reflection, challenges: fields.challenges, improvements: fields.improvements, next_actions: fields.next_actions, updatedAt: new Date().toISOString() } },
+        }));
+      }
+      setMonthlyReviewSaveStatus({ status: "saved", message: "保存済み" });
+    } catch (error) {
+      setMonthlyReviewSaveStatus({ status: "error", message: `保存に失敗しました: ${getSupabaseErrorMessage(error)}` });
+    }
+  };
+  // debounce付き自動保存(要件7) — 入力のたびにDBへ大量リクエストしないよう400ms(既存の
+  // 日次入力自動保存と同じ間隔)待ってから送信する。
+  const saveMonthlyReviewFields = (fields) => {
+    if (guardFranchiseReadOnly()) return;
+    if (!canEditMonthlyReview) return;
+    if (monthlyReviewSaveTimerRef.current) window.clearTimeout(monthlyReviewSaveTimerRef.current);
+    const companyId = appState.currentCompanyId;
+    const storeId = monthlyReviewKeyStoreId;
+    const targetMonth = selectedMonth;
+    monthlyReviewSaveTimerRef.current = window.setTimeout(() => {
+      monthlyReviewSaveTimerRef.current = null;
+      void performMonthlyReviewSave(companyId, storeId, targetMonth, fields);
+    }, 400);
+  };
+  // 入力欄からフォーカスが外れた瞬間(=画面遷移・タブ切替・他要素クリック等の直前に必ず
+  // 起こる)に、debounceを待たず即座に保存する(要件7: 「画面遷移や再読み込みで文章が
+  // 消えないように」の直接の対応)。保留中のdebounceタイマーがあれば止めて、代わりにこちらを
+  // 即実行することで、同じ内容を二重送信しない。
+  const flushMonthlyReviewSave = (fields) => {
+    if (guardFranchiseReadOnly()) return;
+    if (!canEditMonthlyReview) return;
+    if (monthlyReviewSaveTimerRef.current) {
+      window.clearTimeout(monthlyReviewSaveTimerRef.current);
+      monthlyReviewSaveTimerRef.current = null;
+    }
+    void performMonthlyReviewSave(appState.currentCompanyId, monthlyReviewKeyStoreId, selectedMonth, fields);
+  };
+
   // 全店舗 月カレンダーで「まだ緑になっていない営業日」をクリックすると、どの店舗が未締めか
   // 表示するポップオーバー(要件13)。{dateIso, anchorEl}か、閉じている間はnull。
   const [unclosedStoresPopover, setUnclosedStoresPopover] = useState(null);
@@ -1807,6 +1898,35 @@ function App() {
   // 個別に「未登録」表示するのではなく、まとめて1箇所の案内(TargetSetupHint)だけを出す
   // (未入力=警告、を避けるための整理。任意項目のご指示に基づく)。
   const hasAnyTarget = hasSalesTarget || hasCustomerTarget || hasReviewCountTarget;
+  // 初回利用時の分かりやすさ改善(要件9): 「何から入力すればいいか分からない」状態を防ぐための
+  // 5段階チェックリスト。既存のTargetSetupHint(目標だけの単発の案内)とは別に、店舗情報・
+  // 営業日設定・固定費・日次入力まで含めた全体の進み具合を1つのカードにまとめる——ここでも
+  // 「未入力=常に赤警告」にはせず、5項目すべて完了したら自動的にカード自体を非表示にする
+  // (要件: 常に大きな案内を表示して邪魔にならないように/設定完了後は通常画面を優先)。
+  // 全店舗ビューは特定の1店舗の設定状況を表すものが無いため対象外。
+  const setupChecklist = useMemo(() => {
+    if (isAllStoresView || !selectedStoreEntity) return [];
+    const hasStoreProfile = Boolean(selectedStoreEntity.address?.trim() || selectedStoreEntity.phone?.trim());
+    const hasHolidaySetting = businessDaySettings.mode === "manual"
+      ? parseNumber(businessDaySettings.businessDayCount) > 0
+      : (getStoreHolidayDates(appState, selectedStoreId, selectedMonth).length > 0 || parseNumber(businessDaySettings.holidayCount) > 0);
+    const hasFixedCostSetting = fixedCosts.length > 0;
+    const hasDailyEntry = dailyEntries.length > 0;
+    return [
+      { key: "store", label: "店舗情報", done: hasStoreProfile, page: "stores" },
+      { key: "target", label: "月間目標", done: hasAnyTarget, page: "monthly" },
+      { key: "holidays", label: "営業日・休業日", done: hasHolidaySetting, page: "daily" },
+      { key: "fixedCosts", label: "固定費など必要設定", done: hasFixedCostSetting, page: "monthly" },
+      { key: "daily", label: "日次入力", done: hasDailyEntry, page: "daily" },
+    ];
+  }, [isAllStoresView, selectedStoreEntity, businessDaySettings, appState, selectedStoreId, selectedMonth, fixedCosts, dailyEntries, hasAnyTarget]);
+  const [setupChecklistDismissed, setSetupChecklistDismissed] = useState(false);
+  const showSetupChecklist = setupChecklist.length > 0 && setupChecklist.some((item) => !item.done) && !setupChecklistDismissed;
+  // 店舗を切り替えたら、別の店舗の設定状況に対する「閉じる」操作を引き継がない(要件: 店舗
+  // 切替でデータが混ざらない、の一種——ここでのdismiss状態も一種の店舗ごとの表示状態)。
+  useEffect(() => {
+    setSetupChecklistDismissed(false);
+  }, [selectedStoreId]);
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
   const forecastVsTarget = summary.displayForecast - parseNumber(target.targetSales);
@@ -2357,6 +2477,15 @@ function App() {
       }
       const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data);
 
+      // monthly_reviews(月次レビューの自由記述4項目)。fixed_costsと同じ理由で月ウィンドウを
+      // 設けず会社全体を丸ごと取得する — 対象月を過去へ切り替えても保存済みの文章が正しく
+      // 復元される必要があるため(要件6)。
+      const monthlyReviewsResult = await loadMonthlyReviewsForCompany({ companyId });
+      if (!monthlyReviewsResult.ok) {
+        throw monthlyReviewsResult.error || new Error("月次レビューデータの取得に失敗しました");
+      }
+      const monthlyReviewsOverlay = buildMonthlyReviewStateFromRows(monthlyReviewsResult.data);
+
       // store_status_audit_log(店舗の停止/再開/アーカイブ/復元/削除の履歴)。RLSでcompany_admin/
       // system_admin以外には空配列が返る(store_manager/staffには非公開) — その場合
       // getStoreStatusAsOfDateは常にnullを返し、呼び出し側は現在のstores.statusだけで代替
@@ -2490,6 +2619,14 @@ function App() {
           Object.keys(mergedCostMonthlyAmounts || {}).filter((key) => costItemIds.has(key.split("__")[0]))
         );
       };
+      // monthly_reviewsも同じ理由(fixed_costsと同じく無制限取得)でwindowedExpectedKeysを
+      // 使えない——ただしcostMonthlyAmountsと違い費用項目のような親子関係を経由する必要は無く、
+      // 単純に「この会社の店舗キー、またはこの会社自身の全店舗キーに一致するローカルの既存
+      // キー」がそのまま期待キーになる(companyStoreIdPrefixesは上のfixedCosts処理で既に
+      // 定義済みのものを再利用する)。
+      const monthlyReviewsExpectedKeysFor = (mergedMonthlyReviews) => new Set(
+        Object.keys(mergedMonthlyReviews || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)) || key.startsWith(`${companyId}__`))
+      );
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
           dailyResults: dailySalesState.dailyResults,
@@ -2514,6 +2651,7 @@ function App() {
           // (mergeRemoteAppStateの `...remoteState` 展開により自動的に「remote優先」になる)。
           storeStatusAuditLog: storeStatusAuditLogRows,
           fixedCosts: fixedCostsOverlay.fixedCosts,
+          monthlyReviews: monthlyReviewsOverlay.monthlyReviews,
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
           cashBreakdownResults: cashBreakdownState.cashBreakdownResults,
@@ -2614,6 +2752,7 @@ function App() {
           // expected set from this company's own cost item ids (just resolved via the fixedCosts
           // merge above), unbounded across every month (see costMonthlyAmountsExpectedKeysFor).
           costMonthlyAmounts: pruneStaleKeys(merged.costMonthlyAmounts, costMonthlyAmountsExpectedKeysFor(merged.fixedCosts, merged.costMonthlyAmounts), costMonthlyAmountsOverlay.costMonthlyAmounts),
+          monthlyReviews: pruneStaleKeys(merged.monthlyReviews, monthlyReviewsExpectedKeysFor(merged.monthlyReviews), monthlyReviewsOverlay.monthlyReviews),
           // storeInventoryBalances keys are `${storeId}__${targetMonth}` — the same shape
           // windowedExpectedKeys already uses, so it can be reused directly (unlike costMonthlyAmounts).
           storeInventoryBalances: pruneStaleKeys(merged.storeInventoryBalances, windowedExpectedKeys, storeInventoryBalancesOverlay.storeInventoryBalances),
@@ -6369,7 +6508,7 @@ function App() {
             </button>
             <div>
               <p className="eyebrow">SALON MANAGEMENT</p>
-              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : activePage === "franchise" ? "加盟店連携" : activePage === "faq" ? "使い方・FAQ" : "設定"}</h1>
+              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "monthlyReview" ? "月次レビュー" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : activePage === "franchise" ? "加盟店連携" : activePage === "faq" ? "使い方・FAQ" : "設定"}</h1>
               {currentUser ? (
                 <div className="user-role-badge" style={{ marginTop: 6 }}>
                   {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
@@ -6466,6 +6605,13 @@ function App() {
         {notice ? <div className="notice-box error">{notice}</div> : null}
         {activePage === "dashboard" && (
           <div className="dashboard-layout">
+            {showSetupChecklist ? (
+              <SetupChecklistCard
+                items={setupChecklist}
+                onGoToPage={(page) => setActivePage(page)}
+                onDismiss={() => setSetupChecklistDismissed(true)}
+              />
+            ) : null}
             <section className="panel">
               <div className="business-progress-card">
                 <div className="business-progress-header">
@@ -8569,6 +8715,22 @@ function App() {
           );
         })() : null}
 
+        {activePage === "monthlyReview" && (
+          <MonthlyReviewPage
+            summary={monthlyReviewSummary}
+            text={monthlyReviewText}
+            monthValue={selectedMonth}
+            isAllStoresView={isAllStoresView}
+            storeName={isAllStoresView ? "全店舗" : (selectedStoreEntity?.name || selectedStore)}
+            canEdit={canEditMonthlyReview}
+            saveStatus={monthlyReviewSaveStatus}
+            onSaveFields={saveMonthlyReviewFields}
+            onFlushFields={flushMonthlyReviewSave}
+            // storeName(表示名)ではなくid基準のキー——同名店舗が別会社(加盟店等)に存在
+            // しても下書きのリセット判定が正しく別物として扱われるようにする。
+            reviewContextKey={`${appState.currentCompanyId}::${isAllStoresView ? "all" : selectedStoreId}::${selectedMonth}`}
+          />
+        )}
         {activePage === "faq" && <FaqPage />}
 
         {activePage === "settings" && (
@@ -8688,6 +8850,38 @@ function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", e
 // せず、この1枚だけをkpi-hero-gridの先頭に出す。警告・エラーではなく中立トーン(.setup-card)
 // にし、目標を1つでも登録すればhasAnyTargetがtrueになり自動的に消える(表示ON/OFFの設定は
 // 持たない)。
+// 初回利用時の設定チェックリスト(要件9)。項目をクリックすると該当ページへ移動するだけの
+// シンプルな案内——タスク管理・期限管理までは今回作らない。5項目すべて完了すると
+// (呼び出し元のshowSetupChecklistがfalseになり)このカード自体が描画されなくなるため、
+// 設定完了後にずっと居座って邪魔になることは無い。
+function SetupChecklistCard({ items, onGoToPage, onDismiss }) {
+  const doneCount = items.filter((item) => item.done).length;
+  return (
+    <div className="setup-card setup-checklist-card">
+      <div className="setup-checklist-card-heading">
+        <div>
+          <p className="eyebrow">GETTING STARTED</p>
+          <strong>初期設定 {doneCount}/{items.length}</strong>
+        </div>
+        <button type="button" className="setup-checklist-close" onClick={onDismiss} aria-label="閉じる">×</button>
+      </div>
+      <p className="helper-text">まずはこの店舗の基本設定を進めましょう。完了した項目には自動でチェックが付きます。</p>
+      <div className="setup-checklist-list">
+        {items.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className={`setup-checklist-item ${item.done ? "done" : "pending"}`}
+            onClick={() => onGoToPage(item.page)}
+          >
+            {item.done ? "✓" : "○"} {item.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TargetSetupHint({ onGoToTarget }) {
   return (
     <div className="setup-card target-setup-hint">

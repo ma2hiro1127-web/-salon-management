@@ -230,7 +230,13 @@
 // していた)、App.jsx側の各ハンドラもその確認済みの値でappStateを更新するよう修正した。
 // ページ再読込・店舗切替・会社切替時に古いキャッシュが残らないことは既存のhydrateFromSupabase
 // (ログイン時の全件取得)・store/company切替時の再同期effectで担保済みであることを確認した。
-const CACHE_NAME = 'salon-manager-cache-v36';
+// v37: 改善フェーズ1。(1)月次レビュー機能を新設(利益・営業利益は表示しない、店舗/全店舗
+// ビュー別に自由記述4項目をcompany_id・store_id・target_monthで保存、前月比はdiffPercent/
+// formatDiffOrDashを既存ロジックのまま再利用)。(2)初回利用時の設定チェックリストカードを
+// ダッシュボードに追加(店舗情報/月間目標/営業日/固定費/日次入力の5項目、完了後は自動非表示)。
+// (3)月次レビューのテキスト保存はdebounce自動保存+blur時の即時flushの二重構成にし、画面遷移・
+// タブ切替直前でも保存漏れが起きないようにした。
+const CACHE_NAME = 'salon-manager-cache-v37';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

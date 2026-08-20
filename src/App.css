@@ -555,6 +555,20 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .setup-step.done { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-soft); }
 .setup-body { display: flex; flex-direction: column; gap: 12px; }
 .setup-card { padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-strong); box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04); }
+
+/* 初回利用時の設定チェックリスト(要件9)。.dashboard-layoutの2カラムグリッドの直下に
+   置かれるため、.target-setup-hintと同じくgrid-column: 1 / -1で両カラムいっぱいに広げ、
+   バナーとして正しく全幅表示させる。 */
+.setup-checklist-card { grid-column: 1 / -1; }
+.setup-checklist-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.setup-checklist-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.setup-checklist-item {
+  display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface); font-size: 0.85rem; font-weight: 600; cursor: pointer;
+}
+.setup-checklist-item.done { color: var(--success); border-color: rgba(22, 163, 74, 0.3); background: rgba(22, 163, 74, 0.08); }
+.setup-checklist-item.pending { color: var(--text); }
+.setup-checklist-close { border: none; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; padding: 4px; }
 .card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .store-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .store-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
@@ -728,4 +742,43 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .user-staff-row-main { flex-direction: column; align-items: flex-start; }
   .user-staff-row .row-actions { flex-wrap: wrap; }
   .modal-card { padding: 14px; max-width: 100%; }
+}
+
+/* 月次レビュー(利益管理ではない、店舗・会社全体で共有する数字サマリー+自由記述)。
+   既存の.panel/.value-pill/.helper-textをそのまま使い、この画面専用の新しいカード階層・
+   独自の色トークンは作らない — 幹部MT・店舗MT共有でそのまま画面を見せられるデザインという
+   要件を、既存の見慣れたパネルの並びの延長として実現するため。 */
+.monthly-review-context-strip { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.monthly-review-save-chip { font-size: 0.8rem; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: rgba(100, 116, 139, 0.12); color: var(--muted); white-space: nowrap; }
+.monthly-review-save-chip.saving { background: var(--accent-soft); color: var(--accent); }
+.monthly-review-save-chip.saved { background: rgba(22, 163, 74, 0.16); color: var(--success); }
+.monthly-review-save-chip.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
+
+.monthly-review-metric-list { display: flex; flex-direction: column; gap: 10px; }
+/* 「今月」「前月」「前月比」が一目で並ぶ1行(要件4)。狭い画面ではラベル→3つの値、を
+   縦に積む(横スクロールさせない、要件15)。 */
+.monthly-review-metric-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-strong);
+}
+.monthly-review-metric-label { font-weight: 700; min-width: 110px; }
+.monthly-review-metric-values { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.monthly-review-metric-value-block { display: flex; flex-direction: column; align-items: flex-end; min-width: 84px; }
+.monthly-review-metric-value-tag { font-size: 0.7rem; color: var(--muted); }
+.monthly-review-metric-diff { min-width: 64px; text-align: right; font-weight: 700; color: var(--muted); }
+.monthly-review-metric-diff.positive { color: var(--success); }
+.monthly-review-metric-diff.negative { color: var(--danger); }
+
+.monthly-review-textarea {
+  width: 100%; box-sizing: border-box; min-height: 110px; border: 1px solid var(--border); border-radius: 14px;
+  padding: 12px; background: var(--surface-strong); color: var(--text); font: inherit; line-height: 1.6; resize: vertical;
+}
+.monthly-review-readonly-text { white-space: pre-wrap; line-height: 1.7; color: var(--text); min-height: 44px; }
+
+@media (max-width: 640px) {
+  .monthly-review-metric-row { flex-direction: column; align-items: flex-start; }
+  .monthly-review-metric-values { width: 100%; justify-content: space-between; gap: 8px; }
+  .monthly-review-metric-value-block { align-items: flex-start; min-width: 0; }
+  .monthly-review-metric-diff { text-align: left; }
+  .monthly-review-textarea { min-height: 90px; font-size: 16px; }
 }

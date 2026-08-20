@@ -33,19 +33,24 @@ export const NAV_ITEMS_BY_ROLE = {
   // "faq"(使い方・FAQ)は権限体系の正式仕様(会社管理画面・まとめて入力の権限整理)により
   // system_admin/company_admin/store_managerの管理者向けヘルプとして扱う — staffには
   // ナビゲーション・URL直接アクセスとも表示しない(要件8)。
-  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings", "faq"],
-  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings", "faq"],
+  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "settings", "faq"],
+  company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "franchise", "settings", "faq"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
   // branch in App.jsx. No "companies" (店舗管理会社), and no monthly-target-adjacent company-wide
   // settings beyond their own store.
-  store_manager: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "settings", "faq"],
+  store_manager: ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "settings", "faq"],
   // 月次経営ダッシュボードは店舗横断比較・会社全体集計を含むため、staffには意図的に含めない。
   // 店舗管理("stores")も同様にstaffの通常業務範囲外のため含めない — この配列がURLの
   // 存在しないこのSPAにおける唯一の認可ゲート(canAccessPage)なので、ここから外すことが
   // そのままURL直接アクセスの拒否にもなる。faqも管理者向けヘルプのためstaffには含めない
   // (要件8: 権限体系の正式仕様)。
-  staff: ["dashboard", "daily"],
+  // monthlyReview(月次レビュー)はstaffにも閲覧を許可する(要件8: 「原則として閲覧のみ」=
+  // 見えないのではなく、見られるが編集はできない)。他の管理系画面(monthlyDashboard/stores等)
+  // とは異なり、店舗全体で「今月どうだったか」を共有するのが目的の画面のため、staffも含めて
+  // 見える状態にする——編集可否はページ内でcanEditMonthlyData(既存のsystem_admin/
+  // company_admin/store_manager限定の判定関数、新規に権限判定を作らない)で別途ゲートする。
+  staff: ["dashboard", "daily", "monthlyReview"],
   owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "settings", "faq"],
   admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "settings", "faq"],
 };
@@ -119,6 +124,7 @@ const NAV_ITEM_CATEGORY = {
   daily: "sales",
   monthly: "sales",
   monthlyDashboard: "sales",
+  monthlyReview: "sales",
   stores: "management",
   users: "management",
   companies: "management",
@@ -136,6 +142,7 @@ export const getVisibleNavItems = (role) => {
     label: {
       dashboard: "売上",
       monthlyDashboard: "月次ダッシュボード",
+      monthlyReview: "月次レビュー",
       daily: "日次入力",
       monthly: "管理画面",
       companies: "会社管理",

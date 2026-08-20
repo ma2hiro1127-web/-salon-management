@@ -1981,6 +1981,83 @@ export const loadStoreStatusAuditLogForCompany = async ({ companyId }) => {
   }
 };
 
+// monthly_reviews — 月次レビュー(利益管理ではない自由記述4項目)。fixed_costsと同じ理由で
+// 月ウィンドウを設けず会社全体を丸ごと取得する——対象月を過去へ切り替えても(直近3か月の
+// ウィンドウの外でも)保存済みの文章が正しく復元される必要があるため(要件6)。件数も
+// 「会社の店舗数×これまでの月数」程度で小さく、無制限取得のコストは無視できる。
+export const loadMonthlyReviewsForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("monthly_reviews")
+      .select("id, company_id, store_id, target_month, reflection, challenges, improvements, next_actions, updated_at")
+      .eq("company_id", companyId)
+      .order("target_month", { ascending: true });
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadMonthlyReviewsForCompany", table: "monthly_reviews", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+// 一意制約が店舗ごと/全店舗ごとで別々の部分ユニークインデックス(store_id is not null /
+// store_id is null)になっている(migration参照、store_idがnullを許容するため通常の
+// unique(company_id, store_id, target_month)だけでは全店舗レビューの重複防止にならない)。
+// PostgreSQLのON CONFLICTで部分インデックスを対象にするにはWHERE述語の指定が必要で、
+// PostgRESTのupsert(onConflict=列名のみ)経由では正しく推論できない可能性があるため、
+// ON CONFLICTに頼らず「まずUPDATEを試し、対象行が無ければINSERTする」方式にする——
+// 通常のUPDATE/INSERTだけで完結するため、部分インデックスの推論に依存しない分確実。
+// このテーブルへの同時書き込みは同一store×同一月の自動保存デバウンス程度で、競合insert
+// (=同時に初回保存)が起きても、後勝ちのINSERTがユニーク制約違反で失敗するだけなので、
+// その場合だけ改めてUPDATEを試す。
+export const upsertMonthlyReview = async ({ companyId, storeId, targetMonth, userId, fields }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, targetMonth, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertMonthlyReview", table: "monthly_reviews", userId, companyId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const editableFields = {
+    reflection: String(fields?.reflection || ""),
+    challenges: String(fields?.challenges || ""),
+    improvements: String(fields?.improvements || ""),
+    next_actions: String(fields?.next_actions || ""),
+    updated_by: userId,
+  };
+  const selectColumns = "id, company_id, store_id, target_month, reflection, challenges, improvements, next_actions, updated_at";
+  const scopeQuery = (query) => (storeId ? query.eq("store_id", storeId) : query.is("store_id", null));
+  try {
+    const { data: updatedRow, error: updateError } = await scopeQuery(
+      supabase.from("monthly_reviews").update(editableFields).eq("company_id", companyId).eq("target_month", targetMonth)
+    ).select(selectColumns).maybeSingle();
+    if (updateError) throw updateError;
+    if (updatedRow) return { ok: true, data: updatedRow };
+
+    const { data: insertedRow, error: insertError } = await supabase
+      .from("monthly_reviews")
+      .insert({ company_id: companyId, store_id: storeId || null, target_month: targetMonth, ...editableFields, created_by: userId })
+      .select(selectColumns)
+      .single();
+    if (insertError) {
+      // 同時初回保存で先にINSERTされていた場合(ユニーク制約違反、23505)だけ、改めてUPDATEを
+      // 試す。それ以外のエラーはそのまま投げる。
+      if (insertError.code === "23505") {
+        const { data: retryRow, error: retryError } = await scopeQuery(
+          supabase.from("monthly_reviews").update(editableFields).eq("company_id", companyId).eq("target_month", targetMonth)
+        ).select(selectColumns).maybeSingle();
+        if (retryError) throw retryError;
+        if (retryRow) return { ok: true, data: retryRow };
+      }
+      throw insertError;
+    }
+    return { ok: true, data: insertedRow };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertMonthlyReview", table: "monthly_reviews", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
 export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryMonth, userId, item }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ id, companyId, storeId, entryMonth, userId });
