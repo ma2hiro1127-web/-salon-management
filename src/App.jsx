@@ -619,6 +619,11 @@ const canManageUsers = (role) => canManageUsersByRole(role);
 // Resolving by the durable selectedStoreId first, and only falling back to a name match or
 // Supabase's own default when there's truly no id match, is what makes every entry point below
 // self-heal to the SAME store across a rename instead of drifting to an arbitrary one.
+// hydrateFromSupabaseが連続して失敗した場合の自動リトライ上限(要件2: 無限更新防止)。これを
+// 超えたら自動リトライを止め、setSyncStatusのエラー表示のまま留める——再読み込みや店舗切替等、
+// ユーザーの明示的な操作(新しいhydrateFromSupabase呼び出し)がきっかけで再開する。
+const HYDRATE_MAX_AUTO_RETRY_ATTEMPTS = 5;
+
 const resolvePreferredStoreSelection = ({ tenantState, localRecoveredState, currentCompanyId, role = "staff" }) => {
   const targetStores = (tenantState?.companies || []).find((company) => company.id === currentCompanyId)?.stores
     || tenantState?.companies?.[0]?.stores
@@ -860,6 +865,18 @@ function App() {
   const [isBusinessDayEditing, setIsBusinessDayEditing] = useState(false);
   const [saveStatus, setSaveStatus] = useState({ status: "saved", message: "自動保存済み", timestamp: "", error: false });
   const [syncStatus, setSyncStatus] = useState({ status: "idle", message: "同期待機中", timestamp: "", error: false });
+  // PWAアップデート対策(要件6): main.jsxが新しいService Worker(待機中)を検知すると
+  // window発火する"salon-manager:sw-update-available"を受け取り、そのapplyUpdateコールバック
+  // (SKIP_WAITINGメッセージを送るだけの関数)を保持する。null以外の間、下の更新バナーを表示
+  // する。ユーザーが「更新する」を押すまでは何もリロードしない(main.jsx参照)。
+  const [swUpdateApply, setSwUpdateApply] = useState(null);
+  useEffect(() => {
+    const handleUpdateAvailable = (event) => {
+      setSwUpdateApply(() => event.detail?.applyUpdate || null);
+    };
+    window.addEventListener("salon-manager:sw-update-available", handleUpdateAvailable);
+    return () => window.removeEventListener("salon-manager:sw-update-available", handleUpdateAvailable);
+  }, []);
   const [syncInitialized, setSyncInitialized] = useState(false);
   const [isOnline, setIsOnline] = useState(typeof navigator !== "undefined" ? navigator.onLine : true);
   // 月間目標設定パネル専用の対象月。ヘッダーのグローバルな対象月とは独立して切り替えられる。
@@ -2201,12 +2218,25 @@ function App() {
     // 自分より新しい呼び出しが既に始まっていれば、非同期処理が先に終わっても結果を捨てる。
     const requestId = ++hydrateRequestRef.current;
     try {
+      // 診断ログ(要件4): role・authenticated company(profile.company_id)・viewing
+      // company(companyIdOverride、加盟店閲覧中のみ本来と異なる値になる)・選択中店舗・
+      // アクセス可能な店舗数を毎回記録する。パスワード・JWT・メールアドレス等は一切含めない
+      // (含めているのはUUID・件数・店舗名のみ)。他ユーザーからの不具合報告時に、本人の
+      // ブラウザのdevtools consoleからこのログを共有してもらうだけで、role・所属会社・
+      // 表示中の会社・店舗数のズレを特定できるようにするためのもの。
       console.info("[sync-hydrate] start", {
+        appVersion: typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev",
         authUserId: authUser?.id,
         profileId: profile?.id,
-        companyId: companyIdOverride || profile?.company_id,
+        role: profile?.role || currentRole,
+        authenticatedCompanyId: profile?.company_id,
+        viewingCompanyId: companyIdOverride || profile?.company_id,
+        isViewingFranchise: Boolean(tenantState?.isViewingFranchise),
         selectedStore: tenantState?.selectedStore,
+        selectedStoreId: tenantState?.selectedStoreId,
         selectedMonth: tenantState?.selectedMonth,
+        availableStoreCount: (tenantState?.companies || []).find((item) => item.id === (companyIdOverride || profile?.company_id))?.stores?.length ?? null,
+        attempt: hydrateRetryCountRef.current,
       });
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
       const companyId = companyIdOverride || profile.company_id || tenantState?.currentCompanyId || "";
@@ -2719,6 +2749,12 @@ function App() {
       setAppState(merged);
       lastPersistedRef.current = canonicalStringifyForComparison(buildPersistenceComparableState(merged));
       setSyncStatus({ status: "loaded", message: "同期データを読み込みました", timestamp: new Date().toISOString(), error: false });
+      console.info("[sync-hydrate] success", {
+        authenticatedCompanyId: profile?.company_id,
+        viewingCompanyId: companyIdOverride || profile?.company_id,
+        selectedStoreId: merged.selectedStoreId,
+        availableStoreCount: (merged.companies || []).find((item) => item.id === merged.currentCompanyId)?.stores?.length ?? null,
+      });
       hydrateRetryCountRef.current = 0;
       setSyncInitialized(true);
     } catch (error) {
@@ -2728,6 +2764,11 @@ function App() {
       // Supabase data → THEN the real fetch finally lands" race this app was vulnerable to.
       // Leaving it false blocks all outgoing writes until a hydrate genuinely succeeds.
       logSupabaseError({ operation: "hydrateFromSupabase", table: "tenant_snapshots", userId: authUser?.id, companyId: companyIdOverride || profile?.company_id, storeId: tenantState?.selectedStore, error });
+      console.info("[sync-hydrate] failure", {
+        authenticatedCompanyId: profile?.company_id,
+        viewingCompanyId: companyIdOverride || profile?.company_id,
+        attempt: hydrateRetryCountRef.current + 1,
+      });
       const reason = getSupabaseErrorMessage(error);
       setSyncStatus({ status: "error", message: `同期エラー: ${reason}`, timestamp: new Date().toISOString(), error: true });
       if (hydrateRetryTimerRef.current) {
@@ -2735,6 +2776,20 @@ function App() {
       }
       const attempt = hydrateRetryCountRef.current + 1;
       hydrateRetryCountRef.current = attempt;
+      // 無限更新防止(要件2): RLS拒否・権限不整合・ネットワーク断など、再試行しても解消しない
+      // 種類の失敗だと、この上限が無い場合はsetTimeoutの再帰呼び出しが15秒間隔で永久に続き、
+      // 「更新中」→エラー→「更新中」→エラー……を無限に繰り返す(今回のバナー無限点滅バグとは
+      // 別経路だが、同じ「無限リトライ」という不具合の型)。一定回数で自動リトライを止め、
+      // 手動での復旧(再読み込み・store切替等の明示的な操作による再hydrate)に委ねる。
+      if (attempt > HYDRATE_MAX_AUTO_RETRY_ATTEMPTS) {
+        setSyncStatus({
+          status: "error",
+          message: `同期に繰り返し失敗しています(${reason})。ページを再読み込みしてください。`,
+          timestamp: new Date().toISOString(),
+          error: true,
+        });
+        return;
+      }
       const delayMs = Math.min(3000 * attempt, 15000);
       hydrateRetryTimerRef.current = window.setTimeout(() => {
         void hydrateFromSupabase({ authUser, profile, tenantState, companyIdOverride });
@@ -4529,6 +4584,42 @@ function App() {
     }
   }, [selectedStore, selectedStoreId, visibleStores, currentRole]);
 
+  // 無効な保存状態の自動修復(要件1): 上のselectedStore/selectedStoreId自己修復と同じ理由・
+  // 同じ収束のさせ方(id一致→無ければ現在アクセス可能な先頭の会社へフォールバック)で、
+  // appState.currentCompanyIdがappState.companiesのどれとも一致しない状態(古い加盟店ID・
+  // 権限を失った会社・存在しない会社IDがlocalStorage/tenant_snapshotsのキャッシュに残って
+  // いた場合)を1回のsetAppStateで確実に収束させる。
+  // 収束条件: 修正後は必ずcurrentCompanyIdがcompanies内のどれかのidと一致する状態になるため、
+  // 次回このeffectが走った時にはcompanies.some(...)がtrueとなり、setAppStateを一切呼ばずに
+  // 早期returnする——「無効値↔正常値を行き来する」ループにはなり得ない(高々1回の修正で安定)。
+  // appState.companiesが空(=まだ会社データを一度も取得できていない、hydrate未完了)の間は、
+  // 「一致する会社が無い」を「無効」と誤判定して意味の無い書き換えをしないよう、何もしない。
+  useEffect(() => {
+    const companies = appState.companies || [];
+    if (!companies.length) return;
+    if (!appState.currentCompanyId) return;
+    const isValid = companies.some((company) => company.id === appState.currentCompanyId);
+    if (isValid) return;
+    const fallbackCompany = companies[0];
+    if (!fallbackCompany) return;
+    setAppState((prev) => {
+      // effectの実行順で他の変更と競合しないよう、判定時点のprevへ改めて同じ条件を確認する
+      // (React 18のバッチ処理・StrictModeの二重実行下でも安全な、標準的な防御パターン)。
+      const prevCompanies = prev.companies || [];
+      if (!prevCompanies.length || prevCompanies.some((company) => company.id === prev.currentCompanyId)) {
+        return prev;
+      }
+      const nextFallback = prevCompanies[0];
+      return {
+        ...prev,
+        currentCompanyId: nextFallback.id,
+        // 無効だった会社に紐づく加盟店閲覧状態も一緒に破棄する(古い加盟店IDが残るケースの対応)。
+        isViewingFranchise: false,
+        homeCompanyIdBeforeFranchiseView: "",
+      };
+    });
+  }, [appState.companies, appState.currentCompanyId]);
+
   useEffect(() => {
     if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !appState.currentCompanyId) {
       if (remoteSyncChannelRef.current) {
@@ -6316,6 +6407,24 @@ function App() {
         ) : null}
 
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
+        {/* PWAアップデート対策(要件6): 新しいバージョンが既に用意できている(Service Worker
+            は待機中)ことをユーザー自身の判断で適用してもらうバナー。押すまでは何も起きない
+            — 入力途中のデータを失うような強制リロードはしない。 */}
+        {swUpdateApply ? (
+          <div className="notice-box sw-update-banner">
+            <span>新しいバージョンが利用可能です。</span>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => {
+                swUpdateApply();
+                setSwUpdateApply(null);
+              }}
+            >
+              更新する
+            </button>
+          </div>
+        ) : null}
         {/* 対象月・店舗の切替直後、hydrateFromSupabaseがまだ進行中の間は「その月のデータ」が
             appStateへ反映しきっていない可能性がある。従来はsyncStatusをどこにも表示していな
             かったため、この間に古い月の数字が一瞬残ったり¥0が見えたりしても利用者には何も

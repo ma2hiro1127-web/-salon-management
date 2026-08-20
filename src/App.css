@@ -199,6 +199,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice-box { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; }
 .notice-box.warning { background: rgba(180, 83, 9, 0.12); color: var(--warning); }
 .notice-box.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
+.notice-box.sw-update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 /* 加盟店連携リクエストの通知バナー(未対応リクエストがある間だけ表示)。既存.notice-boxと
    同じ丸み・余白・コンパクトさを踏襲し、警告色(danger/warning)は使わない — 通常のお知らせと
    同じ落ち着いたトーンにする。加盟店を閲覧中であることを示す専用バナーは意図的に置かない —
@@ -322,6 +323,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .faq-question::after { content: "+"; margin-left: auto; color: var(--muted); font-size: 1.1rem; flex-shrink: 0; }
 .faq-item[open] .faq-question::after { content: "−"; }
 .faq-answer { padding: 0 0 14px; color: var(--text); line-height: 1.7; white-space: pre-line; word-break: break-word; }
+.faq-version-footer { text-align: center; color: var(--muted); font-size: 0.75rem; margin: 4px 0 0; }
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .value-pill.inactive { background: rgba(100, 116, 139, 0.12); color: var(--muted); }

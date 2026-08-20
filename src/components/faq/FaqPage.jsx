@@ -160,6 +160,11 @@ export default function FaqPage() {
         <button type="button" className="secondary-button" onClick={() => setShowContactModal(true)}>管理者に問い合わせる</button>
       </section>
 
+      {/* アプリバージョン表示(要件5): 不具合報告時に、古いキャッシュ/古いビルドを使って
+          いないかを判断する材料。__APP_VERSION__はvite.config.jsのdefineで注入される
+          ビルド時定数(デプロイのたびに自動で変わる、Vercelのgitコミット短縮SHA)。 */}
+      <p className="faq-version-footer">Version {typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}</p>
+
       {showContactModal ? <ContactModal onClose={() => setShowContactModal(false)} /> : null}
     </div>
   );

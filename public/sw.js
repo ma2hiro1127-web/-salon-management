@@ -204,7 +204,16 @@
 // かったと考えられる)。比較用シグネチャを常に実際のappStateと同じ形から作るよう統一し
 // (storage.jsのbuildPersistenceComparableState)、加えて配列・オブジェクトの並び順の違いだけ
 // では「変化あり」と判定しないよう正規化してから比較する(canonicalStringifyForComparison)。
-const CACHE_NAME = 'salon-manager-cache-v33';
+// v34: 「更新中」不具合の再発防止策一式。(1) localStorage/tenant_snapshotsに古い加盟店ID・
+// 存在しない会社IDが残っていた場合の自動修復(currentCompanyId自己修復effect、App.jsx)。
+// (2) hydrateFromSupabaseの自動リトライに上限を追加し、RLS拒否等が続いても無限リトライしない
+// ようにした(HYDRATE_MAX_AUTO_RETRY_ATTEMPTS)。(3) role・会社・店舗数を記録する診断ログを
+// hydrateの開始/成功/失敗に追加(パスワード・JWT等は含めない)。(4) FAQ画面下部にアプリ
+// バージョン表示を追加(デプロイのたびに変わるgitコミットSHA由来)。(5) PWAアップデートを
+// 「待機中のService Workerをユーザーが自分のタイミングで適用する」方式へ変更——このsw.js
+// 自体、install時にself.skipWaiting()を無条件に呼ぶのをやめ、ページ側からのSKIP_WAITING
+// メッセージを待つようにした(入力途中のデータを失う強制リロードを防ぐ)。
+const CACHE_NAME = 'salon-manager-cache-v34';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
@@ -212,7 +221,14 @@ const APP_SHELL = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL)));
-  self.skipWaiting();
+  // 以前はここでself.skipWaiting()を無条件に呼んでおり、デプロイのたびに開きっぱなしの
+  // タブ/PWAが更新チェックのタイミングで即座に新バージョンへ切り替わり、直後の
+  // controllerchange(main.jsx)がwindow.location.reload()を無条件に実行していた——日次
+  // 入力の途中でも問答無用でリロードされ、入力中のデータを失い得る設計になっていた
+  // (PWAアップデート対策、要件6)。ここでskipWaiting()を呼ばないことで、新しいService
+  // Workerは「待機中(waiting)」のままとどまり、ユーザーがApp.jsx側の更新バナーで
+  // 明示的に「更新する」を押すまでは、開いているタブは古いバージョンのまま安全に動き
+  // 続ける(下のmessageハンドラ参照)。
 });
 
 self.addEventListener('activate', (event) => {
@@ -220,6 +236,14 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))))
   );
   self.clients.claim();
+});
+
+// main.jsxのSwUpdateBanner「更新する」ボタンから送られる、ユーザー起点の明示的な適用指示。
+// これ以外の経路(タイマー・フォーカス復帰等)でskipWaiting()を呼ぶことは無い。
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+  }
 });
 
 self.addEventListener('fetch', (event) => {
