@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3315,4 +3315,110 @@ test("getMonthlyReviewText: 未保存の月は空文字のフォームを返す(
   const state = createInitialAppState();
   const result = getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08");
   assert.deepEqual(result, { reflection: "", challenges: "", improvements: "", next_actions: "", updatedAt: "" });
+});
+
+// 「複数アカウントでログイン後にアプリが開けない障害」の再発防止テスト群。
+// resolvePreferredStoreSelectionは元々App.jsxコンポーネント内の生のconstで単体テストできな
+// かった(この障害調査を機にstorage.jsへexport化した)——ログイン直後にどの会社・店舗を開くか
+// を決める、認証後の共通初期化フローの中核ロジック。
+
+test("再招待シナリオ: staffとして招待→削除→同じメールで再招待→管理者権限へ変更→ログイン、で新しい所属先(店舗の無い会社全体)が正しく開く", () => {
+  // 招待フロー整理ラウンドで確認済みの通り、削除は行(profiles/user_stores)ごと消えるため、
+  // 「再招待→権限変更」後のログインでtenantStateに残るのは新しいcompany_admin行だけ——
+  // 古いstaff行由来のselectedStoreId等が残っていないことを確認する。
+  const tenantState = {
+    companies: [{ id: "company-1", stores: [{ id: "store-a", name: "A店" }, { id: "store-b", name: "B店" }] }],
+    selectedStore: "A店", // loadTenantStateFromSupabaseの既定(先頭店舗)
+    selectedStoreId: "store-a",
+  };
+  // localStorageには古いstaff時代の所属店舗(B店)が残っている、というケース。
+  const localRecoveredState = { selectedStore: "B店", selectedStoreId: "store-b" };
+  const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState, currentCompanyId: "company-1", role: "company_admin" });
+  // company_adminはどの店舗でも編集可能なので、古いキャッシュのB店がそのまま(id一致で)
+  // 復元されて問題ない——「クラッシュしない」「有効な店舗が返る」ことが本質。
+  assert.equal(result.selectedStoreId, "store-b");
+  assert.equal(result.selectedStore, "B店");
+});
+
+test("重複membership相当のケース: localStorageに別会社の古いselectedStoreIdが残っていても、現在の会社(currentCompanyId)の店舗一覧だけを基準に解決する(古い所属で決め打ちしない)", () => {
+  const tenantState = {
+    companies: [
+      { id: "company-intro", stores: [{ id: "intro-store", name: "INTRO" }] },
+      { id: "company-fine", stores: [{ id: "fine-a", name: "フィーネ原宿" }, { id: "fine-b", name: "フィーネ横浜" }] },
+    ],
+    selectedStore: "フィーネ原宿",
+    selectedStoreId: "fine-a",
+  };
+  // 古いINTRO時代のselectedStoreIdがlocalStorageに残っている(=INTRO所属だった頃のキャッシュ)。
+  const localRecoveredState = { selectedStore: "INTRO", selectedStoreId: "intro-store" };
+  const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState, currentCompanyId: "company-fine", role: "company_admin" });
+  // currentCompanyId(フィーネ)のtargetStoresの中にintro-storeは存在しないため、id一致は
+  // 失敗し、名前一致(INTROという名前の店舗もフィーネには無い)も失敗——tenantState自身の
+  // 既定値(フィーネ原宿)へ正しくフォールバックする。古い会社の店舗IDをそのまま使ってしまう
+  // (=会社をまたいだデータ混在)ことは無い。
+  assert.equal(result.selectedStoreId, "fine-a");
+  assert.equal(result.selectedStore, "フィーネ原宿");
+});
+
+test("不正store_idテスト: localStorageに存在しない/削除済みのstore_idが残っていてもクラッシュせず、現在の所属店舗(先頭店舗)へフォールバックする", () => {
+  const tenantState = {
+    companies: [{ id: "company-1", stores: [{ id: "store-a", name: "A店" }] }],
+    selectedStore: "A店",
+    selectedStoreId: "store-a",
+  };
+  const staleLocal = { selectedStore: "削除済み店舗", selectedStoreId: "deleted-store-id-xyz" };
+  const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState: staleLocal, currentCompanyId: "company-1", role: "staff" });
+  assert.equal(result.selectedStoreId, "store-a");
+  assert.equal(result.selectedStore, "A店");
+});
+
+test("companiesが空(hydrate未完了・会社データ0件)でもクラッシュせず、空の選択状態を返す", () => {
+  const tenantState = { companies: [], selectedStore: "", selectedStoreId: "" };
+  const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState: {}, currentCompanyId: "company-1", role: "staff" });
+  assert.equal(result.selectedStoreId, "");
+  assert.equal(result.selectedStore, "");
+});
+
+test("全店舗ビューからの降格: 会社管理者から降格された(role=staffに変更された)後は、キャッシュされた全店舗ビュー選択を維持せず実店舗へフォールバックする", () => {
+  const tenantState = {
+    companies: [{ id: "company-1", stores: [{ id: "store-a", name: "A店" }] }],
+    selectedStore: "A店",
+    selectedStoreId: "store-a",
+  };
+  const localRecoveredState = { selectedStore: "__all_stores__", selectedStoreId: "" };
+  const asAdmin = resolvePreferredStoreSelection({ tenantState, localRecoveredState, currentCompanyId: "company-1", role: "company_admin" });
+  assert.equal(asAdmin.selectedStore, "__all_stores__", "権限がある間は全店舗ビューを維持する");
+
+  const asStaff = resolvePreferredStoreSelection({ tenantState, localRecoveredState, currentCompanyId: "company-1", role: "staff" });
+  assert.notEqual(asStaff.selectedStore, "__all_stores__", "権限を失った後は全店舗ビューのキャッシュに固定されない");
+  assert.equal(asStaff.selectedStoreId, "store-a");
+});
+
+test("company_admin/store_manager/staff全ロール、単一店舗/複数店舗、いずれの組み合わせでも例外を投げず有効な選択を返す(役割・店舗数を変えた総当たり)", () => {
+  const roles = ["company_admin", "store_manager", "staff"];
+  const storeCounts = [1, 3];
+  for (const role of roles) {
+    for (const count of storeCounts) {
+      const stores = Array.from({ length: count }, (_, index) => ({ id: `store-${index}`, name: `店舗${index}` }));
+      const tenantState = { companies: [{ id: "company-1", stores }], selectedStore: stores[0].name, selectedStoreId: stores[0].id };
+      assert.doesNotThrow(() => {
+        const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState: {}, currentCompanyId: "company-1", role });
+        assert.ok(result.selectedStoreId, `role=${role} count=${count}で有効な店舗idが返らなかった`);
+      }, `role=${role} count=${count}`);
+    }
+  }
+});
+
+test("加盟店情報がnull/undefinedでも(tenantState.companiesに加盟店が含まれていなくても)自社店舗の解決には影響しない", () => {
+  const tenantState = {
+    companies: [{ id: "company-1", stores: [{ id: "store-a", name: "A店" }] }],
+    selectedStore: "A店",
+    selectedStoreId: "store-a",
+    // 加盟店閲覧関連のフィールドが一切無い(undefined)、フィールド自体が存在しない古い
+    // tenantState形状でも構わない。
+  };
+  assert.doesNotThrow(() => {
+    const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState: undefined, currentCompanyId: "company-1", role: "company_admin" });
+    assert.equal(result.selectedStoreId, "store-a");
+  });
 });

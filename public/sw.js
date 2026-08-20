@@ -244,7 +244,12 @@
 // zone)になり、これがレンダーのたびに必ず発生していた(データや権限の内容に一切関係ない、
 // 純粋なコードのバグ)。判定式を直接埋め込む形に修正し、後方で定義される関数の呼び出し
 // そのものを無くした。
-const CACHE_NAME = 'salon-manager-cache-v38';
+// v39: v38の緊急障害修正の再発防止分。resolvePreferredStoreSelection(ログイン直後にどの
+// 会社・店舗を開くかを決める中核ロジック)をApp.jsxのコンポーネント内から独立したstorage.js
+// の純粋関数へ移設・export化し、company_admin/store_manager/staff×単一/複数店舗×
+// localStorageに古い/存在しないstore_idが残っている×全店舗ビューからの降格、等の組み合わせ
+// を自動テストできるようにした。挙動自体は変更していない。
+const CACHE_NAME = 'salon-manager-cache-v39';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

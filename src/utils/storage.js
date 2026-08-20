@@ -10,8 +10,48 @@ import {
   costCategoryKeys,
   UNCATEGORIZED_KEY,
 } from "../data/defaults.js";
+import { canViewAllStores } from "./permissions.js";
 
 export { createInitialAppState } from "../data/defaults.js";
+
+// loadTenantStateFromSupabase always defaults selectedStore to the alphabetically-first store in
+// the company. Every login/session-restore path needs to override that with whatever store this
+// device actually had selected — but resolving that by NAME alone breaks the instant another
+// device renames the store (the cached name goes stale while the id stays valid), silently
+// stranding the session on a different, often-empty store while things like store ranking (which
+// always reads the company's current store list, never a cached selection) keep looking correct.
+// Resolving by the durable selectedStoreId first, and only falling back to a name match or
+// Supabase's own default when there's truly no id match, is what makes every entry point below
+// self-heal to the SAME store across a rename instead of drifting to an arbitrary one.
+//
+// 緊急障害(App.jsxのTDZクラッシュ)対応でApp.jsxからstorage.jsへ移設・export化した——
+// 元々App.jsxのコンポーネント関数内に生のconstとして置かれており、単体テストできなかった
+// (「company_admin/store_manager/staff×加盟店あり/なし×店舗1件/複数件×localStorageに
+// 古いIDあり」等の組み合わせを自動テストしたい、という再発防止要件に応えるための移設)。
+// ロジック自体は一切変更していない。
+export const resolvePreferredStoreSelection = ({ tenantState, localRecoveredState, currentCompanyId, role = "staff" }) => {
+  const targetStores = (tenantState?.companies || []).find((company) => company.id === currentCompanyId)?.stores
+    || tenantState?.companies?.[0]?.stores
+    || [];
+  const availableStoreNames = new Set(targetStores.map((store) => store.name));
+  const storeMatchedById = localRecoveredState?.selectedStoreId
+    ? targetStores.find((store) => store.id === localRecoveredState.selectedStoreId)
+    : null;
+  // 「全店舗」は実店舗ではないのでavailableStoreNamesには含まれない。権限がある間は
+  // 実店舗へ戻さず、そのまま維持する。
+  if (localRecoveredState?.selectedStore === ALL_STORES_VALUE && canViewAllStores(role)) {
+    return { selectedStore: ALL_STORES_VALUE, selectedStoreId: "" };
+  }
+  const selectedStore = storeMatchedById
+    ? storeMatchedById.name
+    : (localRecoveredState?.selectedStore && availableStoreNames.has(localRecoveredState.selectedStore)
+      ? localRecoveredState.selectedStore
+      : (tenantState?.selectedStore || localRecoveredState?.selectedStore || ""));
+  const selectedStoreId = storeMatchedById
+    ? storeMatchedById.id
+    : (targetStores.find((store) => store.name === selectedStore)?.id || tenantState?.selectedStoreId || "");
+  return { selectedStore, selectedStoreId };
+};
 
 export const STORAGE_KEYS = {
   theme: "salon-theme",
