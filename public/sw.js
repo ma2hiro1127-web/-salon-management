@@ -213,7 +213,17 @@
 // 「待機中のService Workerをユーザーが自分のタイミングで適用する」方式へ変更——このsw.js
 // 自体、install時にself.skipWaiting()を無条件に呼ぶのをやめ、ページ側からのSKIP_WAITING
 // メッセージを待つようにした(入力途中のデータを失う強制リロードを防ぐ)。
-const CACHE_NAME = 'salon-manager-cache-v34';
+// v35: 誤った会社・店舗への招待を削除した後、同じメールアドレスを別会社から再招待できない
+// 不具合を修正。原因はhandleSaveUserの重複判定がappState.users(ログイン時にしか再取得
+// しないローカルキャッシュ。system_adminは全社分が1つの配列に混在)を対象に、company_idを
+// 見ないメール一致だけで判定していたこと。送信直前にSupabaseへ直接問い合わせて判定するよう
+// 変更し、会社ごとに分類(自社利用中/自社招待待ち/他社登録済み/他社招待待ち)する
+// classifyEmailDuplicateForInviteを追加。また、招待メール送信済み・未登録のまま削除した
+// 場合にauth.usersの残骸が残ることがあった点もdelete-user Edge Function側で修正
+// (send-invite-emailの既存の同種処理と同じ方法)。ユーザー管理画面のmanageableUsersも
+// system_admin含め常にcurrentCompanyでの絞り込みを行うよう修正(他社ユーザーが会社ラベル
+// 無しで一覧に混在していた)。
+const CACHE_NAME = 'salon-manager-cache-v35';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

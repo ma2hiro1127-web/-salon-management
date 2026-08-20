@@ -119,6 +119,7 @@ import {
   loadStoreInputSettingsForCompany,
   upsertStoreInputSettings,
   createUserProfileRecord,
+  checkExistingProfilesByEmail,
   upsertDailySalesEntry,
   updateDailySalesClosingState,
   loadDailySalesForCompanyRange,
@@ -179,7 +180,7 @@ import {
 import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
-import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta } from "./utils/invitations.js";
+import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta, classifyEmailDuplicateForInvite } from "./utils/invitations.js";
 import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
@@ -1098,10 +1099,17 @@ function App() {
     () => (normalizeRole(currentRole) === "store_manager" ? currentCompanyStores.filter((store) => allowedStoreIds.includes(store.id)) : currentCompanyStores),
     [currentRole, currentCompanyStores, allowedStoreIds]
   );
+  // 会社分離の修正(誤った店舗への招待削除後に再招待できない不具合の周辺調査で発見):
+  // 以前はsystem_adminの場合だけcompany_idでの絞り込みを一切せず、appState.users
+  // (system_adminはRLS上全社分のプロフィールを取得するため、実質「全社のユーザーが1つの
+  // 配列に混在した状態」)をそのままユーザー管理画面へ出していた——他社(例: INTRO)の
+  // ユーザーが、会社名のラベルも無いまま今見ている会社(例: フィーネ)のユーザー一覧に
+  // 紛れ込んで表示されてしまう状態だった。この画面はヘッダーの会社切替と連動する
+  // 「今選択している会社」のユーザー管理という設計(会社をまたいだ一覧は別画面の会社管理
+  // 側の役割)なので、system_adminも他ロールと同じくcurrentCompanyでの絞り込みを行う。
   const manageableUsers = useMemo(() => (appState.users || []).filter((user) => {
-    const normalizedCurrentRole = normalizeRole(currentRole);
-    if (normalizedCurrentRole === "system_admin") return true;
     if (user.companyId !== currentCompany?.id) return false;
+    const normalizedCurrentRole = normalizeRole(currentRole);
     if (normalizedCurrentRole === "store_manager") {
       return user.role === "staff" && (user.storeIds || []).some((storeId) => allowedStoreIds.includes(storeId));
     }
@@ -3107,23 +3115,31 @@ function App() {
     // 重複作成につながる同時多重実行を防ぐ。
     if (userFormBusy) return;
     const normalizedEmail = userForm.email.trim().toLowerCase();
-    const duplicateUser = (appState.users || []).find((user) => user.email === normalizedEmail);
-    if (duplicateUser) {
-      // 既存行の状態によってメッセージを出し分ける(招待フロー整理の要件1-2)。
-      // 「登録済み」で一律ブロックしていたのが、送信失敗後に同じメールアドレスでもう一度
-      // 招待しようとすると誤解を招くメッセージで詰まってしまう不具合の直接の原因だった —
-      // まだ登録が完了していない(招待中/メール未送信/期限切れ)場合は、新規に招待を作り直す
-      // のではなく既存の行から「再招待」するよう案内する。
-      const duplicateStatus = getUserStatusMeta(duplicateUser);
-      if (duplicateStatus.key === "active" || duplicateStatus.key === "not_logged_in") {
-        setNotice("このメールアドレスはすでに登録済みです");
-      } else if (duplicateStatus.key === "suspended") {
-        setNotice("このメールアドレスは停止中のユーザーとして登録されています。ユーザー一覧から状態をご確認ください");
-      } else {
-        setNotice("このメールアドレスへの招待はすでに作成されています(招待待ち)。ユーザー一覧から「再招待」を押して送信し直してください");
+    setUserFormBusy(true);
+    try {
+      // 重複判定不具合の修正(誤った店舗への招待削除後に再招待できない不具合):
+      // 以前はappState.users(ログイン時にしか再取得しないローカルキャッシュ——system_admin
+      // の場合は全社分のユーザーが1つの配列に混在する)を対象に、company_idを見ずに単純な
+      // email一致だけで判定していた。そのため (a) 他デバイス/他タブでの削除がこのセッションに
+      // 反映されていない場合や、(b) 削除済みだが古いキャッシュが残っている場合、(c) そもそも
+      // 別会社の招待でしかない場合まで「招待済み」として誤ってブロックしていた。
+      // 送信直前にSupabaseへ直接問い合わせて判定する(RLSがそのまま適用されるため、
+      // company_admin/store_managerは自社の行しか見えず、他社の行との衝突はそもそも
+      // 検知できない——その場合はcreateUserProfileRecord側のDB一意制約違反の翻訳
+      // メッセージが最終防御になる)。
+      const existingResult = await checkExistingProfilesByEmail({ email: normalizedEmail });
+      const duplicateClassification = classifyEmailDuplicateForInvite({ existingRows: existingResult.data || [], currentCompanyId: appState.currentCompanyId });
+      if (duplicateClassification) {
+        setNotice(duplicateClassification.message);
+        return;
       }
-      return;
+      await handleSaveUserCreate({ normalizedEmail });
+    } finally {
+      setUserFormBusy(false);
     }
+  };
+
+  const handleSaveUserCreate = async ({ normalizedEmail }) => {
     const normalizedCurrentRole = normalizeRole(currentRole);
     // Both the assignable role set and the assignable store set are clamped here to exactly
     // what this inviter is allowed to hand out — system_admin/company_admin/store_manager each
@@ -3144,7 +3160,8 @@ function App() {
       : (userForm.storeIds.length ? userForm.storeIds : (inviterStoreIds[0] ? [inviterStoreIds[0]] : [])).filter((storeId) => inviterStoreIds.includes(storeId));
     const requestedPrimaryStoreId = role === "company_admin" ? "" : (inviterStoreIds.includes(userForm.primaryStoreId) ? userForm.primaryStoreId : (requestedStoreIds[0] || ""));
 
-    setUserFormBusy(true);
+    // userFormBusyのon/offは呼び出し元のhandleSaveUser側で一括管理する(重複判定の
+    // Supabase問い合わせ中もボタンを無効化し続けるため)。ここでは二重にtrue/falseしない。
     try {
       // Account creation is deliberately NOT done here: this used to call signUpWithEmail with a
       // hardcoded "password123" the moment an admin clicked 招待する, which (a) left every
@@ -3218,8 +3235,6 @@ function App() {
       }
     } catch (error) {
       setNotice(getSupabaseErrorMessage(error));
-    } finally {
-      setUserFormBusy(false);
     }
   };
 

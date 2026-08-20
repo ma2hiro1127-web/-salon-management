@@ -146,6 +146,33 @@ Deno.serve(async (req) => {
       if (deleteAuthError && !/not.*found/i.test(String(deleteAuthError.message || ""))) {
         throw deleteAuthError;
       }
+    } else {
+      // 誤った会社・店舗へ招待した後、承認前(profiles.auth_user_idがまだnull)に削除する
+      // ケースへの対応。send-invite-email(招待メールの実送信)はSupabase Auth標準の
+      // admin.inviteUserByEmailを使っており、これは呼んだ時点でauth.usersに未確認
+      // (confirmed_at null)の行を作る——だがそのauth_user_idがprofiles側へ書き込まれるのは
+      // 本人がaccept-invite経由で登録を完了した時だけ(このファイル冒頭のコメント・
+      // handleSaveUserのコメント参照)。そのため「招待メールは送ったが本人はまだ登録して
+      // いない」段階でこのprofilesを削除すると、target.auth_user_idがnullのままここへ来て
+      // しまい、実際には存在するauth.usersの残骸(orphan shell)が削除されずに残ってしまう。
+      // profiles.emailにはUNIQUE制約があるため、この残骸は実害が無い(次にprofilesへ挿入
+      // する時点でemailの一意性チェックにも引っかからない)が、Supabase Auth側に未確認の
+      // ユーザーが残り続け、その後「同じメールアドレスへ別会社から再招待」した際に
+      // send-invite-email側の同種のクリーンアップ処理に依存しきりになってしまう
+      // (今回kkfine.a@gmail.comで実際に確認された状態)。ここでも同じ理由・同じ方法で
+      // 先んじて片付けておく——メール文字列の部分一致ではなく、完全一致するものだけを対象に
+      // する。
+      const lookupResp = await fetch(`${supabaseUrl}/auth/v1/admin/users?email=${encodeURIComponent(target.email || "")}`, {
+        headers: { Authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey },
+      }).catch(() => null);
+      if (lookupResp?.ok) {
+        const lookupJson = await lookupResp.json().catch(() => null);
+        const candidates = Array.isArray(lookupJson?.users) ? lookupJson.users : (Array.isArray(lookupJson) ? lookupJson : []);
+        const orphanAuthUser = candidates.find((item) => String(item?.email || "").toLowerCase() === String(target.email || "").toLowerCase());
+        if (orphanAuthUser?.id) {
+          await admin.auth.admin.deleteUser(orphanAuthUser.id).catch(() => {});
+        }
+      }
     }
 
     const { error: storesError } = await admin.from("user_stores").delete().eq("user_id", target.id);

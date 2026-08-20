@@ -1109,6 +1109,29 @@ export const updateStoreDailyFieldSettings = async ({ storeId, settings }) => {
   return { ok: true, data };
 };
 
+// メールアドレス重複判定を、appState.users(ローカルキャッシュ——ログイン時にしか再取得
+// されず、他デバイス/他タブでの削除等を反映しない。system_adminの場合は全社分を1つの配列で
+// 保持しているため、会社をまたいだ古い招待とも単純なメール一致で衝突していた)ではなく、
+// 送信直前にSupabaseへ直接問い合わせて判定するための取得。RLS(profiles_select_company_
+// scoped)がそのまま適用されるため、company_admin/store_managerは自社の行だけが返り、
+// system_adminは全社分が返る——「別会社の行が見えるかどうか」自体を呼び出し側で権限分岐
+// する必要が無い(見えない場合は単にこの配列に含まれないだけ)。
+export const checkExistingProfilesByEmail = async ({ email }) => {
+  const normalizedEmail = normalizeEmail(email);
+  if (!isSupabaseConfigured || !normalizedEmail) return { ok: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("id, email, company_id, role, is_active, invitation_status, invite_expires_at, auth_user_id")
+      .eq("email", normalizedEmail);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "checkExistingProfilesByEmail", table: "profiles", error });
+    return { ok: false, error, data: [] };
+  }
+};
+
 export const createUserProfileRecord = async ({ name, email, role, companyId, storeIds = [], primaryStoreId = "", authUserId = null, invitationStatus = "active", inviteToken = null, inviteExpiresAt = null }) => {
   const normalizedEmail = normalizeEmail(email);
   const resolvedRole = normalizeRole(role || resolveDefaultRole(normalizedEmail));
@@ -1132,7 +1155,19 @@ export const createUserProfileRecord = async ({ name, email, role, companyId, st
     invite_expires_at: inviteExpiresAt,
   };
   const { error: profileError } = await supabase.from("profiles").insert(insertPayload);
-  if (profileError) throw profileError;
+  if (profileError) {
+    // profiles.emailはDB側でUNIQUE制約(profiles_email_key)——1つのメールアドレスは常に
+    // 1つの会社にしか登録できない、というこのアプリの会社分離の前提そのもの。
+    // checkExistingProfilesByEmail(呼び出し元、handleSaveUser)による事前チェックは
+    // RLSの範囲でしか他社の行を見られない(company_admin/store_managerには他社の行が
+    // そもそも見えない)ため、事前チェックをすり抜けて実際にこの一意性違反へ到達する
+    // ケースが起こり得る——ここで拾って、生のPostgresエラー(意味の伝わらない文言)では
+    // なく、原因が分かる日本語メッセージへ翻訳する。
+    if (profileError.code === "23505" && /profiles_email_key/.test(profileError.message || profileError.details || "")) {
+      throw new Error("このメールアドレスは既に別の会社に登録されています。1つのメールアドレスは1つの会社にのみ登録できます。先にその会社側で招待の削除・所属解除を行ってから、あらためて招待してください。");
+    }
+    throw profileError;
+  }
   const profile = { ...insertPayload, id: profileId };
 
   if (storeIds.length || primaryStoreId) {
