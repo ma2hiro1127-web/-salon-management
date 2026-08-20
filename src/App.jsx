@@ -70,6 +70,7 @@ import {
   buildMonthlyReviewKey,
   monthlyReviewRowToEntry,
   resolvePreferredStoreSelection,
+  normalizeStoreNameForDuplicateCheck,
   calculateAllStoresMonthSummary,
   buildAllStoresTargetStateFromRows,
   buildCompanyMonthKey,
@@ -189,7 +190,7 @@ import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabase
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta, classifyEmailDuplicateForInvite } from "./utils/invitations.js";
-import { computeStoreSummary, normalizeStoreUrls, sortStoresForManagement } from "./utils/storeManagement.js";
+import { computeStoreSummary, sortStoresForManagement } from "./utils/storeManagement.js";
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
@@ -439,6 +440,10 @@ const normalizeStoreNameForSimilarity = (name) =>
     .toLowerCase()
     .replace(/\s+/g, "")
     .replace(/(本店|支店|店)$/u, "");
+
+// normalizeStoreNameForDuplicateCheckはstorage.js側で定義・export済み(単体テスト可能に
+// するため——店舗追加の重複防止を機に、資金・所属関連の同種の判定と同じくApp.jsxコンポーネント
+// 内の生のconstではなく独立した純粋関数へ切り出した)。
 
 // 日次入力画面の「今日のAI分析」を組み立てる。ここは詳しい原因分析・改善提案の場ではなく、
 // (1)当日の売上・目標に対する状況 (2)入力KPIの中から特徴的な1〜2項目 (3)前向きな一言、を
@@ -717,6 +722,11 @@ function App() {
   const [appState, setAppState] = useState(initialAppStateValue);
   const [companyEditId, setCompanyEditId] = useState("");
   const [storeEditId, setStoreEditId] = useState("");
+  // 「店舗追加」= 新しい店舗を作る、専用の最小限の状態(店舗名のみ)。「店舗基本設定」
+  // (storeForm/storeEditId、既存店舗の設定)とは完全に別の状態を持つ——同じ入力フォームを
+  // 新規作成・既存編集の両方に共有しない(初期設定「店舗情報」の重複整理、要件7)。
+  const [newStoreName, setNewStoreName] = useState("");
+  const [newStoreFormStatus, setNewStoreFormStatus] = useState({ status: "idle", message: "" });
   // 店舗プロフィールフォームはモーダルではなく常時表示のインラインフォーム(店舗一覧より
   // 前に描画される)なので、「店舗を追加」/「編集」ボタンを押しても画面内に変化が見えず、
   // 「ボタンが反応しない」ように見えていた — フォームへスクロール+フォーカスして明示的に
@@ -1386,6 +1396,31 @@ function App() {
     }
   }, [selectedStoreEntity]);
 
+  // 「店舗基本設定」(初期設定「店舗情報」の重複整理、要件2)は常に「現在選択中の店舗」を
+  // 対象にする——店舗一覧から個別に「編集」を押さなくても、店舗管理画面を開くだけで
+  // ヘッダーで選択中の店舗の設定がそのまま表示される(「現在の店舗：〇〇店」)。店舗を
+  // 切り替えた時「だけ」下書きを作り直す——selectedStoreEntity自体は他の保存操作のたびに
+  // 新しいオブジェクト参照になる(appStateが少しでも変わるたびcurrentCompanyStoresが
+  // 再生成されるため)ため、依存配列にオブジェクトそのものを使うと、無関係な自動保存の
+  // たびに入力中のスタッフ数等が上書きされてしまう(MonthlyReviewPageのcontextKeyと同じ
+  // 理由の対策)。selectedStoreEntity?.id という値だけを見ることでこれを避ける。
+  const selectedStoreIdForBasicSettings = selectedStoreEntity?.id || "";
+  useEffect(() => {
+    if (!selectedStoreEntity) {
+      setStoreEditId("");
+      return;
+    }
+    setStoreEditId(selectedStoreEntity.id);
+    setStoreForm({
+      ...createStoreFormDefaults(),
+      name: selectedStoreEntity.name || "",
+      staffCount: selectedStoreEntity.staffCount ? String(selectedStoreEntity.staffCount) : "",
+      productivityStaffCount: selectedStoreEntity.productivityStaffCount ? String(selectedStoreEntity.productivityStaffCount) : "",
+    });
+    setStoreFormStatus({ status: "idle", message: "" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStoreIdForBasicSettings]);
+
   // 費用入力フォームが新規追加(未編集)状態のとき、開始月を対象月に追従させる。編集中
   // (fixedForm.idがある)場合はその項目自体の開始月を上書きしないよう手を出さない。
   useEffect(() => {
@@ -1882,17 +1917,22 @@ function App() {
   // 全店舗ビューは特定の1店舗の設定状況を表すものが無いため対象外。
   const setupChecklist = useMemo(() => {
     if (isAllStoresView || !selectedStoreEntity) return [];
-    const hasStoreProfile = Boolean(selectedStoreEntity.address?.trim() || selectedStoreEntity.phone?.trim());
+    // 「店舗基本設定」は店舗追加(店舗名の登録)と役割が重複しないよう、店舗名の再入力を
+    // 完了条件にしない——店舗追加が終わった時点で、この店舗はシステム上作成済みであり、
+    // 基本設定に必須の追加入力は無い(現状、在籍スタッフ数等はどれも任意項目)。そのため
+    // 「店舗が存在する(=selectedStoreEntityがある)」だけで完了扱いにする。将来この画面に
+    // 本当に必須の項目が増えた場合は、ここへその条件を追加する。
+    const hasStoreBasicSetting = true;
     const hasHolidaySetting = businessDaySettings.mode === "manual"
       ? parseNumber(businessDaySettings.businessDayCount) > 0
       : (getStoreHolidayDates(appState, selectedStoreId, selectedMonth).length > 0 || parseNumber(businessDaySettings.holidayCount) > 0);
     const hasFixedCostSetting = fixedCosts.length > 0;
     const hasDailyEntry = dailyEntries.length > 0;
     return [
-      { key: "store", label: "店舗情報", done: hasStoreProfile, page: "stores" },
+      { key: "store", label: "店舗基本設定", done: hasStoreBasicSetting, page: "stores" },
       { key: "target", label: "月間目標", done: hasAnyTarget, page: "monthly" },
       { key: "holidays", label: "営業日・休業日", done: hasHolidaySetting, page: "daily" },
-      { key: "fixedCosts", label: "固定費など必要設定", done: hasFixedCostSetting, page: "monthly" },
+      { key: "fixedCosts", label: "固定費設定", done: hasFixedCostSetting, page: "monthly" },
       { key: "daily", label: "日次入力", done: hasDailyEntry, page: "daily" },
     ];
   }, [isAllStoresView, selectedStoreEntity, businessDaySettings, appState, selectedStoreId, selectedMonth, fixedCosts, dailyEntries, hasAnyTarget]);
@@ -3079,6 +3119,18 @@ function App() {
     // 警告する — ただし本当に別店舗の可能性もあるため、作成自体は禁止しない。
     if (!existingStore) {
       const existingActiveStores = (currentCompany?.stores || []).filter((store) => store.status !== "archived");
+      // 同一会社内での重複作成防止(店舗追加時の重複防止、要件1)。会社初回セットアップ画面
+      // (needsFirstStoreSetup/showInitialSetup)もこの関数を共有しているため、新規作成経路が
+      // どこであってもここで一律にブロックする。完全一致(表記ゆれレベル)の場合は確認
+      // ダイアログすら出さず明確に拒否する——「店舗を追加」ボタンの新設カードと同じ判定
+      // (normalizeStoreNameForDuplicateCheck)。
+      const exactDuplicateStore = existingActiveStores.find((store) => normalizeStoreNameForDuplicateCheck(store.name) === normalizeStoreNameForDuplicateCheck(storeForm.name));
+      if (exactDuplicateStore) {
+        const message = `「${exactDuplicateStore.name}」という店舗が既に登録されています。同じ店舗を重複して作成することはできません。この店舗の設定を変更したい場合は「店舗基本設定」から編集してください。`;
+        setStoreFormStatus({ status: "error", message });
+        setNotice(message);
+        return;
+      }
       if (existingActiveStores.length > 0) {
         const newNameNormalized = normalizeStoreNameForSimilarity(storeForm.name);
         const similarStore = existingActiveStores.find((store) => normalizeStoreNameForSimilarity(store.name) === newNameNormalized);
@@ -3195,14 +3247,19 @@ function App() {
         },
       };
       persistTenantState(nextState);
-      setStoreForm(createStoreFormDefaults());
-      setStoreEditId("");
       // 「店舗を切り替えただけ」なのか「新しい店舗を作成した」のかが紛らわしくならない
       // よう、新規作成時は文言を明確に分ける(要件3)。フォーム近くのstoreFormStatusに加え、
       // 見落としにくい画面上部のsetNoticeバナーでも同じ内容を出す。
       if (existingStore) {
+        // 「店舗基本設定」(現在選択中の店舗を編集するカード)の保存はここに来る——保存後も
+        // フォームを空にしない。空にすると「現在の店舗：〇〇店」の表示が一瞬消えて
+        // 「また店舗を追加する画面」に見えてしまう(初期設定「店舗情報」重複整理の要件2)。
         setStoreFormStatus({ status: "saved", message: `${nextStore.name} を更新しました` });
       } else {
+        // 新規作成は現在では専用のhandleCreateNewStore経由になったため通常この分岐には
+        // 来ないが、念のため既存の後方互換の挙動(フォームを空に戻す)を残しておく。
+        setStoreForm(createStoreFormDefaults());
+        setStoreEditId("");
         setStoreFormStatus({ status: "saved", message: `${nextStore.name} を新しい店舗として追加しました` });
         setNotice(`${nextStore.name} を新しい店舗として追加しました`);
       }
@@ -3212,9 +3269,121 @@ function App() {
       // (an error that fired but gave no visible sign anything went wrong) is what prompted
       // adding storeFormStatus in the first place.
       console.error("handleSaveStore failed", error);
-      const message = getSupabaseErrorMessage(error);
+      // DB側の最終防御(stores_company_id_normalized_name_unique、handleCreateNewStoreの
+      // catchと同じ理由)。
+      const message = (error?.code === "23505" && /stores_company_id_normalized_name_unique/.test(error?.message || ""))
+        ? "同じ名前の店舗が既に登録されています。同じ店舗を重複して作成することはできません。この店舗の設定を変更したい場合は「店舗基本設定」から編集してください。"
+        : getSupabaseErrorMessage(error);
       setNotice(message);
       setStoreFormStatus({ status: "error", message });
+    } finally {
+      savingStoreRef.current = false;
+    }
+  };
+
+  // 「店舗追加」専用、最小限の新規作成フロー(初期設定「店舗情報」の重複整理、要件1・7)。
+  // 独立したnewStoreName状態だけを使い、「店舗基本設定」(storeForm/storeEditId、常に現在
+  // 選択中の既存店舗を指す)とは一切状態を共有しない——同じ入力フォームを新規作成・既存編集
+  // 両方に流用しない。ここで登録するのは店舗名のみ(要件: 最低限、店舗名を登録)。在籍
+  // スタッフ数等は店舗作成後に「店舗基本設定」から設定する。
+  const handleCreateNewStore = async () => {
+    if (guardFranchiseReadOnly()) return;
+    if (!canManageStore(currentRole)) {
+      setNotice("店舗作成はシステム管理者または会社管理者が実行できます");
+      return;
+    }
+    const trimmedName = newStoreName.trim();
+    if (!trimmedName) {
+      setNewStoreFormStatus({ status: "error", message: "店舗名を入力してください" });
+      return;
+    }
+    // 同一会社内での重複作成防止(要件1)。前後空白・全角半角・大文字小文字の表記ゆれを
+    // 吸収した上で完全に同じ店舗名が既に存在する場合は、確認ダイアログではなく明確に
+    // ブロックする——「INTRO」「INTRO 」「intro」等を意図せず別店舗として重複作成させない。
+    // これはクライアント側の一次防御で、ボタン連打・複数端末からの同時作成に対しては
+    // DB側のユニークインデックス(stores_company_id_normalized_name_unique)が最終防御となる
+    // (下のcatchで23505を捕捉して同じ文言に翻訳する)。
+    const existingActiveStores = (currentCompany?.stores || []).filter((store) => store.status !== "archived");
+    const exactDuplicateNormalized = normalizeStoreNameForDuplicateCheck(trimmedName);
+    const exactDuplicateStore = existingActiveStores.find((store) => normalizeStoreNameForDuplicateCheck(store.name) === exactDuplicateNormalized);
+    if (exactDuplicateStore) {
+      const message = `「${exactDuplicateStore.name}」という店舗が既に登録されています。同じ店舗を重複して作成することはできません。この店舗の設定を変更したい場合は「店舗基本設定」から編集してください。`;
+      setNewStoreFormStatus({ status: "error", message });
+      setNotice(message);
+      return;
+    }
+    // 誤操作による意図しない2店舗目・3店舗目の作成を防ぐ確認(handleSaveStoreの既存の
+    // 確認ロジックと同じ意図・同じ文言パターン)。完全一致(上で既にブロック済み)ではないが、
+    // 「本店」等の接尾辞違いなど紛らわしい名前は、作成自体は止めずに一度確認する。
+    if (existingActiveStores.length > 0) {
+      const newNameNormalized = normalizeStoreNameForSimilarity(trimmedName);
+      const similarStore = existingActiveStores.find((store) => normalizeStoreNameForSimilarity(store.name) === newNameNormalized);
+      const existingNamesText = existingActiveStores.map((store) => store.name).join("\n");
+      const message = similarStore
+        ? `既存の「${similarStore.name}」と名称が似ています。\n\n既存店舗の設定(スタッフ数・生産性計算人数・営業日など)を変更したい場合は、新規店舗を作成せず「店舗基本設定」から編集してください。\n\n現在登録されている店舗：\n${existingNamesText}\n\n新しく追加する店舗：\n${trimmedName}\n\n本当に別店舗として追加しますか？\nOKで別店舗として追加します。キャンセルすると追加は行われません。`
+        : `この会社にはすでに店舗が登録されています。新しい店舗を追加しますか？\n\n既存店舗：\n${existingNamesText}\n\n追加する店舗：\n${trimmedName}\n\nOKで新しい別店舗として追加します。キャンセルすると追加は行われません。`;
+      if (!window.confirm(message)) return;
+    }
+    if (savingStoreRef.current) return;
+    savingStoreRef.current = true;
+    setNewStoreFormStatus({ status: "saving", message: "" });
+    try {
+      const companyId = appState.currentCompanyId;
+      const createdStore = await createStoreRecord({ companyId, name: trimmedName, code: crypto.randomUUID() });
+      const storeId = createdStore?.id;
+      if (!storeId) throw new Error("店舗IDを取得できませんでした");
+      const nextStore = {
+        id: storeId,
+        name: trimmedName,
+        code: createdStore?.code || "",
+        companyId,
+        postalCode: "", address: "", phone: "", managerName: "", representativeName: "",
+        openingDate: "", openingHour: "09:00", closingHour: "20:00", closedDays: "月", businessHours: "09:00-20:00",
+        description: "", website: "", instagram: "", googleMapUrl: "", serviceTypes: [], urls: [],
+        status: "active", isActive: true, staffCount: 0, productivityStaffCount: 0,
+        settings: createStoreSettingsDefaults(),
+      };
+      if (isSupabaseConfigured) {
+        const profileResult = await upsertStoreProfile({ companyId, storeId, userId: appState.currentUserId, profile: nextStore });
+        if (!profileResult.ok) throw profileResult.error || new Error("店舗プロフィールの保存に失敗しました");
+      }
+      const nextCompany = {
+        ...currentCompany,
+        stores: [...(currentCompany?.stores || []), nextStore],
+        setup: { ...(currentCompany?.setup || {}), store: true },
+      };
+      const nextState = {
+        ...appState,
+        companies: (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+        // 作成直後にその新しい店舗へ切り替える——「追加した店舗がどこにあるか分からない」を
+        // 避け、続けて「店舗基本設定」でスタッフ数等を設定したい場合にもそのまま繋がる。
+        selectedStore: nextStore.name,
+        selectedStoreId: nextStore.id,
+        companySnapshots: {
+          ...(appState.companySnapshots || {}),
+          [companyId]: {
+            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            stores: nextCompany.stores.map((store) => store.name),
+            selectedStore: nextStore.name,
+            selectedStoreId: nextStore.id,
+          },
+        },
+      };
+      persistTenantState(nextState);
+      setNewStoreName("");
+      setNewStoreFormStatus({ status: "saved", message: `${nextStore.name} を新しい店舗として追加しました` });
+      setNotice(`${nextStore.name} を新しい店舗として追加しました`);
+    } catch (error) {
+      console.error("handleCreateNewStore failed", error);
+      // DB側の最終防御(stores_company_id_normalized_name_unique)に引っかかった場合——
+      // クライアント側の事前チェックはローカルのappState.companiesを見ているだけなので、
+      // ボタン連打や複数端末からの同時作成でこの一意制約違反(23505)へ実際に到達し得る。
+      // 生のPostgresエラーではなく、上のクライアント側チェックと同じ文言へ翻訳する。
+      const message = (error?.code === "23505" && /stores_company_id_normalized_name_unique/.test(error?.message || ""))
+        ? "同じ名前の店舗が既に登録されています。同じ店舗を重複して作成することはできません。この店舗の設定を変更したい場合は「店舗基本設定」から編集してください。"
+        : getSupabaseErrorMessage(error);
+      setNotice(message);
+      setNewStoreFormStatus({ status: "error", message });
     } finally {
       savingStoreRef.current = false;
     }
@@ -3492,35 +3661,6 @@ function App() {
     setCompanyEditId(company.id);
     setCompanyForm({ name: company.name, code: company.code, contractStatus: company.contractStatus || "trial", businessType: company.businessType || "salon" });
     setCompanySettingsForm({ ...createCompanySettingsDefaults(), ...(company.settings || {}), businessType: company.businessType || "salon" });
-  };
-
-  const handleEditStore = (store) => {
-    setStoreEditId(store.id);
-    setStoreForm({
-      name: store.name || "",
-      postalCode: store.postalCode || "",
-      address: store.address || "",
-      phone: store.phone || "",
-      managerName: store.managerName || "",
-      representativeName: store.representativeName || "",
-      openingDate: store.openingDate || "",
-      openingHour: store.openingHour || "09:00",
-      closingHour: store.closingHour || "20:00",
-      closedDays: store.closedDays || "月",
-      businessHours: store.businessHours || "09:00-20:00",
-      description: store.description || "",
-      website: store.website || "",
-      instagram: store.instagram || "",
-      googleMapUrl: store.googleMapUrl || "",
-      serviceTypes: (store.serviceTypes || []).join(", "),
-      urls: Array.isArray(store.urls) ? store.urls : normalizeStoreUrls(store.urls || []),
-      isActive: store.isActive !== false,
-      status: store.status || "active",
-      staffCount: store.staffCount ? String(store.staffCount) : "",
-      productivityStaffCount: store.productivityStaffCount ? String(store.productivityStaffCount) : "",
-    });
-    setStoreSettingsForm({ ...createStoreSettingsDefaults(), ...(store.settings || {}) });
-    focusStoreForm();
   };
 
   const handleEditUser = (user) => {
@@ -7875,43 +8015,67 @@ function App() {
             {isFranchiseReadOnlyForCurrentUser() ? (
               <div className="empty-card">加盟店の店舗情報は閲覧専用です（登録・編集・各種設定の変更はできません）。</div>
             ) : null}
-            {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (
-            <div className="setup-card" ref={storeFormSectionRef}>
+            {canManageStore(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (
+            // 「店舗追加」= 新しい店舗を作る専用カード。店舗名だけを入力する(要件1)。
+            // 「店舗基本設定」(下)とは状態もフォームも完全に別——ここで店舗名を再入力させて
+            // いるのは新規作成の時だけで、既存店舗の設定を開いてもこのカードは店舗名の再入力を
+            // 求めない(要件2・7)。
+            <div className="setup-card">
               <div className="panel-heading compact">
                 <div>
                   <p className="eyebrow">STORE</p>
-                  <h3>{storeEditId ? "店舗名を編集" : "店舗を登録"}</h3>
+                  <h3>店舗を追加</h3>
                 </div>
               </div>
-              {/* 店舗登録・編集で入力するのは店舗名のみ — store_idは自動発行、company_idは
-                  ログイン中の会社へ自動で紐づく。以前あった住所・電話番号・営業時間・URL等の
-                  詳細プロフィール項目は、店舗を経営データに紐づけるための識別画面としては
-                  不要なため画面から外した(Supabase側のカラム・既存データはそのまま)。
-                  「店舗を追加」ボタンは以前ここと右上の2箇所にあり、右上側は入力欄をリセット
-                  するだけで実際には何も登録しないため紛らわしかった — このフォーム内の1つに
-                  統一した。 */}
-              <div className="store-form-grid">
-                <label className="field">
-                  <span>店舗名</span>
-                  <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
-                </label>
-                <label className="field">
-                  <span>在籍スタッフ数</span>
-                  <NumericInput value={storeForm.staffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, staffCount: value }))} placeholder="例: 6" />
-                </label>
-                <label className="field">
-                  <span>生産性計算人数（任意）</span>
-                  <NumericInput value={storeForm.productivityStaffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: value }))} allowDecimal placeholder="例: 5.0" />
-                  <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
-                </label>
-              </div>
-              {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}
-              <div className="button-row">
-                <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>
-                  {storeFormStatus.status === "saving" ? "追加中…" : storeEditId ? "店舗名を更新" : "店舗追加"}
+              <p className="helper-text">新しい店舗を作成します。店舗名を登録するだけで作成でき、スタッフ数などの詳細は作成後に「店舗基本設定」から設定できます。</p>
+              <div className="inline-form">
+                <input value={newStoreName} onChange={(event) => setNewStoreName(event.target.value)} placeholder="新しい店舗名" />
+                <button className="primary-button" type="button" onClick={handleCreateNewStore} disabled={newStoreFormStatus.status === "saving"}>
+                  {newStoreFormStatus.status === "saving" ? "追加中…" : "店舗を追加"}
                 </button>
-                <button className="secondary-button" type="button" onClick={() => { setStoreEditId(""); setStoreForm(createStoreFormDefaults()); setStoreFormStatus({ status: "idle", message: "" }); }}>クリア</button>
               </div>
+              {newStoreFormStatus.message ? <div className="notice-box">{newStoreFormStatus.message}</div> : null}
+            </div>
+            )}
+            {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (
+            // 「店舗基本設定」= 既に作成済みの店舗(=ヘッダーで現在選択中の店舗)を設定する
+            // カード。店舗名は既に登録済みの値がそのまま表示され、再入力は必須ではない
+            // (要件2)。全店舗ビュー中はどの店舗を指すか一意に決まらないため表示しない。
+            <div className="setup-card" ref={storeFormSectionRef}>
+              <div className="panel-heading compact">
+                <div>
+                  <p className="eyebrow">STORE SETTINGS</p>
+                  <h3>店舗基本設定</h3>
+                </div>
+              </div>
+              {isAllStoresView || !selectedStoreEntity ? (
+                <div className="empty-card">店舗を選択すると、その店舗の基本設定を表示・編集できます。</div>
+              ) : (
+                <>
+                  <p className="value-pill">現在の店舗：{selectedStoreEntity.name}</p>
+                  <div className="store-form-grid">
+                    <label className="field">
+                      <span>店舗名（既存店舗名の編集。変更しない場合はそのままで構いません）</span>
+                      <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
+                    </label>
+                    <label className="field">
+                      <span>在籍スタッフ数</span>
+                      <NumericInput value={storeForm.staffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, staffCount: value }))} placeholder="例: 6" />
+                    </label>
+                    <label className="field">
+                      <span>生産性計算人数（任意）</span>
+                      <NumericInput value={storeForm.productivityStaffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: value }))} allowDecimal placeholder="例: 5.0" />
+                      <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
+                    </label>
+                  </div>
+                  {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}
+                  <div className="button-row">
+                    <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>
+                      {storeFormStatus.status === "saving" ? "保存中…" : "店舗基本設定を保存"}
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
             )}
             <div className="setup-card">
@@ -8101,7 +8265,19 @@ function App() {
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleStoreSwitch(store.name)}>選択</button>
                         {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (canManageStores(currentRole) || allowedStoreIds.includes(store.id)) && (
-                          <button className="text-button" type="button" onClick={() => handleEditStore(store)}>編集</button>
+                          // 「店舗基本設定」は常に現在選択中の店舗を対象にするため(要件2)、
+                          // 一覧の「編集」はまずその店舗へ切り替えてから、基本設定カードへ
+                          // スクロールする——別のフォームを開くのではなく、「選択」の延長。
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => {
+                              handleStoreSwitch(store.name);
+                              focusStoreForm();
+                            }}
+                          >
+                            編集
+                          </button>
                         )}
                         {canOperate && store.status === "archived" && (
                           <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "restore")}>復元</button>

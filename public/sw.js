@@ -249,7 +249,15 @@
 // の純粋関数へ移設・export化し、company_admin/store_manager/staff×単一/複数店舗×
 // localStorageに古い/存在しないstore_idが残っている×全店舗ビューからの降格、等の組み合わせ
 // を自動テストできるようにした。挙動自体は変更していない。
-const CACHE_NAME = 'salon-manager-cache-v39';
+// v40: 初期設定「店舗情報」と店舗追加の役割重複を整理。(1)初期設定の項目名を「店舗情報」→
+// 「店舗基本設定」に変更し、店舗名の再入力を完了条件にしないよう修正(店舗が存在すれば完了
+// 扱い)。(2)店舗管理画面を「店舗を追加」(店舗名のみの新規作成専用カード)と「店舗基本設定」
+// (常に現在選択中の店舗を対象にする既存店舗編集専用カード、「現在の店舗：〇〇店」表示)の
+// 2つに分離し、同じ入力フォームを新規作成・既存編集で共有しないようにした。(3)店舗追加時の
+// 重複作成防止: 前後空白・全角半角・大文字小文字の表記ゆれを吸収した完全一致チェックで
+// クライアント側から重複作成をブロックし、DB側にも company_id + 正規化した店舗名 の
+// ユニークインデックスを追加(ボタン連打・複数端末からの同時作成に対する最終防御)。
+const CACHE_NAME = 'salon-manager-cache-v40';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

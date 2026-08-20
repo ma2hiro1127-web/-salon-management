@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3421,4 +3421,31 @@ test("加盟店情報がnull/undefinedでも(tenantState.companiesに加盟店�
     const result = resolvePreferredStoreSelection({ tenantState, localRecoveredState: undefined, currentCompanyId: "company-1", role: "company_admin" });
     assert.equal(result.selectedStoreId, "store-a");
   });
+});
+
+// 「店舗追加時の重複作成防止」の回帰テスト。DB側のユニークインデックス
+// (company_id, lower(btrim(name)))が吸収する範囲(空白・大文字小文字)と、クライアント側の
+// normalizeStoreNameForDuplicateCheckが同じ基準で判定できることを確認する。
+test("normalizeStoreNameForDuplicateCheck: 前後・全角半角スペース、大文字小文字の違いを同一の店舗名とみなす(報告の具体例そのもの)", () => {
+  const variants = ["INTRO", "INTRO ", "INTRO　", " INTRO", "intro", "Intro", "ＩＮＴＲＯ"];
+  const normalized = variants.map((name) => normalizeStoreNameForDuplicateCheck(name));
+  normalized.forEach((value) => assert.equal(value, normalized[0], `"${variants[normalized.indexOf(value)]}" が先頭の正規化結果と一致しなかった`));
+});
+
+test("normalizeStoreNameForDuplicateCheck: 意味の異なる店舗名(接尾辞違い含む)は別物として区別する(normalizeStoreNameForSimilarityのような『本店』剥がしはしない)", () => {
+  assert.notEqual(normalizeStoreNameForDuplicateCheck("フィーネ本店"), normalizeStoreNameForDuplicateCheck("フィーネ支店"));
+  assert.notEqual(normalizeStoreNameForDuplicateCheck("フィーネ原宿"), normalizeStoreNameForDuplicateCheck("フィーネ横浜"));
+  assert.notEqual(normalizeStoreNameForDuplicateCheck("A店"), normalizeStoreNameForDuplicateCheck("AB店"));
+});
+
+test("normalizeStoreNameForDuplicateCheck: 内部の連続空白は1つに畳むが、単語区切りとしての空白自体は残す(空文字化しない)", () => {
+  assert.equal(normalizeStoreNameForDuplicateCheck("フィーネ  原宿"), normalizeStoreNameForDuplicateCheck("フィーネ 原宿"));
+  assert.notEqual(normalizeStoreNameForDuplicateCheck("フィーネ原宿"), normalizeStoreNameForDuplicateCheck("フィーネ 原宿"));
+});
+
+test("normalizeStoreNameForDuplicateCheck: 空文字・未定義でも例外を投げない", () => {
+  assert.doesNotThrow(() => normalizeStoreNameForDuplicateCheck(""));
+  assert.doesNotThrow(() => normalizeStoreNameForDuplicateCheck(undefined));
+  assert.doesNotThrow(() => normalizeStoreNameForDuplicateCheck(null));
+  assert.equal(normalizeStoreNameForDuplicateCheck(undefined), normalizeStoreNameForDuplicateCheck(null));
 });

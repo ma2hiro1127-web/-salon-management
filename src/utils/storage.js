@@ -53,6 +53,20 @@ export const resolvePreferredStoreSelection = ({ tenantState, localRecoveredStat
   return { selectedStore, selectedStoreId };
 };
 
+// 店舗追加時の重複作成防止(完全一致・表記ゆれレベルの判定専用)。店舗名の「似ている」
+// 警告(本店/支店等の接尾辞まで剥がすゆるい正規化、App.jsxのnormalizeStoreNameForSimilarity)
+// とは意図的に別の、より保守的な正規化——前後・連続する空白(全角スペースはNFKCで半角化
+// される)と大文字小文字の表記ゆれだけを吸収する。DB側の一意インデックス
+// (stores_company_id_normalized_name_unique: company_id, lower(btrim(name)))が吸収できる
+// 範囲(空白・大文字小文字)とも意図的に揃えてあり、クライアント側の事前チェックとDB側の
+// 最終防御が同じ基準で判定する。
+export const normalizeStoreNameForDuplicateCheck = (name) =>
+  String(name || "")
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+
 export const STORAGE_KEYS = {
   theme: "salon-theme",
   appState: "salon-goal-app-v2",
