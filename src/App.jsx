@@ -1705,7 +1705,15 @@ function App() {
   );
   const [monthlyReviewSaveStatus, setMonthlyReviewSaveStatus] = useState({ status: "idle", message: "" });
   const monthlyReviewSaveTimerRef = useRef(null);
-  const canEditMonthlyReview = canEditMonthlyData(currentRole) && !isFranchiseReadOnlyForCurrentUser();
+  // 【緊急障害の直接原因】isFranchiseReadOnlyForCurrentUser はこのコンポーネント関数内で
+  // もっと後ろ(line ~3485)でconstとして定義されている。JavaScriptのconstは巻き上げされても
+  // 初期化前にアクセスするとReferenceError(TDZ)になるため、ここで直接呼び出すと
+  // 「毎回のレンダーで、ログイン後の全ユーザーが必ずクラッシュする」不具合になっていた
+  // (ErrorBoundaryの「予期しない問題が発生しました」の直接の原因)。同じ関数を呼ぶのではなく
+  // 判定式そのものをここに複製する(後方で定義されるisFranchiseReadOnlyForCurrentUser関数
+  // 自体は変更しない、変更すると2箇所の判定が将来ズレる可能性があるため、ロジックは
+  // 1行だけの単純な式なのでコメントで対応関係を明記するに留める)。
+  const canEditMonthlyReview = canEditMonthlyData(currentRole) && !(appState.isViewingFranchise && normalizeRole(currentRole) !== "system_admin");
   // 保存直後にDBが実際に保存した値でappStateを更新する(「送ったつもりの値」で信じない、
   // 直近の保存/削除/停止/招待の各修正と同じ方針)。company_id・store_id・target_monthの
   // 3つで一意に定まるため、店舗Aと店舗B、全店舗ビューのレビューが混ざることは無い(要件6)。

@@ -236,7 +236,15 @@
 // ダッシュボードに追加(店舗情報/月間目標/営業日/固定費/日次入力の5項目、完了後は自動非表示)。
 // (3)月次レビューのテキスト保存はdebounce自動保存+blur時の即時flushの二重構成にし、画面遷移・
 // タブ切替直前でも保存漏れが起きないようにした。
-const CACHE_NAME = 'salon-manager-cache-v37';
+// v38(緊急障害修正): v37で全ユーザー・全ロールがログイン後に「予期しない問題が発生しました」
+// (ErrorBoundary)でアプリを開けなくなる障害が発生していた。原因はApp.jsx内で
+// canEditMonthlyReview(月次レビューの編集可否)を計算する行が、同じコンポーネント関数内で
+// もっと後ろでconstとして定義されているisFranchiseReadOnlyForCurrentUser()を先に呼んで
+// いたこと——JavaScriptのconstは初期化前にアクセスするとReferenceError(temporal dead
+// zone)になり、これがレンダーのたびに必ず発生していた(データや権限の内容に一切関係ない、
+// 純粋なコードのバグ)。判定式を直接埋め込む形に修正し、後方で定義される関数の呼び出し
+// そのものを無くした。
+const CACHE_NAME = 'salon-manager-cache-v38';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
