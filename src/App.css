@@ -300,12 +300,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* 損益表: 営業利益/営業利益率カードを他のカードより目立たせ、消費税考慮後の数字と混同しないようにする */
 .summary-card.emphasize { background: linear-gradient(135deg, rgba(47, 125, 246, 0.14), rgba(255, 255, 255, 0.98)); border-color: rgba(47, 125, 246, 0.16); }
 .summary-card.emphasize strong { color: var(--accent); }
-.daily-progress-card { padding: 14px; border-radius: 18px; border: 1px solid var(--border); background: linear-gradient(135deg, var(--accent-soft), rgba(255,255,255,0.88)); display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
-.daily-progress-main { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
-.daily-progress-value { font-size: 1.35rem; font-weight: 800; color: var(--text); }
-.daily-progress-meta { color: var(--muted); font-size: 0.95rem; }
+/* 日次入力UI整理(要件3): 営業進捗は1〜2行のコンパクトな帯にする。プログレスバーは
+   細く(4px)残すが、メイン入力より目立たせない(強い背景グラデーションは使わない)。 */
+.daily-progress-compact { padding: 8px 14px; border-radius: 14px; border: 1px solid var(--border); background: var(--surface-strong); margin-bottom: 10px; }
+.daily-progress-compact-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.daily-progress-compact-label { font-weight: 700; font-size: 0.85rem; color: var(--text); flex-shrink: 0; }
+.daily-progress-compact-figure { font-size: 0.86rem; color: var(--text); white-space: nowrap; }
+.daily-progress-compact-figure.muted { color: var(--muted); }
+.daily-progress-compact .status-chip { margin-left: auto; flex-shrink: 0; }
+.daily-progress-compact-track { width: 100%; height: 4px; border-radius: 999px; background: rgba(148, 163, 184, 0.22); overflow: hidden; margin-top: 6px; }
+.daily-progress-compact-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: inherit; }
 .daily-settings-card { padding: 12px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface-strong); margin-bottom: 12px; }
-.daily-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+/* 要件6: 店舗/対象日/日締め状態を1行のコンパクトな帯にする。.fieldは元々flex-direction:
+   column+width:100%(ラベル上・値下、縦積み全幅)なので、このコンテナ内だけ横並びに
+   なるようwidthをautoへ上書きする(.field自体の定義は他画面のため変更しない)。 */
+.daily-basic-info { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 12px 14px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface-strong); margin-bottom: 10px; }
+.daily-basic-info .field { width: auto; min-width: 150px; }
+.daily-basic-info .field select { min-width: 150px; }
+/* 要件7: メイン入力(売上入力・客数)専用グリッド。カード数は常に1〜2枚(客数が非表示の
+   店舗もあるため)で将来的に増減する種類のものではないため、auto-fitでよい。 */
+.daily-main-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 12px; }
+/* 要件8・9・12: 日計・口コミ・メモ(今後の任意項目も含む)専用の可変グリッド。auto-fill+
+   minmaxにより、カードが1枚のときは不自然に100%まで伸びず(auto-fitと違い、余った列は
+   幅0の「空きトラック」として残るため実カードの列だけが自然な幅になる)、2枚以上のときは
+   幅に応じて自然に並ぶ。列数を前提にしたgrid-template-columns: 1fr 1fr等の固定実装はしない
+   ——今後カードが増えてもこのグリッドの定義自体は変更不要(要件12)。 */
+.daily-optional-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin-bottom: 12px; }
+.daily-optional-grid .daily-optional-full { grid-column: 1 / -1; }
 .daily-section-card { padding: 14px; border-radius: 18px; border: 1px solid var(--border); background: var(--surface-strong); display: flex; flex-direction: column; gap: 10px; }
 .daily-section-card h3 { margin: 0; font-size: 1rem; }
 /* 日計カード: 既存の.daily-section-cardをそのまま<details>に適用し、角丸・枠線・余白は
@@ -410,6 +431,14 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .sales-composition-percent { color: var(--muted); font-size: 0.8rem; min-width: 46px; text-align: right; }
 .kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; width: 100%; max-width: 100%; }
 .kpi-grid.compact-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* 日次入力UI整理(要件13・17): 自動計算指標(客単価・店販率・新規率・再来率)専用のグリッド。
+   PCでは4列横並び、iPhoneでも(他の.kpi-grid系のように1列へは落とさず)2列を維持する
+   ——2クラス選択子にして.kpi-grid.compact-grid/各ブレークポイントの.kpi-grid単体指定
+   より詳細度を上げ、常に上書きできるようにする。 */
+.kpi-grid.daily-metrics-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 900px) {
+  .kpi-grid.daily-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 /* 2列グリッドで行の高さが揃うと、内容の少ないカードだけ下に空白が残るため、内容を
    カード内で上下中央寄せする(情報を追加せずレイアウト位置だけで統一感を出す)。 */
 .metric-card { padding: 14px; display: flex; flex-direction: column; justify-content: center; gap: 6px; width: 100%; max-width: 100%; box-sizing: border-box; overflow: hidden; }
@@ -580,7 +609,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      余白を付けない(見出しを削除したことで元々のスッキリした2列表示に戻る)。 */
   .nav-button.nav-group-start { margin-top: 0; }
   .main-content { padding: 12px; }
-  .input-grid, .summary-grid, .kpi-grid, .kpi-grid.compact-grid, .ranking-metrics, .daily-form-grid, .daily-hero, .kpi-hero-grid { grid-template-columns: 1fr; }
+  .input-grid, .summary-grid, .kpi-grid, .kpi-grid.compact-grid, .ranking-metrics, .daily-main-grid, .daily-optional-grid, .daily-hero, .kpi-hero-grid { grid-template-columns: 1fr; }
   .topbar { flex-direction: column; align-items: stretch; }
   .filters { justify-content: space-between; display: grid; grid-template-columns: 1fr 1fr; align-items: end; }
   .inline-form, .button-row { flex-direction: column; align-items: stretch; }

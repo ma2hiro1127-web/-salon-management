@@ -1118,6 +1118,14 @@ function App() {
   // 出し分ける(常に「日締め」という同じラベルのボタンだと、既に締め済みの日をもう一度押した
   // ときに実際は「解除」される、と気づかず誤って締めを解除してしまう不具合があったため)。
   const isSelectedDailyEntryClosed = Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date]);
+  // 日次入力UI整理: 新規入力/編集/キャンセル/日締めを常時4つ並べる代わりに、状態に応じて
+  // 必要な操作だけを出す(要件5)。これは「表示するボタンの組み合わせ」を決めるための派生値
+  // であり、各ボタン自身のdisabled判定(下のJSXで個別に付与、既存の式のまま)を置き換える
+  // ものではない——このbooleanの計算を誤っても、ボタン自体のdisabled属性が最終防御として
+  // 残るため、誤って編集不可能な操作を有効化してしまうことはない。既存の編集ボタンの
+  // disabled条件(!dailyForm.id || isDailyEntryLockedForStaff || isDailyDateBatchLocked ||
+  // isStaffPastOrFutureDateLocked)とまったく同じ式を、表示分岐にも使う。
+  const canEditSelectedDailyEntry = Boolean(dailyForm.id) && !isDailyEntryLockedForStaff && !isDailyDateBatchLocked && !isStaffPastOrFutureDateLocked;
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -5982,22 +5990,6 @@ function App() {
     if (useCashBreakdown) void saveCashBreakdown();
   };
 
-  const startNewDailyEntry = () => {
-    if (isDailyDateBatchLocked) {
-      setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
-      return;
-    }
-    if (isStaffPastOrFutureDateLocked) {
-      setNotice("スタッフは今日の日次入力のみ保存できます。過去日・未来日は編集できません。");
-      return;
-    }
-    const defaultValue = { ...defaultDailyEntry, date: dailyForm.date || "" };
-    setDailyForm(defaultValue);
-    setDailyMode("create");
-    setDailyOriginalEntry(null);
-    setDailyInsight("");
-  };
-
   const editDailyEntry = () => {
     if (isDailyDateBatchLocked) {
       setNotice("この日はまとめて入力で反映されています。編集は「まとめて入力」から行ってください。");
@@ -7424,22 +7416,26 @@ function App() {
                     </div>
                   </div>
 
-                  <div className="daily-progress-card">
-                    <div className="business-progress-header compact">
-                      <div>
-                        <p className="eyebrow">PROGRESS</p>
-                        <h3>営業進捗</h3>
-                      </div>
+                  {/* 日次入力UI整理(要件2・3): ①営業進捗はコンパクトな1〜2行の帯にする
+                      (以前の.daily-progress-card/.daily-progress-main/.daily-progress-value/
+                      .daily-progress-metaは廃止、進捗バーは残すが細く・目立たせない)。
+                      営業進捗の値自体(progressRate/completedDays/businessDayCount/
+                      remainingBusinessDays)はbusinessDaySummaryをそのまま表示するだけで、
+                      計算ロジックには一切触れていない。 */}
+                  <div className="daily-progress-compact">
+                    <div className="daily-progress-compact-row">
+                      <span className="daily-progress-compact-label">営業進捗</span>
+                      <span className="daily-progress-compact-figure">{businessDaySummary.completedDays ?? 0} / {businessDaySummary.businessDayCount ?? 0}日</span>
+                      <span className="daily-progress-compact-figure muted">残り{businessDaySummary.remainingBusinessDays === null ? "-" : businessDaySummary.remainingBusinessDays}営業日</span>
                       <span className={`status-chip ${businessDaySummary.progressRate === null ? "neutral" : businessDaySummary.progressRate >= 100 ? "good" : businessDaySummary.progressRate >= 50 ? "warning" : "danger"}`}>
                         {businessDaySummary.progressRate === null ? "未設定" : `${Math.round(businessDaySummary.progressRate)}%`}
                       </span>
                     </div>
-                    <div className="daily-progress-main">
-                      <div className="daily-progress-value">{businessDaySummary.completedDays ?? 0} / {businessDaySummary.businessDayCount ?? 0}日</div>
-                      <div className="daily-progress-meta">残り{businessDaySummary.remainingBusinessDays === null ? "-" : businessDaySummary.remainingBusinessDays}営業日</div>
-                    </div>
+                    <div className="daily-progress-compact-track"><div className="daily-progress-compact-fill" style={{ width: `${Math.min(100, businessDaySummary.progressRate || 0)}%` }} /></div>
                   </div>
 
+                  {/* 要件4: 営業日設定ボタンは進捗の直下(関連性が分かる位置)にそのまま残す。
+                      営業日設定・店休日設定・営業日数計算のロジックは無変更。 */}
                   <div className="button-row">
                     <button className="secondary-button" type="button" onClick={startManualBusinessDayEdit}>営業日設定</button>
                   </div>
@@ -7476,37 +7472,14 @@ function App() {
                     </div>
                   ) : null}
 
-                  <div className="button-row">
-                    <button className="secondary-button" type="button" onClick={startNewDailyEntry} disabled={isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>新規入力</button>
-                    <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || dailyMode === "edit" || isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>編集</button>
-                    <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                    <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyFormDateHoliday || isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
-                  </div>
-
-                  {isDailyFormDateHoliday ? (
-                    <div className="notice-box">
-                      この日（{dailyForm.date}）は店休日です。日次入力・保存・日締めはできません。
-                    </div>
-                  ) : null}
-                  {isDailyDateBatchLocked ? (
-                    <div className="notice-box">
-                      この日はまとめて入力（{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.startDate : ""}〜{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.endDate : ""}の期間）で反映されています。編集・削除は「まとめて入力」から行ってください。
-                    </div>
-                  ) : null}
-                  {isStaffPastOrFutureDateLocked ? (
-                    <div className="notice-box">
-                      スタッフが入力できるのは今日の分のみです。過去日・未来日は閲覧のみで、編集・保存・日締めはできません。
-                    </div>
-                  ) : null}
-                  {isDailyEntryLockedForStaff ? (
-                    <div className="notice-box">
-                      この日は日締め済みのため編集・削除できません。修正が必要な場合は店長以上にご連絡ください。
-                    </div>
-                  ) : null}
-
-                  <form id="daily-form" className="daily-form-grid" onSubmit={submitDailyEntry}>
-                    <div className="daily-section-card">
-                      <h3>基本情報</h3>
+                  <form id="daily-form" onSubmit={submitDailyEntry}>
+                    {/* 要件6: 店舗/対象日/日締め状態を1行のコンパクトな帯にまとめる。対象日は
+                        従来disabled={dailyMode === "view"}で閲覧中は日付変更できなかったが、
+                        これは「日付のナビゲーション」と「その日のデータの編集可否」を混同して
+                        いた根本原因(要件16・20の依存関係調査で判明)——日付変更自体は
+                        handleDailyDateChange(カレンダーのonDayClickと全く同じ関数)を呼ぶだけの
+                        画面遷移で、保存・編集とは無関係のため、常に操作可能にする。 */}
+                    <div className="daily-basic-info">
                       <label className="field">
                         <span>店舗</span>
                         <select
@@ -7525,7 +7498,7 @@ function App() {
                           ) : null}
                         </select>
                       </label>
-                      <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} disabled={dailyMode === "view"} />
+                      <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} />
                       <div className="field">
                         <span>日締め状態</span>
                         <div className={`value-pill ${isSelectedDailyEntryClosed ? "active" : "inactive"}`}>
@@ -7534,8 +7507,68 @@ function App() {
                       </div>
                     </div>
 
+                    {/* 要件5: 新規入力/編集/キャンセル/日締めを常時4つ並べるのをやめ、状態に応じて
+                        必要な操作だけを出す。各ボタンのonClick/disabled式は既存のまま変更して
+                        いない(表示するボタンの組み合わせだけを状態で出し分ける)。「新規入力」は
+                        対象日を選択した時点でhandleDailyDateChangeが自動的にcreateモードへ
+                        遷移させるため常時ボタンとしては不要と判断し削除(要件5で明示的に許可)
+                        ——空の日付を選択すればこれまで通りすぐ入力できる。店休日は要件どおり
+                        操作自体を出さない(下のフォームも非表示のため)。 */}
+                    {!isDailyFormDateHoliday ? (
+                      <div className="button-row">
+                        {dailyMode === "create" ? (
+                          <>
+                            <button className="primary-button" type="submit">保存</button>
+                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+                          </>
+                        ) : dailyMode === "edit" ? (
+                          <>
+                            <button className="primary-button" type="submit">保存</button>
+                            <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
+                          </>
+                        ) : canEditSelectedDailyEntry ? (
+                          <>
+                            <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>編集</button>
+                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    {isDailyFormDateHoliday ? (
+                      <div className="notice-box">
+                        この日（{dailyForm.date}）は店休日です。日次入力・保存・日締めはできません。
+                      </div>
+                    ) : null}
+                    {isDailyDateBatchLocked ? (
+                      <div className="notice-box">
+                        この日はまとめて入力（{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.startDate : ""}〜{dailyDateBatchAllocation?.batchEntryId ? batchEntries.find((entry) => entry.id === dailyDateBatchAllocation.batchEntryId)?.endDate : ""}の期間）で反映されています。編集・削除は「まとめて入力」から行ってください。
+                      </div>
+                    ) : null}
+                    {isStaffPastOrFutureDateLocked ? (
+                      <div className="notice-box">
+                        スタッフが入力できるのは今日の分のみです。過去日・未来日は閲覧のみで、編集・保存・日締めはできません。
+                      </div>
+                    ) : null}
+                    {isDailyEntryLockedForStaff ? (
+                      <div className="notice-box">
+                        この日は日締め済みのため編集・削除できません。修正が必要な場合は店長以上にご連絡ください。
+                      </div>
+                    ) : null}
+                    {dailyMode === "view" && dailyOriginalEntry ? (
+                      <div className="preview-card">
+                        <strong>入力済みの内容</strong>
+                        <small>日付 {dailyOriginalEntry.date} / 総売上 {money(dailyOriginalEntry.totalSales || 0)} / 客数 {dailyOriginalEntry.customers || 0}名</small>
+                      </div>
+                    ) : null}
+
                     {isDailyFormDateHoliday ? null : (
                     <>
+                    {/* 要件7: メイン入力(売上・客数)は基本構造を維持しつつ、専用グリッド
+                        (.daily-main-grid)へ分離する——以前は基本情報・任意項目とすべて同じ
+                        1つの3列グリッド(.daily-form-grid)に混在しており、それが要件8の
+                        「日計だけ表示時に右へ大きな空白ができる」原因だった。 */}
+                    <div className="daily-main-grid">
                     <div className="daily-section-card">
                       <h3>売上入力</h3>
                       {/* value={x || ""}, not value={x}: an untouched field is "" or a loaded
@@ -7575,7 +7608,15 @@ function App() {
                         )}
                       </div>
                     ) : null}
+                    </div>
 
+                    {/* 要件8・9・12: 日計・口コミ・メモ(今後増える任意項目も含む)専用の
+                        可変グリッド。個数に応じてauto-fillで自然に列数が決まり(要件9)、
+                        0個の場合はエリア自体を描画しない(要件8・10・11)。今後任意カードが
+                        増えても、この配列にJSXを1つ追加するだけで同じグリッドへ自然に並ぶ
+                        (要件12: 列数やページ全体のCSSを書き直す必要がない)。 */}
+                    {(useCashBreakdown || showReviewCountField || showMemoField) ? (
+                    <div className="daily-optional-grid">
                     {useCashBreakdown ? (
                       <details className="daily-section-card cash-breakdown-card" open>
                         <summary className="cash-breakdown-summary">
@@ -7612,7 +7653,7 @@ function App() {
                     ) : null}
 
                     {showMemoField ? (
-                      <div className="daily-section-card">
+                      <div className="daily-section-card daily-optional-full">
                         <h3>メモ</h3>
                         <label className="field">
                           <span>メモ</span>
@@ -7620,29 +7661,29 @@ function App() {
                         </label>
                       </div>
                     ) : null}
+                    </div>
+                    ) : null}
                     </>
                     )}
                   </form>
 
-                  <div className="helper-text">必要な数字だけ入力すれば、客単価・店販率・新規率・再来率は自動計算されます。</div>
-                  {dailyMode === "view" && dailyOriginalEntry ? (
-                    <div className="preview-card">
-                      <strong>入力済みの内容</strong>
-                      <small>日付 {dailyOriginalEntry.date} / 総売上 {money(dailyOriginalEntry.totalSales || 0)} / 客数 {dailyOriginalEntry.customers || 0}名</small>
-                    </div>
-                  ) : null}
-
-                  <div className="kpi-grid compact-grid">
+                  {/* 要件13: 自動計算指標(入力欄ではなく結果)は追加入力エリアと分離し、独立
+                      した専用グリッド(.daily-metrics-grid、PC4列→iPhoneでも2列を維持)にする。
+                      説明文は削除し、見れば分かるUIに寄せる(計算式自体は無変更)。 */}
+                  <div className="kpi-grid daily-metrics-grid">
                     {showCustomersField ? <MetricCard label="客単価" value={money(dailyEffectiveCustomers ? dailyEffectiveTotalSales / dailyEffectiveCustomers : 0)} /> : null}
                     {totalSalesIsAutoCalculated ? <MetricCard label="店販率" value={percent(dailyEffectiveTotalSales ? (parseNumber(dailyForm.retailSales) / dailyEffectiveTotalSales) * 100 : 0)} /> : null}
                     {showNewCustomersField ? <MetricCard label="新規率" value={percent(dailyEffectiveCustomers ? (parseNumber(dailyForm.newCustomers) / dailyEffectiveCustomers) * 100 : 0)} /> : null}
                     {showRepeatCustomersField ? <MetricCard label="再来率" value={percent(dailyEffectiveCustomers ? (parseNumber(dailyForm.repeatCustomers) / dailyEffectiveCustomers) * 100 : 0)} /> : null}
                   </div>
 
-                  {currentCompany && aiAnalysisSettings[currentCompany.id] ? (
+                  {/* 要件14: 分析可能なデータが無い(buildDailyInsightが「不足」の定型文を返した)
+                      場合はカード自体を非表示にする——AI分析ロジック・判定基準は既存のまま、
+                      表示条件だけを追加する。 */}
+                  {currentCompany && aiAnalysisSettings[currentCompany.id] && dailyInsight && dailyInsight !== "分析に必要なデータが不足しています" ? (
                     <div className="insight-card">
                       <p className="eyebrow">今日のAI分析</p>
-                      <strong>{dailyInsight || "分析に必要なデータが不足しています"}</strong>
+                      <strong>{dailyInsight}</strong>
                     </div>
                   ) : null}
 
@@ -7653,7 +7694,7 @@ function App() {
                         <h3>月カレンダー</h3>
                       </div>
                     </div>
-                    <p className="helper-text">緑=日締め完了／赤=店休日／通常色=未締めの営業日。日付をクリックすると対象日を選択できます。</p>
+                    <p className="helper-text">緑=日締め完了 / 赤=店休日 / 通常色=未締め営業日</p>
                     <BusinessCalendarGrid
                       monthValue={selectedMonth}
                       closedDates={businessDaySummary.closedDates}
