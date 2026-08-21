@@ -308,6 +308,21 @@ const getDailySalesQueryRange = (targetMonth) => {
   return { startDate: formatLocalDate(firstDate), endDate: formatLocalDate(lastDate) };
 };
 
+// 初期表示速度の調査(要件1: どのSQL/APIがボトルネックかを計測する)用の軽量ラッパー。
+// hydrateFromSupabaseはPromise.allで18件のクエリを並列発行しているため、単純に「開始〜
+// 全体完了」の1つの時間だけでは、どの1件が実際に遅いのか切り分けられない——このラッパーで
+// 個々のクエリの所要時間を独立して記録し、devtools consoleから直接「どのテーブル/条件が
+// 遅いか」を確認できるようにする。解決値はそのまま(ok/data/error)透過するだけで、
+// 呼び出し元の分岐ロジックには一切影響しない。
+const timeHydrateQuery = (label, promise) => {
+  const startedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
+  return promise.then((result) => {
+    const durationMs = Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt);
+    console.info("[hydrate-query]", { label, durationMs, ok: result?.ok !== false, rows: Array.isArray(result?.data) ? result.data.length : undefined });
+    return result;
+  });
+};
+
 const createCompanySettingsDefaults = () => ({
   currency: "JPY",
   fiscalYearStartMonth: "1",
@@ -1724,15 +1739,20 @@ function App() {
   // そのまま再利用、重複計算ロジックを作らない)、対象は「今表示中の店舗/全店舗ビュー」——
   // このページ専用の別の店舗選択UIは持たず、ヘッダーの既存の店舗切替とそのまま連動する
   // (要件16: 同じコンポーネント・取得処理を使う)。
+  // パフォーマンス改善(要件8: 表示していないページのために重い計算をしない): 月次レビュー
+  // ページ(activePage==="monthlyReview")を開いている時だけ実際に計算する。以前はappStateが
+  // 変わるたびに(=売上ページを見ているだけの間も含め、ほぼ毎レンダー)calculateMonthSummary/
+  // calculateAllStoresMonthSummaryをcurrent・previous分(全店舗ビューでは店舗数×2)呼んで
+  // おり、月次レビューを一度も開いていないセッションでも無駄にCPUを消費していた。
   const monthlyReviewSummary = useMemo(
-    () => getMonthlyReviewSummary(appState, {
+    () => (activePage !== "monthlyReview" ? null : getMonthlyReviewSummary(appState, {
       storeId: selectedStoreId,
       isAllStoresView,
       company: currentCompany,
       storeEntity: selectedStoreEntity,
       companyStores: currentCompanyStores,
-    }, selectedMonth),
-    [appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth]
+    }, selectedMonth)),
+    [activePage, appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth]
   );
   const monthlyReviewKeyStoreId = isAllStoresView ? "" : selectedStoreId;
   const monthlyReviewText = useMemo(
@@ -2541,6 +2561,7 @@ function App() {
       // throwする(store_status_audit_log/company_settings/store_profiles/
       // store_input_settingsは元々ベストエフォート扱いで.okをチェックしていなかった——その
       // 扱いも変更していない)。
+      const hydrateBatchStartedAt = (typeof performance !== "undefined" ? performance.now() : Date.now());
       const [
         dailySalesResult,
         cashBreakdownResult,
@@ -2569,18 +2590,18 @@ function App() {
         // RLS scopes the result to whichever stores this user can actually see. A failed fetch
         // here fails the whole hydrate (see catch block) rather than silently showing stale or
         // empty progress/ranking numbers.
-        loadDailySalesForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate }),
+        timeHydrateQuery("dailySales", loadDailySalesForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate })),
         // 日計(現金/キャッシュレス/ポイント利用の内訳)。daily_salesと同じ日付レンジで、
         // 完全に別テーブル・別のstateとして取得する — 総売上等の計算には一切混ざらない。
-        loadDailyCashBreakdownForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate }),
+        timeHydrateQuery("cashBreakdown", loadDailyCashBreakdownForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate })),
         // まとめて入力(daily_batch_entries)。daily_salesと同じ日付レンジで取得する
         // (start_date基準、end_dateは常に同一月内)。dailyResultsには絶対に混ぜない — 集計時に
         // calculateMonthSummary側で別途参照するだけの、完全に独立したstate。
-        loadDailyBatchEntriesForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate }),
+        timeHydrateQuery("batchEntries", loadDailyBatchEntriesForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate })),
         // Same reasoning for monthly_closings: it's the authoritative table now (see
         // upsertMonthlyClosingState), so a fresh device/session needs this fetched directly
         // instead of only ever reflecting whatever was last embedded in a tenant_snapshots row.
-        loadMonthlyClosingsForCompany({ companyId, yearMonths: closingMonths }),
+        timeHydrateQuery("monthlyClosings", loadMonthlyClosingsForCompany({ companyId, yearMonths: closingMonths })),
         // Same reasoning again for monthly_targets: without this, appState.targets was only ever
         // populated by the 月間目標設定 panel's own per-visit fetch for whichever store+month
         // *that panel* happens to be showing (a separate, independent month selector from this
@@ -2588,55 +2609,56 @@ function App() {
         // registered" simply because nobody had opened the target panel for it this session, not
         // because no target was actually ever saved. Reuses the same 3-month window as
         // monthly_closings above.
-        loadMonthlyTargetsForCompany({ companyId, yearMonths: closingMonths }),
+        timeHydrateQuery("monthlyTargets", loadMonthlyTargetsForCompany({ companyId, yearMonths: closingMonths })),
         // company_all_stores_targets (「全店舗」company_admin専用ビューの目標+営業日設定)。
         // store_idを持たず company_id 単位なので storeIdToName は不要。同じ3か月ウィンドウを
         // 使い、pruneStaleKeysで会社切り替え時に前の会社のキャッシュが残らないようにする。
-        loadAllStoresTargetsForCompany({ companyId, yearMonths: closingMonths }),
+        timeHydrateQuery("allStoresTargets", loadAllStoresTargetsForCompany({ companyId, yearMonths: closingMonths })),
         // 店休日(カレンダーの具体的な日付)。daily_salesと同じ日付レンジ(過去2か月+対象月)で
         // 取得する — 営業進捗/KPIが参照する期間と一致させるため。
-        loadStoreHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate }),
-        loadAllStoresHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate }),
+        timeHydrateQuery("storeHolidays", loadStoreHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate })),
+        timeHydrateQuery("allStoresHolidays", loadAllStoresHolidaysForCompanyRange({ companyId, startDate: dailySalesRange.startDate, endDate: dailySalesRange.endDate })),
         // fixed_costs (see 20260808000000_create_fixed_costs.sql): a "翌月以降も継続" item is
         // computed by looking backwards across every earlier month's entries for the store (see
         // getFixedCostsForStoreMonth), so — unlike monthly_targets/monthly_closings above — this
         // can't be windowed to a few recent months; fetch every fixed_costs row for the company.
-        loadFixedCostsForCompany({ companyId }),
+        timeHydrateQuery("fixedCosts", loadFixedCostsForCompany({ companyId })),
         // monthly_reviews(月次レビューの自由記述4項目)。fixed_costsと同じ理由で月ウィンドウを
         // 設けず会社全体を丸ごと取得する — 対象月を過去へ切り替えても保存済みの文章が正しく
         // 復元される必要があるため(要件6)。
-        loadMonthlyReviewsForCompany({ companyId }),
+        timeHydrateQuery("monthlyReviews", loadMonthlyReviewsForCompany({ companyId })),
         // store_status_audit_log(店舗の停止/再開/アーカイブ/復元/削除の履歴)。RLSでcompany_admin/
         // system_admin以外には空配列が返る(store_manager/staffには非公開) — その場合
         // getStoreStatusAsOfDateは常にnullを返し、呼び出し側は現在のstores.statusだけで代替
         // 判定するため、失敗としては扱わない(結果を無視してよいベストエフォート情報)。
-        loadStoreStatusAuditLogForCompany({ companyId }),
+        timeHydrateQuery("storeStatusAuditLog", loadStoreStatusAuditLogForCompany({ companyId })),
         // cost_monthly_amounts (費用の対象月ごとの金額)。継続費用は「その月から有効になる金額」を
         // 履歴として引き継ぐ(getCostMonthlyAmount参照)ため、fixed_costsと同じ理由で3か月窓には
         // 絞れない(遡って参照する可能性のある行が窓の外にあり得る) — 会社の全件を取得する。
-        loadCostMonthlyAmountsForCompany({ companyId }),
+        timeHydrateQuery("costMonthlyAmounts", loadCostMonthlyAmountsForCompany({ companyId })),
         // store_inventory_balances (在庫管理ONの店舗の月末在庫/期首在庫) — direct month lookup,
         // no carry-forward, windowed the same as cost_monthly_amounts above.
-        loadStoreInventoryBalancesForCompany({ companyId, yearMonths: closingMonths }),
+        timeHydrateQuery("storeInventoryBalances", loadStoreInventoryBalancesForCompany({ companyId, yearMonths: closingMonths })),
         // variable_costs (販管費) and monthly_closing_items (月締め項目) — direct month lookup,
         // no carry-forward, so windowed the same as monthly_targets/monthly_closings above.
-        loadVariableCostsForCompany({ companyId, yearMonths: closingMonths }),
-        loadMonthlyClosingItemsForCompany({ companyId, yearMonths: closingMonths }),
+        timeHydrateQuery("variableCosts", loadVariableCostsForCompany({ companyId, yearMonths: closingMonths })),
+        timeHydrateQuery("monthlyClosingItems", loadMonthlyClosingItemsForCompany({ companyId, yearMonths: closingMonths })),
         // company_settings (business type/currency/display prefs/tax settings/showOtherSales) —
         // a single row for the whole company. null when no row exists yet (brand-new company);
         // applyCompanySettingsToCompanies below falls back to the hardcoded defaults in that case,
         // same as before this table existed.
-        loadCompanySettings({ companyId }),
+        timeHydrateQuery("companySettings", loadCompanySettings({ companyId })),
         // store_profiles (address/phone/manager/representative/hours/description/URLs/etc) —
         // keyed by store_id, one row per store, fetched company-wide alongside store_input_settings.
-        loadStoreProfilesForCompany({ companyId }),
+        timeHydrateQuery("storeProfiles", loadStoreProfilesForCompany({ companyId })),
         // store_input_settings (daily/monthly field visibility) is the authoritative source now
         // — see 20260807000000_create_store_input_settings.sql. Fetched company-wide alongside
         // daily_sales/monthly_closings above, then merged onto each store's settings object
         // below wherever appState.companies gets (re)built, the same way those other two tables
         // overlay onto dailyResults/dayClosingStates/monthClosingStatus.
-        loadStoreInputSettingsForCompany({ companyId }),
+        timeHydrateQuery("storeInputSettings", loadStoreInputSettingsForCompany({ companyId })),
       ]);
+      console.info("[hydrate-query] total (Promise.all batch)", { durationMs: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - hydrateBatchStartedAt) });
 
       if (!dailySalesResult.ok) throw dailySalesResult.error || new Error("日次売上データの取得に失敗しました");
       const dailySalesState = buildDailyStateFromRows(dailySalesResult.data);

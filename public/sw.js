@@ -361,7 +361,17 @@
 // 全項目が完了と判定されたら店舗単位でtrueを保存、以後どの対象月でも再表示しない。
 // 既存の会社作成ウィザードの完了状態(company.setup)とは別の概念で、重複作成はしていない。
 // 会社/店舗分離・RLS・権限・既存の売上/日次/まとめ入力データへの変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v49';
+// v50: 初期表示速度の調査・計測強化。本番DBを直接確認したところdaily_sales全体で37行のみ
+// ——現状はデータ量が遅さの原因ではないことを確認した(データが増えた場合に備えた並列化・
+// index等の対策は既に導入済み、今回は追加のindex変更は不要と判断)。hydrateFromSupabaseが
+// 並列発行する18クエリそれぞれに個別の所要時間計測(console.info「[hydrate-query]」)を
+// 追加し、次回以降「実際にどのSQL/APIが遅いか」を推測ではなく実測できるようにした。
+// あわせて、月次レビューページ用のサマリー計算(calculateMonthSummaryをcurrent/previous
+// 2回、全店舗ビューでは店舗数×2回)が、月次レビューを開いていない間(売上ページ閲覧中等)も
+// appStateが変わるたびに無条件で実行されていた無駄を修正——月次レビューページを実際に
+// 開いている時だけ計算するようにした。店舗切替・ページ遷移では元々追加の取得は発生しない
+// (既存設計を確認済み)。会社/店舗分離・RLS・権限・既存データへの変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v50';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
