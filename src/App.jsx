@@ -2059,7 +2059,10 @@ function App() {
   // 月末着地予測÷目標のratioに適用するだけ。目標未設定の場合は判定しない(neutral)。
   const forecastAchievementRatio = hasSalesTarget ? (summary.displayForecast / parseNumber(target.targetSales)) * 100 : null;
   const forecastStatusTone = forecastAchievementRatio === null ? "" : getMetricTone(forecastAchievementRatio, 90, 100);
-  const forecastStatusLabel = forecastStatusTone === "good" ? "順調" : forecastStatusTone === "warning" ? "やや遅れ" : forecastStatusTone === "danger" ? "要注意" : "";
+  // 追加UI/UX微修正(要件4): 「要注意」は日常的に見る画面では強すぎるとの指摘のため、
+  // 意味(判定ロジック)は変えずに文言だけやわらげる。dangerの文言を「要注意」→
+  // 「ペース確認」に変更(good/warningの文言は据え置き)。
+  const forecastStatusLabel = forecastStatusTone === "good" ? "順調" : forecastStatusTone === "warning" ? "やや遅れ" : forecastStatusTone === "danger" ? "ペース確認" : "";
   // ③ 月間達成率は「営業進捗との差」を表示する(要件3)。営業進捗(businessDaySummary.
   // progressRate)は既に営業日ベース(休業日を除外した営業日数を分母にする、既存の
   // getBusinessDaySummary)で計算済みの値をそのまま使う——ここで暦日ベースの新しい計算は
@@ -2067,6 +2070,15 @@ function App() {
   const scheduleAdjustedGapPt = (hasSalesTarget && isInitialDataReady && businessDaySummary.progressRate !== null)
     ? summary.targetAchievement - businessDaySummary.progressRate
     : null;
+  // 追加UI/UX微修正(要件6): 客数達成率も、売上と同じ「営業進捗との比較」で判定する
+  // (月途中に実績÷目標の単純な達成率だけで強い注意色にしない)。新しい客数計算は追加せず、
+  // 既存のcustomerTargetSummary.achievementRateとbusinessDaySummary.progressRateという
+  // 2つの既存計算値の差分(pt)だけを使う——差0pt=ちょうど進捗通りを100点とみなし、
+  // forecastStatusToneと同じ90/100の閾値をそのまま再利用する(新しい判定基準を増やさない)。
+  const customerScheduleAdjustedGapPt = (hasCustomerTarget && isInitialDataReady && businessDaySummary.progressRate !== null)
+    ? customerTargetSummary.achievementRate - businessDaySummary.progressRate
+    : null;
+  const customerPaceTone = customerScheduleAdjustedGapPt === null ? "" : getMetricTone(customerScheduleAdjustedGapPt + 100, 90, 100);
   // ㉑ 過去月は現在月と同じ見せ方にしない(要件21)。「対象月が既に終了しているか」は表示
   // モードの切替だけに使う判定で、どのデータがどの月に属するかというデータ分類には一切
   // 関与しない(データ側の対象月判定は既存通りbusiness_date/target_month基準のまま)。
@@ -7030,14 +7042,14 @@ function App() {
                 <div className="progress-track">
                   <div className="progress-fill" style={{ width: `${Math.min(100, businessDaySummary.progressRate || 0)}%` }} />
                 </div>
-                {/* 売上画面UI/UX改善(要件4): 上段=進捗バー+進捗率(上のbusiness-progress-header
-                    に既存)、下段=営業完了/今月営業日数をまとめた1セル+残り営業日+総売上+
-                    1日平均売上+顧客数の5セル。表示する情報自体は変更していない。 */}
+                {/* 追加UI/UX微修正(要件1): 「営業完了 / 今月営業日数」というラベルが長く
+                    字余りだったため、ラベルを短縮する(表示する情報・値のフォーマットは
+                    変更していない — X/Y日という値自体に既に両方の意味が含まれている)。 */}
                 <div className="business-progress-grid">
-                  <div><span>営業完了 / 今月営業日数</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.completedDays} / ${businessDaySummary.businessDayCount}日` : `${businessDaySummary.completedDays}日 / 未設定`}</strong></div>
-                  <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
+                  <div><span>営業完了</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.completedDays} / ${businessDaySummary.businessDayCount}日` : `${businessDaySummary.completedDays}日 / 未設定`}</strong></div>
+                  <div><span>残り</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
                   <div><span>総売上</span><strong>{isInitialDataReady ? money(summary.sales) : "—"}</strong></div>
-                  <div><span>1日平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
+                  <div><span>平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
                   <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
                 </div>
               </div>
@@ -7062,13 +7074,12 @@ function App() {
                     label="月間達成率"
                     value={isInitialDataReady ? percent(summary.targetAchievement) : "—"}
                     secondaryValue={isInitialDataReady ? `目標売上まで ${money(summary.remainingSalesTarget)}` : ""}
-                    // 色分けは月間達成率そのもの(月途中は常に低く出て赤だらけになる)では
-                    // なく、月末着地予測ベースの判定(forecastStatusTone、要件2)を使う。
+                    // 追加UI/UX微修正(要件5): 状態評価(色・バッジ)は月末着地予測カード側に
+                    // 一本化し、このカードは「今どこまで来ているか(達成率)」と「営業進捗比の
+                    // 差」の2つだけを見せる役割にする(同じ意味の注意表示を重複させない)。
                     hint={isInitialDataReady && scheduleAdjustedGapPt !== null
                       ? <span className={scheduleAdjustedGapPt >= 0 ? "text-success" : "text-danger"}>{`営業進捗比 ${scheduleAdjustedGapPt >= 0 ? "+" : ""}${scheduleAdjustedGapPt.toFixed(1)}pt`}</span>
                       : null}
-                    statusLabel={isInitialDataReady ? forecastStatusLabel : ""}
-                    tone={isInitialDataReady ? forecastStatusTone : ""}
                     emphasize
                     hero
                     primary
@@ -7093,7 +7104,9 @@ function App() {
                   <MetricCard
                     label="1日平均必要売上"
                     value={isInitialDataReady ? money(summary.dailyNeededSales) : "—"}
-                    hint={isInitialDataReady ? `残り${summary.remainingBusinessDays ?? 0}営業日` : ""}
+                    hint={isInitialDataReady
+                      ? <span className="metric-hint-strong">{`残り${summary.remainingBusinessDays ?? 0}営業日で必要`}</span>
+                      : ""}
                     hero
                     primary
                   />
@@ -7104,7 +7117,10 @@ function App() {
                     value={isInitialDataReady ? percent(customerTargetSummary.achievementRate) : "—"}
                     secondaryValue={isInitialDataReady ? `目標まで ${customerTargetSummary.remainingCustomers}名` : ""}
                     hint={isInitialDataReady ? `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` : ""}
-                    tone={isInitialDataReady ? getMetricTone(customerTargetSummary.achievementRate, 85, 100) : ""}
+                    // 追加UI/UX微修正(要件6): 売上と同じ考え方で、単純な達成率(実績÷目標)
+                    // ではなく営業進捗との比較で判定する(customerPaceTone、新しい客数計算は
+                    // 追加していない)。
+                    tone={isInitialDataReady ? customerPaceTone : ""}
                     secondary
                   />
                 ) : null}

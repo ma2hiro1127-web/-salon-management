@@ -427,19 +427,21 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .kpi-sales-section .metric-card.good strong,
 .kpi-sales-section .metric-card.warning strong,
 .kpi-sales-section .metric-card.danger strong { color: var(--text); }
-/* 売上画面UI/UX改善(要件2・20): 主数値そのものは上のルールで色を変えないため、代わりに
-   左端の細いラインだけで状態を伝える(status-chipと同じtone色を再利用、新しい判定ロジック
-   は追加しない)。派手な全面カラーにしない、という要件の「落ち着いた表現」の具体化。 */
-.kpi-sales-section .metric-card.good { border-left: 3px solid var(--success); }
-.kpi-sales-section .metric-card.warning { border-left: 3px solid var(--warning); }
-.kpi-sales-section .metric-card.danger { border-left: 3px solid var(--danger); }
-/* label行に、色だけに依存しない短い状態文言(順調/やや遅れ/要注意)を小さなバッジで併記する
-   (要件20)。status-chipと同じ配色パターンを踏襲し、新しい色は増やさない。 */
+/* 追加UI/UX微修正(要件3): 左端の赤ライン・枠強調は「直感的に分かりにくく強すぎる」との
+   指摘のため削除する。状態は下のmetric-status-labelという控えめなバッジ表現のみに一本化する
+   (代替として枠色や背景色は付けない——バッジ+補助テキストで十分、という方針)。 */
+/* label行に、色だけに依存しない短い状態文言(順調/やや遅れ/ペース確認)を小さなバッジで併記
+   する(要件4・20)。status-chipと同じ配色パターンを踏襲しつつ、要件4に合わせて不透明度を
+   落として全体的にやわらかいトーンにする(新しい色は増やさない)。 */
 .metric-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.metric-status-label { flex-shrink: 0; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; background: rgba(100, 116, 139, 0.16); color: var(--muted); }
-.metric-status-label.good { background: rgba(22, 163, 74, 0.16); color: var(--success); }
-.metric-status-label.warning { background: rgba(245, 158, 11, 0.16); color: var(--warning); }
-.metric-status-label.danger { background: rgba(220, 38, 38, 0.16); color: var(--danger); }
+.metric-status-label { flex-shrink: 0; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; background: rgba(100, 116, 139, 0.12); color: var(--muted); }
+.metric-status-label.good { background: rgba(22, 163, 74, 0.12); color: var(--success); }
+.metric-status-label.warning { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
+.metric-status-label.danger { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
+/* 追加UI/UX微修正(要件7): 「1日平均必要売上」の補足(残り◯営業日で必要)にアクセント色と
+   太字を付け、数値と補足が1セットであることを分かりやすくする(カード全体は強調しすぎない
+   よう、背景・サイズは変更しない)。 */
+.metric-hint-strong { color: var(--accent); font-weight: 700; }
 /* 売上画面UI/UX改善(要件1・9): 月間達成率・月末着地予測・1日平均必要売上の3項目だけを
    少し強め、他のKPI(客数達成率・口コミ数・平均客単価等)を少し弱める——文字サイズの差は
    1段階だけに留め、情報量・計算ロジックには一切触れない。 */
@@ -519,13 +521,16 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ranking-row { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; box-shadow: var(--shadow); box-sizing: border-box; }
 .ranking-row-rank { width: 32px; height: 32px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 800; font-size: 0.85rem; flex-shrink: 0; }
 .ranking-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-/* min-widthが無いと店舗名が極端に狭い列に押し込まれて1文字ずつ折り返ることがあるため、
-   店舗名が読める最小幅を確保する。 */
-.ranking-row-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 64px; }
-.ranking-row-sales { font-size: 1.05rem; font-weight: 800; color: var(--text); white-space: nowrap; margin-left: auto; min-width: 100px; text-align: right; }
+/* 追加UI/UX微修正(要件2): 店舗名が「フィー…」のように省略されすぎるとの指摘のため、
+   店舗名エリアを優先的に広げる(flex:1で余白を優先的に取得、min-widthも64px→108pxへ拡大)。
+   売上は右寄せのまま固定幅を少し絞り(flex-shrink:0で潰れないようにしつつmin-width/文字
+   サイズを微調整)、店舗名の識別性を優先する。ランキングの集計・順位ロジックは無変更。 */
+.ranking-row-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 108px; }
+.ranking-row-sales { font-size: 1rem; font-weight: 800; color: var(--text); white-space: nowrap; margin-left: auto; flex-shrink: 0; min-width: 88px; text-align: right; }
 /* 先月列を固定幅にすることで、行ごとに数字の桁数が違っても店舗名の切れる位置が
-   行によってバラバラにならないようにする(店舗名の折り返し列の残り幅を揃える)。 */
-.ranking-row-previous { color: var(--muted); font-size: 0.78rem; white-space: nowrap; flex: 0 0 auto; min-width: 118px; text-align: right; }
+   行によってバラバラにならないようにする(店舗名の折り返し列の残り幅を揃える)。
+   追加UI/UX微修正(要件2): 補助情報として今より少し弱める(文字を小さく・少し薄く)。 */
+.ranking-row-previous { color: var(--muted); font-size: 0.72rem; white-space: nowrap; flex: 0 0 auto; min-width: 92px; text-align: right; opacity: 0.85; }
 /* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更のまま、4位以下の
    行だけ視覚的に少し弱める(不透明度を落とすのみ、金額の可読性は保つ)。 */
 .ranking-row-muted { opacity: 0.72; }
