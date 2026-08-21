@@ -427,7 +427,15 @@
 // 固定費一覧をドラッグ&ドロップ(PC: ハンドルドラッグ/iPhone: ハンドル長押し)で並び替え可能に
 // し、並び順はDBへ保存する。継続費用の「前月をコピー」は基本値が自動反映されるため削除
 // (単月・期間限定費用は既存仕様のまま維持)。売上・日次・権限・店舗分離ロジックへの変更は無い。
-const CACHE_NAME = 'salon-manager-cache-v58';
+// v59: 日次入力「過去日の日締め解除後、編集ボタンを押しても入力欄が編集可能にならない」
+// 不具合への根本対応。「編集」ボタンの表示可否(canShowEditButton)と入力欄の実際の編集可否
+// (canEditDailyEntry)が別々の式だったのを、resolveDailyEntryEditState(storage.js、単体
+// テスト済み)という1つの純粋関数から同時に導出するよう統合し、両者が同じロック理由
+// (まとめて入力ロック/staffの日締め済みロック/staffの過去・未来日ロック)を共有する構造に
+// した(原理的に食い違えなくする)。あわせて、対象日・編集モードが切り替わるたびに日次入力
+// フォームをReactに完全に作り直させる安全策(key追加)も導入。保存/日締め/権限ロジック自体は
+// 無変更。
+const CACHE_NAME = 'salon-manager-cache-v59';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

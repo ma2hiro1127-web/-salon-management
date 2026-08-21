@@ -51,6 +51,7 @@ import {
   getStaffProductivitySummary,
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
+  resolveDailyEntryEditState,
   getCostMonthlyAmount,
   getPreviousMonthCostAmount,
   buildCostMonthlyAmountsStateFromRows,
@@ -1718,24 +1719,25 @@ function App() {
     [batchAllocatedEntries, dailyForm.date]
   );
   const isDailyDateBatchLocked = Boolean(dailyDateBatchAllocation);
-  // 【緊急障害の直接原因(修正済み)】この派生値(日次入力UI整理・要件5用: 表示するボタンの
-  // 組み合わせを決めるためだけの値)は、以前isDailyDateBatchLockedより前の行(旧1128行目)に
-  // 置かれていた。isDailyDateBatchLockedはconstでこのすぐ上の行まで初期化されないため、
-  // それより前から参照すると毎レンダー確実にReferenceError(TDZ)になり、対象日を変更して
-  // 再レンダーが走った瞬間にErrorBoundaryへ落ちていた(1772行目付近の過去の類似障害と同じ
-  // パターン)。isDailyDateBatchLockedの初期化後であるこの位置へ移動して解消する——
-  // 判定式自体(dailyForm.id/isDailyEntryLockedForStaff/isDailyDateBatchLocked/
-  // isStaffPastOrFutureDateLockedを見るだけ)は変更していない。
-  const canEditSelectedDailyEntry = Boolean(dailyForm.id) && !isDailyEntryLockedForStaff && !isDailyDateBatchLocked && !isStaffPastOrFutureDateLocked;
-  // 過去日編集の状態管理整理: 各入力欄が個別に「dailyMode !== "view"」だけを見るのではなく、
-  // 権限上編集可能(!isDailyEntryLockedForStaff・!isStaffPastOrFutureDateLocked)・店休日
-  // ではない(!isDailyFormDateHoliday)・まとめて入力でロックされていない
-  // (!isDailyDateBatchLocked)・実際に編集可能な状態(新規作成中 or 編集モード中)である、
-  // という4条件をすべて満たす場合だけ入力可能にする共通判定へ一本化する。単純な
-  // dailyMode !== "view" 比較だと、万一モード遷移とロック理由の状態が一瞬ズレても
-  // 入力欄側は無条件で編集可能になってしまうため、ロック理由を入力欄の判定自体にも
-  // 明示的に含めて安全側に倒す。
-  const canEditDailyEntry = (dailyMode === "create" || dailyMode === "edit") && !isDailyFormDateHoliday && !isDailyDateBatchLocked && !isDailyEntryLockedForStaff && !isStaffPastOrFutureDateLocked;
+  // 【緊急障害の直接原因(修正済み)】以前この付近の派生値がisDailyDateBatchLockedより前の行に
+  // 置かれ、constの初期化前参照(TDZ)でReferenceErrorになっていた。isDailyDateBatchLocked
+  // の初期化後であるこの位置に置く(判定式自体の変更ではない)。
+  //
+  // 過去日編集の状態管理整理(根本修正): 「編集」ボタンを表示するかどうか(canShowEditButton)
+  // と、入力欄を実際に編集可能にするかどうか(canEditDailyEntry)を、別々の式ではなく
+  // resolveDailyEntryEditState という1つの純粋関数(storage.js、単体テスト済み)から同時に
+  // 導出する。両者が同じロック理由(まとめて入力ロック・staffの日締め済みロック・staffの
+  // 過去/未来日ロック)を共有するため、原理的に「ボタンは押せるのに入力欄はロックされたまま」
+  // という状態を作れない構造にする——これが「編集ボタン表示条件とinputの編集条件を完全に
+  // 共通化する」という要求そのものへの対応。
+  const { canShowEditButton: canEditSelectedDailyEntry, canEditDailyEntry, isLocked: isDailyEntryLocked } = resolveDailyEntryEditState({
+    dailyMode,
+    hasEntryId: Boolean(dailyForm.id),
+    isDailyFormDateHoliday,
+    isDailyDateBatchLocked,
+    isDailyEntryLockedForStaff,
+    isStaffPastOrFutureDateLocked,
+  });
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を
@@ -7570,7 +7572,12 @@ function App() {
                     </div>
                   ) : null}
 
-                  <form id="daily-form" onSubmit={submitDailyEntry}>
+                  {/* keyにdailyForm.date+dailyModeを含める: 対象日や編集モードが切り替わる
+                      たびにReactへこのフォームを完全に作り直させる(差分パッチではなく)。
+                      disabled等のprops自体は毎回正しく渡っているはずだが、万一DOM側に古い
+                      属性が残るクラスの不具合があっても、モード遷移のたびに新しいDOMノードへ
+                      置き換わるため確実に解消される、という追加の安全策。 */}
+                  <form id="daily-form" key={`${dailyForm.date || "none"}__${dailyMode}`} onSubmit={submitDailyEntry}>
                     {/* 要件6: 店舗/対象日/日締め状態を1行のコンパクトな帯にまとめる。対象日は
                         従来disabled={dailyMode === "view"}で閲覧中は日付変更できなかったが、
                         これは「日付のナビゲーション」と「その日のデータの編集可否」を混同して
@@ -7617,7 +7624,7 @@ function App() {
                         {dailyMode === "create" ? (
                           <>
                             <button className="primary-button" type="submit">保存</button>
-                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
                           </>
                         ) : dailyMode === "edit" ? (
                           <>
@@ -7626,8 +7633,8 @@ function App() {
                           </>
                         ) : canEditSelectedDailyEntry ? (
                           <>
-                            <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>編集</button>
-                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLockedForStaff || isDailyDateBatchLocked || isStaffPastOrFutureDateLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+                            <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || isDailyEntryLocked}>編集</button>
+                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
                           </>
                         ) : null}
                       </div>

@@ -373,6 +373,30 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
   };
 };
 
+// 日次入力の「編集」ボタン表示可否と、入力欄の実際の編集可否を、同じロック理由(isLocked)
+// から1か所で計算する純粋関数。この2つを別々の式で計算していると、片方だけ条件を直したときに
+// もう片方が古いまま取り残され「編集ボタンは押せるのに入力欄はロックされたまま」という不具合
+// (根本原因の再発)を招くため、意図的に1つの関数へ統合する。
+//   - canShowEditButton: 閲覧中(dailyMode==="view")で、対象日に保存済みのデータがあり、
+//     ロック理由が無い場合だけ「編集」ボタンを表示する。
+//   - canEditDailyEntry: 実際に作成中/編集中のモードで、店休日でもロック中でもない場合だけ
+//     入力欄(技術売上・店販売上・新規客数・再来客数・日計・口コミ数・メモ)を編集可能にする。
+// ロック理由(isLocked = まとめて入力ロック or staffの日締め済みロック or staffの過去/未来日
+// ロック)はcanShowEditButton/canEditDailyEntry両方が同じ値を参照するため、原理的に食い違えない。
+export const resolveDailyEntryEditState = ({
+  dailyMode,
+  hasEntryId,
+  isDailyFormDateHoliday,
+  isDailyDateBatchLocked,
+  isDailyEntryLockedForStaff,
+  isStaffPastOrFutureDateLocked,
+}) => {
+  const isLocked = Boolean(isDailyDateBatchLocked) || Boolean(isDailyEntryLockedForStaff) || Boolean(isStaffPastOrFutureDateLocked);
+  const canShowEditButton = dailyMode === "view" && Boolean(hasEntryId) && !isLocked;
+  const canEditDailyEntry = (dailyMode === "create" || dailyMode === "edit") && !isDailyFormDateHoliday && !isLocked;
+  return { canShowEditButton, canEditDailyEntry, isLocked };
+};
+
 // daily_sales is the row-per-day Supabase source of truth (see upsertDailySalesEntry /
 // loadDailySalesForCompanyRange in utils/supabase.js). These convert between its column
 // shape and the app's in-memory entry shape, and rebuild the dailyResults/dayClosingStates/

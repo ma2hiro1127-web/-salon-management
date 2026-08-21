@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3631,4 +3631,139 @@ test("normalizeStoreNameForDuplicateCheck: 空文字・未定義でも例外を�
   assert.doesNotThrow(() => normalizeStoreNameForDuplicateCheck(undefined));
   assert.doesNotThrow(() => normalizeStoreNameForDuplicateCheck(null));
   assert.equal(normalizeStoreNameForDuplicateCheck(undefined), normalizeStoreNameForDuplicateCheck(null));
+});
+
+// 日次入力「過去日の日締め解除→編集」不具合の回帰テスト群。「編集ボタンは表示されるのに
+// 入力欄は編集可能にならない」という不具合が、canShowEditButtonとcanEditDailyEntryが別々の
+// 式だったことに起因して再発しないよう、resolveDailyEntryEditStateが返す両方の値を必ず
+// セットで検証する(片方だけ確認して「直った」と誤判定しないようにするため)。
+test("resolveDailyEntryEditState: 過去日・日締め済み→解除→編集ボタン押下、の一連の状態遷移(store_manager/company_admin視点)", () => {
+  // 1. 過去日を開く・日締め済み(dailyMode="view"でロード直後、staffではないのでisDailyEntry
+  //    LockedForStaff/isStaffPastOrFutureDateLockedはどちらも常にfalse)。
+  const closedViewing = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false, // store_manager/company_adminはこの制限を受けない
+    isStaffPastOrFutureDateLocked: false,
+  });
+  // 日締め済みでも権限上編集可能なロールには「編集」ボタン自体は既に表示されている。
+  assert.equal(closedViewing.canShowEditButton, true);
+  assert.equal(closedViewing.canEditDailyEntry, false); // まだview中なので入力欄はロックのまま
+
+  // 2. 日締め解除(dayClosingStatesがfalseへ) → 3. 「編集」ボタン表示(既に表示されていた
+  //    状態が維持される、ロック理由はどれも変化していない)。
+  const afterUnlockStillViewing = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(afterUnlockStillViewing.canShowEditButton, true);
+  assert.equal(afterUnlockStillViewing.canEditDailyEntry, false);
+
+  // 4. 「編集」を押す(editDailyEntryがsetDailyMode("edit")する) → 入力欄が編集可能になる。
+  //    これがボタン表示条件(canShowEditButton)と入力欄の編集可否(canEditDailyEntry)が同じ
+  //    ロック理由セットを共有していることの核心的な検証——ボタンが出ていた条件のうち
+  //    dailyModeだけがedit化されれば、他の条件を一切変えずにcanEditDailyEntryがtrueになる。
+  const editing = resolveDailyEntryEditState({
+    dailyMode: "edit",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(editing.canEditDailyEntry, true); // ← 技術売上・店販売上等のinputがdisabled={false}になる
+  assert.equal(editing.canShowEditButton, false); // 編集中は「編集」ボタン自体は出さない(保存/キャンセルに切り替わる)
+});
+
+test("resolveDailyEntryEditState: staffは日締め済みの過去日を解除しても編集できない(既存権限を維持、要件12)", () => {
+  const closedForStaff = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: true, // staff + 締め済み
+    isStaffPastOrFutureDateLocked: true, // staff + 過去日
+  });
+  assert.equal(closedForStaff.canShowEditButton, false); // 「編集」ボタン自体を出さない
+
+  // 過去日である以上、日締めを解除してisDailyEntryLockedForStaffがfalseになっても、
+  // isStaffPastOrFutureDateLockedは変わらずtrueのまま(staffは今日以外編集不可)。
+  const unlockedButStillPastDateForStaff = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: true,
+  });
+  assert.equal(unlockedButStillPastDateForStaff.canShowEditButton, false);
+  // 万一何らかの経路でdailyModeが"edit"になったとしても、入力欄側も独立してロックされたまま
+  // (ボタンを経由しない直接呼び出しなどに対する多重防御)。
+  const forcedEditModeForStaff = resolveDailyEntryEditState({
+    dailyMode: "edit",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: true,
+  });
+  assert.equal(forcedEditModeForStaff.canEditDailyEntry, false);
+});
+
+test("resolveDailyEntryEditState: まとめて入力ロック中は「編集」ボタンを表示せず、入力欄も編集不可にする(要件13、ボタン表示と実際の編集可否を一致させる)", () => {
+  const batchLocked = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: false, // まとめ入力の配分表示はdailyForm.idを持たない
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: true,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(batchLocked.canShowEditButton, false);
+  assert.equal(batchLocked.canEditDailyEntry, false);
+});
+
+test("resolveDailyEntryEditState: 店休日は入力欄を編集不可にする(通常営業日の過去日ロックとは別の判定、要件14)", () => {
+  const holiday = resolveDailyEntryEditState({
+    dailyMode: "create",
+    hasEntryId: false,
+    isDailyFormDateHoliday: true,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(holiday.canEditDailyEntry, false);
+
+  // 通常営業日(店休日ではない)の同じ状態なら編集可能——店休日判定が他のロック理由と混同
+  // されていないことを確認する。
+  const regularDay = resolveDailyEntryEditState({
+    dailyMode: "create",
+    hasEntryId: false,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(regularDay.canEditDailyEntry, true);
+});
+
+test("resolveDailyEntryEditState: 新規作成モード(create)でも入力欄は編集可能(既存データが無い日でも新規入力できる)", () => {
+  const creating = resolveDailyEntryEditState({
+    dailyMode: "create",
+    hasEntryId: false,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(creating.canEditDailyEntry, true);
+  // まだ保存されていない(hasEntryId:false)ので「編集」ボタンの出番ではない(保存/日締め
+  // ボタンの組み合わせがApp.jsx側で別途出る)。
+  assert.equal(creating.canShowEditButton, false);
 });
