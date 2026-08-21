@@ -412,7 +412,13 @@
 // isDailyDateBatchLocked(constとして後の行で初期化される)を初期化前に参照していたため、
 // 毎レンダーReferenceError(TDZ)になっていたこと。isDailyDateBatchLockedの初期化後の
 // 行へ宣言を移動し解消(判定式・保存/日締め/権限ロジックへの変更は無し)。
-const CACHE_NAME = 'salon-manager-cache-v56';
+// v57: 過去日を「編集」しても入力欄が編集可能にならない不具合への対応。各入力欄が個別に
+// disabled={dailyMode === "view"}だけを見ていたのを、権限上編集可能・店休日ではない・
+// まとめて入力でロックされていない・実際に編集/新規作成モード中である、という4条件を
+// まとめた共通の判定(canEditDailyEntry)に一本化。ボタンの表示可否とロック理由が今後
+// 一瞬でもズレても入力欄側が独立して安全側に倒れるようにした(保存/日締め/権限ロジック
+// 自体は無変更)。
+const CACHE_NAME = 'salon-manager-cache-v57';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

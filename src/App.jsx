@@ -1726,6 +1726,15 @@ function App() {
   // 判定式自体(dailyForm.id/isDailyEntryLockedForStaff/isDailyDateBatchLocked/
   // isStaffPastOrFutureDateLockedを見るだけ)は変更していない。
   const canEditSelectedDailyEntry = Boolean(dailyForm.id) && !isDailyEntryLockedForStaff && !isDailyDateBatchLocked && !isStaffPastOrFutureDateLocked;
+  // 過去日編集の状態管理整理: 各入力欄が個別に「dailyMode !== "view"」だけを見るのではなく、
+  // 権限上編集可能(!isDailyEntryLockedForStaff・!isStaffPastOrFutureDateLocked)・店休日
+  // ではない(!isDailyFormDateHoliday)・まとめて入力でロックされていない
+  // (!isDailyDateBatchLocked)・実際に編集可能な状態(新規作成中 or 編集モード中)である、
+  // という4条件をすべて満たす場合だけ入力可能にする共通判定へ一本化する。単純な
+  // dailyMode !== "view" 比較だと、万一モード遷移とロック理由の状態が一瞬ズレても
+  // 入力欄側は無条件で編集可能になってしまうため、ロック理由を入力欄の判定自体にも
+  // 明示的に含めて安全側に倒す。
+  const canEditDailyEntry = (dailyMode === "create" || dailyMode === "edit") && !isDailyFormDateHoliday && !isDailyDateBatchLocked && !isDailyEntryLockedForStaff && !isStaffPastOrFutureDateLocked;
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を
@@ -7578,16 +7587,16 @@ function App() {
                           correctly. Save-time parseNumber()/buildDailyEntryPayload treat "" and
                           0 identically, so totals/KPIs/progress are never affected — this is
                           display-only. */}
-                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric /> : null}
-                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric /> : null}
-                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => updateDailyField("otherSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric /> : null}
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => updateDailyField("otherSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
                       {totalSalesIsAutoCalculated ? (
                         <div className="summary-card compact">
                           <span>総売上（税込）</span>
                           <strong>{money(parseNumber(dailyForm.totalSales))}</strong>
                         </div>
                       ) : (
-                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
+                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
                       )}
                     </div>
 
@@ -7597,15 +7606,15 @@ function App() {
                         {/* 総売上と同じ考え方: 入力項目(新規・再来)を先に並べ、自動合計される
                             客数は結果として一番下に置く(要件: どこが入力でどこが自動計算か
                             直感的に分かるように)。 */}
-                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
-                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric /> : null}
+                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric /> : null}
                         {customersIsAutoCalculated ? (
                           <div className="summary-card compact">
                             <span>客数</span>
                             <strong>{number(parseNumber(dailyForm.customers))}名</strong>
                           </div>
                         ) : (
-                          <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={dailyMode === "view"} numeric />
+                          <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric />
                         )}
                       </div>
                     ) : null}
@@ -7629,9 +7638,9 @@ function App() {
                           ) : null}
                         </summary>
                         <div className="cash-breakdown-body">
-                          <Field label="現金" value={cashBreakdownForm.cashAmount || ""} onChange={(value) => updateCashBreakdownField("cashAmount", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
-                          <Field label="キャッシュレス" value={cashBreakdownForm.cashlessAmount || ""} onChange={(value) => updateCashBreakdownField("cashlessAmount", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
-                          <Field label="ポイント利用" value={cashBreakdownForm.pointAmount || ""} onChange={(value) => updateCashBreakdownField("pointAmount", value)} suffix="円" placeholder="金額を入力" disabled={dailyMode === "view"} numeric />
+                          <Field label="現金" value={cashBreakdownForm.cashAmount || ""} onChange={(value) => updateCashBreakdownField("cashAmount", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
+                          <Field label="キャッシュレス" value={cashBreakdownForm.cashlessAmount || ""} onChange={(value) => updateCashBreakdownField("cashlessAmount", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
+                          <Field label="ポイント利用" value={cashBreakdownForm.pointAmount || ""} onChange={(value) => updateCashBreakdownField("pointAmount", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
                           <div className="summary-card compact">
                             <span>日計合計</span>
                             <strong>{money(cashBreakdownTotal)}</strong>
@@ -7649,7 +7658,7 @@ function App() {
                     {showReviewCountField ? (
                       <div className="daily-section-card">
                         <h3>口コミ</h3>
-                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={(value) => updateDailyField("reviewCount", value)} suffix="件" placeholder="件数を入力" disabled={dailyMode === "view"} numeric />
+                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={(value) => updateDailyField("reviewCount", value)} suffix="件" placeholder="件数を入力" disabled={!canEditDailyEntry} numeric />
                       </div>
                     ) : null}
 
@@ -7658,7 +7667,7 @@ function App() {
                         <h3>メモ</h3>
                         <label className="field">
                           <span>メモ</span>
-                          <textarea value={dailyForm.memo || ""} onChange={(event) => setDailyForm((prev) => ({ ...prev, memo: event.target.value }))} disabled={dailyMode === "view"} rows={3} />
+                          <textarea value={dailyForm.memo || ""} onChange={(event) => setDailyForm((prev) => ({ ...prev, memo: event.target.value }))} disabled={!canEditDailyEntry} rows={3} />
                         </label>
                       </div>
                     ) : null}
