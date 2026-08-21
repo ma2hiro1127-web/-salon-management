@@ -502,6 +502,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .metric-card-secondary span { font-size: 0.76rem; }
 .metric-card.clickable { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
 .metric-card.clickable:hover, .metric-card.clickable:focus-visible { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); outline: none; }
+/* 「1人あたり月間売上」がスタッフ数の条件で非表示の月に、同じグリッドの1マスを占有する
+   空の枠。visibility:hiddenはdisplay:noneと違いレイアウト上の場所を確保したまま見た目だけ
+   消すため、他のKPIカードの横幅・高さ・並び順が変わらない(要件)。カードの罫線・背景・影は
+   一切継承しない(空のカード枠自体を表示しない、という要件)。 */
+.metric-card-placeholder { visibility: hidden; }
 .kpi-hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .target-setup-hint { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .target-setup-hint .helper-text { margin: 0; }

@@ -2104,6 +2104,14 @@ function App() {
   // モードの切替だけに使う判定で、どのデータがどの月に属するかというデータ分類には一切
   // 関与しない(データ側の対象月判定は既存通りbusiness_date/target_month基準のまま)。
   const isViewingPastMonth = selectedMonth < formatLocalDate(new Date()).slice(0, 7);
+  // 「1人あたり月間売上」の表示条件(要件): スタッフ数(生産性計算人数優先、無ければ在籍
+  // スタッフ数、getStaffProductivitySummaryと同じ優先順位)が2人以上の場合だけ表示する。
+  // 1人の場合は総売上と同じ金額になり情報が重複するため非表示、0人・未入力の場合も非表示
+  // (hasStaffCountがfalseになる)。この判定はstaffProductivitySummary.effectiveStaffCountを
+  // 参照するだけで、優先順位ロジック自体はgetStaffProductivitySummary側の1箇所に閉じている
+  // (App.jsx側で重複実装しない)。スタッフ数は現状、店舗の現在設定(store_profiles)を
+  // そのまま使う仕様のまま(月次履歴は持たない)——過去月を開いても同じ現在値を参照する。
+  const showPerStaffSalesCard = !isAllStoresView && Boolean(selectedStoreEntity) && staffProductivitySummary.hasStaffCount && staffProductivitySummary.effectiveStaffCount >= 2;
   const dashboardSupportMetrics = useMemo(() => {
     // 「必要客数◯名/日」は客数達成率カード側にまとめたため、平均客単価カードは数値だけの
     // シンプルな表示にする(効率系: 数字中心、補足最小限)。
@@ -2112,16 +2120,27 @@ function App() {
     // ここでは持たない(kpi-hero-grid側で個別に描画する)。
     // 「目標客数まで」はkpi-hero-gridの「客数達成率」カード(secondaryValue)と同じ数字
     // (remainingCustomersTarget)を表示するだけの重複カードだったため廃止。
-    // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない。
+    // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない
+    // (このブロック自体を出さない、既存仕様のまま)。
     if (!isAllStoresView && selectedStoreEntity) {
-      items.push({
-        label: "1人あたり月間売上",
-        value: staffProductivitySummary.hasStaffCount ? `${money(staffProductivitySummary.current)} / 人` : "スタッフ数未設定",
-        hint: staffProductivitySummary.hasStaffCount ? `月末予測 ${money(staffProductivitySummary.monthEndForecast)} / 人` : "",
-      });
+      if (showPerStaffSalesCard) {
+        items.push({
+          label: "1人あたり月間売上",
+          // データ取得前(isInitialDataReady=false)は他のKPIカードと同じ「—」表示にし、
+          // 実績反映前の¥0がちらつくのを防ぐ(要件: ちらつきを出さない)。
+          value: isInitialDataReady ? `${money(staffProductivitySummary.current)} / 人` : "—",
+          hint: isInitialDataReady ? `月末予測 ${money(staffProductivitySummary.monthEndForecast)} / 人` : "",
+        });
+      } else {
+        // スタッフ数が1人以下(または未設定)の月は、カード自体を配列から取り除くのではなく
+        // 「見た目の無いプレースホルダー」を同じ位置へ積む(要件: 非表示でも周辺のKPIカードの
+        // 横幅・高さ・並び順を変えない。項目数によってグリッドの詰まり方が変動しないように、
+        // という目標設定側の任意項目と同じ考え方をここにも適用する)。
+        items.push({ label: "__per_staff_sales_placeholder__", placeholder: true });
+      }
     }
     return items;
-  }, [summary.averageSpend, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
+  }, [summary.averageSpend, isAllStoresView, selectedStoreEntity, showPerStaffSalesCard, staffProductivitySummary, isInitialDataReady]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -7227,7 +7246,14 @@ function App() {
                     secondary
                   />
                 ) : null}
-                {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} secondary />)}
+                {dashboardSupportMetrics.map((item) => (
+                  item.placeholder
+                    // 「1人あたり月間売上」が非表示の月でも、他のKPIカードの位置がズレない
+                    // よう同じグリッドの1マスを占有する空の枠(visibility:hidden、カードの
+                    // 罫線・背景は一切描画しない)。
+                    ? <div key={item.label} className="metric-card-placeholder" aria-hidden="true" />
+                    : <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} secondary />
+                ))}
               </div>
               </div>
               {currentCompany && aiAnalysisSettings[currentCompany.id] ? <AiAssistantCard onOpen={() => openAiChat()} /> : null}

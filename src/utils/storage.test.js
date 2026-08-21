@@ -1657,12 +1657,14 @@ test("getStaffProductivitySummary divides current sales and month-end forecast b
   assert.equal(result.hasStaffCount, true);
   assert.equal(result.current, 620000);
   assert.equal(result.monthEndForecast, 940000);
+  assert.equal(result.effectiveStaffCount, 5);
 });
 
 test("getStaffProductivitySummary supports fractional (FTE) productivity staff counts", () => {
   const result = getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, productivityStaffCount: 2.5 });
   assert.equal(result.current, 400000);
   assert.equal(result.monthEndForecast, 600000);
+  assert.equal(result.effectiveStaffCount, 2.5);
 });
 
 // 正社員のみ(パート・アルバイト無し)の店舗は、生産性計算人数を未入力のまま在籍スタッフ数を
@@ -1672,16 +1674,32 @@ test("getStaffProductivitySummary falls back to staffCount when productivityStaf
   assert.equal(result.hasStaffCount, true);
   assert.equal(result.current, 600000);
   assert.equal(result.monthEndForecast, 600000);
+  assert.equal(result.effectiveStaffCount, 6);
 });
 
 test("getStaffProductivitySummary prefers productivityStaffCount over staffCount when both are entered", () => {
   const result = getStaffProductivitySummary({ sales: 5600000, forecast: 5600000, staffCount: 6, productivityStaffCount: 5.6 });
   assert.ok(Math.abs(result.current - 1000000) < 1);
+  assert.equal(result.effectiveStaffCount, 5.6);
 });
 
 test("getStaffProductivitySummary reports hasStaffCount:false and never divides by zero when neither is set", () => {
-  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, staffCount: 0, productivityStaffCount: 0 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
-  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000 }), { hasStaffCount: false, current: 0, monthEndForecast: 0 });
+  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000, staffCount: 0, productivityStaffCount: 0 }), { hasStaffCount: false, current: 0, monthEndForecast: 0, effectiveStaffCount: 0 });
+  assert.deepEqual(getStaffProductivitySummary({ sales: 1000000, forecast: 1500000 }), { hasStaffCount: false, current: 0, monthEndForecast: 0, effectiveStaffCount: 0 });
+});
+
+// 「1人あたり月間売上」ダッシュボードカードの表示条件(要件: スタッフ数2人以上のみ表示)は
+// effectiveStaffCountを閾値判定するだけで実装する——ここでその値が常に正しい優先順位
+// (生産性計算人数→在籍スタッフ数)で解決されることを回帰テストとして固定する。
+test("getStaffProductivitySummary: effectiveStaffCountは「1人あたり月間売上」カードの表示判定にそのまま使える(1人なら非表示、2人以上なら表示、小数にも対応)", () => {
+  // 1人(在籍スタッフ数のみ) → 非表示になるべき(effectiveStaffCount < 2)。
+  assert.equal(getStaffProductivitySummary({ sales: 1000000, forecast: 1000000, staffCount: 1 }).effectiveStaffCount, 1);
+  // 1人(生産性計算人数のみ) → 非表示になるべき。
+  assert.equal(getStaffProductivitySummary({ sales: 1000000, forecast: 1000000, productivityStaffCount: 1 }).effectiveStaffCount, 1);
+  // 3.5人(小数) → 表示されるべき(effectiveStaffCount >= 2)。
+  assert.equal(getStaffProductivitySummary({ sales: 1000000, forecast: 1000000, productivityStaffCount: 3.5 }).effectiveStaffCount, 3.5);
+  // ちょうど2人 → 表示されるべき(境界値、2人以上に含む)。
+  assert.equal(getStaffProductivitySummary({ sales: 1000000, forecast: 1000000, staffCount: 2 }).effectiveStaffCount, 2);
 });
 
 test("pruneStaleKeys drops any expected key Supabase no longer has a row for, leaves everything else untouched", () => {

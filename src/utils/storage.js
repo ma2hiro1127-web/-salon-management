@@ -2375,12 +2375,16 @@ export const getStaffProductivitySummary = ({ sales, forecast, staffCount, produ
   const productivityCount = parseNumber(productivityStaffCount);
   const effectiveCount = productivityCount > 0 ? productivityCount : parseNumber(staffCount);
   if (!effectiveCount || effectiveCount <= 0) {
-    return { hasStaffCount: false, current: 0, monthEndForecast: 0 };
+    return { hasStaffCount: false, current: 0, monthEndForecast: 0, effectiveStaffCount: 0 };
   }
   return {
     hasStaffCount: true,
     current: parseNumber(sales) / effectiveCount,
     monthEndForecast: parseNumber(forecast) / effectiveCount,
+    // 呼び出し側(ダッシュボードの「1人あたり月間売上」表示条件)が、優先順位(生産性計算人数
+    // →在籍スタッフ数)を重複実装せずに閾値判定できるよう、実際に使った人数をそのまま返す
+    // (小数(例: 3.5人)にも対応、parseNumberは丸めない)。
+    effectiveStaffCount: effectiveCount,
   };
 };
 
