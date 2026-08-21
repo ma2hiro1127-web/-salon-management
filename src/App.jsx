@@ -1118,14 +1118,6 @@ function App() {
   // 出し分ける(常に「日締め」という同じラベルのボタンだと、既に締め済みの日をもう一度押した
   // ときに実際は「解除」される、と気づかず誤って締めを解除してしまう不具合があったため)。
   const isSelectedDailyEntryClosed = Boolean(dailyForm.date) && Boolean(appState.dayClosingStates?.[buildMonthKey(selectedStoreId, selectedMonth)]?.[dailyForm.date]);
-  // 日次入力UI整理: 新規入力/編集/キャンセル/日締めを常時4つ並べる代わりに、状態に応じて
-  // 必要な操作だけを出す(要件5)。これは「表示するボタンの組み合わせ」を決めるための派生値
-  // であり、各ボタン自身のdisabled判定(下のJSXで個別に付与、既存の式のまま)を置き換える
-  // ものではない——このbooleanの計算を誤っても、ボタン自体のdisabled属性が最終防御として
-  // 残るため、誤って編集不可能な操作を有効化してしまうことはない。既存の編集ボタンの
-  // disabled条件(!dailyForm.id || isDailyEntryLockedForStaff || isDailyDateBatchLocked ||
-  // isStaffPastOrFutureDateLocked)とまったく同じ式を、表示分岐にも使う。
-  const canEditSelectedDailyEntry = Boolean(dailyForm.id) && !isDailyEntryLockedForStaff && !isDailyDateBatchLocked && !isStaffPastOrFutureDateLocked;
   const currentUserProfile = useMemo(() => (appState.users || []).find((user) => user.id === appState.currentUserId) || null, [appState.currentUserId, appState.users]);
   const allowedStoreIds = useMemo(() => getAllowedStoreIdsForRole({ role: currentRole, companyStoreIds: currentCompanyStores.map((store) => store.id), currentUserStoreIds: currentUserProfile?.storeIds || [] }), [currentRole, currentCompanyStores, currentUserProfile]);
   const visibleStores = useMemo(() => {
@@ -1725,6 +1717,15 @@ function App() {
     [batchAllocatedEntries, dailyForm.date]
   );
   const isDailyDateBatchLocked = Boolean(dailyDateBatchAllocation);
+  // 【緊急障害の直接原因(修正済み)】この派生値(日次入力UI整理・要件5用: 表示するボタンの
+  // 組み合わせを決めるためだけの値)は、以前isDailyDateBatchLockedより前の行(旧1128行目)に
+  // 置かれていた。isDailyDateBatchLockedはconstでこのすぐ上の行まで初期化されないため、
+  // それより前から参照すると毎レンダー確実にReferenceError(TDZ)になり、対象日を変更して
+  // 再レンダーが走った瞬間にErrorBoundaryへ落ちていた(1772行目付近の過去の類似障害と同じ
+  // パターン)。isDailyDateBatchLockedの初期化後であるこの位置へ移動して解消する——
+  // 判定式自体(dailyForm.id/isDailyEntryLockedForStaff/isDailyDateBatchLocked/
+  // isStaffPastOrFutureDateLockedを見るだけ)は変更していない。
+  const canEditSelectedDailyEntry = Boolean(dailyForm.id) && !isDailyEntryLockedForStaff && !isDailyDateBatchLocked && !isStaffPastOrFutureDateLocked;
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を

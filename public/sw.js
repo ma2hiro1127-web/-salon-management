@@ -406,7 +406,13 @@
 // 応じて必要な操作だけを表示するよう変更。対象日は従来は閲覧中(dailyMode==="view")に
 // disabledで変更できなかったが、日付ナビゲーションと編集可否を分離し常に変更可能にした
 // (月カレンダーと同じhandleDailyDateChangeを使うため状態は常に同期する)。
-const CACHE_NAME = 'salon-manager-cache-v55';
+// v56: 緊急バグ修正。日次入力画面で対象日を過去日へ変更すると「予期しない問題が発生
+// しました」で画面全体がクラッシュする不具合を修正。原因はv55で追加したcanEditSelected
+// DailyEntry(状態に応じてボタンの組み合わせを出し分けるための表示専用の派生値)が、
+// isDailyDateBatchLocked(constとして後の行で初期化される)を初期化前に参照していたため、
+// 毎レンダーReferenceError(TDZ)になっていたこと。isDailyDateBatchLockedの初期化後の
+// 行へ宣言を移動し解消(判定式・保存/日締め/権限ロジックへの変更は無し)。
+const CACHE_NAME = 'salon-manager-cache-v56';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
