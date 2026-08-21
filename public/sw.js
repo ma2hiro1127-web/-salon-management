@@ -293,7 +293,17 @@
 // RLS側のUPDATE権限漏れで実際には常に失敗していたのを、store名以外の列
 // (status/is_active/company_id/code等)は変更できないよう制限した上でRLS側にも追加。
 // 会社分離・他店舗分離・加盟店除外・全店舗ビュー仕様への変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v43';
+// v44: 緊急修正。「データを更新中です…」が数分間解除されない不具合の根本原因は、
+// Supabaseへのfetch呼び出し(fetchWithAuthRetry、アプリ内の全通信が経由する唯一の窓口)に
+// タイムアウトが一切無かったこと——1件でも通信がハングすると、そのawaitが永久に返らず、
+// hydrateFromSupabaseがPromise.allで複数クエリを並列発行する設計(前回の速度改善)により
+// 「1件のハングが全体を道連れにする」状態になっていた。AbortControllerで15秒の上限を追加し、
+// 上限を超えたリクエストは確実に失敗させる——失敗すれば既存のリトライ・上限回数・
+// エラー表示が正しく機能する。あわせて、失敗時のsyncStatus="error"を実際に画面へ表示する
+// UIが存在しなかった(前回時点では"syncing"用のnotice-boxしか無かった)のを追加し、
+// 1回目の失敗時点(最大15秒)で「自動的に再試行しています」という安定した文言を表示する
+// ようにした。RLS・権限・会社/店舗分離・データ保存経路への変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v44';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

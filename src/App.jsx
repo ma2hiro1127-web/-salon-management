@@ -2993,7 +2993,16 @@ function App() {
         attempt: hydrateRetryCountRef.current + 1,
       });
       const reason = getSupabaseErrorMessage(error);
-      setSyncStatus({ status: "error", message: `同期エラー: ${reason}`, timestamp: new Date().toISOString(), error: true });
+      // 「更新中です…」が数分間解除されない不具合の緊急修正: 以前はここで「同期エラー:
+      // ${reason}」を出していたが、この文言を実際に画面へ表示するUIが無かったため
+      // (syncStatus.status==="syncing"の時だけnotice-boxを出す作りで、"error"用の表示が
+      // 存在しなかった)、失敗してもユーザーには何も伝わらず、数秒後に始まる自動リトライの
+      // 「更新中です…」が繰り返し出ては消える(=実質「更新中のまま止まっている」ように
+      // 見える)状態になっていた。1回目の失敗の時点で「自動的に再試行しています」という
+      // 安定した(リトライのたびにチラつかない)文言を出し、かつ下のJSXでこのstatus="error"
+      // を実際に表示するようにする——上のfetchWithTimeout(15秒)により、この時点までの
+      // 経過時間は最大でも約15秒に収まる。
+      setSyncStatus({ status: "error", message: "データの取得に時間がかかっています。自動的に再試行しています…", timestamp: new Date().toISOString(), error: true });
       if (hydrateRetryTimerRef.current) {
         window.clearTimeout(hydrateRetryTimerRef.current);
       }
@@ -3005,9 +3014,10 @@ function App() {
       // 別経路だが、同じ「無限リトライ」という不具合の型)。一定回数で自動リトライを止め、
       // 手動での復旧(再読み込み・store切替等の明示的な操作による再hydrate)に委ねる。
       if (attempt > HYDRATE_MAX_AUTO_RETRY_ATTEMPTS) {
+        console.error("[sync-hydrate] giving up after max retries", { attempt, reason });
         setSyncStatus({
           status: "error",
-          message: `同期に繰り返し失敗しています(${reason})。ページを再読み込みしてください。`,
+          message: "データの取得に時間がかかっています。ページを再読み込みしてください。",
           timestamp: new Date().toISOString(),
           error: true,
         });
@@ -6826,6 +6836,13 @@ function App() {
             伝わらなかった(要件7)。データ取得中であることだけを軽く知らせる — 表示自体を
             隠す/ブロックする作りにはしない(既存の各パネルの表示条件・計算ロジックは無変更)。 */}
         {syncStatus.status === "syncing" ? <div className="notice-box">データを更新中です…</div> : null}
+        {/* 「更新中です…」が数分間解除されない不具合の緊急修正: 以前はsyncStatus.status
+            ==="error"を表示するUIが存在せず、hydrateFromSupabaseが失敗してもユーザーには
+            何も伝わらなかった(数秒後に始まる自動リトライで再び「更新中です…」だけが
+            現れては消える=実質、進捗が見えないまま止まっているように見えていた)。
+            エラー時は必ずこのメッセージを表示する——内容は常にgetSupabaseErrorMessage経由の
+            日本語文言(生のSupabase/Postgresエラーは表示しない)。 */}
+        {syncStatus.status === "error" && syncStatus.message ? <div className="notice-box error">{syncStatus.message}</div> : null}
         {/* このnoticeは「成功しました」等の完了通知には使わない — 画面上部にはエラーのみ
             表示する(誤操作でデータを失わないための警告や、対応が必要な保存失敗など)。
             成功・完了の確認は、各操作の近く(保存ステータスチップ・ボタンラベル等)に留める。 */}

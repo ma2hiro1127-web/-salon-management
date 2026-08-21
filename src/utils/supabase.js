@@ -28,8 +28,31 @@ const isAuthTokenEndpoint = (input) => {
   return url.includes("/auth/v1/token");
 };
 
+// 販売前チェックで発見: ここのfetch()にはタイムアウトが一切無かった——不安定な回線・
+// モバイル回線の瞬断・Supabase側の一時的な遅延などでリクエストが1件でもハングすると、
+// このawaitが永久に(ブラウザのデフォルトの非常に長いタイムアウトまで)返らず、
+// hydrateFromSupabase側がPromise.allで複数クエリを並列発行するようになった(パフォーマンス
+// 改善の副作用)ことで「1件がハングすると18件全部がその1件を待ち続ける」状態になり、
+// 「更新中です…」が2分経っても終わらない不具合の直接の原因になっていた。AbortControllerで
+// 明示的な上限を設け、上限を超えたら確実に失敗(reject)させる——失敗すればhydrateFromSupabase
+// 側の既存のリトライ・上限回数・エラー表示(HYDRATE_MAX_AUTO_RETRY_ATTEMPTS)が正しく機能する。
+const FETCH_TIMEOUT_MS = 15000;
+
+const fetchWithTimeout = (input, init = {}) => {
+  const controller = new AbortController();
+  // 呼び出し元が既にsignalを渡している場合(将来的な拡張)を壊さないよう、どちらかが
+  // abortしたら全体をabortする形にする。
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  const externalSignal = init.signal;
+  if (externalSignal) {
+    if (externalSignal.aborted) controller.abort();
+    else externalSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timeoutId));
+};
+
 const fetchWithAuthRetry = async (input, init = {}) => {
-  const response = await fetch(input, init);
+  const response = await fetchWithTimeout(input, init);
   if (response.status !== 401 || isAuthTokenEndpoint(input)) return response;
 
   let bodyText;
@@ -47,7 +70,7 @@ const fetchWithAuthRetry = async (input, init = {}) => {
     if (error || !data?.session?.access_token) return response;
     const retryHeaders = new Headers(init.headers || {});
     retryHeaders.set("Authorization", `Bearer ${data.session.access_token}`);
-    return await fetch(input, { ...init, headers: retryHeaders });
+    return await fetchWithTimeout(input, { ...init, headers: retryHeaders });
   } catch {
     return response;
   }
