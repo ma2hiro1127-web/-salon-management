@@ -78,7 +78,7 @@ Deno.serve(async (req) => {
 
     const { data: target, error: targetError } = await admin
       .from("profiles")
-      .select("id, auth_user_id, role, company_id, name")
+      .select("id, auth_user_id, role, company_id, name, email")
       .eq("id", targetProfileId)
       .maybeSingle();
     if (targetError) throw targetError;

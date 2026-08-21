@@ -24,6 +24,18 @@ test("getSupabaseErrorMessage: JWT以外の通常のSupabaseエラーはこれ�
   assert.equal(getSupabaseErrorMessage(null), "Supabase エラーが発生しました");
 });
 
+test("getSupabaseErrorMessage: 日本語を含まない生のPostgres/PostgRESTエラー文は一般利用者へそのまま出さず、一般的な文言に差し替える(販売前総合チェックで発見)", () => {
+  assert.equal(
+    getSupabaseErrorMessage({ message: 'duplicate key value violates unique constraint "stores_company_id_normalized_name_unique"' }),
+    "Supabase エラーが発生しました"
+  );
+  assert.equal(
+    getSupabaseErrorMessage({ message: "new row violates row-level security policy for table \"stores\"" }),
+    "Supabase エラーが発生しました"
+  );
+  assert.equal(getSupabaseErrorMessage({ message: "Failed to fetch" }), "Supabase エラーが発生しました");
+});
+
 test("normalizeDailyFieldSettings: 保存済みのfields内で明示的にtrueにした項目(口コミ数等)はデフォルトで上書きされず、そのまま残る", () => {
   const saved = { mode: "custom", fields: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: false, reviewCount: true } };
   const normalized = normalizeDailyFieldSettings(saved);

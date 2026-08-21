@@ -708,6 +708,12 @@ function App() {
   // 上書きされたりする)。refはレンダーを待たずに同期的に読み書きできるため、こちらを一次防御
   // として使う。
   const savingStoreRef = useRef(false);
+  // 費用入力フォームの二重送信防止(販売前総合チェックで発見: 他の保存系フォーム
+  // (店舗/招待/月間目標/まとめて入力)は既にref/busy stateでガードされていたが、費用入力だけ
+  // 何のガードも無かった——新規登録時はsubmitFixedCost内でcrypto.randomUUID()を呼ぶたびに
+  // 別のidが生成されるため、連打すると同じ費用が複数件登録され得た。store保存と同じ理由で
+  // stateではなくrefを使う(レンダーを待たず同期的に読み書きできるため)。
+  const savingFixedCostRef = useRef(false);
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
   // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
@@ -847,6 +853,10 @@ function App() {
   const [franchiseDetailRelationshipId, setFranchiseDetailRelationshipId] = useState("");
   const [franchiseActionBusyId, setFranchiseActionBusyId] = useState("");
   const [fixedForm, setFixedForm] = useState(() => ({ ...defaultFixedCostItem, startMonth: new Date().toISOString().slice(0, 7) }));
+  // savingFixedCostRef(同期的なガード)と対になる、ボタンの見た目(disabled)を更新するための
+  // state。refだけだと再レンダーが起きないためボタンが押せる見た目のままになる——他の保存系
+  // フォーム(店舗設定のstoreFormStatus等)と同じ二段構え。
+  const [fixedCostFormBusy, setFixedCostFormBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [businessDayInput, setBusinessDayInput] = useState("");
   const [manualBusinessDayInput, setManualBusinessDayInput] = useState("");
@@ -1839,7 +1849,10 @@ function App() {
     [appState, selectedStoreId, selectedMonth]
   );
   const todayEntry = useMemo(() => {
-    const todayIso = new Date().toISOString().slice(0, 10);
+    // 販売前総合チェックで発見: new Date().toISOString()はUTC基準の日付文字列を返すため、
+    // 日本時間の午前0:00〜8:59の間はUTC側がまだ前日のまま——「本日の実績」カードが実際には
+    // 前日のデータを見てしまっていた。formatLocalDate(JST基準)に統一する。
+    const todayIso = formatLocalDate(new Date());
     return dailyEntries.find((entry) => entry.date === todayIso) || null;
   }, [dailyEntries]);
   const todayActual = todayEntry ? Number(todayEntry.totalSales || todayEntry.technicalSales || 0) : 0;
@@ -4180,16 +4193,22 @@ function App() {
     // 通らないため実データは絶対に作られないが、それに任せると分かりにくい汎用エラーに
     // なるだけなので、他の書き込みハンドラと同じ明示的な通知に揃える。
     if (guardFranchiseReadOnly()) return;
+    // 販売前総合チェックで発見: 他の店舗作成系ハンドラ(handleSaveStore/handleCreateNewStore)は
+    // savingStoreRefで連打を防いでいたが、この複製ボタンだけガードが無く、連打すると
+    // 「{店舗名} コピー」という同名の店舗が複数作られ得た(DB側のユニーク制約が2件目以降を
+    // 拒否はするが、その23505エラーが下のcatchで翻訳されずraw表示されてしまう問題もあった)。
+    if (savingStoreRef.current) return;
+    savingStoreRef.current = true;
     const duplicateName = `${store.name} コピー`;
-    if (!isSupabaseConfigured) {
-      const nextCompany = {
-        ...currentCompany,
-        stores: [...(currentCompany?.stores || []), { ...store, id: `${store.id}-copy-${Date.now()}`, name: duplicateName, code: crypto.randomUUID(), isActive: true, status: "active" }],
-      };
-      persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
-      return;
-    }
     try {
+      if (!isSupabaseConfigured) {
+        const nextCompany = {
+          ...currentCompany,
+          stores: [...(currentCompany?.stores || []), { ...store, id: `${store.id}-copy-${Date.now()}`, name: duplicateName, code: crypto.randomUUID(), isActive: true, status: "active" }],
+        };
+        persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
+        return;
+      }
       // A locally-fabricated id here would never exist in the real stores table — every
       // subsequent daily_sales/monthly_targets write for it would fail FK/RLS. Create a real row.
       const createdStore = await createStoreRecord({ companyId: currentCompany?.id, name: duplicateName, code: crypto.randomUUID() });
@@ -4197,7 +4216,14 @@ function App() {
       const nextCompany = { ...currentCompany, stores: [...(currentCompany?.stores || []), nextStore] };
       persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
     } catch (error) {
-      setNotice(`店舗の複製に失敗しました: ${getSupabaseErrorMessage(error)}`);
+      // DB側の最終防御(stores_company_id_normalized_name_unique、handleSaveStore/
+      // handleCreateNewStoreのcatchと同じ理由・同じ翻訳)。
+      const message = (error?.code === "23505" && /stores_company_id_normalized_name_unique/.test(error?.message || ""))
+        ? "同じ名前の店舗が既に登録されています。同じ店舗を重複して作成することはできません。"
+        : `店舗の複製に失敗しました: ${getSupabaseErrorMessage(error)}`;
+      setNotice(message);
+    } finally {
+      savingStoreRef.current = false;
     }
   };
 
@@ -5830,6 +5856,18 @@ function App() {
   const submitFixedCost = async (event) => {
     event.preventDefault();
     if (guardFranchiseReadOnly()) return;
+    if (savingFixedCostRef.current) return;
+    savingFixedCostRef.current = true;
+    setFixedCostFormBusy(true);
+    try {
+      await submitFixedCostInner();
+    } finally {
+      savingFixedCostRef.current = false;
+      setFixedCostFormBusy(false);
+    }
+  };
+
+  const submitFixedCostInner = async () => {
     const isEditing = Boolean(fixedForm.id);
     if (!fixedForm.name) {
       setNotice("費用名は必須です");
@@ -6379,7 +6417,9 @@ function App() {
       setNotice("この日は店休日のため日締めできません");
       return;
     }
-    const todayIso = new Date().toISOString().slice(0, 10);
+    // todayEntryと同じ理由でformatLocalDate(JST基準)を使う——toISOString()のUTC基準だと
+    // 日本時間の午前0:00〜8:59の間、今日の日付が「未来日」と誤判定され日締めできなくなる。
+    const todayIso = formatLocalDate(new Date());
     if (dailyForm.date > todayIso) {
       setNotice("未来日は締めできません");
       return;
@@ -7580,7 +7620,7 @@ function App() {
                           ) : null}
                         </>
                       )}
-                      <button className="primary-button" type="submit">{fixedForm.id ? "更新" : "追加"}</button>
+                      <button className="primary-button" type="submit" disabled={fixedCostFormBusy}>{fixedCostFormBusy ? "保存中…" : (fixedForm.id ? "更新" : "追加")}</button>
                       {fixedForm.id ? <button className="secondary-button" type="button" onClick={cancelEditFixedCost}>キャンセル</button> : null}
                       <details className="advanced-fields">
                         <summary>詳細設定（任意）</summary>

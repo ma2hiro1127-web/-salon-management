@@ -79,10 +79,23 @@ export const getSupabaseConfigurationIssue = () => {
 // 復旧を試みた後もなお失敗したケース)は、生のメッセージを画面に出さず再ログインを促す
 // 文言に差し替える。それ以外のSupabaseエラーは従来通りそのまま返す(保存失敗時の具体的な
 // 原因表示など、既存の挙動は変えない)。
+const SUPABASE_ERROR_FALLBACK_MESSAGE = "Supabase エラーが発生しました";
+// このアプリが意図的に投げるエラー(throw new Error("店舗情報を確認できませんでした")等、
+// 呼び出し元がユーザー向けに書いた文言)は例外なく日本語(ひらがな/カタカナ/漢字)で
+// 書かれている——販売前総合チェックで発見: それ以外のケース、つまりPostgREST/Postgresが
+// 返す生のエラー文(基本的に英語、例:"duplicate key value violates unique constraint..."や
+// "new row violates row-level security policy for table...")がここを素通りして利用者へ
+// そのまま表示されてしまう経路が複数箇所にあった(要件23: 生のSupabaseエラーを一般利用者へ
+// 出さない、に反する)。日本語を含まないメッセージは「アプリ側が用意した文言ではない」と
+// みなし、一般的な文言に差し替える——詳細は呼び出し元がlogSupabaseErrorで必ずconsoleへ
+// 記録しているため、原因調査(要件19)は引き続き可能。
+const containsJapaneseText = (text) => /[぀-ヿ㐀-鿿]/.test(text);
 export const getSupabaseErrorMessage = (error) => {
   const message = error?.message || "";
   if (isAuthTimingErrorMessage(message)) return AUTH_SESSION_EXPIRED_MESSAGE;
-  return message || "Supabase エラーが発生しました";
+  if (!message) return SUPABASE_ERROR_FALLBACK_MESSAGE;
+  if (!containsJapaneseText(message)) return SUPABASE_ERROR_FALLBACK_MESSAGE;
+  return message;
 };
 
 // Common error-reporting shape for every Supabase read/write in the app: which operation,

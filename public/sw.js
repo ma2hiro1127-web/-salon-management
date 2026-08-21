@@ -280,7 +280,20 @@
 // 「値が無い」と誤認し、staffCount等をDBへ0として書き込んでしまう経路も存在した。
 // 修正: ログイン直後・加盟店閲覧切替時の軽量取得にstore_profilesを最初から含め、
 // undefinedになる空白期間そのものを無くした。DB書き込み経路・RLS・他の店舗設定は無変更。
-const CACHE_NAME = 'salon-manager-cache-v42';
+// v43: 販売前総合最終チェック。(1)「本日の実績」カード・日締めの未来日判定がUTC基準の
+// 日付比較を使っており、日本時間0:00〜8:59の間だけ前日データ参照/誤った未来日判定が
+// 起きていたのをJST基準(formatLocalDate)へ統一。(2)費用入力フォーム・店舗複製ボタンに
+// 連打による二重登録防止ガードを追加(他の保存フォームには既にあったが、この2つだけ
+// 抜けていた)。(3)delete-user Edge Functionのプロフィール取得クエリにemail列が
+// 含まれておらず、招待メール送信済みの未登録アカウントの後片付け処理が常に空振りしていた
+// のを修正。(4)Supabase/Postgresの生の英語エラー文が一般利用者へそのまま表示され得た
+// 経路を、アプリが用意した日本語メッセージ以外は一般的な文言に差し替えるよう修正
+// (詳細は引き続きconsoleへ記録)。(5)重複していたDBインデックスを1件削除。
+// (6)store_managerが自店舗名を変更できる、という既存のアプリ側仕様(canEditStoreName)が
+// RLS側のUPDATE権限漏れで実際には常に失敗していたのを、store名以外の列
+// (status/is_active/company_id/code等)は変更できないよう制限した上でRLS側にも追加。
+// 会社分離・他店舗分離・加盟店除外・全店舗ビュー仕様への変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v43';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
