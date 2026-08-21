@@ -2401,7 +2401,11 @@ function App() {
     // このシグネチャの時点で「自分が最新の呼び出しである」ことを確定させる — 以降、
     // setAppStateで結果を適用する直前に hydrateRequestRef.current === requestId を確認し、
     // 自分より新しい呼び出しが既に始まっていれば、非同期処理が先に終わっても結果を捨てる。
-    const requestId = ++hydrateRequestRef.current;
+    // 実際に取得へ進むことが確定するまで(下のhydrateInFlightRefガードを通過するまで)採番
+    // しない——即座に打ち切られるだけの重複呼び出しがここで番号を消費すると、その番号の分
+    // だけ後発扱いになり、本当に取得中だった側の正しい結果が「自分より新しい呼び出しが
+    // 始まった」と誤判定されて捨てられてしまう(下のsyncStatusと同じ不具合の型)。実際の
+    // 採番はガード通過後(下のrequestId = ++hydrateRequestRef.current;)で行う。
     // finally節でのみ参照するためtry外で宣言する(=companyId/targetMonthが確定するまでは
     // nullのまま。ガードで早期returnした場合や、それより前で例外が出た場合はfinallyで
     // 何もクリアしない、という判定に使う)。
@@ -2427,7 +2431,6 @@ function App() {
         availableStoreCount: (tenantState?.companies || []).find((item) => item.id === (companyIdOverride || profile?.company_id))?.stores?.length ?? null,
         attempt: hydrateRetryCountRef.current,
       });
-      setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
       const companyId = companyIdOverride || profile.company_id || tenantState?.currentCompanyId || "";
       const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
 
@@ -2459,6 +2462,18 @@ function App() {
         return;
       }
       hydrateInFlightRef.current = inFlightKey;
+      const requestId = ++hydrateRequestRef.current;
+      // 「データを更新中です…」が消えない不具合の根本原因だった箇所: 以前はこの関数の
+      // 冒頭(上のガードより前)で無条件に"syncing"をセットしていたため、既に同じキーの
+      // 取得が進行中で即座に打ち切られる(上のreturn)だけの、実質何もしない重複呼び出し
+      // ですら"syncing"をセットしていた。この重複呼び出しが「先行する取得が既に成功して
+      // "loaded"になった後」に発火すると(focus/visibilitychange/pageshowの同時発火や
+      // Realtime購読等、hydrateFromSupabaseの呼び出し元は複数あり、これらが同じcompany_id×
+      // 対象月に対してほぼ同時に発火することは珍しくない)、正しく完了した"loaded"状態を
+      // "syncing"へ巻き戻すだけで、その後何もしないまま返ってしまう——バナーが永久に
+      // 消えなくなる直接の原因だった。実際に取得処理へ進むことが確定した(=上のガードを
+      // 通過した)呼び出しだけが"syncing"をセットするようにする。
+      setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
 
       // daily_sales is the authoritative source for daily sales figures + day-closing state
       // (see upsertDailySalesEntry/updateDailySalesClosingState) — not the tenant_snapshots

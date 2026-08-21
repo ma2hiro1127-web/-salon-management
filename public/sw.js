@@ -310,7 +310,19 @@
 // 「—」/「取得中…」のプレースホルダーにする。前回セッションのキャッシュがある場合や、
 // 既に一度hydrateが成功した後は、実際の値(0円を含む)をそのまま表示する——新しい状態管理は
 // 追加せず、既存フラグ+既存データの有無だけで判定。
-const CACHE_NAME = 'salon-manager-cache-v45';
+// v46: 「データを更新中です…」がデータ取得完了後も消えない不具合の根本修正。原因:
+// hydrateFromSupabaseは複数の経路(focus/visibilitychange/pageshow/Realtime購読等)から
+// 同じcompany_id×対象月に対してほぼ同時に呼ばれることがあり、後発の重複呼び出しは
+// hydrateInFlightRefガードで即座に打ち切られる設計だった。しかしこのガードより前に無条件で
+// "syncing"をセットし、かつhydrateRequestRef(新しい呼び出しほど後続の結果を優先する仕組み)
+// の番号も消費していたため、実際には何も取得しないこの重複呼び出しが「先行する取得が
+// 既に成功して"loaded"になった後」に発火すると、正しく完了した状態を"syncing"へ巻き戻す
+// だけで、その後何もしないまま返ってしまい、バナーが永久に消えなくなっていた(データ自体は
+// 先行の取得で正しく反映済みのため、画面上は正常に見えるのに更新中表示だけ残る、という
+// 報告と一致)。実際に取得処理へ進むことが確定した呼び出しだけが"syncing"をセットし、
+// リクエスト番号を消費するように変更。データ取得・並列化・ランキング・権限・会社/店舗分離
+// への変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v46';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
