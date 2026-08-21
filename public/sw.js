@@ -269,7 +269,18 @@
 // 1回に統合する多重リクエスト対策を追加。(5)店舗切替だけでは取得内容が変わらない
 // (常に会社内全店舗分をまとめて取得する設計のため)ことを利用し、店舗切替時の不要な再取得を
 // 停止。RLS・権限体系・加盟店除外仕様への変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v41';
+// v42: 「在籍スタッフ数」を保存しても0人に戻る不具合の根本修正。原因: ログイン直後の軽量な
+// 初期読み込み(loadTenantStateFromSupabase/加盟店閲覧時のloadFranchiseCompanyMetadata)が
+// 作るstoreオブジェクトにstaffCount等(store_profilesテーブル由来)が最初から含まれておらず、
+// 常にundefinedだった。その直後に店舗基本設定フォームが表示されると、undefinedのまま
+// フォームへセットされてしまい、その後(数百ms〜数秒後)により完全なhydrateFromSupabaseが
+// store_profilesを取得して正しい値に更新しても、フォームの初期化effectは店舗idが変わらない
+// 限り再実行されないため、古い(未読込)表示のまま固定されてしまっていた。この状態で
+// 店舗名など他の項目だけを保存すると、「未入力=既存値を維持」のフォールバックがundefinedを
+// 「値が無い」と誤認し、staffCount等をDBへ0として書き込んでしまう経路も存在した。
+// 修正: ログイン直後・加盟店閲覧切替時の軽量取得にstore_profilesを最初から含め、
+// undefinedになる空白期間そのものを無くした。DB書き込み経路・RLS・他の店舗設定は無変更。
+const CACHE_NAME = 'salon-manager-cache-v42';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

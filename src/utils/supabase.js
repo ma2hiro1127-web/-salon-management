@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import { createInitialAppState, defaultDailyFieldSettings, defaultMonthlyTargetFieldSettings, costCategoryKeys } from "../data/defaults.js";
 import { normalizeRole } from "./permissions.js";
+import { buildStoreProfilesByStoreId } from "./storage.js";
 
 const getEnvValue = (key) => {
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
@@ -594,7 +595,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   const role = normalizeRole(profile.role || "staff");
   const companyFilter = role === "system_admin" ? null : profile.company_id;
 
-  const [{ data: companiesData, error: companiesError }, { data: storesData, error: storesError }, { data: profilesData, error: profilesError }, { data: userStoresData, error: userStoresError }] = await Promise.all([
+  const [{ data: companiesData, error: companiesError }, { data: storesData, error: storesError }, { data: profilesData, error: profilesError }, { data: userStoresData, error: userStoresError }, { data: storeProfilesData, error: storeProfilesError }] = await Promise.all([
     // ai_analysis_enabledはここでは選択しない — AI分析設定はgetCompanyAiAnalysisSettings/
     // updateCompanyAiAnalysisSettingだけを経由する独立した状態として扱う(tenant_snapshot/
     // このログイン時ブートストラップ経由では取得・保持しない)。
@@ -613,12 +614,31 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").order("created_at", { ascending: true })
       : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
     supabase.from("user_stores").select("user_id, company_id, store_id, is_primary").order("created_at", { ascending: true }),
+    // store_profiles(在籍スタッフ数・生産性計算人数・住所・電話番号等)。以前はここで取得
+    // しておらず、ログイン直後のこの軽量ブートストラップだけで作った store オブジェクトは
+    // staffCount等が常にundefinedだった——その後の完全なhydrateFromSupabase(store_profiles
+    // を実際に取得する側)が完了するまでの短い間、「店舗基本設定」フォームがこの未読込状態
+    // (staffCount=undefined)を先に読み込んでしまい、他のフィールドを何も変更していなくても
+    // 保存時にstaffCount等が0へ、住所等の未編集項目が空文字へ巻き戻る不具合の直接の原因だった
+    // (handleSaveStoreの「フォーム未入力時は既存値を維持する」フォールバックが、undefinedを
+    // 「既存値が0/空」と誤認していたため)。ここで最初から一緒に取得することでその空白期間
+    // 自体を無くす。
+    companyFilter
+      ? supabase.from("store_profiles").select("*").eq("company_id", companyFilter)
+      : supabase.from("store_profiles").select("*"),
   ]);
 
   if (companiesError) throw companiesError;
   if (storesError) throw storesError;
   if (profilesError) throw profilesError;
   if (userStoresError) throw userStoresError;
+  // store_profilesはstore_status_audit_logと同じくベストエフォート扱い——RLSで空配列が
+  // 返っても(通常は起こらないはずだが)ログイン自体をブロックしない。後続のhydrate
+  // FromSupabaseが同じテーブルを再取得して確実に埋める。
+  if (storeProfilesError) {
+    logSupabaseError({ operation: "loadTenantStateFromSupabase", table: "store_profiles", error: storeProfilesError });
+  }
+  const storeProfilesByStoreId = buildStoreProfilesByStoreId(storeProfilesData);
 
   const storesByCompany = new Map();
   (storesData || []).forEach((store) => {
@@ -669,6 +689,12 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
       isActive: store.is_active !== false,
       status: store.status || "active",
       settings: { ...createDefaultStoreSettings(), dailyFieldSettings: normalizeDailyFieldSettings(store.daily_field_settings) },
+      // store_profiles(在籍スタッフ数・生産性計算人数・住所等)が既に登録済みの店舗は、この
+      // 時点で正しい値を反映する(上のデフォルト値は「まだ一度もstore_profilesへ保存して
+      // いない、真に新規の店舗」の場合だけ使われる)。undefinedのまま後続のhydrateFrom
+      // Supabase任せにしないことが今回の在籍スタッフ数0リセット不具合の根本修正——詳細は
+      // 上のstore_profiles取得クエリのコメント参照。
+      ...(storeProfilesByStoreId[store.id] || {}),
     })),
   }));
 
@@ -733,15 +759,23 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
 export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
   if (!isSupabaseConfigured || !companyId) return { ok: false, error: new Error("companyId is required") };
   try {
-    const [{ data: companyRow, error: companyError }, { data: storesData, error: storesError }] = await Promise.all([
+    const [{ data: companyRow, error: companyError }, { data: storesData, error: storesError }, { data: storeProfilesData, error: storeProfilesError }] = await Promise.all([
       supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, created_at, updated_at").eq("id", companyId).maybeSingle(),
       supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").eq("company_id", companyId).order("created_at", { ascending: true }),
+      // loadTenantStateFromSupabaseと同じ理由(在籍スタッフ数0リセット不具合の根本修正) —
+      // 加盟店閲覧に切り替えた直後もstore_profilesを最初から一緒に取得し、undefinedの
+      // 空白期間を作らない。
+      supabase.from("store_profiles").select("*").eq("company_id", companyId),
     ]);
     if (companyError) throw companyError;
     if (storesError) throw storesError;
+    if (storeProfilesError) {
+      logSupabaseError({ operation: "loadFranchiseCompanyMetadata", table: "store_profiles", companyId, error: storeProfilesError });
+    }
     if (!companyRow) {
       return { ok: false, error: new Error("加盟店の会社情報を取得できませんでした（連携が承認されていない可能性があります）") };
     }
+    const storeProfilesByStoreId = buildStoreProfilesByStoreId(storeProfilesData);
 
     const company = {
       id: companyRow.id,
@@ -771,6 +805,7 @@ export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
         isActive: store.is_active !== false,
         status: store.status || "active",
         settings: { ...createDefaultStoreSettings(), dailyFieldSettings: normalizeDailyFieldSettings(store.daily_field_settings) },
+        ...(storeProfilesByStoreId[store.id] || {}),
       })),
     };
 
