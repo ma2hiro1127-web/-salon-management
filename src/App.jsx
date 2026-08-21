@@ -105,8 +105,6 @@ import {
   isSupabaseConfigured,
   getSupabaseConfigurationIssue,
   getSupabaseErrorMessage,
-  isAuthTimingErrorMessage,
-  AUTH_SESSION_EXPIRED_MESSAGE,
   signInWithEmail,
   signOutFromSupabase,
   getSupabaseSession,
@@ -188,7 +186,7 @@ import {
   updateFranchiseRelationship,
   loadCompanyPartnerships,
 } from "./utils/supabase.js";
-import { loadLatestTenantSnapshot, upsertTenantSnapshot } from "./utils/supabaseRemote.js";
+import { loadLatestTenantSnapshot, upsertTenantSnapshot, buildTenantSnapshotRow } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta, classifyEmailDuplicateForInvite } from "./utils/invitations.js";
@@ -214,13 +212,18 @@ const monthlyTabs = [
 ];
 
 const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
-// error.messageをそのまま画面表示に使ってよいかを判定する薄いヘルパー。JWT/セッションの
-// タイミング起因エラー(クロックスキュー等)は生のまま出さず、再ログイン案内に差し替える
-// (getSupabaseErrorMessageと同じ規約を、getSupabaseErrorMessageを経由しない箇所にも適用する)。
+// error.messageをそのまま画面表示に使ってよいかを判定する薄いヘルパー。以前はgetSupabase
+// ErrorMessageと同じ判定(JWT/セッションのタイミング起因エラーの差し替え)を別々に実装して
+// おり、片方だけ修正が及ばない状態になっていた——実際に、店舗切替時のstatement timeout調査で
+// 生のPostgresエラー文("canceling statement due to statement timeout"等、日本語を含まない
+// もの)がこの経路を通って画面へそのまま表示され得ることが判明した。二重実装をやめ、
+// getSupabaseErrorMessage(日本語を含まない生のエラー文は一般的な文言へ差し替える判定を
+// 含む、唯一の実装)へ委譲する——messageが空の場合だけ、呼び出し元ごとの独自フォールバック
+// 文言を使う。
 const resolveErrorReason = (error, fallback) => {
   const message = error instanceof Error ? error.message : "";
-  if (isAuthTimingErrorMessage(message)) return AUTH_SESSION_EXPIRED_MESSAGE;
-  return message || fallback;
+  if (!message) return fallback;
+  return getSupabaseErrorMessage({ message });
 };
 // 招待メール送信(send-invite-email Edge Function)専用のエラーメッセージ解決。Supabase標準の
 // メール送信環境はレート制限が厳しいため、レート制限由来のエラーだけは専用の日本語文言に
@@ -3114,11 +3117,61 @@ function App() {
       return { ok: true, skipped: true };
     }
     setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
-    const result = await upsertTenantSnapshot({ company, store, user, appState: nextState, targetMonth: nextState.selectedMonth || new Date().toISOString().slice(0, 7) });
+    // statement timeout不具合の調査で判明: 保存(tenant_snapshotsへのUPSERT)が一時的な
+    // 通信断・DB側の瞬間的な混雑等で失敗した場合、自動保存の呼び出し元
+    // (runPersistToSupabase)はlastPersistedRefを既に「保存試行済み」として更新済みのため、
+    // 利用者が別の変更をしない限り再試行が二度と起きなかった(=一時的な失敗がそのまま
+    // 恒久的な未保存状態になっていた)。ここで最大2回まで短い間隔(2秒→4秒)で自動再試行
+    // する——無限リトライは行わず、それでも失敗した場合だけ最終的なエラーとして扱う。
+    // 実際に取得すべきデータ(売上・費用等)はどれも個別テーブル経由の別の保存処理で
+    // 完結しており、この再試行はtenant_snapshots(高速初期表示・劣化フォールバック専用の
+    // 二次キャッシュ)だけに閉じた話——再試行中に他の操作をブロックすることはない
+    // (呼び出し元は結果をawaitするだけで、画面は既に通常操作可能な状態のまま)。
+    const PERSIST_MAX_ATTEMPTS = 3;
+    const PERSIST_RETRY_DELAYS_MS = [2000, 4000];
+    const persistTargetMonth = nextState.selectedMonth || new Date().toISOString().slice(0, 7);
+    let result = null;
+    for (let attempt = 1; attempt <= PERSIST_MAX_ATTEMPTS; attempt += 1) {
+      const startedAt = Date.now();
+      result = await upsertTenantSnapshot({ company, store, user, appState: nextState, targetMonth: persistTargetMonth });
+      // 診断ログ(statement timeout調査の再発防止): どの保存呼び出しがどれだけ処理時間を
+      // 要したか・成功したかを、開発者コンソールから直接追えるようにする——今回の不具合は
+      // 「店舗切替のたびに数MBのJSONをUPDATEしていた」ことが原因だったが、その症状(処理
+      // 時間の異常な長さ)がconsoleから見えていなかった。company_id/store_id/対象月に加え、
+      // 実際に送信したJSONペイロードのおおよそのサイズ(バイト数)も記録する——次に同種の
+      // 問題が起きた場合、このログだけで「肥大化したデータのUPDATEが原因かどうか」を
+      // 即座に切り分けられるようにするため。
+      console.info("[persist-tenant-snapshot]", {
+        companyId: company.id,
+        storeId: store.id,
+        targetMonth: persistTargetMonth,
+        attempt,
+        durationMs: Date.now() - startedAt,
+        ok: result.ok,
+        skipped: Boolean(result.skipped),
+        // 実際にSupabaseへ送信するJSON payload(buildTenantSnapshotRowが組み立てた後の、
+        // 軽量フィールドだけを含む形)のおおよそのバイト数。appState全体のサイズではない
+        // ——statement timeout不具合の原因(肥大化したpayload)を今後も直接監視できるように、
+        // 実際に送る値そのものを測る。
+        payloadBytes: (() => {
+          try { return JSON.stringify(buildTenantSnapshotRow({ company, store, user, appState: nextState, targetMonth: persistTargetMonth }).payload).length; } catch { return null; }
+        })(),
+      });
+      if (result.ok || result.skipped) break;
+      if (attempt < PERSIST_MAX_ATTEMPTS) {
+        console.warn("[persist-retry] upsertTenantSnapshot failed, retrying", { attempt, reason: result?.error?.message });
+        await new Promise((resolve) => window.setTimeout(resolve, PERSIST_RETRY_DELAYS_MS[attempt - 1]));
+      }
+    }
     if (!result.ok || result.skipped) {
-      const reason = result?.error?.message || "不明な理由";
+      // 実機で発生した"canceling statement due to statement timeout"のような生のPostgres
+      // エラー文が画面上部へそのまま表示されていた不具合の修正。getSupabaseErrorMessage
+      // (日本語を含まない生のエラー文は一般的な文言へ差し替える)を経由させる——詳細は
+      // console.warnに残るため、原因調査は引き続き可能。
+      const reason = result?.error ? getSupabaseErrorMessage(result.error) : "不明な理由";
       console.warn("Supabase sync skipped", { reason, result });
-      setSyncStatus({ status: "error", message: `同期に失敗しました: ${reason}`, timestamp: new Date().toISOString(), error: true });
+      // 自動再試行後もなお失敗した場合だけ、ここへ到達する(上のループで最大2回再試行済み)。
+      setSyncStatus({ status: "error", message: `同期に失敗しました(自動で再試行しましたが解決しませんでした): ${reason}`, timestamp: new Date().toISOString(), error: true });
       return result;
     }
     setSyncStatus({ status: "synced", message: "同期済み", timestamp: new Date().toISOString(), error: false });

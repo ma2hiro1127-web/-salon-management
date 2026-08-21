@@ -14,6 +14,16 @@ import { mergeRemoteAppState, normalizeAppState } from "./storage.js";
 // to persist reliably, it needs its own table the same way this session's fixes added one for
 // fixed_costs/variable_costs/monthly_closing_items/company_settings/store_profiles, not a new
 // reliance on this blob.
+//
+// statement timeout不具合の根本修正(buildTenantSnapshotRow参照): 以前はappStateを丸ごと
+// このpayloadへコピーしており、上記の「各ドメインが自前のテーブルを持つ」設計に反して、
+// 同じデータを二重に(日次データ等は日単位で増え続ける形で)保存していた。長期間使われた
+// 会社では1行が3MBを超え、店舗切替のような些細な変更でもこのJSONを丸ごとUPDATEすることに
+// なり、statement_timeoutへ到達していた。buildTenantSnapshotRowは現在、companies/users/
+// 選択状態など「個別テーブルでカバーされない軽量な情報」だけをallowlist方式で書き込む
+// ——このためloadLatestTenantSnapshot以下の「複数行をマージする」ロジックも、実質的には
+// companies/usersの断片を補い合う程度の役割になっている(重いフィールドはどの行にも
+// 含まれないため、マージしても増えない)。
 
 const getEnvValue = (key) => {
   const env = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env : {};
@@ -32,6 +42,21 @@ const buildSnapshotId = ({ company, store, user, targetMonth }) => {
   return `${companyId}:${storeId}:${resolvedMonth}`;
 };
 
+// statement timeout不具合の根本修正(2026年、実運用で3.4MBに達した行が確認された):
+// このpayloadは以前 `{...(appState || {})}` で丸ごとappStateをコピーしていたため、
+// dailyResults/fixedCosts/targets等——いずれもdaily_sales/fixed_costs/monthly_targets等、
+// 独自のSupabaseテーブルを持ち、hydrateFromSupabaseが毎回そこから直接取得し直すフィールド
+// ——まで含めて、ここへ二重に保存していた。会社が長期間使われて日次データ・費用等が蓄積
+// するほどこのJSONペイロードが肥大化し、店舗切替のような些細な変更のたびに数MBのJSONを
+// UPDATEすることになり、Postgresのstatement_timeoutへ到達していた(実際に3,386,046バイトの
+// 行を確認済み)。
+//
+// tenant_snapshotsはログイン直後の「取得完了前の暫定表示」「hydrateFromSupabase失敗時の
+// 劣化フォールバック」専用であり(loadLatestTenantSnapshotの説明参照)、正式なデータは
+// 常に個別テーブルが真実の情報源——このpayloadに含めるのは、それらのテーブルでは
+// カバーされない軽量な選択状態・構造情報だけにする(allowlist方式。除外リストではなく
+// 許可リストにすることで、将来appStateへ大きなフィールドが追加されても自動的にここへは
+// 含まれない=同じ肥大化が再発しない)。
 export const buildTenantSnapshotRow = ({ company, store, user, appState, targetMonth = null }) => {
   const resolvedMonth = targetMonth || appState?.selectedMonth || new Date().toISOString().slice(0, 7);
   const resolvedCompanyId = company?.id || appState?.currentCompanyId || "";
@@ -39,12 +64,31 @@ export const buildTenantSnapshotRow = ({ company, store, user, appState, targetM
   const resolvedUserId = resolveProfileUserId(user);
   const resolvedAuthUserId = resolveAuthUserId(user);
   const payload = {
-    ...(appState || {}),
+    // 構造情報(companies/users): 各店舗のstore_profiles/store_input_settings由来の値も
+    // 含む店舗一覧だが、これ自体は日次データのような日単位で増え続けるものではなく、
+    // 店舗数に応じた緩やかなサイズに留まるため許容する——「ログイン直後、まだ何も取得
+    // していない一瞬」に会社名・店舗一覧だけでも表示できることの価値の方が大きい。
+    companies: appState?.companies || [],
+    users: appState?.users || [],
+    // 選択状態(すべて数十バイト程度の軽量な値)。
+    stores: appState?.stores || [],
     selectedStore: store?.name || appState?.selectedStore || "",
+    selectedStoreId: resolvedStoreId || appState?.selectedStoreId || "",
     selectedMonth: resolvedMonth,
+    isViewingFranchise: Boolean(appState?.isViewingFranchise),
+    homeCompanyIdBeforeFranchiseView: appState?.homeCompanyIdBeforeFranchiseView || "",
+    preferences: appState?.preferences || {},
+    taxSettings: appState?.taxSettings || {},
     currentCompanyId: resolvedCompanyId,
     currentUserId: resolvedUserId,
     currentAuthUserId: resolvedAuthUserId,
+    // dailyResults/targets/fixedCosts/costMonthlyAmounts/storeInventoryBalances/
+    // variableCosts/monthClosing/monthClosingStatus/storeHolidays/allStoresTargets/
+    // allStoresBusinessDaySettings/allStoresHolidays/monthlyReviews/storeStatusAuditLog/
+    // cashBreakdownResults/dailyBatchEntries/businessDaySettings/dayClosingStates/
+    // dayClosingUpdatedAt/dailyResultBackups/companySnapshotsは意図的に含めない——上の
+    // コメント参照。呼び出し元(hydrateFromSupabaseの「snapshotがある」分岐)はこれらの
+    // キーが無いことを前提に、必ず個別テーブルの取得結果で埋める設計になっている。
   };
 
   return {

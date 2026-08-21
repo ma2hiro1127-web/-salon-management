@@ -331,7 +331,21 @@
 // (店舗保存・費用保存・月間目標保存・自動保存キュー)にも無いか確認——いずれも正しくガード
 // 通過後にのみ状態を変更していることを確認済み(修正不要)。動作(実際の取得タイミング・
 // 結果)自体は変更していない。RLS・権限・会社/店舗分離・データ保存経路への変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v47';
+// v48: 店舗切替時の"canceling statement due to statement timeout"を根本修正。原因は
+// tenant_snapshots(高速初期表示・劣化フォールバック専用のキャッシュテーブル)がappStateを
+// 丸ごとJSON化して保存しており、dailyResults/fixedCosts/targets等——いずれも独自の
+// Supabaseテーブルを持ち、hydrateFromSupabaseが毎回そこから取得し直すフィールド——まで
+// 二重に保存していたため、長期間使われた会社では1行が3.4MBに達し、店舗切替のような
+// 些細な変更のUPDATEでもこのJSON全体を書き込むことになり、statement_timeoutへ到達して
+// いた。buildTenantSnapshotRowを、個別テーブルでカバーされない軽量な情報(companies/
+// users/選択状態)だけを書き込むallowlist方式へ変更——3.4MBの原因データは書き込み対象から
+// 完全に外れる。あわせて、(1)一時的な保存失敗を最大2回まで自動再試行(無限リトライはしない)、
+// (2)生のPostgresエラー文が画面へ表示されていた別経路(resolveErrorReason)も
+// getSupabaseErrorMessageへ統一、(3)保存処理の所要時間・payloadサイズを診断ログへ記録、
+// を実施。既存の大きいtenant_snapshots行は次回の保存で自動的に縮小される(即時のデータ
+// 移行は不要)。日次入力・費用・目標等の実データ保存経路・RLS・権限・会社/店舗分離への
+// 変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v48';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
