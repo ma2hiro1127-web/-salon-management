@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -124,6 +124,72 @@ test("getStoreMonthSalesTotal: 実日次入力もまとめて入力も無い月�
 
   assert.equal(result.sales, 0);
   assert.equal(result.hasEntries, false);
+});
+
+// 「データを更新中です…」が消えない不具合(2件連続、いずれも同じ型)の再発防止テスト。
+// 詳細はresolveHydrateDispatch(storage.js)自身のコメント参照——打ち切られる呼び出しが
+// 共有状態(リクエスト番号・UIのsyncing表示)へ一切触れないことを、実際のReact/App.jsxを
+// 介さずに検証する。
+test("resolveHydrateDispatch: 同一キーの取得が既に進行中なら打ち切り、リクエスト番号を消費しない(2件連続バグの再発防止)", () => {
+  const result = resolveHydrateDispatch({
+    currentInFlightKey: "company-1::2026-08",
+    candidateKey: "company-1::2026-08",
+    currentRequestCounter: 5,
+  });
+  assert.equal(result.shouldProceed, false);
+  assert.equal(result.requestId, null);
+  // 打ち切られる呼び出しはinFlightKey・requestCounterのどちらも変更しない(呼び出し元は
+  // これらの値をそのまま自分のrefへ書き戻すだけでよい設計) — この値が変わっていたら、
+  // 「打ち切られた呼び出しが共有状態を書き換えてしまう」バグが再発したことになる。
+  assert.equal(result.nextInFlightKey, "company-1::2026-08");
+  assert.equal(result.nextRequestCounter, 5);
+});
+
+test("resolveHydrateDispatch: 異なるキー(会社/対象月違い)なら進行し、リクエスト番号を1つ進める", () => {
+  const result = resolveHydrateDispatch({
+    currentInFlightKey: "company-1::2026-07",
+    candidateKey: "company-1::2026-08",
+    currentRequestCounter: 5,
+  });
+  assert.equal(result.shouldProceed, true);
+  assert.equal(result.requestId, 6);
+  assert.equal(result.nextInFlightKey, "company-1::2026-08");
+  assert.equal(result.nextRequestCounter, 6);
+});
+
+test("resolveHydrateDispatch: 進行中の取得が無い(null)場合は常に進行する", () => {
+  const result = resolveHydrateDispatch({
+    currentInFlightKey: null,
+    candidateKey: "company-1::2026-08",
+    currentRequestCounter: 0,
+  });
+  assert.equal(result.shouldProceed, true);
+  assert.equal(result.requestId, 1);
+});
+
+test("resolveHydrateDispatch: 打ち切りが連続しても、その間にリクエスト番号が進まないことを確認(打ち切りは真に何もしないという不変条件)", () => {
+  let counter = 0;
+  // 1件目: 実際に取得へ進む
+  const first = resolveHydrateDispatch({ currentInFlightKey: null, candidateKey: "company-1::2026-08", currentRequestCounter: counter });
+  counter = first.nextRequestCounter;
+  const inFlightKey = first.nextInFlightKey;
+  assert.equal(first.requestId, 1);
+
+  // 2件目・3件目: 同じキーへの重複呼び出し(focus/visibilitychange/pageshowの同時発火を想定)。
+  // 何度打ち切られてもcounterは1のまま——打ち切られた呼び出し「だけ」が後から発火しても、
+  // 本来のrequestId(1)が「自分より新しい呼び出しが始まった」と誤判定されることは無い。
+  const second = resolveHydrateDispatch({ currentInFlightKey: inFlightKey, candidateKey: "company-1::2026-08", currentRequestCounter: counter });
+  assert.equal(second.shouldProceed, false);
+  counter = second.nextRequestCounter;
+  const third = resolveHydrateDispatch({ currentInFlightKey: inFlightKey, candidateKey: "company-1::2026-08", currentRequestCounter: counter });
+  assert.equal(third.shouldProceed, false);
+  counter = third.nextRequestCounter;
+
+  assert.equal(counter, 1);
+  // 1件目のrequestId(1)は、counterが1のままである限り「最新」であり続ける——
+  // hydrateFromSupabase側のstale判定(hydrateRequestRef.current !== requestId)が
+  // 誤ってfirst.requestIdを古い扱いにしないことを保証する。
+  assert.equal(counter, first.requestId);
 });
 
 test("calculateMonthSummary: adCost/adRate only count the 広告費 category (and legacy 定額広告費), never the whole cost total", () => {

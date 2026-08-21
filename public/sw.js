@@ -322,7 +322,16 @@
 // 報告と一致)。実際に取得処理へ進むことが確定した呼び出しだけが"syncing"をセットし、
 // リクエスト番号を消費するように変更。データ取得・並列化・ランキング・権限・会社/店舗分離
 // への変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v46';
+// v47: 全体安定化対応。前回(v46)の「データを更新中です…」が消えない不具合の修正を、
+// アプリ内に素朴なref比較として埋め込んだままにせず、hydrateFromSupabaseの呼び出し調停
+// ロジック(重複呼び出しの打ち切り判定・リクエスト番号発行)をresolveHydrateDispatchという
+// 純粋関数(storage.js)へ抽出し、「打ち切られる呼び出しは共有状態に一切触れない」という
+// 不変条件を自動テストで直接検証できるようにした(再発防止テスト4件追加)。あわせて、
+// 同じ「in-flightガードの前に共有状態へ触れてしまう」というバグの型が他の保存系ガード
+// (店舗保存・費用保存・月間目標保存・自動保存キュー)にも無いか確認——いずれも正しくガード
+// 通過後にのみ状態を変更していることを確認済み(修正不要)。動作(実際の取得タイミング・
+// 結果)自体は変更していない。RLS・権限・会社/店舗分離・データ保存経路への変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v47';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

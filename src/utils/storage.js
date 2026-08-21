@@ -67,6 +67,39 @@ export const normalizeStoreNameForDuplicateCheck = (name) =>
     .toLowerCase()
     .replace(/\s+/g, " ");
 
+// hydrateFromSupabase(App.jsx)の呼び出し調停ロジック。同じcompany_id×対象月への取得は
+// focus/visibilitychange/pageshow/Supabase Realtime購読など複数の経路からほぼ同時に発火
+// し得るため、既に同じキーの取得が進行中なら後発の呼び出しを即座に打ち切り(先行呼び出しに
+// 任せる)、そうでなければ実際に取得へ進む——その判定と、進む場合だけのリクエスト番号発行
+// (新しい呼び出しほど後続の結果を優先するための、単調増加するカウンタ)を1つの純粋関数に
+// まとめたもの。
+//
+// このロジックは元々App.jsxのhydrateFromSupabase内にref比較として直接書かれていたが、
+// 同じ箇所で関連する2件の不具合が続けて発生したため(いずれも「何もしない打ち切りのはずの
+// 呼び出しが、実は何かを変えてしまっていた」という同じ型のバグ):
+//   1. 打ち切られる呼び出しもリクエスト番号を消費していたため、本当に取得中だった側の
+//      正しい結果が「自分より新しい呼び出しが始まった」と誤判定されて捨てられ得た。
+//   2. 打ち切られる呼び出しがガードより前に無条件でUIの"syncing"状態をセットしていたため、
+//      先行する取得が既に成功して"loaded"になった後にこの呼び出しが発火すると、正しい
+//      状態を"syncing"へ巻き戻すだけで、その後何もしないまま返ってしまい、
+//      「データを更新中です…」が永久に消えなくなっていた。
+// 両方とも根本原因は同じ(打ち切られる呼び出しが共有状態に触れてしまう設計)だったため、
+// ここへ抽出してテストし、「打ち切られる呼び出しは本当に何もしない」という不変条件を
+// 直接検証できるようにする。
+//
+// - currentInFlightKey: hydrateInFlightRef.currentの現在値(進行中の取得のキー、無ければnull)
+// - candidateKey: これから呼ばれようとしている呼び出しのキー(`${companyId}::${targetMonth}`)
+// - currentRequestCounter: hydrateRequestRef.currentの現在値
+export const resolveHydrateDispatch = ({ currentInFlightKey, candidateKey, currentRequestCounter }) => {
+  if (currentInFlightKey === candidateKey) {
+    // 打ち切り: 呼び出し元の共有状態(inFlightRef/requestCounter/syncStatus等)には
+    // 一切触れない、という契約を型で示すため、変更しない値をそのまま返す。
+    return { shouldProceed: false, nextInFlightKey: currentInFlightKey, requestId: null, nextRequestCounter: currentRequestCounter };
+  }
+  const nextRequestCounter = currentRequestCounter + 1;
+  return { shouldProceed: true, nextInFlightKey: candidateKey, requestId: nextRequestCounter, nextRequestCounter };
+};
+
 export const STORAGE_KEYS = {
   theme: "salon-theme",
   appState: "salon-goal-app-v2",

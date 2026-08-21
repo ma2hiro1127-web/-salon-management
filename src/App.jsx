@@ -71,6 +71,7 @@ import {
   buildMonthlyReviewKey,
   monthlyReviewRowToEntry,
   resolvePreferredStoreSelection,
+  resolveHydrateDispatch,
   normalizeStoreNameForDuplicateCheck,
   calculateAllStoresMonthSummary,
   buildAllStoresTargetStateFromRows,
@@ -2401,11 +2402,9 @@ function App() {
     // このシグネチャの時点で「自分が最新の呼び出しである」ことを確定させる — 以降、
     // setAppStateで結果を適用する直前に hydrateRequestRef.current === requestId を確認し、
     // 自分より新しい呼び出しが既に始まっていれば、非同期処理が先に終わっても結果を捨てる。
-    // 実際に取得へ進むことが確定するまで(下のhydrateInFlightRefガードを通過するまで)採番
-    // しない——即座に打ち切られるだけの重複呼び出しがここで番号を消費すると、その番号の分
-    // だけ後発扱いになり、本当に取得中だった側の正しい結果が「自分より新しい呼び出しが
-    // 始まった」と誤判定されて捨てられてしまう(下のsyncStatusと同じ不具合の型)。実際の
-    // 採番はガード通過後(下のrequestId = ++hydrateRequestRef.current;)で行う。
+    // 実際の判定・採番はresolveHydrateDispatch(storage.js、テスト済みの純粋関数)へ委譲する
+    // ——「打ち切られる呼び出しは共有状態に一切触れない」という不変条件を、この関数の中に
+    // 素朴なref比較として埋め込むのではなく、テストで直接検証できる形にするため。
     // finally節でのみ参照するためtry外で宣言する(=companyId/targetMonthが確定するまでは
     // nullのまま。ガードで早期returnした場合や、それより前で例外が出た場合はfinallyで
     // 何もクリアしない、という判定に使う)。
@@ -2453,26 +2452,25 @@ function App() {
       });
       const targetMonth = tenantState?.selectedMonth || new Date().toISOString().slice(0, 7);
 
-      // 上のhydrateInFlightRefの説明の通り、company_id×対象月が完全一致する取得が既に
-      // 進行中なら、ここで打ち切って先行呼び出しに任せる(店舗切替はキーに影響しない —
-      // 店舗を問わず常に会社全体を取得する設計のため、店舗だけが違う呼び出しは重複とみなす)。
-      inFlightKey = `${companyId}::${targetMonth}`;
-      if (hydrateInFlightRef.current === inFlightKey) {
-        inFlightKey = null; // finallyで(先行呼び出し分の)キーを誤って消さないようにする
+      // company_id×対象月が完全一致する取得が既に進行中なら、ここで打ち切って先行呼び出しに
+      // 任せる(店舗切替はキーに影響しない — 店舗を問わず常に会社全体を取得する設計のため、
+      // 店舗だけが違う呼び出しは重複とみなす)。判定・採番はresolveHydrateDispatch(storage.js)
+      // に委譲——打ち切られる場合はinFlightKey/requestCounterのどちらも変更しない値が返る
+      // ため、この関数の共有状態(hydrateInFlightRef/hydrateRequestRef/syncStatus)には
+      // 一切触れずに早期returnできる(過去2件の不具合の再発防止、詳細は同関数のコメント参照)。
+      const candidateKey = `${companyId}::${targetMonth}`;
+      const dispatch = resolveHydrateDispatch({
+        currentInFlightKey: hydrateInFlightRef.current,
+        candidateKey,
+        currentRequestCounter: hydrateRequestRef.current,
+      });
+      if (!dispatch.shouldProceed) {
         return;
       }
-      hydrateInFlightRef.current = inFlightKey;
-      const requestId = ++hydrateRequestRef.current;
-      // 「データを更新中です…」が消えない不具合の根本原因だった箇所: 以前はこの関数の
-      // 冒頭(上のガードより前)で無条件に"syncing"をセットしていたため、既に同じキーの
-      // 取得が進行中で即座に打ち切られる(上のreturn)だけの、実質何もしない重複呼び出し
-      // ですら"syncing"をセットしていた。この重複呼び出しが「先行する取得が既に成功して
-      // "loaded"になった後」に発火すると(focus/visibilitychange/pageshowの同時発火や
-      // Realtime購読等、hydrateFromSupabaseの呼び出し元は複数あり、これらが同じcompany_id×
-      // 対象月に対してほぼ同時に発火することは珍しくない)、正しく完了した"loaded"状態を
-      // "syncing"へ巻き戻すだけで、その後何もしないまま返ってしまう——バナーが永久に
-      // 消えなくなる直接の原因だった。実際に取得処理へ進むことが確定した(=上のガードを
-      // 通過した)呼び出しだけが"syncing"をセットするようにする。
+      inFlightKey = dispatch.nextInFlightKey;
+      hydrateInFlightRef.current = dispatch.nextInFlightKey;
+      hydrateRequestRef.current = dispatch.nextRequestCounter;
+      const requestId = dispatch.requestId;
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
 
       // daily_sales is the authoritative source for daily sales figures + day-closing state
@@ -3052,10 +3050,12 @@ function App() {
         void hydrateFromSupabase({ authUser, profile, tenantState, companyIdOverride });
       }, delayMs);
     } finally {
-      // 自分がhydrateInFlightRefへ書き込んだ本人である場合だけクリアする — 早期return時
-      // (別の呼び出しが既に同じキーで進行中だった場合)はinFlightKeyをnullに戻してあるため
-      // ここでは何もしない。万一、自分の完了までの間に別のキーで新しい呼び出しが既にrefを
-      // 上書きしていた場合も、そのキーを誤って消さない(===で厳密に一致した時だけクリア)。
+      // 自分がhydrateInFlightRefへ書き込んだ本人である場合だけクリアする — resolveHydrate
+      // Dispatchがshould Proceed:falseを返して早期returnした場合、inFlightKeyは初期値の
+      // nullのまま(実際に取得へ進むと確定した呼び出しだけがdispatch.nextInFlightKeyを代入
+      // する)ため、ここでは何もしない。万一、自分の完了までの間に別のキーで新しい呼び出しが
+      // 既にrefを上書きしていた場合も、そのキーを誤って消さない(===で厳密に一致した時だけ
+      // クリア)。
       if (inFlightKey && hydrateInFlightRef.current === inFlightKey) {
         hydrateInFlightRef.current = null;
       }
