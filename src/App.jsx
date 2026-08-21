@@ -7197,37 +7197,35 @@ function App() {
                 <div className="ranking-list">
                   {currentCompanyStores.map((store) => (
                     <div key={store.id} className="ranking-row ranking-row-skeleton">
-                      <div className="ranking-row-top">
-                        <div className="ranking-row-rank">—</div>
-                        <div className="ranking-row-main">
-                          <span className="ranking-row-name">{store.name}</span>
+                      <div className="ranking-row-rank">—</div>
+                      <div className="ranking-row-main">
+                        <span className="ranking-row-name">{store.name}</span>
+                        <div className="ranking-row-figures">
                           <strong className="ranking-row-sales">取得中…</strong>
+                          <small className="ranking-row-previous">&nbsp;</small>
                         </div>
                       </div>
-                      <div className="ranking-row-bottom"><small className="ranking-row-previous">&nbsp;</small></div>
                     </div>
                   ))}
                 </div>
               ) : (
                 <div className="ranking-list">
                   {/* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更
-                      (rankingRowsをそのまま描画するだけ)。表示だけ、上位3位はメダルで強調、
-                      4位以下は行全体を少し弱める(ranking-row-muted)ことで、主役である
-                      自店舗のKPIより目立たないようにする。
-                      追加UI調整: 「先月」を現在売上の横から下段へ移動し、横幅不足による
-                      崩れ・店舗名の過度な省略を解消する(1行目=順位/店舗名/現在売上、
-                      2行目=先月売上のみの2段構成)。 */}
+                      (rankingRowsをそのまま描画するだけ)。表示は上位3位をメダルで強調するのみ
+                      ——4位以下も店舗名・現在売上は同じ濃さで表示し、非活性に見えないようにする
+                      (順位差はメダル/順位番号だけで表現する、追加UI最終調整)。
+                      追加UI最終調整: 現在売上と先月売上の左端を揃えるため、両方を1つの
+                      縦積みブロック(ranking-row-figures)にまとめ、先月売上は現在売上の
+                      真下・同じ左端に配置する。 */}
                   {rankingRows.map((row) => (
-                    <div key={row.storeId} className={`ranking-row ${row.currentRank > 3 ? "ranking-row-muted" : ""}`}>
-                      <div className="ranking-row-top">
-                        <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
-                        <div className="ranking-row-main">
-                          <span className="ranking-row-name">{row.storeName}</span>
+                    <div key={row.storeId} className="ranking-row">
+                      <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
+                      <div className="ranking-row-main">
+                        <span className="ranking-row-name">{row.storeName}</span>
+                        <div className="ranking-row-figures">
                           <strong className="ranking-row-sales">{money(row.sales)}</strong>
+                          <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "—"}</small>
                         </div>
-                      </div>
-                      <div className="ranking-row-bottom">
-                        <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "—"}</small>
                       </div>
                     </div>
                   ))}
