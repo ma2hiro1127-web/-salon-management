@@ -515,22 +515,24 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-chat-input-row textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; font: inherit; max-height: 120px; }
 .ai-chat-input-row button { flex-shrink: 0; }
 .today-result-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--accent-soft); }
-/* 店舗売上ランキング: 順位・店舗名・現在売上・先月売上だけのシンプルな横一列表示
+/* 店舗売上ランキング: 順位・店舗名・現在売上・先月売上だけのシンプルな表示
    (達成率%・前回順位・トレンド矢印・展開式の詳細は廃止)。 */
 .ranking-list { display: flex; flex-direction: column; gap: 8px; }
-.ranking-row { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; box-shadow: var(--shadow); box-sizing: border-box; }
+/* 追加UI調整: 「先月」を現在売上の横から下段へ移動したため、行全体を縦積み(1行目=順位/
+   店舗名/現在売上、2行目=先月売上)にする。横幅不足による崩れ・店舗名の過度な省略を解消。 */
+.ranking-row { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; box-shadow: var(--shadow); box-sizing: border-box; }
+.ranking-row-top { display: flex; align-items: center; gap: 12px; }
 .ranking-row-rank { width: 32px; height: 32px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-weight: 800; font-size: 0.85rem; flex-shrink: 0; }
 .ranking-row-main { display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-/* 追加UI/UX微修正(要件2): 店舗名が「フィー…」のように省略されすぎるとの指摘のため、
-   店舗名エリアを優先的に広げる(flex:1で余白を優先的に取得、min-widthも64px→108pxへ拡大)。
-   売上は右寄せのまま固定幅を少し絞り(flex-shrink:0で潰れないようにしつつmin-width/文字
-   サイズを微調整)、店舗名の識別性を優先する。ランキングの集計・順位ロジックは無変更。 */
-.ranking-row-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 108px; }
-.ranking-row-sales { font-size: 1rem; font-weight: 800; color: var(--text); white-space: nowrap; margin-left: auto; flex-shrink: 0; min-width: 88px; text-align: right; }
-/* 先月列を固定幅にすることで、行ごとに数字の桁数が違っても店舗名の切れる位置が
-   行によってバラバラにならないようにする(店舗名の折り返し列の残り幅を揃える)。
-   追加UI/UX微修正(要件2): 補助情報として今より少し弱める(文字を小さく・少し薄く)。 */
-.ranking-row-previous { color: var(--muted); font-size: 0.72rem; white-space: nowrap; flex: 0 0 auto; min-width: 92px; text-align: right; opacity: 0.85; }
+/* 先月が同じ行から無くなった分、店舗名エリアに使える幅が増えたため、省略されすぎないよう
+   最小幅を確保しつつflex:1で余白を優先的に取得する(店舗名の識別性を優先)。現在売上は
+   主情報としてやや大きめのまま右寄せ固定幅を保つ。ランキングの集計・順位ロジックは無変更。 */
+.ranking-row-name { font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1 1 auto; min-width: 96px; }
+.ranking-row-sales { font-size: 1.05rem; font-weight: 800; color: var(--text); white-space: nowrap; margin-left: auto; flex-shrink: 0; text-align: right; }
+/* 先月売上は2行目に単独表示する補助情報のため、現在売上の下に来るよう右寄せにし、
+   文字を小さく・薄くして主情報(現在売上)との優先度の差を明確にする。 */
+.ranking-row-bottom { display: flex; justify-content: flex-end; }
+.ranking-row-previous { color: var(--muted); font-size: 0.74rem; white-space: nowrap; opacity: 0.85; }
 /* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更のまま、4位以下の
    行だけ視覚的に少し弱める(不透明度を落とすのみ、金額の可読性は保つ)。 */
 .ranking-row-muted { opacity: 0.72; }
@@ -589,9 +591,8 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .panel { padding: 14px; border-radius: 18px; }
   .business-progress-grid, .store-form-grid, .store-metrics { grid-template-columns: 1fr; }
   .daily-section-card, .daily-settings-card, .setup-card, .today-result-card { padding: 12px; }
-  .ranking-row { padding: 10px 12px; gap: 8px; }
-  /* 横幅が足りない分は「先月◯◯」だけ2段目に落とす(店舗名+現在売上は1行目を維持)。 */
-  .ranking-row-previous { flex-basis: 100%; text-align: right; margin-top: -2px; }
+  .ranking-row { padding: 10px 12px; }
+  .ranking-row-top { gap: 8px; }
   .status-pill { width: 100%; justify-content: center; }
   .button-row { gap: 10px; }
 }

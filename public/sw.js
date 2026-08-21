@@ -386,7 +386,12 @@
 // 「要注意」→「ペース確認」など状態文言をやわらげ、状態表示(色・バッジ)は月末着地予測
 // カードのみに集約(月間達成率カードは達成率と営業進捗比の差のみを表示)、客数達成率も
 // 売上と同じ営業進捗ベースの判定に変更、1日平均必要売上の補足テキストを強調。
-const CACHE_NAME = 'salon-manager-cache-v52';
+// v53: 売上画面 追加UI調整(見た目のみ、データロジック・集計・ランキング順位・対象月・
+// 権限は無変更)。店舗ランキングの「先月」を現在売上の横から下段へ移動(1行目=順位/店舗名/
+// 現在売上、2行目=先月売上のみ)し、横幅不足による崩れと店舗名の過度な省略を解消。営業進捗
+// カードのラベルを「営業完了」→「営業日」、「残り」→「残り営業日」に変更し、より自然で
+// 短い表現に統一。
+const CACHE_NAME = 'salon-manager-cache-v53';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

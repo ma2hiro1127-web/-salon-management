@@ -7042,12 +7042,12 @@ function App() {
                 <div className="progress-track">
                   <div className="progress-fill" style={{ width: `${Math.min(100, businessDaySummary.progressRate || 0)}%` }} />
                 </div>
-                {/* 追加UI/UX微修正(要件1): 「営業完了 / 今月営業日数」というラベルが長く
-                    字余りだったため、ラベルを短縮する(表示する情報・値のフォーマットは
-                    変更していない — X/Y日という値自体に既に両方の意味が含まれている)。 */}
+                {/* 追加UI調整: ラベルをより自然で短い表現に変更する(「営業完了」→「営業日」、
+                    「残り」→「残り営業日」)。「営業日数完了」のような不自然な言い回しは避け、
+                    値のフォーマット(X/Y日など)・計算ロジックは変更していない。 */}
                 <div className="business-progress-grid">
-                  <div><span>営業完了</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.completedDays} / ${businessDaySummary.businessDayCount}日` : `${businessDaySummary.completedDays}日 / 未設定`}</strong></div>
-                  <div><span>残り</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
+                  <div><span>営業日</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.completedDays} / ${businessDaySummary.businessDayCount}日` : `${businessDaySummary.completedDays}日 / 未設定`}</strong></div>
+                  <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
                   <div><span>総売上</span><strong>{isInitialDataReady ? money(summary.sales) : "—"}</strong></div>
                   <div><span>平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
                   <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
@@ -7197,12 +7197,14 @@ function App() {
                 <div className="ranking-list">
                   {currentCompanyStores.map((store) => (
                     <div key={store.id} className="ranking-row ranking-row-skeleton">
-                      <div className="ranking-row-rank">—</div>
-                      <div className="ranking-row-main">
-                        <span className="ranking-row-name">{store.name}</span>
-                        <strong className="ranking-row-sales">取得中…</strong>
+                      <div className="ranking-row-top">
+                        <div className="ranking-row-rank">—</div>
+                        <div className="ranking-row-main">
+                          <span className="ranking-row-name">{store.name}</span>
+                          <strong className="ranking-row-sales">取得中…</strong>
+                        </div>
                       </div>
-                      <small className="ranking-row-previous">&nbsp;</small>
+                      <div className="ranking-row-bottom"><small className="ranking-row-previous">&nbsp;</small></div>
                     </div>
                   ))}
                 </div>
@@ -7211,15 +7213,22 @@ function App() {
                   {/* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更
                       (rankingRowsをそのまま描画するだけ)。表示だけ、上位3位はメダルで強調、
                       4位以下は行全体を少し弱める(ranking-row-muted)ことで、主役である
-                      自店舗のKPIより目立たないようにする。 */}
+                      自店舗のKPIより目立たないようにする。
+                      追加UI調整: 「先月」を現在売上の横から下段へ移動し、横幅不足による
+                      崩れ・店舗名の過度な省略を解消する(1行目=順位/店舗名/現在売上、
+                      2行目=先月売上のみの2段構成)。 */}
                   {rankingRows.map((row) => (
                     <div key={row.storeId} className={`ranking-row ${row.currentRank > 3 ? "ranking-row-muted" : ""}`}>
-                      <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
-                      <div className="ranking-row-main">
-                        <span className="ranking-row-name">{row.storeName}</span>
-                        <strong className="ranking-row-sales">{money(row.sales)}</strong>
+                      <div className="ranking-row-top">
+                        <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
+                        <div className="ranking-row-main">
+                          <span className="ranking-row-name">{row.storeName}</span>
+                          <strong className="ranking-row-sales">{money(row.sales)}</strong>
+                        </div>
                       </div>
-                      <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "－"}</small>
+                      <div className="ranking-row-bottom">
+                        <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "—"}</small>
+                      </div>
                     </div>
                   ))}
                 </div>
