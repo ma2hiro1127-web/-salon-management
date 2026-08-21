@@ -2052,16 +2052,31 @@ function App() {
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
   const forecastVsTarget = summary.displayForecast - parseNumber(target.targetSales);
-  // KPIエリア(目標に対する数値)用。実績値は営業進捗カードに表示するため、ここには置かない
-  // (数字を混在させない、という今回の整理方針)。目標未設定の項目は配列に入れない
-  // (0円/0名として表示しない — 任意項目のご指示に基づく)。
+  // 売上画面UI/UX改善(色分けは「単純な目標未達」で判定しない、要件2・20): 月間達成率が
+  // 100%未満なだけで赤にすると、月途中は常に赤だらけになる。月末着地予測(このペースで
+  // 進んだ場合の着地見込み、既存のsummary.displayForecast)を基準に判定する——今回追加した
+  // 新しい計算ロジックは無く、既存のgetMetricTone(hero-gridの他のKPIと同じ判定関数)を
+  // 月末着地予測÷目標のratioに適用するだけ。目標未設定の場合は判定しない(neutral)。
+  const forecastAchievementRatio = hasSalesTarget ? (summary.displayForecast / parseNumber(target.targetSales)) * 100 : null;
+  const forecastStatusTone = forecastAchievementRatio === null ? "" : getMetricTone(forecastAchievementRatio, 90, 100);
+  const forecastStatusLabel = forecastStatusTone === "good" ? "順調" : forecastStatusTone === "warning" ? "やや遅れ" : forecastStatusTone === "danger" ? "要注意" : "";
+  // ③ 月間達成率は「営業進捗との差」を表示する(要件3)。営業進捗(businessDaySummary.
+  // progressRate)は既に営業日ベース(休業日を除外した営業日数を分母にする、既存の
+  // getBusinessDaySummary)で計算済みの値をそのまま使う——ここで暦日ベースの新しい計算は
+  // 行わない。達成率(実績÷目標)と進捗率(経過営業日÷全営業日)の差分(pt)を出すだけ。
+  const scheduleAdjustedGapPt = (hasSalesTarget && isInitialDataReady && businessDaySummary.progressRate !== null)
+    ? summary.targetAchievement - businessDaySummary.progressRate
+    : null;
+  // ㉑ 過去月は現在月と同じ見せ方にしない(要件21)。「対象月が既に終了しているか」は表示
+  // モードの切替だけに使う判定で、どのデータがどの月に属するかというデータ分類には一切
+  // 関与しない(データ側の対象月判定は既存通りbusiness_date/target_month基準のまま)。
+  const isViewingPastMonth = selectedMonth < formatLocalDate(new Date()).slice(0, 7);
   const dashboardSupportMetrics = useMemo(() => {
     // 「必要客数◯名/日」は客数達成率カード側にまとめたため、平均客単価カードは数値だけの
     // シンプルな表示にする(効率系: 数字中心、補足最小限)。
     const items = [{ label: "平均客単価", value: money(summary.averageSpend), hint: "" }];
-    if (hasSalesTarget) {
-      items.push({ label: "1日平均必要売上", value: money(summary.dailyNeededSales), hint: `残り${summary.remainingBusinessDays ?? 0}営業日` });
-    }
+    // 「1日平均必要売上」は売上画面UI/UX改善(要件1)で主KPI3項目の1つへ格上げしたため、
+    // ここでは持たない(kpi-hero-grid側で個別に描画する)。
     // 「目標客数まで」はkpi-hero-gridの「客数達成率」カード(secondaryValue)と同じ数字
     // (remainingCustomersTarget)を表示するだけの重複カードだったため廃止。
     // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない。
@@ -2073,7 +2088,7 @@ function App() {
       });
     }
     return items;
-  }, [summary.averageSpend, hasSalesTarget, summary.dailyNeededSales, summary.remainingBusinessDays, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
+  }, [summary.averageSpend, isAllStoresView, selectedStoreEntity, staffProductivitySummary]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -6930,8 +6945,13 @@ function App() {
                 ) : null}
               </select>
             </label>
-            <button className="secondary-button" type="button" onClick={handleLogout}>ログアウト</button>
+            {/* 売上画面UI/UX改善(要件10): 業務操作(店舗切替・対象月切替)とアカウント操作
+                (ログアウト)は目的が異なるため、JSXの並び順を業務操作→アカウント操作に
+                揃え、ログアウトには視覚的に一段弱いクラス(topbar-account-action)を付ける
+                ——既存の.filtersのflex/grid構造(子要素3つ)自体は変更していないため、
+                レスポンシブ挙動への影響は無い。 */}
             <MonthPicker value={selectedMonth} onChange={handleMonthSwitch} />
+            <button className="secondary-button topbar-account-action" type="button" onClick={handleLogout}>ログアウト</button>
           </div>
         </header>
 
@@ -7010,9 +7030,11 @@ function App() {
                 <div className="progress-track">
                   <div className="progress-fill" style={{ width: `${Math.min(100, businessDaySummary.progressRate || 0)}%` }} />
                 </div>
+                {/* 売上画面UI/UX改善(要件4): 上段=進捗バー+進捗率(上のbusiness-progress-header
+                    に既存)、下段=営業完了/今月営業日数をまとめた1セル+残り営業日+総売上+
+                    1日平均売上+顧客数の5セル。表示する情報自体は変更していない。 */}
                 <div className="business-progress-grid">
-                  <div><span>今月営業日数</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"}</strong></div>
-                  <div><span>営業完了</span><strong>{businessDaySummary.completedDays}日</strong></div>
+                  <div><span>営業完了 / 今月営業日数</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.completedDays} / ${businessDaySummary.businessDayCount}日` : `${businessDaySummary.completedDays}日 / 未設定`}</strong></div>
                   <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
                   <div><span>総売上</span><strong>{isInitialDataReady ? money(summary.sales) : "—"}</strong></div>
                   <div><span>1日平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
@@ -7029,7 +7051,10 @@ function App() {
               {/* 進捗系・予測系・効率系を1つのグリッドにまとめ、非表示カードの分の空枠を
                   残さず、表示対象だけを左上から順に自動で詰めて配置する(kpi-hero-grid/
                   kpi-gridに分かれていたのを統合)。カードの増減があってもこの1グリッドの
-                  auto-flowでそのまま整う。 */}
+                  auto-flowでそのまま整う。売上画面UI/UX改善(要件1・9・23): 月間達成率・
+                  月末着地予測・1日平均必要売上の3項目をprimary(少し強調)にし、視線が
+                  この3つ→他のKPI→ランキング/売上構成→AIの順に流れるよう並べる。それ以外の
+                  KPIはsecondary(少し弱める)。 */}
               <div className="kpi-hero-grid">
                 {!hasAnyTarget ? <TargetSetupHint onGoToTarget={goToMonthlyTargetSetting} /> : null}
                 {hasSalesTarget ? (
@@ -7037,20 +7062,42 @@ function App() {
                     label="月間達成率"
                     value={isInitialDataReady ? percent(summary.targetAchievement) : "—"}
                     secondaryValue={isInitialDataReady ? `目標売上まで ${money(summary.remainingSalesTarget)}` : ""}
-                    tone={!isInitialDataReady ? "" : (summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100))}
+                    // 色分けは月間達成率そのもの(月途中は常に低く出て赤だらけになる)では
+                    // なく、月末着地予測ベースの判定(forecastStatusTone、要件2)を使う。
+                    hint={isInitialDataReady && scheduleAdjustedGapPt !== null
+                      ? <span className={scheduleAdjustedGapPt >= 0 ? "text-success" : "text-danger"}>{`営業進捗比 ${scheduleAdjustedGapPt >= 0 ? "+" : ""}${scheduleAdjustedGapPt.toFixed(1)}pt`}</span>
+                      : null}
+                    statusLabel={isInitialDataReady ? forecastStatusLabel : ""}
+                    tone={isInitialDataReady ? forecastStatusTone : ""}
                     emphasize
                     hero
+                    primary
                     onClick={goToMonthlyTargetSetting}
                   />
                 ) : null}
                 <MetricCard
-                  label="月末着地予測"
+                  label={isViewingPastMonth ? "最終着地（確定）" : "月末着地予測"}
                   value={isInitialDataReady ? money(summary.displayForecast) : "—"}
                   hint={isInitialDataReady && hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
                     : null}
-                  tone={!isInitialDataReady ? "" : (hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : "")}
+                  statusLabel={isInitialDataReady && hasSalesTarget ? forecastStatusLabel : ""}
+                  tone={!isInitialDataReady ? "" : (hasSalesTarget ? forecastStatusTone : "")}
+                  hero
+                  primary
                 />
+                {/* 過去月は「残り営業日」を前提とした表示が不自然になるため出さない(要件21)
+                    ——計算ロジック(summary.dailyNeededSales)自体は変更しない、表示条件だけ
+                    追加する。 */}
+                {hasSalesTarget && !isViewingPastMonth ? (
+                  <MetricCard
+                    label="1日平均必要売上"
+                    value={isInitialDataReady ? money(summary.dailyNeededSales) : "—"}
+                    hint={isInitialDataReady ? `残り${summary.remainingBusinessDays ?? 0}営業日` : ""}
+                    hero
+                    primary
+                  />
+                ) : null}
                 {hasCustomerTarget ? (
                   <MetricCard
                     label="客数達成率"
@@ -7058,6 +7105,7 @@ function App() {
                     secondaryValue={isInitialDataReady ? `目標まで ${customerTargetSummary.remainingCustomers}名` : ""}
                     hint={isInitialDataReady ? `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` : ""}
                     tone={isInitialDataReady ? getMetricTone(customerTargetSummary.achievementRate, 85, 100) : ""}
+                    secondary
                   />
                 ) : null}
                 {effectiveShowReviewCountField ? (
@@ -7068,12 +7116,13 @@ function App() {
                       : `${number(summary.reviewCount)}件`)}
                     hint={isInitialDataReady && showReviewCountTargetField && hasReviewCountTarget ? `達成率 ${percent(summary.reviewCountAchievement)}` : null}
                     tone={!isInitialDataReady ? "" : (showReviewCountTargetField && hasReviewCountTarget ? getMetricTone(summary.reviewCountAchievement, 85, 100) : "")}
+                    secondary
                   />
                 ) : null}
-                {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
+                {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} secondary />)}
               </div>
               </div>
-              {currentCompany && aiAnalysisSettings[currentCompany.id] ? <AiAssistantCard onOpen={() => openAiChat()} onQuickQuestion={(question) => openAiChat(question)} /> : null}
+              {currentCompany && aiAnalysisSettings[currentCompany.id] ? <AiAssistantCard onOpen={() => openAiChat()} /> : null}
               {todayEntry ? (
                 <div className="today-result-card">
                   <div className="panel-heading compact">
@@ -7143,8 +7192,12 @@ function App() {
                 </div>
               ) : (
                 <div className="ranking-list">
+                  {/* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更
+                      (rankingRowsをそのまま描画するだけ)。表示だけ、上位3位はメダルで強調、
+                      4位以下は行全体を少し弱める(ranking-row-muted)ことで、主役である
+                      自店舗のKPIより目立たないようにする。 */}
                   {rankingRows.map((row) => (
-                    <div key={row.storeId} className="ranking-row">
+                    <div key={row.storeId} className={`ranking-row ${row.currentRank > 3 ? "ranking-row-muted" : ""}`}>
                       <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
                       <div className="ranking-row-main">
                         <span className="ranking-row-name">{row.storeName}</span>
@@ -9265,16 +9318,26 @@ function App() {
 
 // 上部の「営業進捗」に既に大きな進捗バーがあるため、KPIカード内には進捗バーを持たない
 // (項目名→メイン数値→補足情報のシンプルな構成に統一)。
-function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", emphasize = false, hero = false, onClick = null }) {
+// 売上画面UI/UX改善(要件1・2・9・20): KPIの重要度に強弱をつけるための追加プロパティ。
+// primary: 月間達成率・月末着地予測・1日平均必要売上の3項目だけに使う、少し強めた表示
+// (文字サイズ・太さ)。secondary: それ以外のKPI(客数達成率・口コミ数・平均客単価等)を
+// 少し弱めた表示にする。statusLabel: 色だけに意味を持たせない(要件20)ための短い状態文言
+// (順調/やや遅れ/要注意)——toneが同じ情報を色でも表すが、色覚特性等に依存しないよう文言も
+// 併記する。色の使い方自体は既存のtone(good/warning/danger)の仕組みをそのまま使い、新しい
+// 判定ロジックは追加しない(呼び出し元がforecastStatusTone等、既存計算値から渡すだけ)。
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", statusLabel = "", emphasize = false, hero = false, primary = false, secondary = false, onClick = null }) {
   return (
     <div
-      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${onClick ? "clickable" : ""}`}
+      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${primary ? "metric-card-primary" : ""} ${secondary ? "metric-card-secondary" : ""} ${onClick ? "clickable" : ""}`}
       onClick={onClick || undefined}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
       onKeyDown={onClick ? (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onClick(); } } : undefined}
     >
-      <span>{label}</span>
+      <div className="metric-card-heading">
+        <span>{label}</span>
+        {statusLabel ? <span className={`metric-status-label ${tone}`}>{statusLabel}</span> : null}
+      </div>
       <strong>{value}</strong>
       {secondaryValue ? <strong className="metric-card-secondary-value">{secondaryValue}</strong> : null}
       {hint ? <small>{hint}</small> : null}
@@ -9454,16 +9517,11 @@ function UnclosedStoresPopover({ dateIso, anchorEl, info, onClose }) {
 // next color in the loop, so this never needs updating when new sales fields show up.
 const SALES_COMPOSITION_COLORS = ["#2f7df6", "#38b28f", "#f5a524", "#e35757", "#8b5cf6", "#14b8a6", "#ec4899", "#84cc16"];
 
+// 売上画面UI/UX改善(要件6): 技術売上96.9%/店販売上3.1%のように差が大きいと円グラフでは
+// 小さい項目が見えづらいため、100%積み上げの横棒グラフへ変更する。items(key/label/amount/
+// ratio)の集計ロジックは呼び出し元(salesComposition useMemo)から一切変更していない——
+// ここは受け取ったitemsをそのまま描画するだけ。
 function SalesCompositionCard({ items }) {
-  const gradientStops = (() => {
-    let cursor = 0;
-    return items.map((item, index) => {
-      const start = cursor;
-      cursor += item.ratio * 360;
-      return `${SALES_COMPOSITION_COLORS[index % SALES_COMPOSITION_COLORS.length]} ${start}deg ${cursor}deg`;
-    });
-  })();
-
   return (
     <section className="panel sales-composition-card">
       <div className="panel-heading">
@@ -9476,10 +9534,16 @@ function SalesCompositionCard({ items }) {
         <div className="empty-card">売上データが入力されると内訳を表示します。</div>
       ) : (
         <div className="sales-composition-body">
-          <div
-            className="sales-composition-pie"
-            style={{ background: items.length === 1 ? SALES_COMPOSITION_COLORS[0] : `conic-gradient(${gradientStops.join(", ")})` }}
-          />
+          <div className="sales-composition-bar" role="img" aria-label="売上構成の内訳">
+            {items.map((item, index) => (
+              <div
+                key={item.key}
+                className="sales-composition-bar-segment"
+                style={{ width: `${Math.max(item.ratio * 100, item.ratio > 0 ? 2 : 0)}%`, background: SALES_COMPOSITION_COLORS[index % SALES_COMPOSITION_COLORS.length] }}
+                title={`${item.label} ${percent(item.ratio * 100)}`}
+              />
+            ))}
+          </div>
           <ul className="sales-composition-legend">
             {items.map((item, index) => (
               <li key={item.key}>

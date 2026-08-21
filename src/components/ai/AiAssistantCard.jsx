@@ -1,34 +1,15 @@
-const QUICK_QUESTIONS = [
-  "今月の経営状況を分析",
-  "売上が伸びない原因を分析",
-  "新規客が少ない原因を分析",
-  "利益を増やす方法を相談",
-  "このアプリの使い方を質問",
-];
-
-// ダッシュボードのAI相談カード。数字の表示は一切持たず、AIチャット画面(AiChatScreen)への
-// 入り口(クイック質問チップ / 「AIに相談する」ボタン)を提供するだけ。
-export default function AiAssistantCard({ onOpen, onQuickQuestion }) {
+// 売上画面UI/UX改善(要件7・23): 売上画面では、右下に既存のAiFloatingButton(常設のAI入口)
+// が既にあるため、このカードは役割が重複しないよう最小限のコンパクト表示にする——「今月の
+// 数字をAIで分析」の一文+「AIに相談する」ボタンのみ。視線の流れ(要件23: 進捗→KPI→
+// ランキング/売上構成→AIの順)でも、AIは主KPIより後ろに来る想定のため、大きな面積を占め
+// ないようにする。クイック質問チップ(旧デザイン)は撤去したが、AIチャット機能自体・
+// onOpen/onQuickQuestionの入り口は変更しない(onOpenのボタンはそのまま残す)。
+export default function AiAssistantCard({ onOpen }) {
   return (
-    <div className="ai-assistant-card">
-      <div className="panel-heading compact">
-        <div>
-          <p className="eyebrow">AI ASSISTANT</p>
-          <h3>AI経営アシスタント</h3>
-        </div>
-      </div>
-      <p className="helper-text">
-        売上・客数・目標・経費などの数字をもとに、経営分析や改善方法をAIに相談できます。アプリの使い方についても質問できます。
-      </p>
-      <div className="ai-chip-row">
-        {QUICK_QUESTIONS.map((question) => (
-          <button key={question} type="button" className="ai-chip" onClick={() => onQuickQuestion(question)}>
-            {question}
-          </button>
-        ))}
-      </div>
-      <div className="button-row">
-        <button type="button" className="primary-button" onClick={onOpen}>AIに相談する ＞</button>
+    <div className="ai-assistant-card ai-assistant-card-compact">
+      <div className="ai-assistant-compact-row">
+        <span className="ai-assistant-compact-label">✨ 今月の数字をAIで分析</span>
+        <button type="button" className="secondary-button ai-assistant-compact-button" onClick={onOpen}>AIに相談する ＞</button>
       </div>
     </div>
   );

@@ -95,6 +95,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .main-content { flex: 1; padding: 24px 24px 40px; display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 100%; box-sizing: border-box; overflow-x: hidden; }
 .topbar { display: flex; justify-content: space-between; gap: 16px; align-items: end; margin-bottom: 8px; }
+/* 売上画面UI/UX改善(要件10): 業務操作(店舗切替・対象月切替)とアカウント操作(ログアウト)
+   を視覚的に区別する。.filtersのflex/grid構造自体は変更しないため、色・余白だけの調整。 */
+.topbar-account-action { color: var(--muted); background: transparent; box-shadow: none; }
 .topbar-heading { display: flex; align-items: center; gap: 10px; }
 .mobile-nav-toggle { display: none; }
 .filters { display: flex; gap: 12px; flex-wrap: wrap; }
@@ -240,7 +243,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .business-progress-header.compact { margin-bottom: 6px; }
 .progress-track { width: 100%; height: 10px; border-radius: 999px; background: rgba(148, 163, 184, 0.24); overflow: hidden; margin-bottom: 12px; }
 .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: inherit; }
-.business-progress-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+/* 売上画面UI/UX改善(要件4): 「営業完了/今月営業日数」を1セルに統合し6→5セル構成にした
+   ため、列数も3→5に合わせる(≤640pxでは既存の2列ルールがそのまま適用される)。 */
+.business-progress-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
 .business-progress-grid div { display: flex; flex-direction: column; gap: 4px; }
 .business-progress-grid span { color: var(--muted); font-size: 0.78rem; }
 .business-progress-grid strong { font-size: 1.05rem; font-weight: 700; }
@@ -382,10 +387,16 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .field-switch input[type="checkbox"]:checked { background: var(--accent); }
 .field-switch input[type="checkbox"]:checked::after { transform: translateX(18px); }
 .field-switch input[type="checkbox"]:disabled { opacity: 0.5; cursor: not-allowed; }
-.dashboard-layout { display: grid; grid-template-columns: 1.2fr 1fr; gap: 16px; align-items: start; }
+/* 売上画面UI/UX改善(要件5・8・23): ランキング/売上構成のサイドカラムが主KPIより幅を
+   取りすぎないよう、左右比率を1.2:1→1.6:1に調整する(2カラム自体・≤1040pxで1カラムに
+   なる既存のブレークポイントは変更しない)。 */
+.dashboard-layout { display: grid; grid-template-columns: 1.6fr 1fr; gap: 16px; align-items: start; }
 .dashboard-right-column { display: flex; flex-direction: column; gap: 16px; }
-.sales-composition-body { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
-.sales-composition-pie { width: 96px; height: 96px; min-width: 96px; border-radius: 50%; }
+/* 売上画面UI/UX改善(要件6): 円グラフ→100%積み上げの横棒グラフに変更したため、円+凡例の
+   横並びではなく、棒(全幅)を上・凡例を下に積む縦構成にする。items(集計ロジック)は無変更。 */
+.sales-composition-body { display: flex; flex-direction: column; gap: 14px; }
+.sales-composition-bar { display: flex; width: 100%; height: 16px; border-radius: 999px; overflow: hidden; background: rgba(148, 163, 184, 0.16); }
+.sales-composition-bar-segment { height: 100%; transition: width 160ms ease; }
 .sales-composition-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 160px; }
 .sales-composition-legend li { display: flex; align-items: center; gap: 8px; }
 .sales-composition-swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
@@ -416,6 +427,27 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .kpi-sales-section .metric-card.good strong,
 .kpi-sales-section .metric-card.warning strong,
 .kpi-sales-section .metric-card.danger strong { color: var(--text); }
+/* 売上画面UI/UX改善(要件2・20): 主数値そのものは上のルールで色を変えないため、代わりに
+   左端の細いラインだけで状態を伝える(status-chipと同じtone色を再利用、新しい判定ロジック
+   は追加しない)。派手な全面カラーにしない、という要件の「落ち着いた表現」の具体化。 */
+.kpi-sales-section .metric-card.good { border-left: 3px solid var(--success); }
+.kpi-sales-section .metric-card.warning { border-left: 3px solid var(--warning); }
+.kpi-sales-section .metric-card.danger { border-left: 3px solid var(--danger); }
+/* label行に、色だけに依存しない短い状態文言(順調/やや遅れ/要注意)を小さなバッジで併記する
+   (要件20)。status-chipと同じ配色パターンを踏襲し、新しい色は増やさない。 */
+.metric-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.metric-status-label { flex-shrink: 0; padding: 2px 8px; border-radius: 999px; font-size: 0.68rem; font-weight: 700; background: rgba(100, 116, 139, 0.16); color: var(--muted); }
+.metric-status-label.good { background: rgba(22, 163, 74, 0.16); color: var(--success); }
+.metric-status-label.warning { background: rgba(245, 158, 11, 0.16); color: var(--warning); }
+.metric-status-label.danger { background: rgba(220, 38, 38, 0.16); color: var(--danger); }
+/* 売上画面UI/UX改善(要件1・9): 月間達成率・月末着地予測・1日平均必要売上の3項目だけを
+   少し強め、他のKPI(客数達成率・口コミ数・平均客単価等)を少し弱める——文字サイズの差は
+   1段階だけに留め、情報量・計算ロジックには一切触れない。 */
+/* .metric-card.hero strongと詳細度を揃える(2クラス)ため.metric-cardと結合する
+   ——単独クラスのままだと.hero側の詳細度に負けてサイズが上書きされないため。 */
+.metric-card.metric-card-primary strong { font-size: 1.22rem; }
+.metric-card-secondary strong { font-size: 0.95rem; }
+.metric-card-secondary span { font-size: 0.76rem; }
 .metric-card.clickable { cursor: pointer; transition: transform 0.12s ease, box-shadow 0.12s ease; }
 .metric-card.clickable:hover, .metric-card.clickable:focus-visible { transform: translateY(-1px); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08); outline: none; }
 .kpi-hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
@@ -430,6 +462,13 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-focus-card.saving { background: rgba(47, 125, 246, 0.1); }
 /* AI経営アシスタント: ダッシュボードカード / クイック質問チップ / フローティングボタン / チャット画面 */
 .ai-assistant-card { margin-top: 14px; padding: 16px; border-radius: 18px; border: 1px solid rgba(47, 125, 246, 0.18); background: linear-gradient(135deg, rgba(47, 125, 246, 0.06), var(--surface-strong)); display: flex; flex-direction: column; gap: 10px; }
+/* 売上画面UI/UX改善(要件7・23): 右下の常設AiFloatingButtonと役割が重複しないよう、
+   売上画面のこのカードは1行に収まるコンパクト表示にする(視線の流れで主KPIより後ろに
+   来る想定のため、面積を最小限にする)。 */
+.ai-assistant-card-compact { margin-top: 10px; padding: 12px 16px; gap: 0; }
+.ai-assistant-compact-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.ai-assistant-compact-label { font-size: 0.88rem; font-weight: 700; color: var(--text); }
+.ai-assistant-compact-button { flex-shrink: 0; white-space: nowrap; padding: 7px 14px; font-size: 0.82rem; }
 .ai-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
 .ai-chip { border: 1px solid var(--border); background: var(--surface-strong); color: var(--text); border-radius: 999px; padding: 7px 14px; font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease; }
 .ai-chip:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: 0 4px 12px rgba(47, 125, 246, 0.14); }
@@ -487,6 +526,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 /* 先月列を固定幅にすることで、行ごとに数字の桁数が違っても店舗名の切れる位置が
    行によってバラバラにならないようにする(店舗名の折り返し列の残り幅を揃える)。 */
 .ranking-row-previous { color: var(--muted); font-size: 0.78rem; white-space: nowrap; flex: 0 0 auto; min-width: 118px; text-align: right; }
+/* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更のまま、4位以下の
+   行だけ視覚的に少し弱める(不透明度を落とすのみ、金額の可読性は保つ)。 */
+.ranking-row-muted { opacity: 0.72; }
 .ai-analysis-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .ai-analysis-card { border-radius: 18px; padding: 14px; border: 1px solid var(--border); background: var(--surface-strong); display: flex; flex-direction: column; gap: 6px; }
 .ai-analysis-card span { color: var(--muted); font-size: 0.76rem; }
@@ -594,9 +636,8 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   /* 補助的なKPI(客単価・スタッフ生産性等)はiPhone幅でも2列を維持し、重要カード
      (.kpi-hero-grid)だけを1列に絞る — 情報が縦に伸びすぎないようにする。 */
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  /* 円グラフの隣に凡例を並べると金額・比率が読みにくいほど狭くなるため、iPhone幅では
-     円グラフを上・凡例を下に積んで凡例に横幅いっぱいを使わせる(グラフ自体は縮小しない)。 */
-  .sales-composition-body { flex-direction: column; align-items: stretch; }
+  /* 横棒グラフ+凡例は基本スタイルで既に縦積み(.sales-composition-body参照)のため、
+     iPhone幅では凡例側の余白だけ横幅いっぱいに広げる。 */
   .sales-composition-legend { min-width: 0; width: 100%; }
   .store-url-row { grid-template-columns: 1fr; }
   .main-content { padding: 10px; gap: 10px; }
