@@ -36,7 +36,11 @@ function KpiCard({ label, actualText, targetValue, formatTarget }) {
 // 点6,7,8: 店舗単体ダッシュボード。calculateMonthSummary(当月・前月)+getStaffProductivitySummary
 // の組み合わせだけで全項目が揃うため、専用の集計関数は作らずここで組み立てる。
 export default function StoreDashboardView({ storeName, summary, previousSummary, productivity, previousProductivity }) {
-  const hasPrevious = previousSummary.entries.length > 0;
+  // 不具合修正: 前月の実績が「まとめて入力」(daily_batch_entries)だけで構成されている場合、
+  // 通常の日次入力(entries)はゼロ件になるため、entries.lengthだけを見ると前月比較が
+  // 「比較データなし」に誤判定されていた(storage.jsのgetStoreDashboardRows等と同じ基準に
+  // 統一する)。
+  const hasPrevious = previousSummary.entries.length > 0 || previousSummary.batchEntries.length > 0;
   const target = summary.target || {};
 
   return (

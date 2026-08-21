@@ -166,6 +166,7 @@ import {
   upsertCompanySettings,
   loadStoreProfilesForCompany,
   upsertStoreProfile,
+  markStoreInitialSetupCompleted,
   logSupabaseError,
   signUpWithEmail,
   getProfilesForDebug,
@@ -718,6 +719,11 @@ function App() {
   // 別のidが生成されるため、連打すると同じ費用が複数件登録され得た。store保存と同じ理由で
   // stateではなくrefを使う(レンダーを待たず同期的に読み書きできるため)。
   const savingFixedCostRef = useRef(false);
+  // 初期設定チェックリスト完了フラグの二重送信防止。setupChecklist(useMemo)はappStateが
+  // 何か変わるたびに新しい配列参照になるため、それをそのままdependencyに使っている
+  // 完了検知effectは、恒久フラグがローカルへ反映されるまでの短い間に複数回再実行され得る
+  // ——ref一つで「既に送信中」を弾く、他の保存系ガードと同じパターン。
+  const markingInitialSetupCompletedRef = useRef(false);
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
   // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
@@ -1972,7 +1978,10 @@ function App() {
       ? parseNumber(businessDaySettings.businessDayCount) > 0
       : (getStoreHolidayDates(appState, selectedStoreId, selectedMonth).length > 0 || parseNumber(businessDaySettings.holidayCount) > 0);
     const hasFixedCostSetting = fixedCosts.length > 0;
-    const hasDailyEntry = dailyEntries.length > 0;
+    // 日次入力実績: 通常の日次入力(daily_sales)だけでなく、まとめて入力(daily_batch_entries)
+    // だけで済ませている店舗も「入力済み」とみなす(不具合修正: getStoreMonthSalesTotal等と
+    // 同じ理由——まとめ入力オンリーの店舗がこの項目だけ永久に未完了のままになっていた)。
+    const hasDailyEntry = dailyEntries.length > 0 || batchEntries.length > 0;
     return [
       { key: "store", label: "店舗基本設定", done: hasStoreBasicSetting, page: "stores" },
       { key: "target", label: "月間目標", done: hasAnyTarget, page: "monthly" },
@@ -1980,14 +1989,46 @@ function App() {
       { key: "fixedCosts", label: "固定費設定", done: hasFixedCostSetting, page: "monthly" },
       { key: "daily", label: "日次入力", done: hasDailyEntry, page: "daily" },
     ];
-  }, [isAllStoresView, selectedStoreEntity, businessDaySettings, appState, selectedStoreId, selectedMonth, fixedCosts, dailyEntries, hasAnyTarget]);
+  }, [isAllStoresView, selectedStoreEntity, businessDaySettings, appState, selectedStoreId, selectedMonth, fixedCosts, dailyEntries, batchEntries, hasAnyTarget]);
   const [setupChecklistDismissed, setSetupChecklistDismissed] = useState(false);
-  const showSetupChecklist = setupChecklist.length > 0 && setupChecklist.some((item) => !item.done) && !setupChecklistDismissed;
+  // 初期設定は「対象月ごとの状態」ではなく「店舗単位で一度完了すれば恒久的に完了」として
+  // 扱う(不具合修正: 過去月・翌月など対象月を切り替えるたびに、その月にデータが無いことを
+  // 理由に初期設定案内が再表示されていた)。store_profiles.initial_setup_completed(店舗単位の
+  // 永続フラグ)が既にtrueなら、setupChecklistの各項目がその月にたまたま無くても表示しない。
+  const isStoreInitialSetupCompleted = Boolean(selectedStoreEntity?.initialSetupCompleted);
+  const showSetupChecklist = !isStoreInitialSetupCompleted && setupChecklist.length > 0 && setupChecklist.some((item) => !item.done) && !setupChecklistDismissed;
   // 店舗を切り替えたら、別の店舗の設定状況に対する「閉じる」操作を引き継がない(要件: 店舗
   // 切替でデータが混ざらない、の一種——ここでのdismiss状態も一種の店舗ごとの表示状態)。
   useEffect(() => {
     setSetupChecklistDismissed(false);
   }, [selectedStoreId]);
+  // 現在表示中の対象月で5項目すべてが完了と判定された最初のタイミングで、店舗単位の恒久
+  // フラグ(initialSetupCompleted)を1回だけ立てる——以後はどの対象月を表示しても
+  // チェックリストが再表示されなくなる。まだstore_profiles行が存在しない極めて初期の店舗や、
+  // 権限(staff等)によりRLSでUPDATEが通らない場合はmarkStoreInitialSetupCompleted側が
+  // 静かにskip扱いにする(要件: エラー表示にしない、他の操作をブロックしない)。
+  useEffect(() => {
+    if (isStoreInitialSetupCompleted) return;
+    if (!setupChecklist.length || setupChecklist.some((item) => !item.done)) return;
+    if (!isSupabaseConfigured || !appState.currentCompanyId || !selectedStoreId || !appState.currentUserId) return;
+    if (markingInitialSetupCompletedRef.current) return;
+    markingInitialSetupCompletedRef.current = true;
+    let cancelled = false;
+    void markStoreInitialSetupCompleted({ companyId: appState.currentCompanyId, storeId: selectedStoreId, userId: appState.currentUserId }).then((result) => {
+      if (cancelled || !result.ok || result.skipped) return;
+      // DB確認済みの値で反映する(送ったつもりの値を信じない、既存の他の保存修正と同じ方針)。
+      setAppState((prev) => ({
+        ...prev,
+        companies: (prev.companies || []).map((company) => (company.id !== prev.currentCompanyId ? company : {
+          ...company,
+          stores: (company.stores || []).map((store) => (store.id !== selectedStoreId ? store : { ...store, initialSetupCompleted: true })),
+        })),
+      }));
+    }).finally(() => {
+      markingInitialSetupCompletedRef.current = false;
+    });
+    return () => { cancelled = true; };
+  }, [isStoreInitialSetupCompleted, setupChecklist, appState.currentCompanyId, appState.currentUserId, selectedStoreId]);
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
   const forecastVsTarget = summary.displayForecast - parseNumber(target.targetSales);

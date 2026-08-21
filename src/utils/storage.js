@@ -842,6 +842,11 @@ export const buildStoreProfilesByStoreId = (rows = []) => {
       // silently clobber the real, authoritative value with whatever's in store_profiles.
       staffCount: Number(row.staff_count) || 0,
       productivityStaffCount: Number(row.productivity_staff_count) || 0,
+      // 初期設定チェックリストの恒久的な完了フラグ(不具合修正: 過去月へ切り替えると
+      // チェックリストが再表示されていた問題)。月ごとのデータ有無ではなく、店舗単位で
+      // 一度trueになったら以後ずっとtrueのまま——company.setup(会社作成ウィザードの
+      // 完了状態)とは別の概念。
+      initialSetupCompleted: Boolean(row.initial_setup_completed),
     };
   });
   return byStoreId;
@@ -2065,7 +2070,11 @@ export const getStoreMonthSalesTotal = (state, storeId, monthValue) => {
     return value === null || value === undefined ? total : total + Number(value);
   }, 0);
   const sales = entries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0) + batchSales;
-  return { sales, hasEntries: entries.length > 0 };
+  // hasEntries: 実日次入力(daily_sales)が無くても、まとめて入力(daily_batch_entries)だけで
+  // その月の実績が入っている店舗は「データあり」と判定する(不具合修正: フィーネ横浜の
+  // 2026年7月が丸ごとまとめ入力1件で構成されており、entries.lengthだけを見ていたため
+  // 店舗ランキングの「先月」がデータありなのに「－」表示になっていた)。
+  return { sales, hasEntries: entries.length > 0 || batchEntries.length > 0 };
 };
 
 // 月締めチェックリスト: 損益表作成に必要な項目(売上+費用10カテゴリ)ごとの入力済み/未確認を
@@ -2374,7 +2383,10 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
     const effectiveStaffCount = parseNumber(store.productivityStaffCount) > 0
       ? parseNumber(store.productivityStaffCount) : parseNumber(store.staffCount);
     const isClosed = Boolean(state.monthClosingStatus?.[buildMonthKey(store.id, monthValue)]?.closed);
-    const hasPrevious = previousSummary.entries.length > 0;
+    // 実日次入力が無くても、まとめて入力だけでその月の実績がある場合は「前月データあり」と
+    // 判定する(getMonthClosingChecklistの「売上」判定と同じ基準に統一。不具合修正:
+    // まとめ入力オンリーの月が「比較データなし」寄りに誤判定されていた)。
+    const hasPrevious = previousSummary.entries.length > 0 || previousSummary.batchEntries.length > 0;
 
     return {
       storeId: store.id,
@@ -2571,10 +2583,14 @@ export const getMonthlyReviewSummary = (state, { storeId, isAllStoresView, compa
     const stores = (Array.isArray(companyStores) ? companyStores : company?.stores || []).filter((store) => store?.id && store.status !== "archived");
     const current = calculateAllStoresMonthSummary(state, company, monthValue);
     const previous = calculateAllStoresMonthSummary(state, company, previousMonthValue);
-    // 全店舗版のhasPrevious: getStoreDashboardRowsの店舗別hasPrevious(前月の日次入力が
-    // 1件でもあるか)と同じ判定基準を、店舗横断でsomeを取るだけ(要件12: 未入力を0として
-    // 勝手に集計しない、の会社全体版)。
-    const hasPrevious = stores.some((store) => calculateMonthSummary(state, store.id, previousMonthValue).entries.length > 0);
+    // 全店舗版のhasPrevious: getStoreDashboardRowsの店舗別hasPrevious(前月の日次入力
+    // または、まとめて入力の実績が1件でもあるか)と同じ判定基準を、店舗横断でsomeを取る
+    // だけ(要件12: 未入力を0として勝手に集計しない、の会社全体版。不具合修正: まとめ入力
+    // オンリーの店舗が1件でもあれば前月データありと判定する)。
+    const hasPrevious = stores.some((store) => {
+      const previousStoreSummary = calculateMonthSummary(state, store.id, previousMonthValue);
+      return previousStoreSummary.entries.length > 0 || previousStoreSummary.batchEntries.length > 0;
+    });
     const showReviewCountTarget = stores.some((store) => Boolean(store.settings?.monthlyTargetFields?.fields?.targetReviewCount));
     const targetSales = parseNumber(current.target?.targetSales);
     return {
@@ -2602,12 +2618,13 @@ export const getMonthlyReviewSummary = (state, { storeId, isAllStoresView, compa
   const useInventoryTracking = Boolean(storeEntity?.settings?.useInventoryTracking);
   const current = calculateMonthSummary(state, storeId, monthValue, { useInventoryTracking, hiddenCategories });
   const previous = calculateMonthSummary(state, storeId, previousMonthValue, { useInventoryTracking, hiddenCategories });
-  // 単一店舗版のhasPrevious: getStoreDashboardRowsと全く同じ基準(前月の日次入力が1件でも
-  // あるか)。まとめ入力だけの月も、calculateMonthSummary内部でentries自体はdaily_sales由来の
-  // ままなので、まとめ入力オンリーの前月は「比較データなし」寄りに倒れる——将来まとめ入力の
-  // 実績有無も見るよう拡張する場合は、この1箇所を直せば月次レビュー・既存ダッシュボード
-  // 双方に一貫して反映される。
-  const hasPrevious = previous.entries.length > 0;
+  // 単一店舗版のhasPrevious: getStoreDashboardRowsと全く同じ基準(前月の日次入力または、
+  // まとめて入力の実績が1件でもあるか)。不具合修正: 以前はentries.length(daily_sales由来)
+  // だけを見ており、まとめ入力オンリーの前月(例: フィーネ横浜2026年7月、1件のまとめ入力
+  // だけで月全体が構成されていたケース)が実際にはデータありなのに「比較データなし」と
+  // 誤判定されていた。この判定はgetStoreDashboardRows/getStoreMonthSalesTotal/
+  // getMonthClosingChecklistと共通の基準(entries || batchEntries)に揃えてある。
+  const hasPrevious = previous.entries.length > 0 || previous.batchEntries.length > 0;
   const showReviewCountTarget = Boolean(storeEntity?.settings?.monthlyTargetFields?.fields?.targetReviewCount);
   const productivity = getStaffProductivitySummary({
     sales: current.sales, forecast: current.displayForecast,

@@ -2440,3 +2440,39 @@ export const upsertStoreProfile = async ({ companyId, storeId, userId, profile }
     return { ok: false, error };
   }
 };
+
+// 初期設定チェックリストの恒久的な完了フラグを立てるだけの、最小限の専用関数(不具合修正:
+// 過去月へ切り替えるとチェックリストが再表示されていた問題)。upsertStoreProfileを流用
+// しない理由: あちらはprofile全体(住所・電話番号等)を送るフル更新のため、呼び出し側が
+// その時点でフルのprofile値を持っていない場合(このフラグはApp.jsx側の副作用的なチェックで
+// 立てるだけなので、フォーム編集中とは限らない)に他のプロフィール項目を意図せず空文字で
+// 上書きしてしまうリスクがある。ここではinitial_setup_completedの1列だけをUPDATEする——
+// 呼び出し時点でstore_profiles行は既に存在している前提(hydrateFromSupabase側で
+// initialSetupCompletedを読めている=行が存在する、という前提と一致)。
+export const markStoreInitialSetupCompleted = async ({ companyId, storeId, userId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "markStoreInitialSetupCompleted", table: "store_profiles", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  try {
+    const { data, error } = await supabase
+      .from("store_profiles")
+      .update({ initial_setup_completed: true, updated_by: userId, updated_at: new Date().toISOString() })
+      .eq("store_id", storeId)
+      .eq("company_id", companyId)
+      .select("initial_setup_completed")
+      .maybeSingle();
+    if (error) throw error;
+    // 行が無い(=まだ一度もstore_profilesへ保存したことが無い、極めて初期の店舗)場合は
+    // 静かにskip扱いにする——このフラグの唯一の目的は「チェックリストの再表示防止」であり、
+    // 行を新規作成してまで急いで立てる必要は無い(次にstore_profilesへ何か保存された時点で
+    // 行ができ、その後改めてこの関数が成功するようになる)。
+    if (!data) return { ok: true, skipped: true };
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "markStoreInitialSetupCompleted", table: "store_profiles", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};

@@ -55,7 +55,10 @@ export const buildCompanyCsv = (storeRows = []) => {
 // 店舗単体モードは「1店舗の月次KPI・費用・損益」を項目,値の縦持ちで出力する(比較表と違い
 // 行方向の比較軸を持たないデータのため)。
 export const buildStoreCsv = ({ storeName, monthValue, summary, previousSummary, productivity }) => {
-  const hasPrevious = Boolean(previousSummary?.entries?.length);
+  // 不具合修正: 前月の実績がまとめて入力(daily_batch_entries)だけで構成されている場合、
+  // entries(daily_sales由来)だけを見ると前月比が「比較データなし」に誤判定されていた
+  // (storage.jsのgetStoreDashboardRows等と同じ基準に統一する)。
+  const hasPrevious = Boolean(previousSummary?.entries?.length) || Boolean(previousSummary?.batchEntries?.length);
   const salesDiff = diffPercent(summary.sales, previousSummary?.sales, hasPrevious);
   const rows = [["項目", "値"]];
   const push = (label, value) => rows.push([label, value]);

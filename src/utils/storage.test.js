@@ -3319,6 +3319,68 @@ test("getMonthlyReviewSummary(単一店舗): 前月に実データ(0円の日を
   assert.equal(summary.sales.diff, null);
 });
 
+// 不具合修正(フィーネ横浜の実例): 前月の売上が「まとめて入力」1件だけで構成されている
+// 場合(通常の日次入力=daily_sales由来のentriesはゼロ件)でも、月次レビューの前月比較が
+// 「比較データなし」にならないことを保証する回帰テスト。
+test("getMonthlyReviewSummary(単一店舗): 前月の実績がまとめて入力(daily_batch_entries)だけで構成されていても、hasPrevious:trueになり前月比較が機能する(まとめ入力オンリーの月が『比較データなし』になっていた不具合の再発防止)", () => {
+  const state = createInitialAppState();
+  const store = "フィーネ横浜";
+  const month = "2026-08";
+  const previousKey = `${store}__2026-07`;
+  state.dailyResults[`${store}__${month}`] = [{ id: "e1", date: "2026-08-01", totalSales: 300000, technicalSales: 280000, retailSales: 20000, customers: 20 }];
+  // 前月(2026-07)は通常の日次入力を一切使わず、月初〜月末をまとめて入力した1件だけで
+  // 構成されている(daily_sales側のentriesは存在しない)。
+  state.dailyBatchEntries[previousKey] = [{
+    id: "batch-1", startDate: "2026-07-01", endDate: "2026-07-31",
+    totalSales: 14893161, technicalSales: 14528550, retailSales: 364611, otherSales: null,
+    customers: 610, newCustomers: null, repeatCustomers: null, reviewCount: null,
+  }];
+
+  const summary = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
+
+  assert.equal(summary.hasPrevious, true);
+  assert.equal(summary.sales.previous, 14893161);
+  assert.equal(summary.technicalSales.previous, 14528550);
+  assert.equal(summary.retailSales.previous, 364611);
+  assert.equal(summary.customers.previous, 610);
+});
+
+test("getStoreMonthSalesTotal: まとめて入力だけの月もhasEntries:trueになる(店舗ランキングの『先月』表示が消えていた不具合の再発防止)", () => {
+  const state = createInitialAppState();
+  const store = "フィーネ横浜";
+  const month = "2026-07";
+  state.dailyBatchEntries[`${store}__${month}`] = [{
+    id: "batch-1", startDate: "2026-07-01", endDate: "2026-07-31",
+    totalSales: 14893161, technicalSales: 14528550, retailSales: 364611, otherSales: null,
+    customers: 610, newCustomers: null, repeatCustomers: null, reviewCount: null,
+  }];
+
+  const result = getStoreMonthSalesTotal(state, store, month);
+
+  assert.equal(result.hasEntries, true);
+  assert.equal(result.sales, 14893161);
+});
+
+test("getStoreDashboardRows: 前月の実績がまとめて入力だけで構成されていてもhasPrevious:trueになる(月次ダッシュボード・CSVの前月比が消えていた不具合の再発防止)", () => {
+  const state = createInitialAppState();
+  const store = { id: "store-1", name: "フィーネ横浜", settings: {} };
+  const company = { id: "company-1", stores: [store] };
+  const month = "2026-08";
+  const previousKey = `${store.id}__2026-07`;
+  state.dailyResults[`${store.id}__${month}`] = [{ id: "e1", date: "2026-08-01", totalSales: 300000, customers: 20 }];
+  state.dailyBatchEntries[previousKey] = [{
+    id: "batch-1", startDate: "2026-07-01", endDate: "2026-07-31",
+    totalSales: 14893161, technicalSales: 14528550, retailSales: 364611, otherSales: null,
+    customers: 610, newCustomers: null, repeatCustomers: null, reviewCount: null,
+  }];
+
+  const rows = getStoreDashboardRows(state, company, month);
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].previous.hasPrevious, true);
+  assert.equal(rows[0].previous.sales, 14893161);
+});
+
 test("getMonthlyReviewSummary(単一店舗): 目標売上・達成率(要件1)。目標が未設定の場合はtargetAchievementもnullにする", () => {
   const state = createInitialAppState();
   const store = "A店";

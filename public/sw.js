@@ -345,7 +345,23 @@
 // を実施。既存の大きいtenant_snapshots行は次回の保存で自動的に縮小される(即時のデータ
 // 移行は不要)。日次入力・費用・目標等の実データ保存経路・RLS・権限・会社/店舗分離への
 // 変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v48';
+// v49: 月次レビュー・損益表・CSV・店舗ランキングの「前月比較データなし」誤判定と、
+// 過去月へ切り替えると初期設定案内が再表示される不具合を根本修正。
+// (1)「比較データなし」の原因: hasPrevious判定がdaily_sales由来のentries.lengthだけを
+// 見ており、まとめて入力(daily_batch_entries)だけでその月の実績が構成されている場合
+// (実例: フィーネ横浜2026年7月、月初〜月末をまとめて入力1件だけで登録)を検知できて
+// いなかった。getStoreMonthSalesTotal/getStoreDashboardRows/getMonthlyReviewSummary
+// (単一店舗・全店舗)/StoreDashboardView/dashboardExport(CSV)の計6箇所すべてを
+// entries.length > 0 || batchEntries.length > 0 の基準に統一。作成日時・更新日時・現在
+// 日時を使って対象月を判定している箇所は無かった(業務日付=business_date/start_date基準を
+// 確認済み)。
+// (2)初期設定案内の再表示: 対象月ごとにその月のデータ有無で「完了」を判定していたため、
+// 完全にセットアップ済みの店舗でも過去月・翌月へ切り替えると未完了扱いに戻っていた。
+// store_profiles.initial_setup_completed(店舗単位の恒久フラグ、新規列)を追加し、一度
+// 全項目が完了と判定されたら店舗単位でtrueを保存、以後どの対象月でも再表示しない。
+// 既存の会社作成ウィザードの完了状態(company.setup)とは別の概念で、重複作成はしていない。
+// 会社/店舗分離・RLS・権限・既存の売上/日次/まとめ入力データへの変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v49';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
