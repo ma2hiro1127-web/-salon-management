@@ -686,9 +686,9 @@ export const buildTargetStateFromRows = (rows = []) => {
 // Rebuilds the fixedCosts map (storeName__entryMonth -> item[]) from fixed_costs rows, in the
 // exact shape getFixedCostsForStoreMonth already expects — entry_month is the month the item
 // was originally filed under, which is what that function's "翌月以降も継続" lookback keys on.
-// The row's own `amount` is legacy (pre-per-month-amount) data and is intentionally not carried
-// into the item — the effective amount for a given month now always comes from
-// costMonthlyAmounts (see getCostMonthlyAmount), never from this master row.
+// The row's own legacy `amount` (pre-per-month-amount data) is intentionally not carried into the
+// item. baseAmount (継続費用の基本値) IS carried in — it's the fallback getCostMonthlyAmount uses
+// for an "ongoing" item's month with no explicit override row in costMonthlyAmounts.
 export const buildFixedCostsStateFromRows = (rows = []) => {
   const fixedCosts = {};
   (Array.isArray(rows) ? rows : []).forEach((row) => {
@@ -706,6 +706,8 @@ export const buildFixedCostsStateFromRows = (rows = []) => {
       periodType: row.period_type || (row.end_month ? "limited" : "ongoing"),
       startMonth: row.start_month || "",
       endMonth: row.end_month || "",
+      baseAmount: parseNumber(row.base_amount),
+      sortOrder: Number.isFinite(row.sort_order) ? row.sort_order : 0,
       updatedAt: row.updated_at || "",
     };
     fixedCosts[key] = [...(fixedCosts[key] || []), item];
@@ -1664,7 +1666,23 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
     if (item.id) byId.set(item.id, item);
     else withoutId.push(item);
   });
-  return [...byId.values(), ...withoutId];
+  // 表示順序はsort_order昇順で固定する(要件5・9)。金額・項目編集では変わらない専用の値
+  // なので、名前やカテゴリを更新しただけで並びが変わることはない。Array.sortは安定ソート
+  // (ES2019以降)のため、同値の項目は取得順(=DB側のsort_order, created_atの順)のまま。
+  return [...byId.values(), ...withoutId].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+};
+
+// costItemId(fixed_costsの行id)から項目そのものを引く。店舗ごとの月キーでバケット化されて
+// いるfixedCostsを横断して探す(会社全体を無制限取得しているため件数は小さい、他の同様の
+// 横断探索と同じ前提)。getCostMonthlyAmountが継続費用の基本値(baseAmount)を参照するために使う。
+const findFixedCostItemById = (state, costItemId) => {
+  if (!costItemId) return undefined;
+  for (const items of Object.values(state.fixedCosts || {})) {
+    if (!Array.isArray(items)) continue;
+    const match = items.find((item) => item.id === costItemId);
+    if (match) return match;
+  }
+  return undefined;
 };
 
 // ongoing | limited — purely for display; the filtering logic above reads item.periodType
@@ -1672,19 +1690,11 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
 // uses (no periodType recorded + no end_month = 継続として扱う).
 export const getCostPatternLabel = (item) => item?.periodType || (item?.endMonth ? "limited" : "ongoing");
 
-// 対象月に今まさに反映されている行そのもの(amount/updatedAt)を返す — getCostMonthlyAmount
-// (金額だけ欲しい呼び出し元向け)とneedsMonthReconfirmation(月締め後の変更検知にupdatedAtが
-// 要る)の両方が、この1か所だけを基準にする(費用入力画面・損益表とも同じロジックを共有する
-// ための唯一の実装)。優先順位:
-//   1. 対象月にちょうど保存された行があればそれを最優先(明示的にその月の金額を変更した場合)。
-//   2. 無ければ、対象月以前で最も新しく保存されている行を「引き継いだ金額」として使う(通常の
-//      継続費用の引き継ぎ — 未来の変更を過去へ遡って適用することは絶対にしない)。
-//   3. それも無い(=対象月より前に1件も行が無い)場合、対象月より後で最も古い行を使う。継続
-//      費用は「初めてシステムに登録した月」より前から実際には発生し続けている固定費という
-//      前提のため、登録月より過去の対象月を見た時に「未入力」になってしまうのを避ける
-//      (例: 8月に初めて登録した家賃¥300,000を7月で見ても¥300,000を表示する)。この場合も、
-//      あくまで表示・集計上の解決であり、過去月へ新しい行を書き込む(確定させる)ことはしない。
-//   4. その項目の金額が1件も保存されたことが無ければundefined。
+// 単月・期間限定費用(period_type='limited')専用のキャリーフォワード解決(既存仕様を維持、
+// 要件10)。対象月にちょうど保存された行があれば最優先、無ければ対象月以前で最も新しい行を
+// 引き継ぐ、それも無ければ対象月より後で最も古い行を使う(登録月より過去を見たときに
+// 「未入力」にならないようにするため)。継続費用(ongoing)にはこの関数を使わない——
+// getCostMonthlyAmountで基本値(baseAmount)ベースの別ロジックに分岐する。
 const resolveEffectiveCostMonthlyAmountRow = (state, costItemId, monthValue) => {
   if (!costItemId) return undefined;
   const exactRow = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
@@ -1709,11 +1719,21 @@ const resolveEffectiveCostMonthlyAmountRow = (state, costItemId, monthValue) => 
   return latestRowAtOrBefore || earliestRowAfter;
 };
 
-// 対象月ごとの金額(cost_monthly_amounts)。継続費用・期間限定費用とも「その月から有効になる
-// 金額」を履歴として持つ仕様(費用入力「継続」の金額引き継ぎ仕様、要件1-4)。損益集計では
-// undefinedを0として扱う(getCostMonthlyAmount(...) ?? 0)。
-export const getCostMonthlyAmount = (state, costItemId, monthValue) =>
-  resolveEffectiveCostMonthlyAmountRow(state, costItemId, monthValue)?.amount;
+// 対象月ごとの金額(cost_monthly_amounts)。
+//   - 継続費用(period_type='ongoing'): 対象月にちょうど保存された上書き行があればそれを
+//     最優先、無ければ費用マスター(fixed_costs)の基本値(baseAmount)を使う。過去に他の月へ
+//     入力した金額を引き継ぐことは一切しない(要件1-4: 対象月だけ変更しても翌月以降は
+//     自動的に基本値へ戻る)。
+//   - 単月・期間限定費用(period_type='limited'): 既存仕様のキャリーフォワードのまま
+//     (resolveEffectiveCostMonthlyAmountRow、要件10で変更しないと指定されている)。
+// 損益集計ではundefinedを0として扱う(getCostMonthlyAmount(...) ?? 0)。
+export const getCostMonthlyAmount = (state, costItemId, monthValue) => {
+  const exactRow = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
+  if (exactRow && exactRow.amount !== undefined) return exactRow.amount;
+  const item = findFixedCostItemById(state, costItemId);
+  if (item && item.periodType !== "limited") return item.baseAmount;
+  return resolveEffectiveCostMonthlyAmountRow(state, costItemId, monthValue)?.amount;
+};
 
 // 「前月の金額をコピー」用。前月に金額が保存されていなければundefined。
 export const getPreviousMonthCostAmount = (state, costItemId, monthValue) =>
@@ -2110,11 +2130,16 @@ export const needsMonthReconfirmation = (state, storeId, monthValue) => {
   if (!status?.closed || !status.lockedAt) return false;
   const fixedCosts = getFixedCostsForStoreMonth(state, storeId, monthValue);
   const timestamps = [
+    // item.updatedAtはfixed_costs行自体の更新日時 — 継続費用の基本値(base_amount)の変更も
+    // 同じ行のupdated_atを更新するため、ここで既に検知できる。
     ...fixedCosts.map((item) => item.updatedAt || ""),
-    // 対象月に直接保存された行だけでなく、継続費用が引き継いでいる行(この月に固有の行が無い
-    // 場合)のupdatedAtも見る — そうしないと、月締め後に「別の月の」継続費用金額を変更した
-    // ことで、確定済みの月の実質的な金額が変わっているのに再確認を促せなくなる。
-    ...fixedCosts.map((item) => resolveEffectiveCostMonthlyAmountRow(state, item.id, monthValue)?.updatedAt || ""),
+    // 対象月ごとの上書き(cost_monthly_amounts)のupdatedAtも見る。継続費用は対象月の上書き
+    // 行(あれば)だけを見れば十分(要件1-4の仕様変更でキャリーフォワードをやめたため)。
+    // 単月・期間限定費用は既存仕様のまま、キャリーフォワード解決後の行のupdatedAtを見る
+    // (対象月に固有の行が無い場合でも、引き継いでいる別月の行の変更を検知する必要があるため)。
+    ...fixedCosts.map((item) => (item.periodType === "limited"
+      ? resolveEffectiveCostMonthlyAmountRow(state, item.id, monthValue)?.updatedAt || ""
+      : state.costMonthlyAmounts?.[`${item.id}__${monthValue}`]?.updatedAt || "")),
     ...getClosingItemsForStoreMonth(state, storeId, monthValue).map((item) => item.updatedAt || ""),
     state.storeInventoryBalances?.[`${storeId}__${monthValue}`]?.updatedAt || "",
   ].filter(Boolean);

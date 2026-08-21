@@ -418,7 +418,16 @@
 // まとめた共通の判定(canEditDailyEntry)に一本化。ボタンの表示可否とロック理由が今後
 // 一瞬でもズレても入力欄側が独立して安全側に倒れるようにした(保存/日締め/権限ロジック
 // 自体は無変更)。
-const CACHE_NAME = 'salon-manager-cache-v57';
+// v58: 固定費・継続費用を再設計。継続費用は「基本値」(fixed_costs.base_amount、新カラム)と
+// 「月別上書き値」(cost_monthly_amounts、対象月だけの独立した値)を分離し、対象月を編集して
+// 保存しても翌月以降は自動的に基本値へ戻るようにした(従来はキャリーフォワードしていたため、
+// 一度変更すると未来の月にもずっと引き継がれていた)。表示順序をsort_order(新カラム)で
+// 明示管理し、金額編集や項目編集で並び順が変わらないようにした(ORDER BY無しのSELECTが
+// PostgreSQLの物理行順序に依存していたことが「金額変更で一覧の末尾へ移動する」不具合の原因)。
+// 固定費一覧をドラッグ&ドロップ(PC: ハンドルドラッグ/iPhone: ハンドル長押し)で並び替え可能に
+// し、並び順はDBへ保存する。継続費用の「前月をコピー」は基本値が自動反映されるため削除
+// (単月・期間限定費用は既存仕様のまま維持)。売上・日次・権限・店舗分離ロジックへの変更は無い。
+const CACHE_NAME = 'salon-manager-cache-v58';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

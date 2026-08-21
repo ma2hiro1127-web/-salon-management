@@ -2014,10 +2014,15 @@ export const loadMonthlyTargetFromSupabase = async ({ companyId, storeId, target
 export const loadFixedCostsForCompany = async ({ companyId }) => {
   if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
   try {
+    // ORDER BY無しだとPostgreSQLの行の物理順序(UPDATE等で変わり得る)に依存し、同じ内容でも
+    // 取得のたびに配列の並びが変わり得る(「金額を変更した項目が一覧の一番下へ移動する」
+    // 不具合の原因)。sort_orderを一次キーにして、同値の場合はcreated_atで安定させる。
     const { data, error } = await supabase
       .from("fixed_costs")
       .select("*")
-      .eq("company_id", companyId);
+      .eq("company_id", companyId)
+      .order("sort_order", { ascending: true })
+      .order("created_at", { ascending: true });
     if (error) throw error;
     return { ok: true, data: data || [] };
   } catch (error) {
@@ -2149,6 +2154,14 @@ export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryM
     period_type: item?.periodType === "limited" ? "limited" : "ongoing",
     start_month: String(item?.startMonth || ""),
     end_month: String(item?.endMonth || ""),
+    // 継続費用の基本値(要件1)。単月・期間限定費用には概念が無いため0のまま(呼び出し側の
+    // App.jsxもongoing以外では0を渡す)。既存のcost_monthly_amounts(月別上書き値)には
+    // 一切触れない——このupsertは項目マスターの更新のみを行う。
+    base_amount: Number(item?.baseAmount || 0),
+    // 表示順序(要件7・8・9)。呼び出し側が現在のsort_orderをそのまま渡す限り、名前/カテゴリ/
+    // 金額の編集だけでは並び順は変わらない。並び替え自体はreorderFixedCostsInSupabase経由の
+    // 別経路で行う(要件9: 金額変更・並び替え・項目編集を混同しない)。
+    sort_order: Number.isFinite(item?.sortOrder) ? item.sortOrder : 0,
     updated_by: userId,
     updated_at: new Date().toISOString(),
   };
@@ -2167,6 +2180,27 @@ export const upsertFixedCostToSupabase = async ({ id, companyId, storeId, entryM
   }
 };
 
+// 固定費一覧の並び替え(要件7・8・9)。金額・項目編集とは完全に別経路——sort_orderだけを
+// 個別にupdateし、他のカラム(名前・金額・カテゴリ等)には一切触れない。1件ずつのupdateに
+// するのは、upsertで一部カラムだけの配列を送ると欠けたNOT NULL列を意図せず上書きしてしまう
+// リスクを避けるため(項目数は店舗ごとに数件〜数十件程度で、並び替えは低頻度の操作のため
+// 複数リクエストでも実用上問題ない)。
+export const reorderFixedCostsInSupabase = async ({ updates }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!Array.isArray(updates) || updates.length === 0) return { ok: true, skipped: true };
+  try {
+    const results = await Promise.all(
+      updates.map(({ id, sortOrder }) => supabase.from("fixed_costs").update({ sort_order: sortOrder }).eq("id", id))
+    );
+    const failed = results.find((result) => result.error);
+    if (failed) throw failed.error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "reorderFixedCostsInSupabase", table: "fixed_costs", error });
+    return { ok: false, error };
+  }
+};
+
 export const deleteFixedCostFromSupabase = async ({ id }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   if (!id) return { ok: true, skipped: true };
@@ -2180,8 +2214,10 @@ export const deleteFixedCostFromSupabase = async ({ id }) => {
   }
 };
 
-// cost_monthly_amounts — the per-month amount for a fixed_costs item, entered explicitly (no
-// automatic carry-forward from a prior month, see storage.js's getCostMonthlyAmount). Windowed
+// cost_monthly_amounts — the per-month amount for a fixed_costs item. For an "ongoing" item this
+// is a pure single-month override (no carry-forward — the fallback for months with no exact row
+// is the item's own fixed_costs.base_amount, see storage.js's getCostMonthlyAmount). "limited"
+// (単月・期間限定) items keep the older carry-forward-within-window behavior unchanged. Windowed
 // the same way variable_costs/monthly_closings are below (current + recent months), since the
 // monthly cost-entry screen and P&L only ever need a small recent window, not full history.
 // No `id` param: the (cost_item_id, target_month) unique constraint is what upsert conflicts on,

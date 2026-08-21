@@ -395,6 +395,17 @@ button.list-row:hover { border-color: var(--accent); }
 .cost-row { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
 .cost-row-amount { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cost-row-amount input { width: 130px; min-height: 40px; }
+/* 固定費の並び替え用ドラッグハンドル(要件7・8)。touch-action:noneでiPhoneの長押しドラッグ中に
+   画面がスクロールしてしまうのを防ぐ。タップ領域は44px以上を確保する。 */
+.cost-row-drag-handle {
+  display: flex; align-items: center; justify-content: center; width: 32px; height: 44px;
+  flex-shrink: 0; cursor: grab; color: var(--muted); font-size: 1.15rem; font-weight: 700;
+  touch-action: none; user-select: none; -webkit-user-select: none; border-radius: 8px;
+}
+.cost-row-drag-handle:hover { background: rgba(148, 163, 184, 0.14); color: var(--text); }
+.cost-row-drag-handle:active { cursor: grabbing; }
+.cost-row-dragging { opacity: 0.5; }
+.cost-row-drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft) inset; }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }

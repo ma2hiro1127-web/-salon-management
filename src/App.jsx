@@ -156,6 +156,7 @@ import {
   upsertMonthlyReview,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
+  reorderFixedCostsInSupabase,
   loadCostMonthlyAmountsForCompany,
   upsertCostMonthlyAmountToSupabase,
   loadStoreInventoryBalancesForCompany,
@@ -6052,10 +6053,6 @@ function App() {
       setNotice("費用名は必須です");
       return;
     }
-    if (!isEditing && !fixedForm.amount) {
-      setNotice("金額は必須です");
-      return;
-    }
     if (!fixedForm.categoryKey) {
       setNotice("費用カテゴリは必須です");
       return;
@@ -6064,6 +6061,12 @@ function App() {
     // 「継続」を選ばせず常に単月(開始月=終了月=対象年月)として登録する。
     const isSingleMonthCategory = fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials";
     const periodType = isSingleMonthCategory || fixedForm.periodType === "limited" ? "limited" : "ongoing";
+    // 継続費用の基本値(要件1-4): 新規登録時は必須、既存項目の編集時も(このフォームに基本値
+    // 欄を出しているため)必須にする。単月・期間限定は既存仕様通り新規登録時だけ必須。
+    if (periodType === "ongoing" ? !fixedForm.amount : !isEditing && !fixedForm.amount) {
+      setNotice("金額は必須です");
+      return;
+    }
     let startMonth = fixedForm.startMonth || selectedMonth;
     let endMonth = "";
     if (isSingleMonthCategory) {
@@ -6084,7 +6087,16 @@ function App() {
 
     const key = buildMonthKey(selectedStoreId, startMonth);
     const itemId = fixedForm.id || crypto.randomUUID();
-    const nextItem = { id: itemId, name: fixedForm.name, category: fixedForm.category || "", categoryKey: fixedForm.categoryKey, memo: fixedForm.memo || "", periodType, startMonth, endMonth };
+    // 継続費用だけ基本値(baseAmount)を持つ。単月・期間限定には概念が無いため0のまま
+    // (金額は既存仕様通りcostMonthlyAmounts側の月別入力のみで管理する)。
+    const baseAmount = periodType === "ongoing" ? parseNumber(fixedForm.amount) : 0;
+    // 表示順序(要件7・8・9): 編集時は既存のsort_orderをそのまま引き継ぐ(名前やカテゴリを
+    // 変更しただけで並びが変わらないようにする)。新規登録時だけ、今の最大値+1を割り当てて
+    // 一覧の末尾に追加する(並び替えは別のドラッグ操作でのみ行う)。
+    const sortOrder = isEditing
+      ? (fixedForm.sortOrder ?? 0)
+      : fixedCosts.reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 0) + 1;
+    const nextItem = { id: itemId, name: fixedForm.name, category: fixedForm.category || "", categoryKey: fixedForm.categoryKey, memo: fixedForm.memo || "", periodType, startMonth, endMonth, baseAmount, sortOrder };
 
     const { company, store } = resolveTargetCompanyAndStore();
     // 停止中の店舗は新規の費用登録不可(要件1)。既存項目の編集(isEditing)はRLS側でも
@@ -6128,9 +6140,11 @@ function App() {
       return { ...prev, fixedCosts: nextFixedCosts };
     });
 
-    // 新規登録時だけ、入力された金額をこの項目の対象月(selectedMonth)の初回金額として保存する。
-    // 編集時はこのフォームに金額欄自体を出していない(月次一覧側でのみ金額を編集する)ので触らない。
-    if (!isEditing && fixedForm.amount) {
+    // 単月・期間限定費用のみ、新規登録時に入力された金額をこの項目の対象月(selectedMonth)の
+    // 初回金額として保存する(既存仕様のまま)。継続費用は基本値(baseAmountとして上で既に
+    // fixed_costsへ保存済み)が全ての月へ自動反映されるため、cost_monthly_amountsへの初回書き
+    // 込みは不要——要件2-4通り、対象月だけの上書きはあくまで月次一覧からの個別保存でのみ行う。
+    if (!isEditing && periodType === "limited" && fixedForm.amount) {
       await persistCostMonthlyAmount({ costItemId: itemId, targetMonth: selectedMonth, amount: fixedForm.amount });
     }
 
@@ -6138,7 +6152,10 @@ function App() {
   };
 
   const editFixedCost = (item) => {
-    setFixedForm({ ...defaultFixedCostItem, ...item, amount: "" });
+    // 継続費用は基本値(baseAmount)を編集フォームに出す(要件1-4)ため、既存値をそのまま
+    // プレフィルする。単月・期間限定は既存仕様通り金額欄自体を出さない(月次一覧側でのみ
+    // 金額を編集する)ため空のままにする。
+    setFixedForm({ ...defaultFixedCostItem, ...item, amount: item.periodType === "limited" ? "" : String(item.baseAmount ?? "") });
   };
 
   const cancelEditFixedCost = () => {
@@ -6254,6 +6271,77 @@ function App() {
         delete next[item.id];
         return next;
       });
+    }
+  };
+
+  // 固定費一覧の並び替え(要件7・8・9)。金額編集・項目編集とは完全に別経路 — sort_orderだけを
+  // 更新し、他のフィールド(金額・名前・カテゴリ等)には一切触れない。PC(ドラッグハンドルを
+  // 押したまま上下移動)・iPhone(ハンドルを長押しして上下移動)の両方をPointer Events(マウス・
+  // タッチを同じAPIで扱える)で統一的に処理する — HTML5ネイティブのdraggable属性はiOS Safari
+  // のタッチでは実用的に動かないため使わない。
+  const [fixedCostDragId, setFixedCostDragId] = useState(null);
+  const [fixedCostDragOverId, setFixedCostDragOverId] = useState(null);
+  const fixedCostDragActiveRef = useRef(false);
+
+  const reorderFixedCostItem = async (draggedId, overId) => {
+    if (guardFranchiseReadOnly()) return;
+    const currentOrder = fixedCosts.map((item) => item.id);
+    const fromIndex = currentOrder.indexOf(draggedId);
+    const toIndex = currentOrder.indexOf(overId);
+    if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) return;
+    const nextOrder = [...currentOrder];
+    nextOrder.splice(fromIndex, 1);
+    nextOrder.splice(toIndex, 0, draggedId);
+    const updates = nextOrder.map((id, index) => ({ id, sortOrder: index }));
+
+    const previousFixedCosts = appState.fixedCosts;
+    setAppState((prev) => {
+      const nextFixedCosts = { ...prev.fixedCosts };
+      Object.keys(nextFixedCosts).forEach((existingKey) => {
+        if (!existingKey.startsWith(`${prev.selectedStoreId}__`)) return;
+        nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).map((item) => {
+          const match = updates.find((update) => update.id === item.id);
+          return match ? { ...item, sortOrder: match.sortOrder } : item;
+        });
+      });
+      return { ...prev, fixedCosts: nextFixedCosts };
+    });
+
+    if (isSupabaseConfigured) {
+      const result = await reorderFixedCostsInSupabase({ updates });
+      if (!result.ok) {
+        // 保存に失敗した場合は表示だけが変わった状態を残さない(要件2と同じ「画面上だけの
+        // 変更にしない」方針)。次回の再取得を待たず、その場でDB確定前の並びへ戻す。
+        setAppState((prev) => ({ ...prev, fixedCosts: previousFixedCosts }));
+        setNotice(getSupabaseErrorMessage(result.error));
+      }
+    }
+  };
+
+  const handleFixedCostDragPointerDown = (event, itemId) => {
+    event.preventDefault();
+    fixedCostDragActiveRef.current = true;
+    setFixedCostDragId(itemId);
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handleFixedCostDragPointerMove = (event) => {
+    if (!fixedCostDragActiveRef.current) return;
+    const target = document.elementFromPoint(event.clientX, event.clientY);
+    const rowEl = target?.closest?.("[data-cost-item-id]");
+    const overId = rowEl?.getAttribute("data-cost-item-id") || null;
+    setFixedCostDragOverId((prev) => (prev === overId ? prev : overId));
+  };
+
+  const handleFixedCostDragPointerUp = async () => {
+    if (!fixedCostDragActiveRef.current) return;
+    fixedCostDragActiveRef.current = false;
+    const draggedId = fixedCostDragId;
+    const overId = fixedCostDragOverId;
+    setFixedCostDragId(null);
+    setFixedCostDragOverId(null);
+    if (draggedId && overId && draggedId !== overId) {
+      await reorderFixedCostItem(draggedId, overId);
     }
   };
 
@@ -7875,8 +7963,14 @@ function App() {
                         <option value="">費用カテゴリを選択</option>
                         {costCategoryKeys.map((category) => <option key={category.key} value={category.key}>{category.label}</option>)}
                       </select>
-                      {!fixedForm.id ? (
-                        <NumericInput value={fixedForm.amount} onChange={(value) => setFixedForm((prev) => ({ ...prev, amount: value }))} placeholder="今月の金額" />
+                      {/* 継続費用は新規登録・編集どちらでも基本値を出す(要件1-4)。単月・
+                          期間限定は既存仕様通り新規登録時だけ(金額は月次一覧側で個別管理)。 */}
+                      {!fixedForm.id || fixedForm.periodType === "ongoing" ? (
+                        <NumericInput
+                          value={fixedForm.amount}
+                          onChange={(value) => setFixedForm((prev) => ({ ...prev, amount: value }))}
+                          placeholder={fixedForm.periodType === "ongoing" ? "基本値（毎月自動反映）" : "今月の金額"}
+                        />
                       ) : null}
                       {fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials" ? (
                         <label className="field">
@@ -7929,6 +8023,10 @@ function App() {
                         </div>
                       </details>
                     </form>
+                    {/* 要件7・8: ドラッグハンドル(≡)で並び替え可能。PCはハンドルを押したまま
+                        上下移動、iPhoneはハンドルを長押しして上下移動(Pointer Eventsでマウス・
+                        タッチを統一的に処理)。入力欄・編集・削除ボタンはハンドルと別要素なので、
+                        誤操作にはならない。 */}
                     <div className="list-card">
                       {fixedCosts.map((item) => {
                         const periodLabel = item.periodType === "limited"
@@ -7943,7 +8041,23 @@ function App() {
                           ? getPreviousMonthAmountByNameAndCategory(appState, selectedStoreId, item.name, item.categoryKey, selectedMonth)
                           : undefined;
                         return (
-                          <div key={item.id} className="list-row cost-row">
+                          <div
+                            key={item.id}
+                            data-cost-item-id={item.id}
+                            className={`list-row cost-row ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
+                          >
+                            <span
+                              className="cost-row-drag-handle"
+                              onPointerDown={(event) => handleFixedCostDragPointerDown(event, item.id)}
+                              onPointerMove={handleFixedCostDragPointerMove}
+                              onPointerUp={handleFixedCostDragPointerUp}
+                              onPointerCancel={handleFixedCostDragPointerUp}
+                              aria-label="ドラッグして並び替え"
+                              role="button"
+                              tabIndex={-1}
+                            >
+                              ≡
+                            </span>
                             <div>
                               <strong>{item.name}</strong>
                               <small>{getCostCategoryLabel(item.categoryKey)} ／ {item.periodType === "limited" ? "単月・期間限定" : "継続"} ／ {periodLabel}{item.memo ? ` ／ ${item.memo}` : ""}</small>
@@ -7954,9 +8068,12 @@ function App() {
                                 placeholder={savedAmount === undefined ? "未入力" : ""}
                                 onChange={(value) => setCostAmountDraft(item.id, value)}
                               />
-                              {previousAmount !== undefined ? (
+                              {/* 要件6: 継続費用は基本値が毎月自動反映されるため「前月をコピー」は
+                                  不要(常に基本値=前月扱いになってしまい紛らわしいため非表示にする)。
+                                  単月・期間限定費用は既存仕様のまま維持する。 */}
+                              {item.periodType === "limited" && previousAmount !== undefined ? (
                                 <button className="text-button" type="button" onClick={() => copyPreviousMonthAmountFor(item)}>前月をコピー（{money(previousAmount)}）</button>
-                              ) : suggestedPreviousAmount !== undefined ? (
+                              ) : item.periodType === "limited" && suggestedPreviousAmount !== undefined ? (
                                 <small className="helper-text">前月の{item.name}: {money(suggestedPreviousAmount)}</small>
                               ) : null}
                               <button className="secondary-button" type="button" onClick={() => saveCostAmountFor(item)}>保存</button>
