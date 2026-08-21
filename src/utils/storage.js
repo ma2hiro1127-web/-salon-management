@@ -2018,6 +2018,23 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   };
 };
 
+// パフォーマンス改善(店舗売上ランキング用の軽量版): calculateMonthSummaryは費用10カテゴリの
+// 集計・在庫評価・消費税引当・営業日進捗まですべて1回で計算する重い関数——ランキングは
+// 「売上合計」と「前月データの有無」の2値しか使わないため、店舗数分×2か月分をそのまま
+// calculateMonthSummaryで計算するのは無駄が大きい(ランキングだけ表示が遅れる主因)。
+// sales/batchSalesの計算式はcalculateMonthSummaryの該当箇所と完全に同一のロジックを保つ——
+// ここを変更する場合はcalculateMonthSummary側の同じ計算も必ず合わせて変更すること。
+export const getStoreMonthSalesTotal = (state, storeId, monthValue) => {
+  const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
+  const batchEntries = getBatchEntriesForStoreMonth(state, storeId, monthValue);
+  const batchSales = batchEntries.reduce((total, item) => {
+    const value = item.totalSales ?? item.technicalSales ?? null;
+    return value === null || value === undefined ? total : total + Number(value);
+  }, 0);
+  const sales = entries.reduce((total, item) => total + parseNumber(item.totalSales || item.technicalSales || 0), 0) + batchSales;
+  return { sales, hasEntries: entries.length > 0 };
+};
+
 // 月締めチェックリスト: 損益表作成に必要な項目(売上+費用10カテゴリ)ごとの入力済み/未確認を
 // 返す。判定は費用名の文字列ではなく、calculateMonthSummaryが算出したcategoryHasEntry
 // (=実際に登録されているデータ)を基準にする。options.hiddenCategoriesに含まれる費用カテゴリ

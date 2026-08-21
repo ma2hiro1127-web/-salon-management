@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -67,6 +67,63 @@ test("calculateMonthSummary returns sales and cost ratios from new monthly struc
   assert.equal(summary.laborCost, 150000);
   assert.equal(summary.purchaseAmount, 40000);
   assert.equal(summary.costOfGoodsSold, 40000);
+});
+
+test("getStoreMonthSalesTotal: 店舗売上ランキング用の軽量版はcalculateMonthSummaryのsales/entriesと同じ値を返す(計算式は同一のまま、費用集計だけを省く)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.stores = [store];
+  state.selectedStore = store;
+  state.selectedMonth = month;
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 200000, technicalSales: 140000, retailSales: 60000, customers: 10 },
+    { date: "2026-08-02", totalSales: 300000, technicalSales: 180000, retailSales: 120000, customers: 12 },
+  ];
+
+  const full = calculateMonthSummary(state, store, month);
+  const lightweight = getStoreMonthSalesTotal(state, store, month);
+
+  assert.equal(lightweight.sales, full.sales);
+  assert.equal(lightweight.sales, 500000);
+  assert.equal(lightweight.hasEntries, full.entries.length > 0);
+  assert.equal(lightweight.hasEntries, true);
+});
+
+test("getStoreMonthSalesTotal: まとめて入力(daily_batch_entries)由来の売上もdailyResultsと合算する(calculateMonthSummaryのbatchSales加算と同じロジック)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.stores = [store];
+  state.selectedStore = store;
+  state.selectedMonth = month;
+  state.dailyBatchEntries[key] = [
+    { id: "batch-1", startDate: "2026-08-01", endDate: "2026-08-10", totalSales: 700000, technicalSales: null, retailSales: null, otherSales: null, customers: null, newCustomers: null, repeatCustomers: null, reviewCount: null },
+  ];
+
+  const full = calculateMonthSummary(state, store, month);
+  const lightweight = getStoreMonthSalesTotal(state, store, month);
+
+  assert.equal(lightweight.sales, full.sales);
+  assert.equal(lightweight.sales, 700000);
+});
+
+test("getStoreMonthSalesTotal: 実日次入力もまとめて入力も無い月はsales=0・hasEntries=falseを返す(前月データなし判定に使われる)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-07";
+
+  state.stores = [store];
+  state.selectedStore = store;
+
+  const result = getStoreMonthSalesTotal(state, store, month);
+
+  assert.equal(result.sales, 0);
+  assert.equal(result.hasEntries, false);
 });
 
 test("calculateMonthSummary: adCost/adRate only count the 広告費 category (and legacy 定額広告費), never the whole cost total", () => {

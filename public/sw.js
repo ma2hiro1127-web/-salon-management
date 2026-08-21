@@ -257,7 +257,19 @@
 // 重複作成防止: 前後空白・全角半角・大文字小文字の表記ゆれを吸収した完全一致チェックで
 // クライアント側から重複作成をブロックし、DB側にも company_id + 正規化した店舗名 の
 // ユニークインデックスを追加(ボタン連打・複数端末からの同時作成に対する最終防御)。
-const CACHE_NAME = 'salon-manager-cache-v40';
+// v41: ログイン後の表示速度の根本改善。(1)hydrateFromSupabaseが18テーブルを1件ずつawaitで
+// 順に取得していた直列ウォーターフォールをPromise.allによる並列取得へ変更(いずれも互いの
+// 結果に依存しない独立した取得だったため、エラー処理の意味は変えず取得だけ並列化)。
+// (2)店舗売上ランキングが費用集計・在庫評価まで行う重いcalculateMonthSummaryを店舗数×2か月分
+// 呼んでいたのを、売上合計だけを返す軽量関数(getStoreMonthSalesTotal)に置き換え。ランキングは
+// 元々ネットワーク取得ではなく取得済みappStateからのクライアント側計算だったため、これはN+1
+// クエリの解消ではなく計算コストの削減。(3)daily_sales/daily_cash_breakdown/
+// daily_batch_entriesへ実際の検索条件(company_id+日付レンジ)に対応するインデックスを追加し、
+// daily_salesの重複インデックスを1件削除。(4)company_id×対象月が同一の並行hydrate呼び出しを
+// 1回に統合する多重リクエスト対策を追加。(5)店舗切替だけでは取得内容が変わらない
+// (常に会社内全店舗分をまとめて取得する設計のため)ことを利用し、店舗切替時の不要な再取得を
+// 停止。RLS・権限体系・加盟店除外仕様への変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v41';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
