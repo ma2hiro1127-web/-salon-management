@@ -1912,6 +1912,15 @@ function App() {
       .sort((left, right) => right.sales - left.sales)
       .map((row, index) => ({ ...row, currentRank: index + 1 }));
   }, [appState, selectedMonth, currentCompanyStores]);
+  // 「データを更新中です…」の間、未取得の売上・ランキングが¥0/0%として表示され、利用者が
+  // 「データが消えたのでは」と不安になる不具合の修正(要件7-9)。syncInitializedは今セッション
+  // で一度でも本物のhydrateが成功したことを示す既存のフラグ(自動保存のガードに使っている
+  // ものを再利用——新しい仕組みは増やさない)。まだ一度も成功していない、かつローカルに
+  // 前回分のキャッシュ(日次入力・ランキング対象店舗の売上)も無い場合だけ「本当に何も
+  // 表示できるものが無い」と判定し、それ以外(前回セッションのキャッシュがある/既に
+  // hydrate成功済み)は実際の値(0円を含む)をそのまま表示する——「前回データを消さない」
+  // 要件を、フラグを増やさずsyncInitialized+既存データの有無だけで満たす。
+  const isInitialDataReady = syncInitialized || dailyEntries.length > 0 || rankingRows.some((row) => row.sales > 0 || row.hasPreviousSales);
   const goToMonthlyTargetSetting = () => {
     // 月間目標設定パネルは selectedMonth (ヘッダーの対象月) とは独立した専用の月選択
     // (targetSelectedMonth) を持つため、ここで同期させないとダッシュボードで見ていた
@@ -6874,9 +6883,9 @@ function App() {
                   <div><span>今月営業日数</span><strong>{businessDaySummary.businessDayCount ? `${businessDaySummary.businessDayCount}日` : "未設定"}</strong></div>
                   <div><span>営業完了</span><strong>{businessDaySummary.completedDays}日</strong></div>
                   <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
-                  <div><span>総売上</span><strong>{money(summary.sales)}</strong></div>
-                  <div><span>1日平均売上</span><strong>{money(summary.displayAverageDailySales)}</strong></div>
-                  <div><span>顧客数</span><strong>{number(summary.customers)}名</strong></div>
+                  <div><span>総売上</span><strong>{isInitialDataReady ? money(summary.sales) : "—"}</strong></div>
+                  <div><span>1日平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
+                  <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
                 </div>
               </div>
               <div className="kpi-sales-section">
@@ -6895,9 +6904,9 @@ function App() {
                 {hasSalesTarget ? (
                   <MetricCard
                     label="月間達成率"
-                    value={percent(summary.targetAchievement)}
-                    secondaryValue={`目標売上まで ${money(summary.remainingSalesTarget)}`}
-                    tone={summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100)}
+                    value={isInitialDataReady ? percent(summary.targetAchievement) : "—"}
+                    secondaryValue={isInitialDataReady ? `目標売上まで ${money(summary.remainingSalesTarget)}` : ""}
+                    tone={!isInitialDataReady ? "" : (summary.remainingSalesTarget === 0 ? "good" : getMetricTone(summary.targetAchievement, 85, 100))}
                     emphasize
                     hero
                     onClick={goToMonthlyTargetSetting}
@@ -6905,29 +6914,29 @@ function App() {
                 ) : null}
                 <MetricCard
                   label="月末着地予測"
-                  value={money(summary.displayForecast)}
-                  hint={hasSalesTarget
+                  value={isInitialDataReady ? money(summary.displayForecast) : "—"}
+                  hint={isInitialDataReady && hasSalesTarget
                     ? <span className={forecastVsTarget >= 0 ? "text-success" : "text-danger"}>{`目標より${forecastVsTarget >= 0 ? "＋" : "▲"}${money(Math.abs(forecastVsTarget))}`}</span>
                     : null}
-                  tone={hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : ""}
+                  tone={!isInitialDataReady ? "" : (hasSalesTarget ? (forecastVsTarget >= 0 ? "good" : "warning") : "")}
                 />
                 {hasCustomerTarget ? (
                   <MetricCard
                     label="客数達成率"
-                    value={percent(customerTargetSummary.achievementRate)}
-                    secondaryValue={`目標まで ${customerTargetSummary.remainingCustomers}名`}
-                    hint={`必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日`}
-                    tone={getMetricTone(customerTargetSummary.achievementRate, 85, 100)}
+                    value={isInitialDataReady ? percent(customerTargetSummary.achievementRate) : "—"}
+                    secondaryValue={isInitialDataReady ? `目標まで ${customerTargetSummary.remainingCustomers}名` : ""}
+                    hint={isInitialDataReady ? `必要客数 ${customerTargetSummary.remainingCustomersPerDay.toFixed(1)}名/日` : ""}
+                    tone={isInitialDataReady ? getMetricTone(customerTargetSummary.achievementRate, 85, 100) : ""}
                   />
                 ) : null}
                 {effectiveShowReviewCountField ? (
                   <MetricCard
                     label="口コミ数"
-                    value={showReviewCountTargetField && hasReviewCountTarget
+                    value={!isInitialDataReady ? "—" : (showReviewCountTargetField && hasReviewCountTarget
                       ? `${number(summary.reviewCount)}件 / ${number(summary.reviewCountTarget)}件`
-                      : `${number(summary.reviewCount)}件`}
-                    hint={showReviewCountTargetField && hasReviewCountTarget ? `達成率 ${percent(summary.reviewCountAchievement)}` : null}
-                    tone={showReviewCountTargetField && hasReviewCountTarget ? getMetricTone(summary.reviewCountAchievement, 85, 100) : ""}
+                      : `${number(summary.reviewCount)}件`)}
+                    hint={isInitialDataReady && showReviewCountTargetField && hasReviewCountTarget ? `達成率 ${percent(summary.reviewCountAchievement)}` : null}
+                    tone={!isInitialDataReady ? "" : (showReviewCountTargetField && hasReviewCountTarget ? getMetricTone(summary.reviewCountAchievement, 85, 100) : "")}
                   />
                 ) : null}
                 {dashboardSupportMetrics.map((item) => <MetricCard key={item.label} label={item.label} value={item.value} hint={item.hint} />)}
@@ -6985,6 +6994,22 @@ function App() {
               </div>
               {stores.length === 0 ? (
                 <div className="empty-card">店舗を追加してください。</div>
+              ) : !isInitialDataReady ? (
+                // 初回ログイン直後、まだ一度もhydrateが成功しておらず前回分のキャッシュも
+                // 無い間は、店舗が0件であるかのような「¥0」を全店舗分並べて不安にさせない
+                // ——取得中であることが分かるプレースホルダーにする(要件9)。
+                <div className="ranking-list">
+                  {currentCompanyStores.map((store) => (
+                    <div key={store.id} className="ranking-row ranking-row-skeleton">
+                      <div className="ranking-row-rank">—</div>
+                      <div className="ranking-row-main">
+                        <span className="ranking-row-name">{store.name}</span>
+                        <strong className="ranking-row-sales">取得中…</strong>
+                      </div>
+                      <small className="ranking-row-previous">&nbsp;</small>
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div className="ranking-list">
                   {rankingRows.map((row) => (

@@ -303,7 +303,14 @@
 // UIが存在しなかった(前回時点では"syncing"用のnotice-boxしか無かった)のを追加し、
 // 1回目の失敗時点(最大15秒)で「自動的に再試行しています」という安定した文言を表示する
 // ようにした。RLS・権限・会社/店舗分離・データ保存経路への変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v44';
+// v45: 「データを更新中です…」の間、未取得の売上・ランキングが¥0/0%として表示され不安に
+// なる不具合を修正。既存のsyncInitializedフラグ(自動保存ガード用)を再利用し、今セッションで
+// 一度もhydrateが成功しておらず、かつローカルに前回分のキャッシュも無い場合だけ、総売上・
+// 1日平均売上・顧客数・月間達成率・月末着地予測・客数達成率・口コミ数・店舗売上ランキングを
+// 「—」/「取得中…」のプレースホルダーにする。前回セッションのキャッシュがある場合や、
+// 既に一度hydrateが成功した後は、実際の値(0円を含む)をそのまま表示する——新しい状態管理は
+// 追加せず、既存フラグ+既存データの有無だけで判定。
+const CACHE_NAME = 'salon-manager-cache-v45';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
