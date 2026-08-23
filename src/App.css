@@ -87,6 +87,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .nav { display: flex; flex-direction: column; gap: 8px; }
 /* カテゴリの切れ目は見出し文字ではなく余白だけで区切る(ページ名との重複を避けるため)。 */
 .nav-button.nav-group-start { margin-top: 14px; }
+/* スマホUI改善(要件1): ログアウトのメニュー内複製。PC/タブレットでは.filters側の
+   ログアウトボタンだけを表示し、こちらは隠す(≤900pxのメディアクエリでだけ表示に切り替える、
+   下の900pxブロック参照)。 */
+.nav-mobile-logout { display: none; }
 .nav-button, .subnav-button, .primary-button, .secondary-button, .text-button { border: 0; border-radius: 12px; padding: 8px 10px; font-weight: 700; font-size: 0.86rem; transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease; }
 .nav-button, .subnav-button { background: transparent; color: var(--text); text-align: left; }
 .nav-button:hover, .subnav-button:hover { background: rgba(37, 99, 235, 0.06); transform: translateX(2px); }
@@ -531,7 +535,10 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-chip:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: 0 4px 12px rgba(47, 125, 246, 0.14); }
 
 .ai-floating-button {
-  position: fixed; right: 20px; bottom: 24px; z-index: 40;
+  position: fixed;
+  /* safe-area-inset(iPhoneのホームインジケーター・ノッチ、PWAホーム追加時)を考慮する。
+     非対応ブラウザではenv()が0扱いになるため既存の20px/24pxのまま変わらない(要件8)。 */
+  right: calc(20px + env(safe-area-inset-right, 0px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40;
   display: inline-flex; align-items: center; gap: 6px; padding: 12px 18px; border-radius: 999px;
   border: none; background: linear-gradient(135deg, #3b8cff, #2f7df6); color: #fff; font-weight: 800; font-size: 0.95rem;
   box-shadow: 0 14px 28px rgba(47, 125, 246, 0.32); cursor: pointer; transition: transform 140ms ease, box-shadow 140ms ease;
@@ -573,6 +580,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 /* 店舗売上ランキング: 順位・店舗名・現在売上・先月売上だけのシンプルな表示
    (達成率%・前回順位・トレンド矢印・展開式の詳細は廃止)。 */
 .ranking-list { display: flex; flex-direction: column; gap: 8px; }
+/* スマホUI改善(要件7): 「全店舗を見る」トグル。PCでは常に非表示(ランキングは従来通り
+   全店舗表示のまま)、≤900pxの時だけ表示する(下の900pxブロック参照)。 */
+.ranking-toggle-button { display: none; }
 .ranking-row { width: 100%; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-strong); padding: 12px 14px; display: flex; align-items: center; gap: 12px; box-shadow: var(--shadow); box-sizing: border-box; }
 /* 追加UI最終調整: 順位はメダル(1〜3位)/番号(4位以下)の違いだけで表現し、行の文字色・
    不透明度では順位差を付けない(店舗名・現在売上は全順位で同じ濃さにする)。 */
@@ -634,6 +644,42 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .status-overview-panel { padding: 14px; }
   .status-overview-header { flex-direction: column; align-items: flex-start; }
   .compact-status-stack { width: 100%; }
+
+  /* スマホUI改善(要件1): 画面上部のコンパクト化。ログアウトは左上メニュー内へ移す
+     (.nav-mobile-logoutを表示し、.filters側の複製は隠す)。店舗/対象月のセレクトは
+     min-height(タップ領域)は44pxのまま維持しつつ、上下のpadding・ラベルとの余白・
+     .topbar/.filters自体の余白だけを詰め、営業進捗までの到達を早くする。 */
+  .topbar-account-action { display: none; }
+  .nav-mobile-logout { display: block; margin-top: 10px; border-top: 1px solid var(--border); padding-top: 14px; color: var(--muted); }
+  .topbar { margin-bottom: 4px; }
+  .topbar-heading { gap: 8px; }
+  .filters { gap: 8px; }
+  .filters label { gap: 3px; font-size: 0.78rem; }
+  .filters select, .filters input { min-height: 44px; padding: 8px 12px; }
+  .user-role-badge { margin-top: 3px !important; }
+
+  /* スマホUI改善(要件4): 客数達成率・平均客単価をこの幅だけ横並び2列にする。DOM順・
+     親要素構造は一切変更していない(JSX側コメント参照、PCの並びに影響しない設計)。
+     kpi-hero-gridを2列へ戻し、既定では全カード(・空プレースホルダー)をgrid-column:
+     1/-1(2列ぶち抜き=実質1列)にしたうえで、ペア対象の2枚だけ1列(span 1)に戻して
+     隣接させる。間に挟まる口コミ数はorder(表示順のみ)で視覚上だけ後方へ回す
+     ——DOM順自体は変わらないため、タブ移動順やPCの並びには一切影響しない。 */
+  .kpi-hero-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .kpi-hero-grid > .metric-card, .kpi-hero-grid > .metric-card-placeholder { grid-column: 1 / -1; }
+  .kpi-hero-grid > .metric-card.metric-card-customer-rate,
+  .kpi-hero-grid > .metric-card.metric-card-average-spend { grid-column: span 1; }
+  /* 客数達成率が無い月は平均客単価だけがペア対象として残り、2列の片方(半分の幅)で
+     浮いてしまうため、その場合は全幅に戻す(hasCustomerTargetに応じてJSX側で
+     付与するクラス)。 */
+  .kpi-hero-grid > .metric-card.metric-card-average-spend-solo { grid-column: 1 / -1; }
+  .metric-card-review-count { order: 1; }
+
+  /* スマホUI改善(要件7): 店舗売上ランキングをTOP3に折りたたむ。「全店舗を見る」ボタンは
+     このメディアクエリ内でだけ表示し(PCは常時全店舗表示のまま)、.collapsed中は4位以降
+     (ranking-row-skeletonのプレースホルダーは対象外にする必要が無いよう:not()は使わず、
+     単純に4番目以降の.ranking-rowを隠すだけ)を非表示にする。 */
+  .ranking-toggle-button { display: block; width: 100%; text-align: center; padding: 10px; margin-top: 4px; }
+  .ranking-list.collapsed .ranking-row:nth-child(n+4) { display: none; }
 }
 
 @media (max-width: 640px) {
@@ -702,13 +748,21 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .panel-heading { align-items: flex-start; flex-direction: column; margin-bottom: 10px; }
   .panel-heading h2, .panel-heading h3 { font-size: 1rem; }
   .eyebrow { font-size: 0.68rem; }
-  .dashboard-layout { gap: 10px; }
-  .business-progress-card { padding: 12px; }
-  .business-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .dashboard-layout { gap: 8px; }
+  /* スマホUI改善(要件2): 営業進捗カードはデザインは維持しつつ、ラベルと数値の余白だけを
+     詰める(「営業日」「残り営業日」の意味の近い2項目も、値自体・計算ロジックは変更せず
+     表示スペースだけ圧縮する)。要件9: カード自体の上下margin/paddingもスマホだけ少し縮小。 */
+  .business-progress-card { padding: 12px; margin-bottom: 10px; }
+  .business-progress-header { margin-bottom: 6px; }
+  .business-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .business-progress-grid div { gap: 1px; }
   .business-progress-grid strong { font-size: 0.95rem; }
-  .metric-card { padding: 10px; }
+  /* スマホUI改善(要件9): カード内部の上下paddingをもう少し詰める(文字が窮屈にならない
+     範囲、以前の10pxからさらに縮めすぎない)。 */
+  .metric-card { padding: 9px 10px; gap: 4px; }
   .metric-card span { font-size: 0.74rem; }
   .metric-card strong { font-size: 0.95rem; }
+  .kpi-hero-grid { gap: 8px; margin-bottom: 10px; }
   .today-result-card { padding: 10px; }
   .status-stack { align-items: stretch; width: 100%; }
   .status-pill, .timestamp-pill { width: 100%; justify-content: center; font-size: 0.74rem; padding: 5px 8px; }
@@ -727,8 +781,17 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .brand { margin-bottom: 12px; }
   .brand strong { font-size: 0.92rem; }
   .brand small { font-size: 0.74rem; }
-  .ai-floating-button { right: 14px; bottom: 18px; padding: 12px 16px; font-size: 0; }
+  /* スマホUI改善(要件6): AI分析エリアをもう少しコンパクトに。「AIに相談する ＞」が1行で
+     収まるよう、ボタンは大きくしすぎず(padding据え置き)、上下の余白だけを詰める。 */
+  .ai-assistant-card-compact { margin-top: 8px; padding: 10px 12px; }
+  .ai-assistant-compact-row { gap: 8px; }
+  .ai-assistant-compact-label { font-size: 0.84rem; }
+  .ai-floating-button { right: calc(14px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); padding: 12px 16px; font-size: 0; }
   .ai-floating-button span:first-child { font-size: 1.2rem; }
+  /* 要件8: ランキング・売上構成カードの一番下がAIボタンの真下に来ないよう、右カラム全体に
+     安全な余白を確保する(ボタンの高さ+余白+safe-area分)。ボタン自体を押しにくくするのでは
+     なく、コンテンツ側に余白を持たせる方式。 */
+  .dashboard-right-column { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
   .ai-chat-screen { max-width: 100%; }
   .ai-chat-message { max-width: 90%; }
   .ai-chat-header { padding: 12px 14px; }
@@ -740,6 +803,14 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    上の640pxブロックの2列のままにする。 */
 @media (max-width: 400px) {
   .kpi-grid { grid-template-columns: 1fr; }
+}
+
+/* スマホUI改善(要件4・10): 320px前後の極小幅では客数達成率・平均客単価の2列も窮屈になり
+   得るため、この2枚も1列(2列ぶち抜き)へフォールバックする(数字・単位が省略・はみ出しする
+   事態を確実に防ぐ)。 */
+@media (max-width: 360px) {
+  .kpi-hero-grid > .metric-card.metric-card-customer-rate,
+  .kpi-hero-grid > .metric-card.metric-card-average-spend { grid-column: 1 / -1; }
 }
 
 /* ユーザー管理: 店舗 > 権限 > スタッフ の階層表示 */

@@ -1851,6 +1851,15 @@ function App() {
     void performMonthlyReviewSave(appState.currentCompanyId, monthlyReviewKeyStoreId, selectedMonth, fields);
   };
 
+  // スマホUI改善(要件7): 店舗売上ランキングをスマホ幅だけTOP3に折りたたむ表示状態。
+  // ランキング自体の計算・順位・同額判定・先月売上は一切変更せず(rankingRowsをそのまま
+  // 描画する)、4位以降をCSSで隠すかどうかだけを切り替える。CSS側は≤900pxのメディアクエリ
+  // 内でだけ4位以降を隠すため、PCでは常に全店舗表示のまま(このstateの値に関係なく)。
+  // 店舗・対象月を切り替えたら毎回TOP3表示へ戻す(前の店舗で展開していた状態を持ち越さない)。
+  const [rankingExpanded, setRankingExpanded] = useState(false);
+  useEffect(() => {
+    setRankingExpanded(false);
+  }, [selectedStoreId, selectedMonth]);
   // 全店舗 月カレンダーで「まだ緑になっていない営業日」をクリックすると、どの店舗が未締めか
   // 表示するポップオーバー(要件13)。{dateIso, anchorEl}か、閉じている間はnull。
   const [unclosedStoresPopover, setUnclosedStoresPopover] = useState(null);
@@ -2112,35 +2121,28 @@ function App() {
   // (App.jsx側で重複実装しない)。スタッフ数は現状、店舗の現在設定(store_profiles)を
   // そのまま使う仕様のまま(月次履歴は持たない)——過去月を開いても同じ現在値を参照する。
   const showPerStaffSalesCard = !isAllStoresView && Boolean(selectedStoreEntity) && staffProductivitySummary.hasStaffCount && staffProductivitySummary.effectiveStaffCount >= 2;
-  const dashboardSupportMetrics = useMemo(() => {
-    // 「必要客数◯名/日」は客数達成率カード側にまとめたため、平均客単価カードは数値だけの
-    // シンプルな表示にする(効率系: 数字中心、補足最小限)。
-    const items = [{ label: "平均客単価", value: money(summary.averageSpend), hint: "" }];
-    // 「1日平均必要売上」は売上画面UI/UX改善(要件1)で主KPI3項目の1つへ格上げしたため、
-    // ここでは持たない(kpi-hero-grid側で個別に描画する)。
-    // 「目標客数まで」はkpi-hero-gridの「客数達成率」カード(secondaryValue)と同じ数字
-    // (remainingCustomersTarget)を表示するだけの重複カードだったため廃止。
+  // 「1人あたり月間売上」は要件どおり単独カードのまま(スマホの2列ペアには入れない)。
+  // ここは「1人あたり月間売上」1項目(表示可否に応じて実カード or プレースホルダー)だけを
+  // 持つ配列にする——平均客単価は客数達成率と隣接させて描画する必要があるため、この配列
+  // からは切り離し、kpi-hero-gridのJSXで直接レンダリングする(下記参照)。
+  const perStaffSalesMetrics = useMemo(() => {
     // 全店舗ビューでは店舗ごとの生産性計算人数という単一の値が存在しないため出さない
     // (このブロック自体を出さない、既存仕様のまま)。
-    if (!isAllStoresView && selectedStoreEntity) {
-      if (showPerStaffSalesCard) {
-        items.push({
-          label: "1人あたり月間売上",
-          // データ取得前(isInitialDataReady=false)は他のKPIカードと同じ「—」表示にし、
-          // 実績反映前の¥0がちらつくのを防ぐ(要件: ちらつきを出さない)。
-          value: isInitialDataReady ? `${money(staffProductivitySummary.current)} / 人` : "—",
-          hint: isInitialDataReady ? `月末予測 ${money(staffProductivitySummary.monthEndForecast)} / 人` : "",
-        });
-      } else {
-        // スタッフ数が1人以下(または未設定)の月は、カード自体を配列から取り除くのではなく
-        // 「見た目の無いプレースホルダー」を同じ位置へ積む(要件: 非表示でも周辺のKPIカードの
-        // 横幅・高さ・並び順を変えない。項目数によってグリッドの詰まり方が変動しないように、
-        // という目標設定側の任意項目と同じ考え方をここにも適用する)。
-        items.push({ label: "__per_staff_sales_placeholder__", placeholder: true });
-      }
+    if (isAllStoresView || !selectedStoreEntity) return [];
+    if (showPerStaffSalesCard) {
+      return [{
+        label: "1人あたり月間売上",
+        // データ取得前(isInitialDataReady=false)は他のKPIカードと同じ「—」表示にし、
+        // 実績反映前の¥0がちらつくのを防ぐ(要件: ちらつきを出さない)。
+        value: isInitialDataReady ? `${money(staffProductivitySummary.current)} / 人` : "—",
+        hint: isInitialDataReady ? `月末予測 ${money(staffProductivitySummary.monthEndForecast)} / 人` : "",
+      }];
     }
-    return items;
-  }, [summary.averageSpend, isAllStoresView, selectedStoreEntity, showPerStaffSalesCard, staffProductivitySummary, isInitialDataReady]);
+    // スタッフ数が1人以下(または未設定)の月は、カードを取り除くのではなく「見た目の無い
+    // プレースホルダー」を同じ位置へ積む(要件: 非表示でも周辺のKPIカードの横幅・高さ・
+    // 並び順を変えない)。
+    return [{ label: "__per_staff_sales_placeholder__", placeholder: true }];
+  }, [isAllStoresView, selectedStoreEntity, showPerStaffSalesCard, staffProductivitySummary, isInitialDataReady]);
   // Driven by which sales fields are actually enabled for this store (activeDailyFieldSettings/
   // preferences.showOtherSales) rather than a hardcoded 技術/店販 pair — a future field added to
   // that same toggle system (エクステ、スパ、着付け etc.) only needs an entry pushed onto this
@@ -7003,6 +7005,18 @@ function App() {
                 </button>
               );
             })}
+            {/* スマホUI改善(要件1): ログアウトは常時大きなボタンとして画面上部に置かず、
+                左上のメニュー(ハンバーガー)内へ移動する。PC/タブレットでは既存通り
+                .filters側のログアウトボタンだけを表示し、こちらはCSSで隠す
+                (.nav-mobile-logoutクラス、≤900pxのみ表示)——JSX構造・ログアウト処理
+                (handleLogout)自体は変更しない、表示位置の複製のみ。 */}
+            <button
+              type="button"
+              className="nav-button nav-mobile-logout"
+              onClick={() => { setMobileNavOpen(false); handleLogout(); }}
+            >
+              ログアウト
+            </button>
           </nav>
         </div>
         <div className="sidebar-footer" />
@@ -7222,6 +7236,12 @@ function App() {
                     primary
                   />
                 ) : null}
+                {/* スマホUI改善(要件4): 客数達成率・平均客単価はスマホ幅だけ横並び2列にする。
+                    DOM順・親要素は一切変更せず(=既存のPCレイアウトを1pxも変えない)、
+                    ≤900pxの時だけこの2枚にmetric-card-customer-rate/metric-card-average-spend
+                    というクラスでgrid-column:span 1を与え、間に挟まる口コミ数にはCSSの
+                    order(表示順)だけを与えて視覚的に後ろへ回す(DOM順自体は変えないので
+                    PCの並び・タブ移動順には一切影響しない)。 */}
                 {hasCustomerTarget ? (
                   <MetricCard
                     label="客数達成率"
@@ -7233,6 +7253,7 @@ function App() {
                     // 追加していない)。
                     tone={isInitialDataReady ? customerPaceTone : ""}
                     secondary
+                    className="metric-card-customer-rate"
                   />
                 ) : null}
                 {effectiveShowReviewCountField ? (
@@ -7244,9 +7265,19 @@ function App() {
                     hint={isInitialDataReady && showReviewCountTargetField && hasReviewCountTarget ? `達成率 ${percent(summary.reviewCountAchievement)}` : null}
                     tone={!isInitialDataReady ? "" : (showReviewCountTargetField && hasReviewCountTarget ? getMetricTone(summary.reviewCountAchievement, 85, 100) : "")}
                     secondary
+                    className="metric-card-review-count"
                   />
                 ) : null}
-                {dashboardSupportMetrics.map((item) => (
+                {/* 客数達成率が非表示(hasCustomerTarget=false または全店舗ビュー)の月は
+                    ペア相手が居ないため、スマホ幅でも2列の片方(半分の幅)のまま残さず
+                    1/-1(全幅)にするクラスを追加する。 */}
+                <MetricCard
+                  label="平均客単価"
+                  value={isInitialDataReady ? money(summary.averageSpend) : "—"}
+                  secondary
+                  className={`metric-card-average-spend${hasCustomerTarget ? "" : " metric-card-average-spend-solo"}`}
+                />
+                {perStaffSalesMetrics.map((item) => (
                   item.placeholder
                     // 「1人あたり月間売上」が非表示の月でも、他のKPIカードの位置がズレない
                     // よう同じグリッドの1マスを占有する空の枠(visibility:hidden、カードの
@@ -7327,27 +7358,44 @@ function App() {
                   ))}
                 </div>
               ) : (
-                <div className="ranking-list">
+                <>
                   {/* 売上画面UI/UX改善(要件5・23): ランキングのロジック・順位・集計は無変更
                       (rankingRowsをそのまま描画するだけ)。表示は上位3位をメダルで強調するのみ
                       ——4位以下も店舗名・現在売上は同じ濃さで表示し、非活性に見えないようにする
                       (順位差はメダル/順位番号だけで表現する、追加UI最終調整)。
                       追加UI最終調整: 現在売上と先月売上の左端を揃えるため、両方を1つの
                       縦積みブロック(ranking-row-figures)にまとめ、先月売上は現在売上の
-                      真下・同じ左端に配置する。 */}
-                  {rankingRows.map((row) => (
-                    <div key={row.storeId} className="ranking-row">
-                      <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
-                      <div className="ranking-row-main">
-                        <span className="ranking-row-name">{row.storeName}</span>
-                        <div className="ranking-row-figures">
-                          <strong className="ranking-row-sales">{money(row.sales)}</strong>
-                          <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "—"}</small>
+                      真下・同じ左端に配置する。
+                      スマホUI改善(要件7): 4位以降はDOM上には常に描画したまま、CSS側で
+                      ≤900pxの時だけ.collapsed中は非表示にする(4位以降をJSで間引かない
+                      ため、PCでは常に全店舗表示のまま——rankingExpandedの値はCSSの適用範囲
+                      が異なるだけで、ランキングの計算・順位判定には一切関与しない)。 */}
+                  <div className={`ranking-list ${rankingExpanded ? "" : "collapsed"}`}>
+                    {rankingRows.map((row) => (
+                      <div key={row.storeId} className="ranking-row">
+                        <div className="ranking-row-rank">{row.currentRank === 1 ? "🥇" : row.currentRank === 2 ? "🥈" : row.currentRank === 3 ? "🥉" : row.currentRank}</div>
+                        <div className="ranking-row-main">
+                          <span className="ranking-row-name">{row.storeName}</span>
+                          <div className="ranking-row-figures">
+                            <strong className="ranking-row-sales">{money(row.sales)}</strong>
+                            <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "—"}</small>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                  {/* 3店舗以下では折りたたむ意味が無いため表示しない。ボタン自体もCSSで
+                      PCでは常に非表示にする(≤900pxのみ表示)。 */}
+                  {rankingRows.length > 3 ? (
+                    <button
+                      type="button"
+                      className="text-button ranking-toggle-button"
+                      onClick={() => setRankingExpanded((prev) => !prev)}
+                    >
+                      {rankingExpanded ? "閉じる" : "全店舗を見る"}
+                    </button>
+                  ) : null}
+                </>
               )}
             </section>
             <SalesCompositionCard items={salesComposition} />
@@ -9549,10 +9597,10 @@ function App() {
 // (順調/やや遅れ/要注意)——toneが同じ情報を色でも表すが、色覚特性等に依存しないよう文言も
 // 併記する。色の使い方自体は既存のtone(good/warning/danger)の仕組みをそのまま使い、新しい
 // 判定ロジックは追加しない(呼び出し元がforecastStatusTone等、既存計算値から渡すだけ)。
-function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", statusLabel = "", emphasize = false, hero = false, primary = false, secondary = false, onClick = null }) {
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", statusLabel = "", emphasize = false, hero = false, primary = false, secondary = false, className = "", onClick = null }) {
   return (
     <div
-      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${primary ? "metric-card-primary" : ""} ${secondary ? "metric-card-secondary" : ""} ${onClick ? "clickable" : ""}`}
+      className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${primary ? "metric-card-primary" : ""} ${secondary ? "metric-card-secondary" : ""} ${className} ${onClick ? "clickable" : ""}`}
       onClick={onClick || undefined}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
