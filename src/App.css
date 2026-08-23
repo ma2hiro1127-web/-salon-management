@@ -511,6 +511,10 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    消すため、他のKPIカードの横幅・高さ・並び順が変わらない(要件)。カードの罫線・背景・影は
    一切継承しない(空のカード枠自体を表示しない、という要件)。 */
 .metric-card-placeholder { visibility: hidden; }
+/* スマホUI改善(要件2): 顧客数はPC/タブレットでは営業進捗カード側にだけ表示するため、
+   KPI側のこの複製カードは既定では常に非表示にする(≤900pxのメディアクエリ内でだけ
+   display:flexへ戻す)。 */
+.metric-card-customer-count-mobile { display: none; }
 .kpi-hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .target-setup-hint { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .target-setup-hint .helper-text { margin: 0; }
@@ -680,6 +684,78 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      単純に4番目以降の.ranking-rowを隠すだけ)を非表示にする。 */
   .ranking-toggle-button { display: block; width: 100%; text-align: center; padding: 10px; margin-top: 4px; }
   .ranking-list.collapsed .ranking-row:nth-child(n+4) { display: none; }
+
+  /* スマホUI改善2段ヘッダー案(要件1): 「売上」画面のみ(.topbar-dashboard-mobile、
+     App.jsx側でactivePage==="dashboard"の時だけ付与)、店舗/対象月をタイトル右側の2段へ
+     移動する。他ページの.topbarは上のflex-direction:column(縦積み)のまま——このブロック
+     の外では一切変更しない。 */
+  .topbar.topbar-dashboard-mobile { flex-direction: row; align-items: flex-start; flex-wrap: nowrap; gap: 8px; }
+  .topbar-dashboard-mobile .topbar-heading { flex: 1 1 auto; min-width: 0; }
+  .topbar-dashboard-mobile .topbar-heading > div { min-width: 0; }
+  .topbar-dashboard-mobile h1 { font-size: 1.15rem; margin: 0; line-height: 1.25; }
+  /* 「管理者」バッジは優先度が低いため、主役(タイトル)より控えめな見た目に落とす
+     (要件1: バッジが目立ちすぎない)。表示条件・文言(currentUser?.role等)は無変更。 */
+  .topbar-dashboard-mobile .user-role-badge {
+    font-size: 0.66rem; padding: 2px 8px; margin-top: 2px !important;
+    background: transparent; color: var(--muted); box-shadow: none; font-weight: 600;
+  }
+  .topbar-dashboard-mobile .filters {
+    flex: 0 1 auto; display: flex; flex-direction: column; align-items: flex-end;
+    gap: 4px; min-width: 0; max-width: 58%;
+  }
+  .topbar-dashboard-mobile .filters label { position: relative; width: auto; align-items: flex-end; min-width: 0; }
+  /* ラベル文言(店舗/対象月)は非表示にし、選択中の値だけを見せる(要件1)。display:noneでは
+     スクリーンリーダーからもラベルが失われるため、視覚的にだけ隠す標準的な手法(サイズを
+     1pxに潰してclipする)を使い、アクセシブルネームは維持する。 */
+  .topbar-dashboard-mobile .filters-label-text,
+  .topbar-dashboard-mobile .month-picker-label {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  /* 「プルダウンと分かる見た目にする」(要件1)。アプリ全体でinput/select/textareaに
+     appearance:noneが掛かっており(既存のグローバルリセット、55行目付近)ネイティブの矢印が
+     元々どのページにも出ていないため、この2段ヘッダーの2つのコントロールにだけ▼を軽量に
+     追加する(新しい画像アセットは使わず、ラベル/ボタン自身の::afterで表現)。 */
+  .topbar-dashboard-mobile .filters label::after {
+    content: "▼"; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-size: 0.55rem; color: var(--muted); pointer-events: none;
+  }
+  .topbar-dashboard-mobile .filters select {
+    min-height: 38px; padding: 6px 22px 6px 10px; font-weight: 700; font-size: 0.85rem;
+    max-width: 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .topbar-dashboard-mobile .month-picker { gap: 0; align-items: flex-end; min-width: 0; }
+  .topbar-dashboard-mobile .month-picker-trigger {
+    position: relative; min-height: 38px; padding: 6px 22px 6px 10px; font-size: 0.85rem;
+    max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .topbar-dashboard-mobile .month-picker-trigger::after {
+    content: "▼"; position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+    font-size: 0.55rem; color: var(--muted); pointer-events: none;
+  }
+
+  /* スマホUI改善(要件2): 営業進捗カードから顧客数を外し、KPI側の同名カード
+     (metric-card-customer-count-mobile、App.jsx参照)へ表示を一本化する。PC/タブレットでは
+     従来通りbusiness-progress-grid側にだけ表示する(下のbase定義でKPI側カードは常時
+     display:noneにしてあるので、ここではbusiness-progress-grid側を隠すだけでよい)。 */
+  .business-progress-customer-cell { display: none; }
+  .kpi-hero-grid > .metric-card.metric-card-customer-count-mobile { display: flex; }
+
+  /* スマホUI改善(要件3): 「月間達成率」カードの主役は達成率(value)であるべきなのに、
+     副次情報(secondaryValue、「目標売上まで」)がCSS詳細度の関係で常にvalueと同じ
+     font-sizeまで引き上げられてしまっていた、という既存バグを特定した(原因:
+     `.metric-card.metric-card-primary strong`のようなクラス2つ+要素型のセレクタが、
+     専用クラス1つだけの`.metric-card-secondary-value`より詳細度が高く、記述順に関係なく
+     常に後者を上書きしてしまう——emphasize/hero/primaryを問わずどのkpi-hero-gridカードでも
+     起きていた)。ここでは影響範囲をスマホに限定するため、詳細度をさらに上回る複合
+     セレクタ(3クラス)でスマホ幅だけ明示的に上書きし、正しく1段階弱いサイズ・トーンで
+     表示されるようにする(達成率→目標までの不足額→補足、の順で視線が流れるようにする)。
+     PC側の見え方は今回変更しない(既存のまま)。 */
+  .metric-card.metric-card-primary strong.metric-card-secondary-value,
+  .metric-card.hero strong.metric-card-secondary-value,
+  .metric-card strong.metric-card-secondary-value {
+    font-size: 0.8rem; font-weight: 600; color: var(--muted); margin-top: 0;
+  }
 }
 
 @media (max-width: 640px) {
@@ -754,6 +830,13 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      表示スペースだけ圧縮する)。要件9: カード自体の上下margin/paddingもスマホだけ少し縮小。 */
   .business-progress-card { padding: 12px; margin-bottom: 10px; }
   .business-progress-header { margin-bottom: 6px; }
+  /* スマホUI改善(要件2): 進捗率チップとプログレスバーが視覚的な主役になるよう、少しだけ
+     強める。.status-chipは日次入力画面の帯(daily-progress-compact)とも共有クラスのため、
+     影響が売上ダッシュボードのこのカードだけに閉じるよう.business-progress-headerを親に
+     付けたセレクタで限定する(日次入力側の見た目は無変更)。.progress-track/.progress-fillは
+     このカード専用(他ページで未使用)のため、そのまま調整する。 */
+  .business-progress-header .status-chip { font-size: 0.92rem; padding: 5px 12px; }
+  .business-progress-card .progress-track { height: 12px; margin-bottom: 10px; }
   .business-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
   .business-progress-grid div { gap: 1px; }
   .business-progress-grid strong { font-size: 0.95rem; }

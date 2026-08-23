@@ -7023,7 +7023,12 @@ function App() {
       </aside>
 
       <main className="main-content">
-        <header className="topbar">
+        {/* スマホUI改善2段ヘッダー案(要件1): 「売上」画面のスマホ幅だけ、店舗/対象月を
+            タイトル右側の2段(1行目=店舗、2行目=対象月)へ移動する。他ページのモバイル
+            ヘッダーは既存の縦積みレイアウトのまま変更しないよう、activePage==="dashboard"
+            の時だけ.topbar-dashboard-mobileを付与し、対応するCSSも全てこのクラスの配下に
+            スコープする(topbar自体は全ページ共通コンポーネントのため、無条件で変更しない)。 */}
+        <header className={`topbar${activePage === "dashboard" ? " topbar-dashboard-mobile" : ""}`}>
           <div className="topbar-heading">
             <button
               type="button"
@@ -7065,7 +7070,12 @@ function App() {
                 の連携だけが対象のため、pending/rejected/disconnectedの加盟店はここに
                 一切出てこない。 */}
             <label>
-              店舗
+              {/* 「売上」画面のスマホ2段ヘッダーでは、ラベル文言(店舗/対象月)は非表示にして
+                  選択中の値だけを見せる仕様(要件1)。テキストノードのままだとCSSで個別に
+                  隠せないため<span>で囲む——PC/他ページでは.topbar-dashboard-mobileが付かず
+                  このspanにも何もスタイルが当たらないため、見え方は今まで通り「店舗」という
+                  文字が普通に表示される。 */}
+              <span className="filters-label-text">店舗</span>
               <select
                 value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}:${appState.selectedStoreId || ""}` : selectedStore}
                 onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
@@ -7175,7 +7185,13 @@ function App() {
                   <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
                   <div><span>総売上</span><strong>{isInitialDataReady ? money(summary.sales) : "—"}</strong></div>
                   <div><span>平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
-                  <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
+                  {/* スマホUI改善(要件2): スマホ幅では営業進捗カードの情報密度を下げるため、
+                      顧客数はこのカードから外しKPI側(kpi-hero-grid内の同名カード、後述)へ
+                      表示を一本化する。PC/タブレットでは従来通りここに残す
+                      (.business-progress-customer-cellは≤900pxの時だけCSSでdisplay:noneに
+                      する——値の計算元(summary.customers)・表示条件は変更しない、表示場所の
+                      重複を避けるための出し分けのみ)。 */}
+                  <div className="business-progress-customer-cell"><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
                 </div>
               </div>
               <div className="kpi-sales-section">
@@ -7276,6 +7292,18 @@ function App() {
                   value={isInitialDataReady ? money(summary.averageSpend) : "—"}
                   secondary
                   className={`metric-card-average-spend${hasCustomerTarget ? "" : " metric-card-average-spend-solo"}`}
+                />
+                {/* スマホUI改善(要件2): 営業進捗カードから外した顧客数の表示先。PC/タブレット
+                    ではこのカード自体をCSSで常時非表示にする(business-progress-grid側に
+                    既にあるため二重表示しない)——≤900pxの時だけdisplayをflexへ戻す
+                    (metric-card-customer-count-mobileクラス)。DOM順は口コミ数(order:1)より
+                    後・平均客単価と同じorder:0の並びに置くため、客数達成率+平均客単価の
+                    2列ペアリングのgrid auto-flowを崩さない(間に割り込ませていない)。 */}
+                <MetricCard
+                  label="顧客数"
+                  value={isInitialDataReady ? `${number(summary.customers)}名` : "—"}
+                  secondary
+                  className="metric-card-customer-count-mobile"
                 />
                 {perStaffSalesMetrics.map((item) => (
                   item.placeholder
@@ -7378,7 +7406,14 @@ function App() {
                           <span className="ranking-row-name">{row.storeName}</span>
                           <div className="ranking-row-figures">
                             <strong className="ranking-row-sales">{money(row.sales)}</strong>
-                            <small className="ranking-row-previous">先月 {row.hasPreviousSales ? money(row.previousSales) : "—"}</small>
+                            {/* スマホUI改善(要件4): 先月データの有無で表現がブレていた
+                                (「先月 —」)のを統一する。データが無い場合は「先月データなし」
+                                と明示する方式(A案)を採用——行自体を消すB案だと、店舗ごとに
+                                ranking-row-figuresの高さが変わりランキング全体の縦位置が
+                                ガタつくため、常に2行分の高さを確保できるA案の方が一覧として
+                                自然。集計ロジック(hasPreviousSales/previousSales)自体は
+                                無変更。 */}
+                            <small className="ranking-row-previous">{row.hasPreviousSales ? `先月 ${money(row.previousSales)}` : "先月データなし"}</small>
                           </div>
                         </div>
                       </div>
