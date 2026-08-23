@@ -7124,7 +7124,10 @@ function App() {
             — 入力途中のデータを失うような強制リロードはしない。 */}
         {swUpdateApply ? (
           <div className="notice-box sw-update-banner">
-            <span>新しいバージョンが利用可能です。</span>
+            {/* 通知文言の調整: 「新しいバージョンが利用可能です。」/「更新する」から、より
+                シンプルな表現へ変更。更新処理自体(swUpdateApply呼び出し・リロードのタイミング)
+                は無変更、文言のみの変更。 */}
+            <span>新しいバージョンがあります</span>
             <button
               type="button"
               className="secondary-button"
@@ -7133,7 +7136,7 @@ function App() {
                 setSwUpdateApply(null);
               }}
             >
-              更新する
+              アップデート
             </button>
           </div>
         ) : null}

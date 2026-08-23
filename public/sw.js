@@ -476,7 +476,11 @@
 // 余白を+10pxに拡大(右14→24px、下18→28px)、スクロール時にカード内容と被りにくくした。
 // ボタンサイズ自体・PC版配置は無変更。(3)以外の要素(2段ヘッダー・月間達成率・客数達成率・
 // 平均客単価・ランキング・売上構成等)は前回v62のまま変更なし。
-const CACHE_NAME = 'salon-manager-cache-v63';
+// v64: アップデート通知の文言をシンプルに変更(PC/スマホ共通、この文言自体が同じ場所に
+// 表示されるためファイル分割は不要)。「新しいバージョンが利用可能です。」→「新しいバージョン
+// があります」、ボタン「更新する」→「アップデート」。更新処理(swUpdateApply呼び出し・
+// リロードのタイミング)・検知ロジック・バージョン管理は無変更、文言のみの変更。
+const CACHE_NAME = 'salon-manager-cache-v64';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
