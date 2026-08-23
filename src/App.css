@@ -511,10 +511,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    消すため、他のKPIカードの横幅・高さ・並び順が変わらない(要件)。カードの罫線・背景・影は
    一切継承しない(空のカード枠自体を表示しない、という要件)。 */
 .metric-card-placeholder { visibility: hidden; }
-/* スマホUI改善(要件2): 顧客数はPC/タブレットでは営業進捗カード側にだけ表示するため、
-   KPI側のこの複製カードは既定では常に非表示にする(≤900pxのメディアクエリ内でだけ
-   display:flexへ戻す)。 */
-.metric-card-customer-count-mobile { display: none; }
 .kpi-hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .target-setup-hint { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .target-setup-hint .helper-text { margin: 0; }
@@ -734,13 +730,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
     font-size: 0.55rem; color: var(--muted); pointer-events: none;
   }
 
-  /* スマホUI改善(要件2): 営業進捗カードから顧客数を外し、KPI側の同名カード
-     (metric-card-customer-count-mobile、App.jsx参照)へ表示を一本化する。PC/タブレットでは
-     従来通りbusiness-progress-grid側にだけ表示する(下のbase定義でKPI側カードは常時
-     display:noneにしてあるので、ここではbusiness-progress-grid側を隠すだけでよい)。 */
-  .business-progress-customer-cell { display: none; }
-  .kpi-hero-grid > .metric-card.metric-card-customer-count-mobile { display: flex; }
-
   /* スマホUI改善(要件3): 「月間達成率」カードの主役は達成率(value)であるべきなのに、
      副次情報(secondaryValue、「目標売上まで」)がCSS詳細度の関係で常にvalueと同じ
      font-sizeまで引き上げられてしまっていた、という既存バグを特定した(原因:
@@ -869,12 +858,16 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .ai-assistant-card-compact { margin-top: 8px; padding: 10px 12px; }
   .ai-assistant-compact-row { gap: 8px; }
   .ai-assistant-compact-label { font-size: 0.84rem; }
-  .ai-floating-button { right: calc(14px + env(safe-area-inset-right, 0px)); bottom: calc(18px + env(safe-area-inset-bottom, 0px)); padding: 12px 16px; font-size: 0; }
+  /* スマホ版UI最終調整(要件4): スクロール中もカードの文字・数字・ボタンに被りにくいよう、
+     現在位置(右14px/下18px)から右端・下端の余白をそれぞれ+10px広げる。ボタン自体の
+     サイズ(padding/フォント)は変更しない。PC版(このメディアクエリの外)の配置には
+     影響しない。 */
+  .ai-floating-button { right: calc(24px + env(safe-area-inset-right, 0px)); bottom: calc(28px + env(safe-area-inset-bottom, 0px)); padding: 12px 16px; font-size: 0; }
   .ai-floating-button span:first-child { font-size: 1.2rem; }
-  /* 要件8: ランキング・売上構成カードの一番下がAIボタンの真下に来ないよう、右カラム全体に
-     安全な余白を確保する(ボタンの高さ+余白+safe-area分)。ボタン自体を押しにくくするのでは
-     なく、コンテンツ側に余白を持たせる方式。 */
-  .dashboard-right-column { padding-bottom: calc(64px + env(safe-area-inset-bottom, 0px)); }
+  /* 要件8/最終調整要件4: ランキング・売上構成カードの一番下がAIボタンの真下に来ないよう、
+     右カラム全体に安全な余白を確保する(ボタンの新しい位置に合わせて64px→76pxへ拡大)。
+     ボタン自体を押しにくくするのではなく、コンテンツ側に余白を持たせる方式。 */
+  .dashboard-right-column { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
   .ai-chat-screen { max-width: 100%; }
   .ai-chat-message { max-width: 90%; }
   .ai-chat-header { padding: 12px 14px; }

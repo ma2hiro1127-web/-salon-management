@@ -7185,13 +7185,12 @@ function App() {
                   <div><span>残り営業日</span><strong>{businessDaySummary.remainingBusinessDays === null ? "未設定" : `${businessDaySummary.remainingBusinessDays}日`}</strong></div>
                   <div><span>総売上</span><strong>{isInitialDataReady ? money(summary.sales) : "—"}</strong></div>
                   <div><span>平均売上</span><strong>{isInitialDataReady ? money(summary.displayAverageDailySales) : "—"}</strong></div>
-                  {/* スマホUI改善(要件2): スマホ幅では営業進捗カードの情報密度を下げるため、
-                      顧客数はこのカードから外しKPI側(kpi-hero-grid内の同名カード、後述)へ
-                      表示を一本化する。PC/タブレットでは従来通りここに残す
-                      (.business-progress-customer-cellは≤900pxの時だけCSSでdisplay:noneに
-                      する——値の計算元(summary.customers)・表示条件は変更しない、表示場所の
-                      重複を避けるための出し分けのみ)。 */}
-                  <div className="business-progress-customer-cell"><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
+                  {/* スマホ版UI最終調整: 「現在の顧客数」はPC/スマホ共通で営業進捗カード内に
+                      表示する(役割分担: 現在の顧客数→営業進捗、顧客数の目標進捗→客数達成率
+                      カード、という配置をPC・スマホで揃える)。前回追加したKPI側の複製カード
+                      (metric-card-customer-count-mobile)は削除し、ここが唯一の表示場所に
+                      一本化した。 */}
+                  <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
                 </div>
               </div>
               <div className="kpi-sales-section">
@@ -7292,18 +7291,6 @@ function App() {
                   value={isInitialDataReady ? money(summary.averageSpend) : "—"}
                   secondary
                   className={`metric-card-average-spend${hasCustomerTarget ? "" : " metric-card-average-spend-solo"}`}
-                />
-                {/* スマホUI改善(要件2): 営業進捗カードから外した顧客数の表示先。PC/タブレット
-                    ではこのカード自体をCSSで常時非表示にする(business-progress-grid側に
-                    既にあるため二重表示しない)——≤900pxの時だけdisplayをflexへ戻す
-                    (metric-card-customer-count-mobileクラス)。DOM順は口コミ数(order:1)より
-                    後・平均客単価と同じorder:0の並びに置くため、客数達成率+平均客単価の
-                    2列ペアリングのgrid auto-flowを崩さない(間に割り込ませていない)。 */}
-                <MetricCard
-                  label="顧客数"
-                  value={isInitialDataReady ? `${number(summary.customers)}名` : "—"}
-                  secondary
-                  className="metric-card-customer-count-mobile"
                 />
                 {perStaffSalesMetrics.map((item) => (
                   item.placeholder
