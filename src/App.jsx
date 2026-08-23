@@ -1972,6 +1972,14 @@ function App() {
       .sort((left, right) => right.sales - left.sales)
       .map((row, index) => ({ ...row, currentRank: index + 1 }));
   }, [appState, selectedMonth, currentCompanyStores]);
+  // 1店舗会社ではランキング(順位比較)自体に意味が無いため、セクションごと非表示にする。
+  // 判定基準は「今画面に描画されているランキング件数」ではなく、現在閲覧中の会社の有効
+  // 店舗数(currentCompanyStores、archived以外)——rankingRowsも同じcurrentCompanyStoresから
+  // 作られているため実質同じ値だが、意図を明確にするため専用の判定にする。currentCompanyは
+  // 加盟店閲覧中(isViewingFranchise)なら閲覧先の加盟店自身を指す(currentCompany/
+  // myCompanyIdの定義参照)ため、自社1店舗+加盟店複数、のようなケースで自社店舗数と加盟店数を
+  // 混同することはない——閲覧中の会社(自社 or 開いている加盟店)自身の店舗数だけで判定される。
+  const showStoreRanking = currentCompanyStores.length >= 2;
   // 「データを更新中です…」の間、未取得の売上・ランキングが¥0/0%として表示され、利用者が
   // 「データが消えたのでは」と不安になる不具合の修正(要件7-9)。syncInitializedは今セッション
   // で一度でも本物のhydrateが成功したことを示す既存のフラグ(自動保存のガードに使っている
@@ -7348,6 +7356,12 @@ function App() {
             </section>
 
             <div className="dashboard-right-column">
+            {/* 1店舗会社では順位比較の意味が無いため、見出し・外枠・余白ごとセクション自体を
+                描画しない(CSSでdisplay:noneにするだけだと外枠の余白・DOM自体は残ってしまう
+                ため、条件付きレンダリングにする)。非表示時は下のSalesCompositionCardが
+                dashboard-right-column(flexカラム)の中で自動的に詰まる——ranking側の余白を
+                打ち消す特別なCSSは不要。 */}
+            {showStoreRanking ? (
             <section className="panel">
               <div className="panel-heading">
                 <div>
@@ -7423,6 +7437,7 @@ function App() {
                 </>
               )}
             </section>
+            ) : null}
             <SalesCompositionCard items={salesComposition} />
             </div>
           </div>

@@ -480,7 +480,14 @@
 // 表示されるためファイル分割は不要)。「新しいバージョンが利用可能です。」→「新しいバージョン
 // があります」、ボタン「更新する」→「アップデート」。更新処理(swUpdateApply呼び出し・
 // リロードのタイミング)・検知ロジック・バージョン管理は無変更、文言のみの変更。
-const CACHE_NAME = 'salon-manager-cache-v64';
+// v65: 1店舗のみの会社では「店舗売上ランキング」セクション自体(見出し・外枠・メダル・
+// 「全店舗を見る」・余白すべて)を非表示にする(showStoreRanking、currentCompanyStores.length
+// >= 2で判定)。判定基準は画面上のランキング件数ではなく、現在閲覧中の会社(自社/開いている
+// 加盟店)の有効店舗数(archived以外)——加盟店閲覧中は閲覧先の会社自身の店舗数で判定するため
+// 自社店舗数と加盟店数を混同しない。CSSで隠すのではなく条件付きレンダリングのため、非表示時は
+// DOM自体が無くなり、下の売上構成カードがdashboard-right-column(flexカラム)内で自然に
+// 詰まる。ランキングの集計・順位計算(rankingRows)自体は無変更。
+const CACHE_NAME = 'salon-manager-cache-v65';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
