@@ -513,7 +513,16 @@
 // ロジックは一切変更していない。あわせてタイトルの折り返し(overflow-wrap)・右側の幅配分
 // (58%→50%)を調整し、「月次ダッシュボード」等の長いタイトルでも右側の店舗/対象月と両方
 // 読める配分にした。PC/タブレット幅(≤900pxのメディアクエリ外)は無変更。
-const CACHE_NAME = 'salon-manager-cache-v67';
+// v68: 販売前総合チェックで見つかった二重送信の穴を修正。(1)まとめて入力・(2)会社作成・
+// (3)ユーザー招待の保存に、同期的なuseRefで即座にブロックするガード(runWithSaveGuard、
+// storage.jsへ切り出し・単体テスト済み)を追加——従来はReact stateだけのガードで、連打や
+// スマホの二重タップ時に2回目の呼び出しがまだ更新前の値を見て素通りし得た。会社作成は
+// disabledすら付いていなかったボタンにも保存中表示を追加。ユーザー招待はDB側のprofiles.email
+// UNIQUE制約が既存の最終防御として機能していることを確認済み。(4)日次入力のsaveStatus
+// (保存・日締め・店休日・営業日設定が共通で更新するstate)が正しく更新されていたのに表示する
+// JSXが無かった(実害は無いが「保存成功が分かる」を満たしていなかった)ため、1行の状態表示を
+// 追加。保存処理・権限判定・値の計算ロジック自体はすべて無変更。
+const CACHE_NAME = 'salon-manager-cache-v68';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

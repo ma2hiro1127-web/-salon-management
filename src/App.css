@@ -359,6 +359,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .value-pill.inactive { background: rgba(100, 116, 139, 0.12); color: var(--muted); }
+/* 日次入力の保存ステータス表示(販売前総合チェックで発見: saveStatusは正しく更新されていたが
+   表示するJSXが無かった)。保存中/成功/失敗を色だけでなく文言でも区別する(既存のnotice-box
+   系の配色トークンを流用、新しい色は増やさない)。 */
+.daily-save-status-line { margin: 0 0 10px; font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+.daily-save-status-line.success { color: var(--success); }
+.daily-save-status-line.saving { color: var(--muted); }
+.daily-save-status-line.error { color: var(--danger); }
 button:disabled { opacity: 0.55; cursor: not-allowed; }
 .summary-card span, .ratio-card span { color: var(--muted); font-size: 0.8rem; }
 .summary-card strong, .ratio-card strong { font-size: 1.1rem; }

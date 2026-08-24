@@ -397,6 +397,25 @@ export const resolveDailyEntryEditState = ({
   return { canShowEditButton, canEditDailyEntry, isLocked };
 };
 
+// 二重送信防止の共通パターン(販売前総合チェックで発見: まとめて入力・会社作成・ユーザー招待
+// の保存が、Reactのstateだけ(setBusy)でガードされていた)。React state の更新は次の
+// レンダーまで反映されないため、同じイベント処理の中で連打・二重タップにより2回目の呼び出しが
+// 走ると、まだ古い(false の)値を見て両方ともガードを素通りしてしまう。ここでは呼び出しと
+// 同時に同期的に読み書きできる参照(guardRef、React側ではuseRefのオブジェクトを渡す想定——
+// {current: boolean}という最小限の形だけに依存するため、Reactに依存しないpure関数として
+// storage.js側でテストできる)を先にチェック・セットすることで、そのすり抜けを構造的に防ぐ。
+// guardRef.currentが既にtrueの間に呼ばれた場合は、taskを一切実行せず即座に返す
+// (二重実行・二重POST・二重upsertを防ぐ)。
+export const runWithSaveGuard = async (guardRef, task) => {
+  if (guardRef.current) return { ok: false, skipped: true };
+  guardRef.current = true;
+  try {
+    return await task();
+  } finally {
+    guardRef.current = false;
+  }
+};
+
 // daily_sales is the row-per-day Supabase source of truth (see upsertDailySalesEntry /
 // loadDailySalesForCompanyRange in utils/supabase.js). These convert between its column
 // shape and the app's in-memory entry shape, and rebuild the dailyResults/dayClosingStates/

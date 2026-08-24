@@ -53,6 +53,7 @@ import {
   getDailyResultsForStoreMonth,
   getFixedCostsForStoreMonth,
   resolveDailyEntryEditState,
+  runWithSaveGuard,
   getCostMonthlyAmount,
   getPreviousMonthCostAmount,
   buildCostMonthlyAmountsStateFromRows,
@@ -742,10 +743,31 @@ function App() {
   // 完了検知effectは、恒久フラグがローカルへ反映されるまでの短い間に複数回再実行され得る
   // ——ref一つで「既に送信中」を弾く、他の保存系ガードと同じパターン。
   const markingInitialSetupCompletedRef = useRef(false);
+  // まとめて入力の二重送信防止(販売前総合チェックで発見: batchFormBusyというReact stateだけで
+  // ガードされていたが、state更新は次のレンダーまで反映されないため、連打・スマホでの二重
+  // タップで同じ期間のまとめ入力が複数件作られ得た——期間(store_id・開始日・終了日)は
+  // ユーザーが任意に選ぶ値でありDB側に自然な一意キーを設定できない(同じ期間へ複数回、
+  // 別の入力項目を分けて登録する運用も許容している——detectBatchEntryFieldOverlap参照)ため、
+  // こちらもrefによる同期ガードを一次防御にする。
+  const savingBatchEntryRef = useRef(false);
+  // 会社作成・更新の二重送信防止(販売前総合チェックで発見: 従来ガードが一切無く、保存ボタンに
+  // disabledすら付いていなかった)。会社コードはgenerateCompanyCode()が呼び出しごとに新しい
+  // ランダム値を生成するため、DB側のUNIQUE制約(あってもcode自体はどのみち毎回別の値)では
+  // 二重作成を防げない——店舗作成(savingStoreRef)と全く同じ理由で、refによる同期ガードのみが
+  // 実効的な防御になる。
+  const savingCompanyRef = useRef(false);
+  const [companyFormBusy, setCompanyFormBusy] = useState(false);
   const [userForm, setUserForm] = useState({ name: "", email: "", role: "store_manager", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
   // 「招待する」ボタンの二重送信防止(要件8: ボタン連打・二重実行によるAuthユーザー重複作成を
   // 防ぐ)。招待フォーム全体を対象にした単一のフラグで十分(フォームは一度に1件しか送信しない)。
   const [userFormBusy, setUserFormBusy] = useState(false);
+  // ↑のuserFormBusyはUI表示(ボタンのdisabled/ラベル)用に残し、実際の二重送信ガードは
+  // 販売前総合チェックで発見した通りstateだけでは不十分(次のレンダーまで反映されないため
+  // 連打・スマホの二重タップをすり抜け得る)なので、同期的なrefを一次防御として追加する。
+  // DB側はprofiles.emailの既存UNIQUE制約(profiles_email_key、createUserProfileRecord参照)が
+  // 最終防御として既に機能している——同じメールアドレスへの重複INSERTは実際に来ても
+  // 23505エラーとして翻訳済みメッセージで拒否される。
+  const savingUserInviteRef = useRef(false);
   // 「再招待」ボタンの二重送信防止。行ごとに独立して無効化するため、対象user.idを保持する
   // (他のユーザー行の再招待ボタンまで巻き込んで無効化しないため)。
   const [resendingUserId, setResendingUserId] = useState("");
@@ -3319,7 +3341,20 @@ function App() {
     return result;
   };
 
-  const handleSaveCompany = async () => {
+  // 二重送信防止(販売前総合チェックで発見): 本処理はhandleSaveCompanyInnerへそのまま残し、
+  // このラッパーがrunWithSaveGuard(savingCompanyRef)による同期ガード+companyFormBusy
+  // (ボタンのdisabled/ラベル表示用)の付与だけを担う——他の新規追加分(まとめて入力・
+  // ユーザー招待)と同じ形にする。
+  const handleSaveCompany = () => runWithSaveGuard(savingCompanyRef, async () => {
+    setCompanyFormBusy(true);
+    try {
+      await handleSaveCompanyInner();
+    } finally {
+      setCompanyFormBusy(false);
+    }
+  });
+
+  const handleSaveCompanyInner = async () => {
     if (!canManageCompany(currentRole)) {
       setNotice("会社作成はシステム管理者または会社管理者が実行できます");
       return;
@@ -3685,15 +3720,19 @@ function App() {
     }
   };
 
-  const handleSaveUser = async () => {
+  // 二重送信防止(販売前総合チェックで発見: 従来は下のuserFormBusyというReact stateだけの
+  // 早期returnガードで、連打・スマホの二重タップ時に2回目の呼び出しがまだ更新前(false)の
+  // stateを見て素通りし得た)。本処理はhandleSaveUserInnerへそのまま残し、このラッパーが
+  // runWithSaveGuard(savingUserInviteRef)による同期ガードを追加する——userFormBusy自体
+  // (ボタンのdisabled/ラベル表示用)はhandleSaveUserInner側で既存どおり管理する。
+  const handleSaveUser = () => runWithSaveGuard(savingUserInviteRef, handleSaveUserInner);
+
+  const handleSaveUserInner = async () => {
     if (!canManageUsers(currentRole)) {
       setNotice("ユーザー招待はシステム管理者・会社管理者・店長が実行できます");
       return;
     }
     if (!userForm.name.trim() || !userForm.email.trim()) return;
-    // ボタン連打・二重実行防止(招待フロー整理の要件8)。送信中は早期returnし、Authユーザーの
-    // 重複作成につながる同時多重実行を防ぐ。
-    if (userFormBusy) return;
     const normalizedEmail = userForm.email.trim().toLowerCase();
     setUserFormBusy(true);
     try {
@@ -5526,7 +5565,15 @@ function App() {
   // (parseNullableNumber経由)でnullのまま保存し、0として確定させない(要件2)。保存前に
   // 項目単位の重複検知(要件7・8)で警告を挟むが、ブロックはしない — 承知の上での重複入力も
   // 許可する。
-  const handleSaveBatchEntry = async () => {
+  // 二重送信防止(販売前総合チェックで発見: 従来はbatchFormBusyというReact stateだけの
+  // ガードで、連打・スマホの二重タップをすり抜け得た)。本処理はhandleSaveBatchEntryInnerへ
+  // そのまま残し、このラッパーがrunWithSaveGuard(savingBatchEntryRef)による同期ガードだけを
+  // 追加する——batchFormBusy自体(ボタンのdisabled/ラベル表示用)はhandleSaveBatchEntryInner
+  // 側で既存どおりtrue/falseする(バリデーションで早期returnする場合はbusyを立てないという
+  // 既存の挙動もそのまま維持するため)。
+  const handleSaveBatchEntry = () => runWithSaveGuard(savingBatchEntryRef, handleSaveBatchEntryInner);
+
+  const handleSaveBatchEntryInner = async () => {
     // 権限体系の正式仕様(要件6): まとめて入力の権限はUI(ボタン非表示)だけに頼らず、
     // 保存処理側でも明示的にチェックする — staffが万一URL直接アクセス・ブラウザ改変等で
     // この関数を呼び出しても、ここで確実に拒否する(RLS側のdaily_batch_entries_insert/
@@ -6911,7 +6958,7 @@ function App() {
                     <option value="eyelash">まつげサロン</option>
                     <option value="esthetic">エステサロン</option>
                   </select>
-                  <button className="primary-button" type="button" onClick={handleSaveCompany}>会社情報を保存</button>
+                  <button className="primary-button" type="button" onClick={handleSaveCompany} disabled={companyFormBusy}>{companyFormBusy ? "保存中…" : "会社情報を保存"}</button>
                 </div>
                 <p className="helper-text">業種: {getBusinessTypeLabel(companyForm.businessType || "salon")}</p>
               </div>
@@ -6942,7 +6989,7 @@ function App() {
                     <option value="store_manager">store_manager</option>
                     <option value="staff">staff</option>
                   </select>
-                  <button className="primary-button" type="button" onClick={handleSaveUser}>管理者を登録</button>
+                  <button className="primary-button" type="button" onClick={handleSaveUser} disabled={userFormBusy}>{userFormBusy ? "送信中…" : "管理者を登録"}</button>
                 </div>
               </div>
               <div className="setup-card">
@@ -7609,6 +7656,20 @@ function App() {
                       <h2>売上入力</h2>
                     </div>
                   </div>
+
+                  {/* 販売前総合チェックで発見: saveStatus(日次入力保存・日締め・店休日設定・
+                      営業日設定が共通で更新するstate)は正しく更新されていたが、それを表示する
+                      JSXがどこにも無く実際には何も画面に出ていなかった——保存が失敗した場合は
+                      別経路(setNotice→notice-box)で既に見えているため実害は無かったが、
+                      「保存成功時に成功したことが分かる」を満たしていなかった。この1行だけを
+                      追加し、saveStatusを書き込んでいる全操作(保存・日締め・店休日・営業日
+                      設定)に共通の成功/保存中/エラー表示を与える。値の計算・保存処理自体は
+                      無変更(表示を追加しただけ)。 */}
+                  {saveStatus.message ? (
+                    <p className={`daily-save-status-line${saveStatus.error ? " error" : saveStatus.status === "saving" ? " saving" : " success"}`}>
+                      {saveStatus.message}
+                    </p>
+                  ) : null}
 
                   {/* 日次入力UI整理(要件2・3): ①営業進捗はコンパクトな1〜2行の帯にする
                       (以前の.daily-progress-card/.daily-progress-main/.daily-progress-value/
@@ -8481,7 +8542,7 @@ function App() {
                   <option value="suspended">停止中</option>
                 </select>
               )}
-              <button className="primary-button" type="button" onClick={handleSaveCompany}>{companyEditId ? "会社情報を更新" : "会社追加"}</button>
+              <button className="primary-button" type="button" onClick={handleSaveCompany} disabled={companyFormBusy}>{companyFormBusy ? "保存中…" : companyEditId ? "会社情報を更新" : "会社追加"}</button>
               {/* 危険度に応じて配置(要件10): 会社情報を更新(通常)の隣に、赤系(危険)の
                   「会社データを削除」を並べる。これは物理削除ではなく論理削除(要件6②) —
                   company_idに紐づくデータには一切触れず、30日間はゴミ箱から復元できる。 */}

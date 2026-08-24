@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3792,4 +3792,58 @@ test("resolveDailyEntryEditState: 新規作成モード(create)でも入力欄�
   // まだ保存されていない(hasEntryId:false)ので「編集」ボタンの出番ではない(保存/日締め
   // ボタンの組み合わせがApp.jsx側で別途出る)。
   assert.equal(creating.canShowEditButton, false);
+});
+
+test("runWithSaveGuard: 連打(同期的な2回目の呼び出し)は1回目が完了するまでtaskを実行しない(販売前総合チェックで発見した二重送信バグの回帰テスト)", async () => {
+  const guardRef = { current: false };
+  let runCount = 0;
+  let resolveFirstTask;
+  const firstTaskPromise = new Promise((resolve) => { resolveFirstTask = resolve; });
+
+  // 1回目: taskの中で待たせておく(まだ完了させない)。
+  const firstCall = runWithSaveGuard(guardRef, async () => {
+    runCount += 1;
+    await firstTaskPromise;
+    return { ok: true };
+  });
+
+  // 1回目がまだ完了していない間に、連打を模して同期的に2回目を呼ぶ(Reactのstate更新を
+  // 待たずに同じイベント処理内で二重に呼ばれるケースと同じタイミング)。
+  const secondResult = await runWithSaveGuard(guardRef, async () => {
+    runCount += 1;
+    return { ok: true };
+  });
+
+  // 2回目はtask自体を一度も実行せず、即座にskippedで返る——二重POST/二重upsertにならない。
+  assert.deepEqual(secondResult, { ok: false, skipped: true });
+  assert.equal(runCount, 1);
+
+  // 1回目を完了させる。
+  resolveFirstTask();
+  const firstResult = await firstCall;
+  assert.deepEqual(firstResult, { ok: true });
+
+  // 1回目の完了後(finallyでguardRef.currentがfalseに戻った後)は、3回目の呼び出しが
+  // 正常にtaskを実行できる——「一度ブロックしたら二度と保存できなくなる」不具合を防ぐ。
+  const thirdResult = await runWithSaveGuard(guardRef, async () => {
+    runCount += 1;
+    return { ok: true };
+  });
+  assert.deepEqual(thirdResult, { ok: true });
+  assert.equal(runCount, 2);
+  assert.equal(guardRef.current, false);
+});
+
+test("runWithSaveGuard: taskが失敗(reject)してもguardRef.currentは必ずfalseへ戻り、エラーは呼び出し元へそのまま伝播する(通信エラー後の再試行が永久にブロックされないことの確認)", async () => {
+  const guardRef = { current: false };
+  await assert.rejects(
+    () => runWithSaveGuard(guardRef, async () => { throw new Error("通信エラー"); }),
+    /通信エラー/
+  );
+  assert.equal(guardRef.current, false);
+
+  // エラー後の再試行(要件: エラー後の再試行まで確認)。ガードが解放されているので、
+  // 次の呼び出しは正常にtaskを実行できる。
+  const retryResult = await runWithSaveGuard(guardRef, async () => ({ ok: true }));
+  assert.deepEqual(retryResult, { ok: true });
 });
