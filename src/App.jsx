@@ -3341,6 +3341,17 @@ function App() {
     return result;
   };
 
+  // 状態上書き防止の共通ヘルパー(販売前総合チェックで発見): 会社/店舗/ユーザー管理系の保存
+  // 処理の多くが、Supabaseへの書き込みをawaitした後、await前に閉じ込めた(その時点で既に
+  // 古い可能性がある)appState/currentCompanyを基にnextStateを組み立てていた。その待ち時間
+  // 中に他タブ・他ユーザーの操作(Realtime再取得、フォーカス復帰時の再取得等)が割り込むと、
+  // その更新がここで静かに巻き戻される——cross-month date bugと同じ種類のバグが、会社/店舗/
+  // ユーザー管理という別の画面群に残っていたもの。修正方針は、await後にnextStateを組み立てる
+  // 直前で必ずappStateRef.current(常に最新、hydrateFromSupabaseの各呼び出し元(フォーカス
+  // 復帰・Realtime購読・selectedMonth変化時)が既に使っているのと同じref)から会社を
+  // 再解決すること。個別に書き直すのではなく、この1つのヘルパーを全箇所から呼ぶ形に統一する。
+  const getLatestCompanyById = (companyId) => (appStateRef.current.companies || []).find((company) => company.id === companyId) || null;
+
   // 二重送信防止(販売前総合チェックで発見): 本処理はhandleSaveCompanyInnerへそのまま残し、
   // このラッパーがrunWithSaveGuard(savingCompanyRef)による同期ガード+companyFormBusy
   // (ボタンのdisabled/ラベル表示用)の付与だけを担う——他の新規追加分(まとめて入力・
@@ -3397,14 +3408,17 @@ function App() {
         settings: { ...createCompanySettingsDefaults(), ...(existingCompany?.settings || {}), ...(companySettingsForm || {}), businessType: companyForm.businessType || existingCompany?.businessType || "salon" },
         stores: existingCompany?.stores || [],
       };
+      // 状態上書き防止(会社作成時はここまでにawait createCompanyRecordを挟んでいるため、
+      // appStateRef.currentから最新状態を読み直す——getLatestCompanyById参照)。
+      const latestAppState = appStateRef.current;
       const nextState = {
-        ...appState,
-        companies: existingCompany ? (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)) : [...(appState.companies || []), nextCompany],
+        ...latestAppState,
+        companies: existingCompany ? (latestAppState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)) : [...(latestAppState.companies || []), nextCompany],
         currentCompanyId: companyId,
         companySnapshots: {
-          ...(appState.companySnapshots || {}),
+          ...(latestAppState.companySnapshots || {}),
           [companyId]: {
-            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            ...(latestAppState.companySnapshots?.[companyId] || createInitialAppState()),
             stores: nextCompany.stores.map((store) => store.name),
             selectedStore: nextCompany.stores[0]?.name || "",
             selectedStoreId: nextCompany.stores[0]?.id || "",
@@ -3552,12 +3566,16 @@ function App() {
           throw profileResult.error || new Error("店舗プロフィールの保存に失敗しました");
         }
       }
+      // 状態上書き防止(ここまでにupsertStoreProfile等をawaitしているため、appStateRef.current
+      // から最新状態を読み直す——getLatestCompanyById参照)。
+      const latestAppState = appStateRef.current;
+      const latestCompany = getLatestCompanyById(companyId);
       const nextCompany = {
-        ...currentCompany,
+        ...latestCompany,
         stores: existingStore
-          ? (currentCompany?.stores || []).map((store) => (store.id === existingStore.id ? nextStore : store))
-          : [...(currentCompany?.stores || []), nextStore],
-        setup: { ...(currentCompany?.setup || {}), store: true },
+          ? (latestCompany?.stores || []).map((store) => (store.id === existingStore.id ? nextStore : store))
+          : [...(latestCompany?.stores || []), nextStore],
+        setup: { ...(latestCompany?.setup || {}), store: true },
       };
       // Renaming a store no longer needs to rekey anything: every per-store/month map is keyed
       // by the store's stable id (buildMonthKey), which a rename never changes. Only the display
@@ -3565,12 +3583,12 @@ function App() {
       // (which was already correct and doesn't change either, but must stay explicitly set here
       // — see applyCompanySnapshot, which restores this pair verbatim on the next company switch).
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+        ...latestAppState,
+        companies: (latestAppState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
         companySnapshots: {
-          ...(appState.companySnapshots || {}),
+          ...(latestAppState.companySnapshots || {}),
           [companyId]: {
-            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            ...(latestAppState.companySnapshots?.[companyId] || createInitialAppState()),
             stores: nextCompany.stores.map((store) => store.name),
             selectedStore: nextStore.name,
             selectedStoreId: nextStore.id,
@@ -3678,22 +3696,26 @@ function App() {
         const profileResult = await upsertStoreProfile({ companyId, storeId, userId: appState.currentUserId, profile: nextStore });
         if (!profileResult.ok) throw profileResult.error || new Error("店舗プロフィールの保存に失敗しました");
       }
+      // 状態上書き防止(ここまでにcreateStoreRecord/upsertStoreProfileをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
+      const latestAppState = appStateRef.current;
+      const latestCompany = getLatestCompanyById(companyId);
       const nextCompany = {
-        ...currentCompany,
-        stores: [...(currentCompany?.stores || []), nextStore],
-        setup: { ...(currentCompany?.setup || {}), store: true },
+        ...latestCompany,
+        stores: [...(latestCompany?.stores || []), nextStore],
+        setup: { ...(latestCompany?.setup || {}), store: true },
       };
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+        ...latestAppState,
+        companies: (latestAppState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
         // 作成直後にその新しい店舗へ切り替える——「追加した店舗がどこにあるか分からない」を
         // 避け、続けて「店舗基本設定」でスタッフ数等を設定したい場合にもそのまま繋がる。
         selectedStore: nextStore.name,
         selectedStoreId: nextStore.id,
         companySnapshots: {
-          ...(appState.companySnapshots || {}),
+          ...(latestAppState.companySnapshots || {}),
           [companyId]: {
-            ...(appState.companySnapshots?.[companyId] || createInitialAppState()),
+            ...(latestAppState.companySnapshots?.[companyId] || createInitialAppState()),
             stores: nextCompany.stores.map((store) => store.name),
             selectedStore: nextStore.name,
             selectedStoreId: nextStore.id,
@@ -3820,9 +3842,11 @@ function App() {
         inviteLink,
         authUserId: createdProfile?.auth_user_id || "",
       };
+      // 状態上書き防止(ここまでにcreateUserProfileRecordをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        users: [...(appState.users || []), nextUser],
+        ...appStateRef.current,
+        users: [...(appStateRef.current.users || []), nextUser],
       };
       persistTenantState(nextState);
       setUserForm({ name: "", email: "", role: invitableRoles[invitableRoles.length - 1] || "staff", storeIds: [], primaryStoreId: "", invitationStatus: "invited", loginCount: 0, lastLoginAt: "", isActive: true });
@@ -3842,9 +3866,15 @@ function App() {
           // サーバー側で"pending"(メール未送信)に更新済み(要件6: 作成成功/送信失敗を
           // 明確に分離する) — ローカル状態もそれに合わせておく(次回ハイドレートを待たず
           // 一覧の表示が即座に正しくなるように)。
+          // 状態上書き防止+潜在的な重複バグの修正: 直前のpersistTenantState(nextState)で
+          // 既にnextUserがusers配列へ追加済みのため、ここでクロージャの古いappStateを基に
+          // [...appState.users, nextUser]を再度スプレッドすると、appStateRef.currentが
+          // 既に更新されている場合には重複追加になり得る(このawaitの間に他の更新が挟まれば
+          // 尚更)。appStateRef.current(常に最新)から該当ユーザーをmapで更新する形にする。
+          const latestAppState = appStateRef.current;
           const pendingState = {
-            ...appState,
-            users: [...(appState.users || []), { ...nextUser, invitationStatus: "pending" }],
+            ...latestAppState,
+            users: (latestAppState.users || []).map((user) => (user.id === nextUser.id ? { ...user, invitationStatus: "pending" } : user)),
           };
           persistTenantState(pendingState);
           setNotice(`${nextUser.name} を招待しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(「再招待」で送信し直すか、「URLコピー」から招待URLを直接共有できます)`);
@@ -3895,14 +3925,17 @@ function App() {
         setNotice("この加盟店にはまだ店舗が登録されていません。");
         return;
       }
-      const homeCompanyId = appState.isViewingFranchise ? appState.homeCompanyIdBeforeFranchiseView : appState.currentCompanyId;
-      const alreadyPresent = (appState.companies || []).some((company) => company.id === partnerCompanyId);
+      // 状態上書き防止(ここまでにloadFranchiseCompanyMetadataをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
+      const latestAppState = appStateRef.current;
+      const homeCompanyId = latestAppState.isViewingFranchise ? latestAppState.homeCompanyIdBeforeFranchiseView : latestAppState.currentCompanyId;
+      const alreadyPresent = (latestAppState.companies || []).some((company) => company.id === partnerCompanyId);
       const nextCompanies = alreadyPresent
-        ? (appState.companies || []).map((company) => (company.id === partnerCompanyId ? { ...company, ...result.company } : company))
-        : [...(appState.companies || []), result.company];
+        ? (latestAppState.companies || []).map((company) => (company.id === partnerCompanyId ? { ...company, ...result.company } : company))
+        : [...(latestAppState.companies || []), result.company];
       const targetStore = (targetStoreId && activeFranchiseStores.find((store) => store.id === targetStoreId)) || activeFranchiseStores[0];
       const nextState = {
-        ...appState,
+        ...latestAppState,
         companies: nextCompanies,
         currentCompanyId: partnerCompanyId,
         isViewingFranchise: true,
@@ -4083,9 +4116,11 @@ function App() {
           if (!storesResult?.ok && !storesResult?.skipped) throw storesResult.error || new Error("所属店舗の更新に失敗しました");
         }
       }
+      // 状態上書き防止(ここまでに最大4件のSupabase呼び出しをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        users: (appState.users || []).map((user) => (user.id === targetUser.id
+        ...appStateRef.current,
+        users: (appStateRef.current.users || []).map((user) => (user.id === targetUser.id
           ? { ...user, name: editUserDraft.name.trim(), email: normalizedEmail, role: nextRole, storeIds: nextStoreIds, primaryStoreId: nextPrimaryStoreId, isActive: confirmedIsActive }
           : user)),
       };
@@ -4137,9 +4172,11 @@ function App() {
           throw result.error || new Error(isPendingInvite ? "招待の取り消しに失敗しました" : "削除に失敗しました");
         }
       }
+      // 状態上書き防止(ここまでにdeleteUserAccountをawaitしているため、appStateRef.current
+      // から最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        users: (appState.users || []).filter((user) => user.id !== targetUser.id),
+        ...appStateRef.current,
+        users: (appStateRef.current.users || []).filter((user) => user.id !== targetUser.id),
       };
       persistTenantState(nextState);
       closeDeleteUserModal();
@@ -4184,9 +4221,11 @@ function App() {
         }
         nextStatus = result.status || nextStatus;
       }
+      // 状態上書き防止(ここまでにupdateCompanyContractStatusをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, contractStatus: nextStatus, lastUpdatedAt: new Date().toISOString() } : item)),
+        ...appStateRef.current,
+        companies: (appStateRef.current.companies || []).map((item) => (item.id === company.id ? { ...item, contractStatus: nextStatus, lastUpdatedAt: new Date().toISOString() } : item)),
       };
       persistTenantState(nextState);
     } finally {
@@ -4230,10 +4269,13 @@ function App() {
         deletionScheduledAt = result.data?.deletionScheduledAt || deletionScheduledAt;
       }
       // company_id・関連データには一切触れない — companies行の3列を更新するだけ。
+      // 状態上書き防止(ここまでにsoftDeleteCompanyをawaitしているため、appStateRef.current
+      // から最新状態を読み直す)。
+      const latestAppState = appStateRef.current;
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((company) => (company.id === target.id ? { ...company, deletedAt, deletedBy: currentUser?.profileId || "", deletionScheduledAt } : company)),
-        currentCompanyId: appState.currentCompanyId === target.id ? "" : appState.currentCompanyId,
+        ...latestAppState,
+        companies: (latestAppState.companies || []).map((company) => (company.id === target.id ? { ...company, deletedAt, deletedBy: currentUser?.profileId || "", deletionScheduledAt } : company)),
+        currentCompanyId: latestAppState.currentCompanyId === target.id ? "" : latestAppState.currentCompanyId,
       };
       persistTenantState(nextState);
       setCompanyEditId("");
@@ -4258,9 +4300,11 @@ function App() {
           return;
         }
       }
+      // 状態上書き防止(ここまでにsoftDeleteCompanyをawaitしているため、appStateRef.current
+      // から最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, deletedAt: "", deletedBy: "", deletionScheduledAt: "" } : item)),
+        ...appStateRef.current,
+        companies: (appStateRef.current.companies || []).map((item) => (item.id === company.id ? { ...item, deletedAt: "", deletedBy: "", deletionScheduledAt: "" } : item)),
       };
       persistTenantState(nextState);
     } finally {
@@ -4299,10 +4343,13 @@ function App() {
           return;
         }
       }
+      // 状態上書き防止(ここまでにdeleteCompanyCompletelyをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
+      const latestAppState = appStateRef.current;
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).filter((company) => company.id !== target.id),
-        currentCompanyId: appState.currentCompanyId === target.id ? "" : appState.currentCompanyId,
+        ...latestAppState,
+        companies: (latestAppState.companies || []).filter((company) => company.id !== target.id),
+        currentCompanyId: latestAppState.currentCompanyId === target.id ? "" : latestAppState.currentCompanyId,
       };
       persistTenantState(nextState);
       closeCompanyHardDeleteModal();
@@ -4324,9 +4371,11 @@ function App() {
           return;
         }
       }
+      // 状態上書き防止(ここまでにupdateCompanyContractStatusをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        companies: (appState.companies || []).map((item) => (item.id === company.id ? { ...item, freeReason: freeReason || "" } : item)),
+        ...appStateRef.current,
+        companies: (appStateRef.current.companies || []).map((item) => (item.id === company.id ? { ...item, freeReason: freeReason || "" } : item)),
       };
       persistTenantState(nextState);
       // 保存の成否がラベルの見た目の変化だけでは分かりにくい(要件1: 保存後、その場で
@@ -4406,14 +4455,18 @@ function App() {
     },
   };
 
+  // 状態上書き防止: 唯一の呼び出し元(handleStoreLifecycleAction)がupdateStoreStatusを
+  // awaitした後に呼ぶため、appStateRef.currentから最新状態を読み直す。
   const applyStoreStatusLocally = (storeId, status) => {
+    const latestAppState = appStateRef.current;
+    const latestCompany = latestAppState.companies?.find((company) => company.id === currentCompany?.id) || null;
     const nextCompany = {
-      ...currentCompany,
-      stores: (currentCompany?.stores || []).map((item) => (item.id === storeId ? { ...item, status, isActive: status !== "archived" } : item)),
+      ...latestCompany,
+      stores: (latestCompany?.stores || []).map((item) => (item.id === storeId ? { ...item, status, isActive: status !== "archived" } : item)),
     };
     const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
+      ...latestAppState,
+      companies: (latestAppState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)),
     };
     persistTenantState(nextState);
   };
@@ -4479,9 +4532,13 @@ function App() {
       // A locally-fabricated id here would never exist in the real stores table — every
       // subsequent daily_sales/monthly_targets write for it would fail FK/RLS. Create a real row.
       const createdStore = await createStoreRecord({ companyId: currentCompany?.id, name: duplicateName, code: crypto.randomUUID() });
+      // 状態上書き防止(ここまでにcreateStoreRecordをawaitしているため、appStateRef.current
+      // から最新状態を読み直す)。
+      const latestAppState = appStateRef.current;
+      const latestCompany = getLatestCompanyById(currentCompany?.id);
       const nextStore = { ...store, id: createdStore.id, name: duplicateName, code: createdStore.code, isActive: true, status: "active" };
-      const nextCompany = { ...currentCompany, stores: [...(currentCompany?.stores || []), nextStore] };
-      persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
+      const nextCompany = { ...latestCompany, stores: [...(latestCompany?.stores || []), nextStore] };
+      persistTenantState(syncLegacyStoreNamesSnapshot({ ...latestAppState, companies: (latestAppState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
     } catch (error) {
       // DB側の最終防御(stores_company_id_normalized_name_unique、handleSaveStore/
       // handleCreateNewStoreのcatchと同じ理由・同じ翻訳)。
@@ -4524,8 +4581,12 @@ function App() {
           return;
         }
       }
-      const nextCompany = { ...currentCompany, stores: (currentCompany?.stores || []).filter((store) => store.id !== target.id) };
-      persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
+      // 状態上書き防止(ここまでにdeleteStoreCompletelyをawaitしているため、
+      // appStateRef.currentから最新状態を読み直す)。
+      const latestAppState = appStateRef.current;
+      const latestCompany = getLatestCompanyById(currentCompany?.id);
+      const nextCompany = { ...latestCompany, stores: (latestCompany?.stores || []).filter((store) => store.id !== target.id) };
+      persistTenantState(syncLegacyStoreNamesSnapshot({ ...latestAppState, companies: (latestAppState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));
       closeHardDeleteModal();
     } finally {
       setHardDeleteSaving(false);
@@ -4552,9 +4613,11 @@ function App() {
         }
         confirmedActive = typeof result?.data?.isActive === "boolean" ? result.data.isActive : nextActive;
       }
+      // 状態上書き防止(ここまでにsetUserActiveStateをawaitしているため、appStateRef.current
+      // から最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        users: (appState.users || []).map((item) => item.id === user.id ? { ...item, isActive: confirmedActive } : item),
+        ...appStateRef.current,
+        users: (appStateRef.current.users || []).map((item) => item.id === user.id ? { ...item, isActive: confirmedActive } : item),
       };
       persistTenantState(nextState);
     } finally {
@@ -4605,9 +4668,12 @@ function App() {
         return;
       }
     }
+    // 状態上書き防止(ここまでにupsertCompanySettingsをawaitしているため、appStateRef.current
+    // から最新状態を読み直す)。
+    const latestAppState = appStateRef.current;
     const nextState = {
-      ...appState,
-      companies: (appState.companies || []).map((company) => company.id === currentCompany?.id ? {
+      ...latestAppState,
+      companies: (latestAppState.companies || []).map((company) => company.id === currentCompany?.id ? {
         ...company,
         businessType: nextSettings.businessType,
         settings: nextSettings,
@@ -4895,9 +4961,11 @@ function App() {
           return;
         }
       }
+      // 状態上書き防止(ここまでにrefreshInviteStateをawaitしているため、appStateRef.current
+      // から最新状態を読み直す)。
       const nextState = {
-        ...appState,
-        users: (appState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt } : item),
+        ...appStateRef.current,
+        users: (appStateRef.current.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "invited", inviteToken: inviteTokenValue, inviteLink, inviteExpiresAt } : item),
       };
       persistTenantState(nextState);
 
@@ -4915,10 +4983,13 @@ function App() {
       });
       if (!emailResult.ok) {
         // send-invite-emailはメール送信に失敗した場合、サーバー側でinvitation_statusを
-        // "pending"(メール未送信)に更新済み — ローカル状態もそれに合わせる。
+        // "pending"(メール未送信)に更新済み — ローカル状態もそれに合わせる。状態上書き防止:
+        // 直前のnextStateを再スプレッドすると、このawaitの間に挟まった別の更新を失うため、
+        // ここでもappStateRef.currentから読み直す。
+        const latestAppStateAfterEmail = appStateRef.current;
         persistTenantState({
-          ...nextState,
-          users: (nextState.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "pending" } : item),
+          ...latestAppStateAfterEmail,
+          users: (latestAppStateAfterEmail.users || []).map((item) => item.id === user.id ? { ...item, invitationStatus: "pending" } : item),
         });
         setNotice(`招待リンクは更新しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(「URLコピー」から招待URLを直接共有することもできます)`);
         return;
@@ -4959,9 +5030,12 @@ function App() {
       // 「招待リンクをコピー」を押した際に古いトークンを送ってしまい「招待情報が見つかりません」
       // で失敗する(2回目以降のコピーが必ず失敗していたバグの修正)。
       if (result.inviteToken) {
+        // 状態上書き防止(ここまでにgenerateInviteLinkをawaitしているため、
+        // appStateRef.currentから最新状態を読み直す)。
+        const latestAppState = appStateRef.current;
         persistTenantState({
-          ...appState,
-          users: (appState.users || []).map((item) => item.id === user.id
+          ...latestAppState,
+          users: (latestAppState.users || []).map((item) => item.id === user.id
             ? { ...item, invitationStatus: "invited", inviteToken: result.inviteToken, inviteExpiresAt: result.inviteExpiresAt || item.inviteExpiresAt }
             : item),
         });
@@ -6323,19 +6397,22 @@ function App() {
     // Same reasoning as submitFixedCost above: the item being removed may live under a
     // different month-key than whichever month is currently on screen (it could be a
     // continuing cost carried forward from an earlier startMonth).
-    const nextFixedCosts = { ...appState.fixedCosts };
+    // 状態上書き防止(ここまでにdeleteFixedCostFromSupabaseをawaitしているため、
+    // appStateRef.currentから最新状態を読み直す)。
+    const latestAppState = appStateRef.current;
+    const nextFixedCosts = { ...latestAppState.fixedCosts };
     Object.keys(nextFixedCosts).forEach((existingKey) => {
-      if (existingKey.startsWith(`${appState.selectedStoreId}__`)) {
+      if (existingKey.startsWith(`${latestAppState.selectedStoreId}__`)) {
         nextFixedCosts[existingKey] = (nextFixedCosts[existingKey] || []).filter((item) => item.id !== itemId);
       }
     });
     // Its cost_monthly_amounts rows cascade-delete in Supabase (FK on delete cascade); drop the
     // matching local entries too so a deleted item's old amounts don't linger in memory.
-    const nextCostMonthlyAmounts = { ...appState.costMonthlyAmounts };
+    const nextCostMonthlyAmounts = { ...latestAppState.costMonthlyAmounts };
     Object.keys(nextCostMonthlyAmounts).forEach((existingKey) => {
       if (existingKey.startsWith(`${itemId}__`)) delete nextCostMonthlyAmounts[existingKey];
     });
-    const nextState = { ...appState, fixedCosts: nextFixedCosts, costMonthlyAmounts: nextCostMonthlyAmounts };
+    const nextState = { ...latestAppState, fixedCosts: nextFixedCosts, costMonthlyAmounts: nextCostMonthlyAmounts };
     // 不具合修正: setAppStateだけだとlocalStorageへ同期反映されず、この後Supabaseへの再取得
     // (hydrateFromSupabase)が一度も走らないまま再読み込みされた場合、readAppState()が削除前の
     // 古いlocalStorageスナップショットを復元してしまう。そのスナップショットが次回の

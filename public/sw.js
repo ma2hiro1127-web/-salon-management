@@ -553,7 +553,18 @@
 // 依存値の変化がきっかけの場合にクロージャの古いappStateを参照する余地が理論上あったため、
 // focus/visibilitychange/Realtime再取得の各所と同じappStateRef.current(常に最新)へ統一した。
 // 保存・書き込みロジック自体(v70で対応済みのsaveDailyEntry等)は無変更。
-const CACHE_NAME = 'salon-manager-cache-v71';
+// v72: 総合品質チェックで発見した「状態上書きリスク(問題A)」を修正。会社作成・店舗作成/
+// 編集/複製/完全削除・ユーザー作成/編集/削除/招待/招待メール再送・契約状態変更・会社の論理/
+// 完全削除/復元・無料利用理由変更・会社設定保存など、~19箇所の保存処理が、Supabaseへの
+// 書き込みをawaitした後、await前のクロージャに閉じ込めた(その時点で既に古い可能性がある)
+// appStateを基に次の状態を組み立てていた——その待ち時間中に他タブ・他ユーザーの操作
+// (Realtime再取得等)が割り込むと、その更新が静かに巻き戻され得た(cross-month date bugと
+// 同じ種類のバグが、会社/店舗/ユーザー管理という別の画面群に残っていたもの)。await後に
+// 状態を組み立てる直前で必ずappStateRef.current(常に最新)から読み直すよう統一し、共通の
+// getLatestCompanyByIdヘルパーも新設した。あわせて、ユーザー招待失敗時のフォールバック処理に
+// 潜在していたユーザー重複追加のリスクも合わせて修正。保存先のSupabaseテーブル・RLS・権限
+// 判定は無変更。
+const CACHE_NAME = 'salon-manager-cache-v72';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
