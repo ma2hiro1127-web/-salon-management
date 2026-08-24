@@ -544,7 +544,16 @@
 // (根本修正、営業日設定・月締め等の月単位の設定は元々正しくselectedMonthを使っていたため
 // 変更なし)、対象月・対象日・日次入力・月カレンダー・日締め状態・店休日・月次ダッシュボード・
 // 月次レビュー・損益・CSVの参照月がずれない構造にした。
-const CACHE_NAME = 'salon-manager-cache-v70';
+// v71: 実機確認で「対象月が2026年8月のままなのに対象日が2026/07/31になる」ケースが報告され、
+// v70のcross-month date bug修正を再点検・強化した。(1)月切替時にdailyFormを空へリセットする
+// 既存effectとhandleDailyDateChangeの同期を、タイミングに依存するuseRefフラグから、
+// effect実行時点のstate比較(dailyForm.dateの月とselectedMonthが既に一致していればリセット
+// しない)へ作り直した——バッチ処理の順序に関する前提を一切必要としない、より堅牢な設計。
+// (2)selectedMonthの変化を検知して自動再取得するhydrateFromSupabaseの呼び出しが、他の
+// 依存値の変化がきっかけの場合にクロージャの古いappStateを参照する余地が理論上あったため、
+// focus/visibilitychange/Realtime再取得の各所と同じappStateRef.current(常に最新)へ統一した。
+// 保存・書き込みロジック自体(v70で対応済みのsaveDailyEntry等)は無変更。
+const CACHE_NAME = 'salon-manager-cache-v71';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

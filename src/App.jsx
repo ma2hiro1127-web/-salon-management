@@ -820,13 +820,6 @@ function App() {
   const [taxSettingsForm, setTaxSettingsForm] = useState({ considerConsumptionTax: false, consumptionTaxReserveRate: "" });
   const [storeSettingsForm, setStoreSettingsForm] = useState(createStoreSettingsDefaults());
   const [dailyForm, setDailyForm] = useState({ ...defaultDailyEntry });
-  // 対象日欄への直接入力で月をまたぐ日付を選んだ場合(要件: cross-month date bug)の同期用
-  // フラグ。handleDailyDateChangeがselectedMonthを対象日の月へ合わせて切り替える時にtrueを
-  // 立てる——月・店舗が変わるたびdailyFormを空にリセットする既存のuseEffect(下記)が、この
-  // フラグが立っている間だけリセットをスキップし、handleDailyDateChangeが設定した対象日を
-  // 上書きしない。通常の(対象月セレクタからの)月切替では立たないため、その場合は従来通り
-  // フォームが空になる既存挙動を維持する。
-  const dailyDateDrivenMonthChangeRef = useRef(false);
   const updateDailyField = (field, value) => {
     setDailyForm((prev) => {
       const next = { ...prev, [field]: value };
@@ -5056,7 +5049,12 @@ function App() {
     void hydrateFromSupabase({
       authUser: { id: currentUser.authUserId, email: currentUser.email },
       profile: { id: currentUser.profileId, company_id: appState.currentCompanyId, role: currentRole },
-      tenantState: appState,
+      // appStateRef.current(常に最新)を使う——focus/visibilitychange/Realtime再取得の各所と
+      // 同じ理由(cross-month date bug調査で確認: このeffectはselectedMonthの変化で発火する
+      // ため通常はクロージャのappStateも十分新しいはずだが、他の依存値(currentCompanyId等)の
+      // 変化で発火した場合にselectedMonthだけが1テンポ古いクロージャを参照する余地を
+      // 完全に無くすため、他の2箇所と同じappStateRef.currentへ統一する)。
+      tenantState: appStateRef.current,
     });
   // パフォーマンス改善(要件1・8: 店舗切替での重複fetch防止): appState.selectedStoreは
   // 意図的に依存配列から外している——hydrateFromSupabaseの実際のSupabaseクエリは
@@ -5337,14 +5335,16 @@ function App() {
   }, [businessDaySettings.mode, businessDaySettings.businessDayCount, selectedStore, selectedMonth]);
 
   useEffect(() => {
-    // cross-month date bugの修正: 対象日欄への直接入力で月をまたぐ日付を選んだ場合、
-    // handleDailyDateChangeが対象月をその日付の月へ同期させたうえで、既にその日付の
-    // dailyFormを正しく設定済み。このeffectは通常(対象月セレクタ・店舗切替による月変更)は
-    // フォームを空にリセットする役割のままだが、handleDailyDateChangeが直前に設定した
-    // フラグが立っている間だけは、そのリセットをスキップして対象日を保持する(何もせず
-    // フラグだけ消費して終了)。
-    if (dailyDateDrivenMonthChangeRef.current) {
-      dailyDateDrivenMonthChangeRef.current = false;
+    // cross-month date bugの修正(refベースの同期フラグから、より堅牢なstate比較へ変更):
+    // 対象日欄への直接入力で月をまたぐ日付を選んだ場合、handleDailyDateChangeがselectedMonthを
+    // その日付の月へ同期させると同時に、dailyForm.dateも同じ月内の日付へ設定済み(両方とも
+    // 同じ関数呼び出し内でのsetState、Reactが1回のレンダーへバッチする)。dailyForm.dateの月が
+    // 既に(新しい)selectedMonthと一致しているなら、それはhandleDailyDateChangeによる同期
+    // 直後だと判定できるため、このeffect本来の「フォームを空にリセットする」動作をスキップし
+    // 対象日を保持する——ref・タイミングに依存せず、effect実行時点のstateだけを見て判定する
+    // ため、バッチ処理の順序に関する前提を一切必要としない。対象月セレクタ・店舗切替による
+    // 通常の月変更では、dailyForm.dateは古い月のままなので一致せず、従来通りリセットされる。
+    if (dailyForm.date && dailyForm.date.slice(0, 7) === selectedMonth) {
       return;
     }
     if (!selectedStore) {
@@ -5358,7 +5358,12 @@ function App() {
     setDailyMode("create");
     setDailyOriginalEntry(null);
     setDailyInsight("");
-  }, [selectedMonth, selectedStore]);
+  // dailyForm.dateを依存配列に加える(要件: このeffectの中で読んでいる値は必ず依存配列に
+  // 含める、react-hooks/exhaustive-depsに準拠)。月をまたいだ直後のリセット処理自体が
+  // dailyForm.dateを""へ変えるため一度だけ再実行されるが、2回目の実行では既に""同士の
+  // 比較になり値が変化しないため、無限ループにはならない(defaultDailyEntryを2回setするだけの
+  // 無害な冗長レンダー1回にとどまる)。
+  }, [selectedMonth, selectedStore, dailyForm.date]);
 
   const persistSaveStatus = (status, message, error = false) => {
     setSaveStatus({ status, message, timestamp: new Date().toISOString(), error });
@@ -6083,7 +6088,6 @@ function App() {
     const nextMonthValue = nextDate ? nextDate.slice(0, 7) : "";
     const isCrossMonth = Boolean(nextMonthValue) && nextMonthValue !== selectedMonth;
     if (isCrossMonth) {
-      dailyDateDrivenMonthChangeRef.current = true;
       handleMonthSwitch(nextMonthValue);
     }
     // 月をまたぐ場合、selectedMonthでメモ化されたdailyEntries/batchAllocatedEntriesは
