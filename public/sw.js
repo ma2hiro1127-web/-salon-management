@@ -532,7 +532,19 @@
 // 調査の結果、元から正しく除外されていたことを確認済み。archived店舗を直接選択して過去実績を
 // 参照する経路(個別店舗ページ)には一切触れていない。回帰テスト2件を追加(archived除外・
 // suspendedは除外しないことの確認)。
-const CACHE_NAME = 'salon-manager-cache-v69';
+// v70: Priority A「cross-month date bug」の根本修正。日次入力の対象日欄(ネイティブ
+// <input type="date">、min/max制限なし)へ直接、表示中の対象月と異なる月の日付を入力すると、
+// (a) dailyEntries/batchAllocatedEntries等がselectedMonthでメモ化されているため実際は存在する
+// データを「無い」と誤判定する、(b) 保存時にselectedMonth基準のキーへ書き込まれ、表示中の月の
+// 集計に別月の実績が紛れ込む、という2つの不具合があった。handleDailyDateChangeが対象日の月へ
+// selectedMonthを同期させ(「今日」や現在月への強制補正はしない、選んだ日付の月へ追従する
+// だけ)、既存の月切替時dailyFormリセットeffectとは新しいrefで協調させて対象日を保持する
+// ようにした。あわせてsaveDailyEntry/saveCashBreakdown/toggleDayClosing/日計読み込みeffectの
+// 保存・読み込み先キーを、selectedMonthではなく保存対象の日付自身の月から導出するよう変更し
+// (根本修正、営業日設定・月締め等の月単位の設定は元々正しくselectedMonthを使っていたため
+// 変更なし)、対象月・対象日・日次入力・月カレンダー・日締め状態・店休日・月次ダッシュボード・
+// 月次レビュー・損益・CSVの参照月がずれない構造にした。
+const CACHE_NAME = 'salon-manager-cache-v70';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

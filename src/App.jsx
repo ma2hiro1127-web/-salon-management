@@ -820,6 +820,13 @@ function App() {
   const [taxSettingsForm, setTaxSettingsForm] = useState({ considerConsumptionTax: false, consumptionTaxReserveRate: "" });
   const [storeSettingsForm, setStoreSettingsForm] = useState(createStoreSettingsDefaults());
   const [dailyForm, setDailyForm] = useState({ ...defaultDailyEntry });
+  // 対象日欄への直接入力で月をまたぐ日付を選んだ場合(要件: cross-month date bug)の同期用
+  // フラグ。handleDailyDateChangeがselectedMonthを対象日の月へ合わせて切り替える時にtrueを
+  // 立てる——月・店舗が変わるたびdailyFormを空にリセットする既存のuseEffect(下記)が、この
+  // フラグが立っている間だけリセットをスキップし、handleDailyDateChangeが設定した対象日を
+  // 上書きしない。通常の(対象月セレクタからの)月切替では立たないため、その場合は従来通り
+  // フォームが空になる既存挙動を維持する。
+  const dailyDateDrivenMonthChangeRef = useRef(false);
   const updateDailyField = (field, value) => {
     setDailyForm((prev) => {
       const next = { ...prev, [field]: value };
@@ -5101,14 +5108,19 @@ function App() {
   // AutoSaveSignatureRefも同期しておくことで、「読み込んだだけなのに即座に自動保存が走る」
   // ことを防ぐ(下の自動保存effect参照)。
   useEffect(() => {
-    const key = buildMonthKey(selectedStoreId, selectedMonth);
-    const existing = appState.cashBreakdownResults?.[key]?.[dailyForm.date];
+    // cross-month date bugの修正: selectedMonthではなく対象日(dailyForm.date)自身の月から
+    // キーを導出する——対象日欄への直接入力で月をまたいだ直後の再レンダーでも、常に対象日
+    // 本来の月の日計を読み直せるようにする(selectedMonthとの一致状態に依存しない)。
+    // dailyForm.dateが空(月・店舗切替直後の一時的な状態)の場合は、従来通り空フォームへ戻す。
+    const existing = dailyForm.date
+      ? appState.cashBreakdownResults?.[buildMonthKey(selectedStoreId, dailyForm.date.slice(0, 7))]?.[dailyForm.date]
+      : null;
     const nextForm = existing
       ? { cashAmount: existing.cashAmount, cashlessAmount: existing.cashlessAmount, pointAmount: existing.pointAmount }
       : { cashAmount: "", cashlessAmount: "", pointAmount: "" };
     setCashBreakdownForm(nextForm);
     lastCashBreakdownAutoSaveSignatureRef.current = getCashBreakdownAutoSaveSignature(nextForm);
-  }, [dailyForm.date, selectedStoreId, selectedMonth, appState.cashBreakdownResults]);
+  }, [dailyForm.date, selectedStoreId, appState.cashBreakdownResults]);
 
   // 日計専用の自動保存(要件6・7・19: 差額があっても・未入力でも保存自体は妨げない、
   // dailyForm側の自動保存とは完全に別のタイマー・別のシグネチャで動く)。useCashBreakdownが
@@ -5325,6 +5337,16 @@ function App() {
   }, [businessDaySettings.mode, businessDaySettings.businessDayCount, selectedStore, selectedMonth]);
 
   useEffect(() => {
+    // cross-month date bugの修正: 対象日欄への直接入力で月をまたぐ日付を選んだ場合、
+    // handleDailyDateChangeが対象月をその日付の月へ同期させたうえで、既にその日付の
+    // dailyFormを正しく設定済み。このeffectは通常(対象月セレクタ・店舗切替による月変更)は
+    // フォームを空にリセットする役割のままだが、handleDailyDateChangeが直前に設定した
+    // フラグが立っている間だけは、そのリセットをスキップして対象日を保持する(何もせず
+    // フラグだけ消費して終了)。
+    if (dailyDateDrivenMonthChangeRef.current) {
+      dailyDateDrivenMonthChangeRef.current = false;
+      return;
+    }
     if (!selectedStore) {
       setDailyForm({ ...defaultDailyEntry });
       setDailyMode("create");
@@ -5424,7 +5446,13 @@ function App() {
       return { ok: true, skipped: true };
     }
 
-    const existingEntry = dailyEntries.find((entry) => entry.date === dailyForm.date) || null;
+    // cross-month date bugの修正: dailyEntriesはselectedMonthでメモ化されているため、
+    // dailyForm.dateが(対象日欄への直接入力等で)selectedMonthと異なる月を指している間は
+    // 古い月のデータを参照してしまい、実際は既に登録済みの日付を「未登録」と誤判定し得る。
+    // dailyForm.date自身の月に対して直接取得し直すことで、selectedMonthとの一致状態に
+    // 依存しない構造にする(通常時はselectedMonthと一致するため、getDailyResultsForStoreMonth
+    // の結果はdailyEntriesと同一)。
+    const existingEntry = getDailyResultsForStoreMonth(appState, selectedStoreId, dailyForm.date.slice(0, 7)).find((entry) => entry.date === dailyForm.date) || null;
     if (existingEntry && existingEntry.id !== dailyForm.id && !force) {
       if (!silent) {
         setNotice("この日付は既に登録済みです。編集ボタンで更新してください。");
@@ -5459,7 +5487,12 @@ function App() {
         throw remoteResult.error || new Error("Supabase への保存に失敗しました");
       }
 
-      const key = buildMonthKey(selectedStoreId, selectedMonth);
+      // cross-month date bugの根本修正: 保存先のローカルキャッシュは表示中のselectedMonthでは
+      // なく、実際に保存したentry自身の日付の月から導出する。selectedMonthとdailyForm.dateの
+      // 月がどんな理由であれ食い違っても、この店舗のこの月の集計(月次ダッシュボード・
+      // 月次レビュー・損益・CSV等、いずれもdailyResults[key]を参照する)へ別月の実績が
+      // 紛れ込むことが構造的に無くなる。
+      const key = buildMonthKey(selectedStoreId, entry.date.slice(0, 7));
       setAppState((prev) => {
         const currentList = prev.dailyResults?.[key] || [];
         const currentMergedEntries = [...currentList.filter((item) => item.id !== entry.id && String(item.date) !== String(entry.date)), entry];
@@ -5743,7 +5776,9 @@ function App() {
         throw remoteResult.error || new Error("日計の保存に失敗しました");
       }
 
-      const key = buildMonthKey(selectedStoreId, selectedMonth);
+      // cross-month date bugの根本修正: saveDailyEntryと同じ理由で、selectedMonthではなく
+      // 保存対象のdailyForm.date自身の月からキーを導出する。
+      const key = buildMonthKey(selectedStoreId, dailyForm.date.slice(0, 7));
       setAppState((prev) => ({
         ...prev,
         cashBreakdownResults: {
@@ -6035,7 +6070,32 @@ function App() {
 
   const handleDailyDateChange = (value) => {
     const nextDate = value;
-    const existingEntry = dailyEntries.find((entry) => entry.date === nextDate) || null;
+    // cross-month date bugの根本対応: 対象日欄はネイティブ<input type="date">でmin/max制限が
+    // 無く、表示中の対象月と異なる月の日付を直接入力できてしまう。従来はselectedMonthを
+    // 変更しないままdailyFormの日付だけをその月をまたいだ日付へ差し替えていたため、
+    // (a) dailyEntries/batchAllocatedEntries(いずれもselectedMonthでメモ化)が古い月のまま
+    // 参照され、実際は存在する対象日のデータを「無い」と誤判定する、(b) 保存時にselectedMonth
+    // 基準のbuildMonthKeyへ書き込まれ、表示中の月の集計に別月の実績が紛れ込む、という2つの
+    // 不具合が起きていた。ここで対象日の月が表示中の対象月と異なる場合はselectedMonthも
+    // その月へ同期させ、対象月・対象日・日次入力・月カレンダー・営業進捗・日締め状態・
+    // 月次ダッシュボード・月次レビュー・損益・CSVがすべて同じ月を参照するようにする
+    // (「今日の日付」や現在月への強制補正は行わない——あくまで選んだ日付の月へ追従するだけ)。
+    const nextMonthValue = nextDate ? nextDate.slice(0, 7) : "";
+    const isCrossMonth = Boolean(nextMonthValue) && nextMonthValue !== selectedMonth;
+    if (isCrossMonth) {
+      dailyDateDrivenMonthChangeRef.current = true;
+      handleMonthSwitch(nextMonthValue);
+    }
+    // 月をまたぐ場合、selectedMonthでメモ化されたdailyEntries/batchAllocatedEntriesは
+    // このレンダーではまだ古い月のまま(Reactの再レンダーはこの関数の後で起きる)なので、
+    // 対象日の月に対して直接純粋関数を呼び、最新のappStateから正しい月のデータを取得する。
+    const targetMonthEntries = isCrossMonth
+      ? getDailyResultsForStoreMonth(appState, selectedStoreId, nextMonthValue)
+      : dailyEntries;
+    const targetMonthBatchAllocations = isCrossMonth
+      ? getBatchAllocatedEntries(appState, selectedStoreId, nextMonthValue)
+      : batchAllocatedEntries;
+    const existingEntry = targetMonthEntries.find((entry) => entry.date === nextDate) || null;
 
     if (existingEntry) {
       // Load totalSales exactly as stored — recomputing it from technicalSales+retailSales
@@ -6045,7 +6105,10 @@ function App() {
       setDailyForm({ ...existingEntry });
       setDailyMode("view");
       setDailyOriginalEntry({ ...existingEntry });
-      setDailyInsight(buildDailyInsight({ form: existingEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      // 月をまたぐ場合、target/businessDaySummaryはまだ古い月のまま(上と同じ理由)なので、
+      // 古い月の営業日数を基準にした誤ったAI分析コメントを一瞬でも見せないよう空にする——
+      // 次のレンダーで新しい月のtarget/businessDaySummaryが揃った時点までは表示しない。
+      setDailyInsight(isCrossMonth ? "" : buildDailyInsight({ form: existingEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
       return;
     }
 
@@ -6053,7 +6116,7 @@ function App() {
     // しないため)。ここで日付が一致する配分結果を探し、あればその値を表示専用として
     // dailyFormへ読み込む(dailyModeは常にview固定 — isDailyDateBatchLockedが編集系の
     // 各ハンドラをガードする)。
-    const batchAllocation = batchAllocatedEntries.find((entry) => entry.date === nextDate) || null;
+    const batchAllocation = targetMonthBatchAllocations.find((entry) => entry.date === nextDate) || null;
     if (batchAllocation) {
       setDailyForm({ ...defaultDailyEntry, ...batchAllocation, date: nextDate });
       setDailyMode("view");
@@ -6787,7 +6850,10 @@ function App() {
     // already-saved entry, which is exactly when a user goes to close it).
     await saveDailyEntry({ silent: true, force: true });
 
-    const key = buildMonthKey(selectedStoreId, selectedMonth);
+    // cross-month date bugの修正: 日締め対象は「表示中の対象月」ではなく「実際に締めている
+    // dailyForm.dateそのものの月」に書き込む(selectedMonthとdailyForm.dateの月は通常
+    // 一致するが、根本対応として日付側から導出することでズレの起きようが無い構造にする)。
+    const key = buildMonthKey(selectedStoreId, dailyForm.date.slice(0, 7));
 
     const { store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured && !store?.id) {
