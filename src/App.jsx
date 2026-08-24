@@ -41,6 +41,7 @@ import {
   deduplicateDailyEntries,
   getBusinessDaySettings,
   formatMonthLabel,
+  formatDailyDateLabel,
   getBusinessDaySummary,
   getMonthClosingChecklist,
   needsMonthReconfirmation,
@@ -6986,6 +6987,36 @@ function App() {
     );
   }
 
+  // 日次入力UI改善(要件8・15): 保存・日締め・編集・キャンセルのボタン群をこの1箇所だけで
+  // 定義し、通常の位置(フォーム内)とスマホ固定アクションバー(下記.daily-fixed-action-bar)
+  // の両方でそのまま再利用する——2箇所に同じ分岐ロジックを重複して書かない。保存ボタンは
+  // どちらの場所に描画してもform="daily-form"で同じ<form id="daily-form" onSubmit=
+  // {submitDailyEntry}>のsubmitイベントを発火させるだけで、別の保存関数・保存経路は一切
+  // 作らない(二重POST/二重upsertのリスクを増やさない)。各ボタンのonClick/disabled式・
+  // 表示条件自体は既存のまま変更していない。
+  const dailyActionButtons = !isDailyFormDateHoliday ? (
+    dailyMode === "create" ? (
+      <>
+        <button className="primary-button" type="submit" form="daily-form">保存</button>
+        <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+      </>
+    ) : dailyMode === "edit" ? (
+      <>
+        <button className="primary-button" type="submit" form="daily-form">保存</button>
+        <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
+      </>
+    ) : canEditSelectedDailyEntry ? (
+      <>
+        <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || isDailyEntryLocked}>編集</button>
+        <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+      </>
+    ) : null
+  ) : null;
+  // スマホ固定アクションバー(要件8)を実際に描画するか。毎日入力モードでボタンが1つでも
+  // ある時だけ表示する——店休日・まとめて入力モード等では空のバーや無駄な下部余白を残さない
+  // (下のCSS側もこのフラグに対応するクラスが付いた時だけ.stackへ予約余白を追加する)。
+  const showDailyFixedActionBar = activePage === "daily" && dailyInputMode === "daily" && Boolean(dailyActionButtons);
+
   return (
     <div className={`app-shell ${theme === "dark" ? "theme-dark" : ""}`}>
       <aside className="sidebar">
@@ -7031,12 +7062,13 @@ function App() {
       </aside>
 
       <main className="main-content">
-        {/* スマホUI改善2段ヘッダー案(要件1): 「売上」画面のスマホ幅だけ、店舗/対象月を
-            タイトル右側の2段(1行目=店舗、2行目=対象月)へ移動する。他ページのモバイル
-            ヘッダーは既存の縦積みレイアウトのまま変更しないよう、activePage==="dashboard"
-            の時だけ.topbar-dashboard-mobileを付与し、対応するCSSも全てこのクラスの配下に
-            スコープする(topbar自体は全ページ共通コンポーネントのため、無条件で変更しない)。 */}
-        <header className={`topbar${activePage === "dashboard" ? " topbar-dashboard-mobile" : ""}`}>
+        {/* スマホUI改善2段ヘッダー案(要件1、売上画面で導入・日次入力画面のスマホUI改善で
+            汎用化): 「売上」「日次入力」両画面のスマホ幅だけ、店舗/対象月をタイトル右側の
+            2段(1行目=店舗、2行目=対象月)へ移動する。他ページのモバイルヘッダーは既存の
+            縦積みレイアウトのまま変更しないよう、この2ページの時だけ.topbar-compact-mobileを
+            付与し、対応するCSSも全てこのクラスの配下にスコープする(topbar自体は全ページ
+            共通コンポーネントのため、無条件で変更しない)。 */}
+        <header className={`topbar${activePage === "dashboard" || activePage === "daily" ? " topbar-compact-mobile" : ""}`}>
           <div className="topbar-heading">
             <button
               type="button"
@@ -7080,7 +7112,7 @@ function App() {
             <label>
               {/* 「売上」画面のスマホ2段ヘッダーでは、ラベル文言(店舗/対象月)は非表示にして
                   選択中の値だけを見せる仕様(要件1)。テキストノードのままだとCSSで個別に
-                  隠せないため<span>で囲む——PC/他ページでは.topbar-dashboard-mobileが付かず
+                  隠せないため<span>で囲む——PC/他ページでは.topbar-compact-mobileが付かず
                   このspanにも何もスタイルが当たらないため、見え方は今まで通り「店舗」という
                   文字が普通に表示される。 */}
               <span className="filters-label-text">店舗</span>
@@ -7460,7 +7492,7 @@ function App() {
         )}
 
         {activePage === "daily" && (
-          <div className="stack">
+          <div className={`stack${showDailyFixedActionBar ? " has-daily-fixed-action-bar" : ""}`}>
             {!selectedStore ? (
               <div className="empty-card">店舗を追加してから日次入力を始めてください。</div>
             ) : isAllStoresView ? (
@@ -7622,7 +7654,7 @@ function App() {
                   </section>
                 ) : null}
                 {dailyInputMode === "daily" || !canEditMonthlyData(currentRole) ? (
-                <section className="panel">
+                <section className="panel daily-entry-panel">
                   <div className="panel-heading">
                     <div>
                       <p className="eyebrow">DAILY</p>
@@ -7651,7 +7683,7 @@ function App() {
                   {/* 要件4: 営業日設定ボタンは進捗の直下(関連性が分かる位置)にそのまま残す。
                       営業日設定・店休日設定・営業日数計算のロジックは無変更。 */}
                   <div className="button-row">
-                    <button className="secondary-button" type="button" onClick={startManualBusinessDayEdit}>営業日設定</button>
+                    <button className="secondary-button daily-business-day-button" type="button" onClick={startManualBusinessDayEdit}>営業日設定</button>
                   </div>
                   {isBusinessDayEditing ? (
                     <div className="daily-settings-card">
@@ -7692,32 +7724,26 @@ function App() {
                       属性が残るクラスの不具合があっても、モード遷移のたびに新しいDOMノードへ
                       置き換わるため確実に解消される、という追加の安全策。 */}
                   <form id="daily-form" key={`${dailyForm.date || "none"}__${dailyMode}`} onSubmit={submitDailyEntry}>
-                    {/* 要件6: 店舗/対象日/日締め状態を1行のコンパクトな帯にまとめる。対象日は
-                        従来disabled={dailyMode === "view"}で閲覧中は日付変更できなかったが、
-                        これは「日付のナビゲーション」と「その日のデータの編集可否」を混同して
+                    {/* 日次入力UI改善(要件5・6): 店舗は画面上部のヘッダー(topbar、
+                        handleUnifiedStoreSwitchを呼ぶ同一の<select>)に常時表示されているため、
+                        ここに全く同じ値・onChange・選択肢を複製していた<select>は削除した
+                        (状態(selectedStore/appState.currentCompanyId等)・切替ロジック自体は
+                        ヘッダー側にそのまま残っているため、店舗切替機能への影響は無い)。
+                        対象日は従来disabled={dailyMode === "view"}で閲覧中は日付変更できなかった
+                        が、これは「日付のナビゲーション」と「その日のデータの編集可否」を混同して
                         いた根本原因(要件16・20の依存関係調査で判明)——日付変更自体は
                         handleDailyDateChange(カレンダーのonDayClickと全く同じ関数)を呼ぶだけの
-                        画面遷移で、保存・編集とは無関係のため、常に操作可能にする。 */}
+                        画面遷移で、保存・編集とは無関係のため、常に操作可能にする。displayLabel
+                        で「8月24日（月）」を常時表示し、対象日が空白に見える不具合を防ぐ
+                        (要件6)。 */}
                     <div className="daily-basic-info">
-                      <label className="field">
-                        <span>店舗</span>
-                        <select
-                          value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}:${appState.selectedStoreId || ""}` : selectedStore}
-                          onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
-                          disabled={franchiseViewBusy}
-                        >
-                          {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
-                          {homeStoresForDropdown.length ? homeStoresForDropdown.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
-                          {viewableFranchisePartnerStores.length > 0 ? (
-                            <optgroup label="──── 加盟店 ────">
-                              {viewableFranchisePartnerStores.map((item) => (
-                                <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.storeName}</option>
-                              ))}
-                            </optgroup>
-                          ) : null}
-                        </select>
-                      </label>
-                      <Field label="対象日" type="date" value={dailyForm.date} onChange={(value) => handleDailyDateChange(value)} />
+                      <Field
+                        label="対象日"
+                        type="date"
+                        value={dailyForm.date}
+                        onChange={(value) => handleDailyDateChange(value)}
+                        displayLabel={formatDailyDateLabel(dailyForm.date) || "日付未選択"}
+                      />
                       <div className="field">
                         <span>日締め状態</span>
                         <div className={`value-pill ${isSelectedDailyEntryClosed ? "active" : "inactive"}`}>
@@ -7732,25 +7758,17 @@ function App() {
                         対象日を選択した時点でhandleDailyDateChangeが自動的にcreateモードへ
                         遷移させるため常時ボタンとしては不要と判断し削除(要件5で明示的に許可)
                         ——空の日付を選択すればこれまで通りすぐ入力できる。店休日は要件どおり
-                        操作自体を出さない(下のフォームも非表示のため)。 */}
-                    {!isDailyFormDateHoliday ? (
-                      <div className="button-row">
-                        {dailyMode === "create" ? (
-                          <>
-                            <button className="primary-button" type="submit">保存</button>
-                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
-                          </>
-                        ) : dailyMode === "edit" ? (
-                          <>
-                            <button className="primary-button" type="submit">保存</button>
-                            <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
-                          </>
-                        ) : canEditSelectedDailyEntry ? (
-                          <>
-                            <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || isDailyEntryLocked}>編集</button>
-                            <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
-                          </>
-                        ) : null}
+                        操作自体を出さない(下のフォームも非表示のため)。
+                        スマホUI改善(要件8・15): ボタン群はdailyActionButtons(コンポーネント
+                        冒頭で1度だけ定義)を参照するだけにし、下の.daily-fixed-action-barと
+                        全く同じ要素をそのまま再利用する——ロジックの二重実装を避ける。ここは
+                        フォーム内の通常位置(PC/タブレット、およびスマホでも固定バーが出ない
+                        ケースのフォールバック)として常に描画し、スマホ幅では.daily-action-row
+                        -inlineクラスでCSS側から非表示にする(固定バー側と表示が重複しない
+                        ようにするだけで、DOM/ロジックの複製ではない)。 */}
+                    {dailyActionButtons ? (
+                      <div className="button-row daily-action-row-inline">
+                        {dailyActionButtons}
                       </div>
                     ) : null}
 
@@ -7885,6 +7903,21 @@ function App() {
                     </>
                     )}
                   </form>
+
+                  {/* スマホUI改善(要件8): 保存・日締めをスマホの画面下部の固定バーからも操作
+                      できるようにする。中身はdailyActionButtons(上のフォーム内と全く同じ
+                      JSX・同じonClick/disabled/type="submit" form="daily-form")をそのまま
+                      再利用するだけで、保存関数・イベント経路を複製しない(要件15)。
+                      「保存」ボタンはform="daily-form"でこのボタン自身が<form>の外にあっても
+                      同じフォームのsubmitイベントを発火させる(HTML標準機能、二重の保存関数を
+                      書かずに済む)。position:fixedのためDOM上の位置は見た目に影響しない。
+                      表示はshowDailyFixedActionBarがtrueの時(毎日入力モードでボタンが
+                      1つ以上ある時)だけ・CSS側で≤900pxのみdisplayさせる(PCでは常時非表示)。 */}
+                  {showDailyFixedActionBar ? (
+                    <div className="daily-fixed-action-bar">
+                      {dailyActionButtons}
+                    </div>
+                  ) : null}
 
                   {/* 要件13: 自動計算指標(入力欄ではなく結果)は追加入力エリアと分離し、独立
                       した専用グリッド(.daily-metrics-grid、PC4列→iPhoneでも2列を維持)にする。
@@ -9607,7 +9640,11 @@ function App() {
           チャット画面(AiChatScreen)を開く経路がそもそも無くなる。 */}
       {currentCompany && aiAnalysisSettings[currentCompany.id] && (
         <>
-          <AiFloatingButton onClick={() => openAiChat()} />
+          {/* 日次入力UI改善(要件9): スマホ固定アクションバー(daily-fixed-action-bar)が
+              出ている間は、AIボタンがそれに被らないよう追加でクラスを渡す
+              (ai-floating-button-raised、App.cssの≤900pxブロックでbottomをさらに上げる)。
+              他ページ・PC・バー非表示時はclassNameが空文字のまま(見た目は無変更)。 */}
+          <AiFloatingButton onClick={() => openAiChat()} className={showDailyFixedActionBar ? "ai-floating-button-raised" : ""} />
           {aiChatOpen ? (
             <AiChatScreen
               role={currentRole}
@@ -9914,11 +9951,16 @@ function NumericInput({ value, onChange, allowDecimal = false, onBlur, ...rest }
   );
 }
 
-function Field({ label, value, onChange, suffix = "", type = "text", numeric = false, allowDecimal = false, disabled = false, placeholder = "" }) {
+function Field({ label, value, onChange, suffix = "", type = "text", numeric = false, allowDecimal = false, disabled = false, placeholder = "", displayLabel = "" }) {
   const normalizedValue = value === undefined || value === null ? "" : value;
   return (
     <label className="field">
       <span>{label}</span>
+      {/* 日次入力の対象日(要件6)専用: <input type="date">はブラウザ・OSのロケール表示に
+          依存し空白に見えることがあるため、「8月24日（月）」のような読みやすい文字列を
+          別途常時表示する。displayLabelを渡さない他の全Field呼び出し(50箇所以上)は
+          従来通り何も追加描画されない(デフォルト""で無効化)。 */}
+      {displayLabel ? <strong className="field-display-label">{displayLabel}</strong> : null}
       <div className="input-with-suffix">
         {numeric ? (
           <NumericInput value={normalizedValue} onChange={onChange} allowDecimal={allowDecimal} disabled={disabled} placeholder={placeholder} />

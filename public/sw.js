@@ -487,7 +487,23 @@
 // 自社店舗数と加盟店数を混同しない。CSSで隠すのではなく条件付きレンダリングのため、非表示時は
 // DOM自体が無くなり、下の売上構成カードがdashboard-right-column(flexカラム)内で自然に
 // 詰まる。ランキングの集計・順位計算(rankingRows)自体は無変更。
-const CACHE_NAME = 'salon-manager-cache-v65';
+// v66: 日次入力画面のスマホUI/UXを改善(状態管理・保存処理は無変更)。(1)売上画面と同じ
+// 2段ヘッダー(店舗/対象月をタイトル右側へ)を日次入力画面にも適用(topbar-compact-mobileを
+// dashboard/dailyの両方で使う汎用クラスへリネーム)。(2)「毎日入力/まとめて入力」を2択の
+// セグメントコントロール風にコンパクト化(setDailyInputMode自体は無変更)。(3)営業進捗の帯・
+// 営業日設定ボタンをさらに圧縮。(4)売上入力カード内にあった店舗選択(topbarと完全に同じ
+// 値・onChangeの重複コントロール)を削除、対象日・日締め状態だけのシンプルな表示にした。
+// (5)対象日を「8月24日（月）」のように常時明確表示する新しい純粋関数
+// formatDailyDateLabel(storage.js、単体テスト済み)をFieldコンポーネントの新しいdisplayLabel
+// propとして追加(他の全Field呼び出しには影響しない)。(6)保存・日締めをスマホ画面下部の
+// 固定バーからも操作できるようにした——ボタン群(dailyActionButtons)は1箇所だけで定義し
+// フォーム内・固定バーの両方で再利用、保存ボタンはform="daily-form"属性で同じ<form>の
+// submitイベントを発火させるだけで保存関数・保存経路は複製していない(二重保存なし)。
+// (7)AIフローティングボタンが固定バーに被らないよう表示中だけ追加でクラスを渡しbottomを
+// 上げる。(8)DAILY/CALENDARの英字見出しをこの画面のパネル内だけ弱める(他画面のeyebrowは
+// 無変更)。日締め・店休日・まとめて入力・カレンダー連動・権限判定・保存ロジック(storage.js
+// のcalculateMonthSummary等)は今回一切変更していない。
+const CACHE_NAME = 'salon-manager-cache-v66';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

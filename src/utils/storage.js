@@ -590,6 +590,21 @@ export const buildCashBreakdownStateFromRows = (rows = []) => {
 
 const WEEKDAY_LABELS_JA = ["日", "月", "火", "水", "木", "金", "土"];
 
+// 日次入力画面のスマホUI改善(要件6): 対象日を「8月24日（月）」のように明確に表示するための
+// 純粋関数。<input type="date">はブラウザ・OSのロケール設定によって表示が空白/読みにくく
+// 見えることがあるため、この文字列を別途常時表示することで対象日を確実に伝える(値自体・
+// onChange先はhandleDailyDateChangeのまま無変更、表示専用の追加)。不正な形式(空文字列・
+// パース不能な値)ではUIを壊さないよう空文字列を返す。
+export const formatDailyDateLabel = (dateIso) => {
+  const match = typeof dateIso === "string" ? dateIso.match(/^(\d{4})-(\d{2})-(\d{2})$/) : null;
+  if (!match) return "";
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const weekday = WEEKDAY_LABELS_JA[new Date(year, month - 1, day).getDay()];
+  return `${month}月${day}日（${weekday}）`;
+};
+
 // 月別日計一覧(画面・CSV共通の元データ)。対象月の全日を1行ずつ組み立てる — 店休日・
 // 日計未入力日・総売上未入力日をそれぞれ区別できるよう、金額そのものではなく
 // hasCashBreakdown/hasTotalSales/isHolidayの3フラグを持たせる(要件13: 未入力を0円と
