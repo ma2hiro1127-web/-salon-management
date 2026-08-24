@@ -680,23 +680,27 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .ranking-toggle-button { display: block; width: 100%; text-align: center; padding: 10px; margin-top: 4px; }
   .ranking-list.collapsed .ranking-row:nth-child(n+4) { display: none; }
 
-  /* スマホUI改善2段ヘッダー案(要件1): 「売上」「日次入力」画面のみ(.topbar-compact-mobile、
-     App.jsx側でactivePage==="dashboard"|"daily"の時だけ付与)、店舗/対象月をタイトル右側の
-     2段へ移動する。他ページの.topbarは上のflex-direction:column(縦積み)のまま——このブロック
-     の外では一切変更しない。 */
+  /* スマホ版全画面共通ヘッダー(要件1・2、当初は売上・日次入力の2画面限定だったものを
+     全画面共通仕様へ拡大、AppHeader.jsxが唯一の描画元)。店舗/対象月をタイトル右側の2段へ
+     移動する。.topbar-compact-mobileは全ページで無条件に付与される(AppHeader.jsx参照)ため、
+     ここでのCSSはどのページでも同じ見た目になる——ページごとの個別調整は行わない。 */
   .topbar.topbar-compact-mobile { flex-direction: row; align-items: flex-start; flex-wrap: nowrap; gap: 8px; }
   .topbar-compact-mobile .topbar-heading { flex: 1 1 auto; min-width: 0; }
   .topbar-compact-mobile .topbar-heading > div { min-width: 0; }
-  .topbar-compact-mobile h1 { font-size: 1.15rem; margin: 0; line-height: 1.25; }
+  /* 「月次ダッシュボード」「加盟店連携」等、画面によってタイトルの長さが大きく異なるため
+     (要件13)、折り返しても崩れない(overflow-wrap)ようにしつつ、右側の店舗/対象月にも
+     最低限の幅を残すバランスにする。 */
+  .topbar-compact-mobile h1 { font-size: 1.1rem; margin: 0; line-height: 1.3; overflow-wrap: break-word; }
   /* 「管理者」バッジは優先度が低いため、主役(タイトル)より控えめな見た目に落とす
-     (要件1: バッジが目立ちすぎない)。表示条件・文言(currentUser?.role等)は無変更。 */
+     (要件6: バッジが目立ちすぎない、全画面共通)。表示条件・文言(currentUser?.role等)は
+     無変更。 */
   .topbar-compact-mobile .user-role-badge {
     font-size: 0.66rem; padding: 2px 8px; margin-top: 2px !important;
     background: transparent; color: var(--muted); box-shadow: none; font-weight: 600;
   }
   .topbar-compact-mobile .filters {
     flex: 0 1 auto; display: flex; flex-direction: column; align-items: flex-end;
-    gap: 4px; min-width: 0; max-width: 58%;
+    gap: 4px; min-width: 0; max-width: 50%;
   }
   .topbar-compact-mobile .filters label { position: relative; width: auto; align-items: flex-end; min-width: 0; }
   /* ラベル文言(店舗/対象月)は非表示にし、選択中の値だけを見せる(要件1)。display:noneでは

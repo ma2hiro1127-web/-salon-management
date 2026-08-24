@@ -503,7 +503,17 @@
 // 上げる。(8)DAILY/CALENDARの英字見出しをこの画面のパネル内だけ弱める(他画面のeyebrowは
 // 無変更)。日締め・店休日・まとめて入力・カレンダー連動・権限判定・保存ロジック(storage.js
 // のcalculateMonthSummary等)は今回一切変更していない。
-const CACHE_NAME = 'salon-manager-cache-v66';
+// v67: スマホ版の店舗/対象月2段ヘッダーを全画面共通仕様へ拡大。以前は売上・日次入力の
+// 2画面限定だったヘッダーJSXを新しい共通コンポーネントAppHeader(src/components/
+// AppHeader.jsx)へ切り出し、topbar-compact-mobileクラス(App.css)を全ページ無条件で
+// 適用するよう変更した。ヘッダーはもともとApp.jsx内で1箇所だけ描画され全ページが共有する
+// 構造だったため、渡すprops(selectedStore/appState.isViewingFranchise/
+// handleUnifiedStoreSwitch/selectedMonth/handleMonthSwitch/handleLogout等)は既存の
+// state・ハンドラをそのまま渡しているだけで、店舗切替・対象月切替・状態保持・ログアウトの
+// ロジックは一切変更していない。あわせてタイトルの折り返し(overflow-wrap)・右側の幅配分
+// (58%→50%)を調整し、「月次ダッシュボード」等の長いタイトルでも右側の店舗/対象月と両方
+// 読める配分にした。PC/タブレット幅(≤900pxのメディアクエリ外)は無変更。
+const CACHE_NAME = 'salon-manager-cache-v67';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

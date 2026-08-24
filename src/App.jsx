@@ -102,6 +102,7 @@ import { createInitialAppState } from "./data/defaults.js";
 import { computeAnchoredPopoverPosition } from "./utils/popoverPosition.js";
 import LoginScreen from "./components/LoginScreen.jsx";
 import AccessDenied from "./components/AccessDenied.jsx";
+import AppHeader from "./components/AppHeader.jsx";
 import {
   supabase,
   isSupabaseConfigured,
@@ -199,7 +200,6 @@ import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
-import MonthPicker from "./components/MonthPicker.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
 import FaqPage from "./components/faq/FaqPage.jsx";
 import MonthlyReviewPage from "./components/monthlyReview/MonthlyReviewPage.jsx";
@@ -7062,85 +7062,33 @@ function App() {
       </aside>
 
       <main className="main-content">
-        {/* スマホUI改善2段ヘッダー案(要件1、売上画面で導入・日次入力画面のスマホUI改善で
-            汎用化): 「売上」「日次入力」両画面のスマホ幅だけ、店舗/対象月をタイトル右側の
-            2段(1行目=店舗、2行目=対象月)へ移動する。他ページのモバイルヘッダーは既存の
-            縦積みレイアウトのまま変更しないよう、この2ページの時だけ.topbar-compact-mobileを
-            付与し、対応するCSSも全てこのクラスの配下にスコープする(topbar自体は全ページ
-            共通コンポーネントのため、無条件で変更しない)。 */}
-        <header className={`topbar${activePage === "dashboard" || activePage === "daily" ? " topbar-compact-mobile" : ""}`}>
-          <div className="topbar-heading">
-            <button
-              type="button"
-              className="secondary-button mobile-nav-toggle"
-              aria-expanded={mobileNavOpen}
-              aria-controls="primary-nav"
-              aria-label={mobileNavOpen ? "メニューを閉じる" : "メニューを開く"}
-              onClick={() => setMobileNavOpen((prev) => !prev)}
-            >
-              <span aria-hidden="true">{mobileNavOpen ? "✕" : "☰"}</span>
-            </button>
-            <div>
-              <p className="eyebrow">SALON MANAGEMENT</p>
-              <h1>{activePage === "dashboard" ? "売上" : activePage === "monthlyDashboard" ? "月次ダッシュボード" : activePage === "monthlyReview" ? "月次レビュー" : activePage === "daily" ? "日次入力" : activePage === "monthly" ? "管理画面" : activePage === "companies" ? "会社管理" : activePage === "stores" ? "店舗管理" : activePage === "users" ? "ユーザー管理" : activePage === "franchise" ? "加盟店連携" : activePage === "faq" ? "使い方・FAQ" : "設定"}</h1>
-              {currentUser ? (
-                <div className="user-role-badge" style={{ marginTop: 6 }}>
-                  {currentUser?.role || currentRole === "system_admin" ? "管理者" : currentRole}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="filters">
-            {/* 店舗切替一覧: 自社店舗と加盟店(承認済みのみ)を同じ<select>から選べるように
-                する(別々のセレクタに分けない)。加盟店を閲覧中でも、自社の「全店舗」・
-                自社の各店舗は常にこの一覧の上部に表示され続けるため、追加のバナーや
-                「本社に戻る」ボタンを設けなくても、この<select>だけで本社・加盟店を
-                行き来できる。自社欄はhomeStoresForDropdown(閲覧状態に左右されない、
-                常に本社を指す参照)から描画するため、加盟店を開いた後も消えない。
-                加盟店側は"──── 加盟店 ────"という視覚的な区切り(optgroup)の下に、
-                店舗単位で列挙する(自社店舗と同じ「1店舗を選ぶ」扱いにするため — 会社単位で
-                1行にして全店舗ビューを開く仕様だと、損益表・月締め・費用入力等の単一店舗
-                前提ページが軒並み弾かれてしまっていた)。ラベルは自社店舗の並びと揃えて
-                店舗名だけを表示する(会社名は付けない) — 会社名と店舗名を連結すると、
-                会社名と店舗名が同じ加盟店(例: 会社「INTRO」の店舗「INTRO」)で
-                「INTRO INTRO」のように二重表示になってしまうため。valueには
-                `__franchise__:companyId:storeId`を使うので、会社名を表示に含めなくても
-                どの会社のどの店舗かは内部的に正しく特定できる。承認済み(status='approved')
-                の連携だけが対象のため、pending/rejected/disconnectedの加盟店はここに
-                一切出てこない。 */}
-            <label>
-              {/* 「売上」画面のスマホ2段ヘッダーでは、ラベル文言(店舗/対象月)は非表示にして
-                  選択中の値だけを見せる仕様(要件1)。テキストノードのままだとCSSで個別に
-                  隠せないため<span>で囲む——PC/他ページでは.topbar-compact-mobileが付かず
-                  このspanにも何もスタイルが当たらないため、見え方は今まで通り「店舗」という
-                  文字が普通に表示される。 */}
-              <span className="filters-label-text">店舗</span>
-              <select
-                value={appState.isViewingFranchise ? `__franchise__:${appState.currentCompanyId}:${appState.selectedStoreId || ""}` : selectedStore}
-                onChange={(event) => handleUnifiedStoreSwitch(event.target.value)}
-                disabled={franchiseViewBusy}
-              >
-                {canViewAllStores(currentRole) ? <option value={ALL_STORES_VALUE}>全店舗</option> : null}
-                {homeStoresForDropdown.length ? homeStoresForDropdown.map((store) => <option key={store.id} value={store.name}>{store.name}</option>) : <option value="">未登録</option>}
-                {viewableFranchisePartnerStores.length > 0 ? (
-                  <optgroup label="──── 加盟店 ────">
-                    {viewableFranchisePartnerStores.map((item) => (
-                      <option key={`${item.companyId}:${item.storeId}`} value={`__franchise__:${item.companyId}:${item.storeId}`}>{item.storeName}</option>
-                    ))}
-                  </optgroup>
-                ) : null}
-              </select>
-            </label>
-            {/* 売上画面UI/UX改善(要件10): 業務操作(店舗切替・対象月切替)とアカウント操作
-                (ログアウト)は目的が異なるため、JSXの並び順を業務操作→アカウント操作に
-                揃え、ログアウトには視覚的に一段弱いクラス(topbar-account-action)を付ける
-                ——既存の.filtersのflex/grid構造(子要素3つ)自体は変更していないため、
-                レスポンシブ挙動への影響は無い。 */}
-            <MonthPicker value={selectedMonth} onChange={handleMonthSwitch} />
-            <button className="secondary-button topbar-account-action" type="button" onClick={handleLogout}>ログアウト</button>
-          </div>
-        </header>
+        {/* スマホ版全画面共通ヘッダー(要件7: 共通コンポーネント化)。以前は売上・日次入力の
+            2画面だけこの位置にJSXを個別に書いていたが、ヘッダー自体はもともとこの1箇所だけで
+            全ページ共通描画されていた(ページごとの複製は無かった)ため、AppHeaderへJSXを
+            そのまま切り出し、店舗/対象月の2段表示(topbar-compact-mobile、App.css)を全ページ
+            無条件で適用するようにした(要件2: 対象画面を全画面へ拡大)。渡しているprops
+            (selectedStore/appState.isViewingFranchise/handleUnifiedStoreSwitch/selectedMonth/
+            handleMonthSwitch等)は全て既存のstate・ハンドラをそのまま渡しているだけで、
+            新しい状態やロジックは増やしていない——店舗切替・対象月切替・状態保持・ログアウトは
+            全て既存の関数がそのまま担う。 */}
+        <AppHeader
+          activePage={activePage}
+          mobileNavOpen={mobileNavOpen}
+          onToggleMobileNav={() => setMobileNavOpen((prev) => !prev)}
+          currentUser={currentUser}
+          currentRole={currentRole}
+          isViewingFranchise={appState.isViewingFranchise}
+          currentCompanyId={appState.currentCompanyId}
+          franchiseSelectedStoreId={appState.selectedStoreId}
+          selectedStore={selectedStore}
+          onStoreChange={handleUnifiedStoreSwitch}
+          franchiseViewBusy={franchiseViewBusy}
+          homeStoresForDropdown={homeStoresForDropdown}
+          viewableFranchisePartnerStores={viewableFranchisePartnerStores}
+          selectedMonth={selectedMonth}
+          onMonthChange={handleMonthSwitch}
+          onLogout={handleLogout}
+        />
 
         {!appState.isViewingFranchise && normalizedCurrentRoleForFranchise === "company_admin" && incomingPendingFranchiseRequests.length > 0 ? (
           <div className="franchise-request-banner">
