@@ -2307,6 +2307,53 @@ test("getCompanyDashboardSummary: 登録店舗が無い会社ではクラッシ�
   assert.deepEqual(summary.storeRows, []);
 });
 
+// 販売前総合チェックで発見: archived(休止・削除済み)店舗がgetStoreDashboardRows/
+// getCompanyDashboardSummary(月次ダッシュボードの全店舗サマリー・比較表・ランキング・CSV出力が
+// 共通で参照する集計関数)の集計対象から漏れて含まれていた——sales/KPIページ側の
+// calculateAllStoresMonthSummaryや月次レビュー側のgetMonthlyReviewSummaryは既にarchived除外
+// 済みだったのに、この関数だけ抜けていた不具合の回帰テスト。
+test("getStoreDashboardRows: archived(休止・削除済み)店舗は集計から除外する(販売前総合チェックで発見した漏れの回帰テスト)", () => {
+  const state = buildDashboardTestState();
+  const currentKeyArchived = buildMonthKey("store-archived", "2026-08");
+  // 休止店舗にも実際に売上データが残っている状態(過去に営業していた実績データ)を用意し、
+  // 「データが無いから含まれない」のではなく「archivedだから除外される」ことを検証する。
+  state.dailyResults[currentKeyArchived] = [
+    { date: "2026-08-01", totalSales: 999999, technicalSales: 999999, retailSales: 0, customers: 1, newCustomers: 1, repeatCustomers: 0 },
+  ];
+  const companyWithArchivedStore = {
+    id: "company-1",
+    stores: [
+      ...dashboardTestCompany.stores,
+      { id: "store-archived", name: "休止店", status: "archived", staffCount: 2, productivityStaffCount: 0, settings: { useInventoryTracking: false } },
+    ],
+  };
+
+  const rows = getStoreDashboardRows(state, companyWithArchivedStore, "2026-08");
+  assert.equal(rows.length, 2); // store-a/store-bのみ、store-archivedは含まれない
+  assert.ok(!rows.some((row) => row.storeId === "store-archived"));
+
+  const summary = getCompanyDashboardSummary(state, companyWithArchivedStore, "2026-08");
+  assert.equal(summary.storeCount, 2);
+  // archived店舗の999999円が合算されていれば600000+999999になってしまうが、そうならないこと
+  // (店A 500000 + 店B 100000 = 600000のまま)を確認する——月次ダッシュボードの全店舗サマリー・
+  // ランキング・CSVがすべてこのstoreRowsを再利用するため、ここで防げば全経路が正しくなる。
+  assert.equal(summary.totalSales, 600000);
+});
+
+test("getStoreDashboardRows: 停止中(suspended)の店舗はarchivedとは別扱いで集計に含める(除外対象を広げすぎない、既存のcalculateAllStoresMonthSummary等と同じ基準)", () => {
+  const state = buildDashboardTestState();
+  const companyWithSuspendedStore = {
+    id: "company-1",
+    stores: dashboardTestCompany.stores.map((store) => (
+      store.id === "store-b" ? { ...store, status: "suspended" } : store
+    )),
+  };
+
+  const rows = getStoreDashboardRows(state, companyWithSuspendedStore, "2026-08");
+  assert.equal(rows.length, 2);
+  assert.ok(rows.some((row) => row.storeId === "store-b")); // suspendedはarchivedと違い除外しない
+});
+
 test("diffPercent: 前月データが無い場合・前月が0円の場合はnull(0%と区別する)", () => {
   assert.equal(diffPercent(120, 100, true), 20);
   assert.equal(diffPercent(80, 100, true), -20);

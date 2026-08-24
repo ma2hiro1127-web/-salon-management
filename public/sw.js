@@ -522,7 +522,17 @@
 // (保存・日締め・店休日・営業日設定が共通で更新するstate)が正しく更新されていたのに表示する
 // JSXが無かった(実害は無いが「保存成功が分かる」を満たしていなかった)ため、1行の状態表示を
 // 追加。保存処理・権限判定・値の計算ロジック自体はすべて無変更。
-const CACHE_NAME = 'salon-manager-cache-v68';
+// v69: 販売前総合チェック「archived-store dashboard leak」の修正。休止・削除済み(archived)
+// 店舗の売上・費用・損益が、月次ダッシュボードの全店舗サマリー・比較表・ランキング・CSV出力へ
+// 紛れ込んでいた不具合を修正。原因はgetStoreDashboardRows(storage.js、これら全機能が共通で
+// 参照する集計関数)がarchived除外を行っていなかったこと——sales/KPIページ側の
+// calculateAllStoresMonthSummaryや月次レビュー側のgetMonthlyReviewSummaryは既に正しく除外
+// していた。この1関数にarchived除外フィルタを追加するだけで、上記すべての画面・CSV出力が
+// 連動して修正される(個別に直す必要なし)。営業進捗・損益表(元々全店舗ビュー非対応)は
+// 調査の結果、元から正しく除外されていたことを確認済み。archived店舗を直接選択して過去実績を
+// 参照する経路(個別店舗ページ)には一切触れていない。回帰テスト2件を追加(archived除外・
+// suspendedは除外しないことの確認)。
+const CACHE_NAME = 'salon-manager-cache-v69';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

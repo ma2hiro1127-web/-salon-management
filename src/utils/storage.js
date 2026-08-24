@@ -2447,8 +2447,17 @@ export const formatDiffOrDash = (diff) => {
 // 再利用し、店舗ごとにcalculateMonthSummaryを重複して呼び出さない。
 // store.settings/staffCount/productivityStaffCountは、Supabaseハイドレート時に既に
 // company.stores[i]へマージ済み(store_profiles/store_input_settingsのオーバーレイ)。
+// 販売前総合チェックで発見したarchived店舗の漏れの修正: 呼び出し元(MonthlyDashboardPage.jsx)
+// はcurrentCompanyStore(archived除外済み)ではなく、生のcurrentCompany(archived含む)を渡して
+// いたため、休止・削除済み店舗の売上・費用・損益がこの関数経由で全店舗サマリー・比較表・
+// ランキング・CSVへ紛れ込んでいた——sales/KPIページ側のcalculateAllStoresMonthSummaryや
+// 月次レビュー側のgetMonthlyReviewSummaryは既にこの関数内でarchived除外していたのと同じ
+// フィルタを、呼び出し元に依存せずここでも一律に適用する(呼び出し元がどの店舗配列を渡しても
+// 必ず現在の運用対象店舗だけに絞られるようにする、根本側での修正)。個別店舗の過去データ
+// 自体(calculateMonthSummary・日次入力・月次レビュー等の単一店舗ページ)には一切触れない
+// ——archived店舗を直接選択して過去実績を参照する経路はそのまま残る。
 export const getStoreDashboardRows = (state, company, monthValue) => {
-  const stores = Array.isArray(company?.stores) ? company.stores : [];
+  const stores = (Array.isArray(company?.stores) ? company.stores : []).filter((store) => store?.id && store.status !== "archived");
   const previousMonthValue = getMonthOffset(monthValue, -1);
 
   return stores.map((store) => {
