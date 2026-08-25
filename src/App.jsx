@@ -667,6 +667,16 @@ function App() {
   const [activeMonthlyTab, setActiveMonthlyTab] = useState("closing");
   const [companyForm, setCompanyForm] = useState({ name: "", code: "", contractStatus: "trial", businessType: "salon" });
   const [storeForm, setStoreForm] = useState(createStoreFormDefaults());
+  // dailyFieldChangeHandlers等と同じ理由・同じパターン(memo化されたNumericInputへ安定した
+  // onChangeを渡す。setStoreFormは元々useStateのsetter自体は安定しているが、この
+  // ラッパー関数の形は他の入力画面と揃えて一貫性を持たせる)。
+  const [storeFieldChangeHandlers] = useState(() => {
+    const makeHandler = (field) => (value) => setStoreForm((prev) => ({ ...prev, [field]: value }));
+    return ["staffCount", "productivityStaffCount"].reduce((acc, field) => {
+      acc[field] = makeHandler(field);
+      return acc;
+    }, {});
+  });
   // 検索・並び替えUIは撤去したが、filteredStoresの絞り込み/並び替えロジック自体は変更せず
   // 維持している(空検索=絞り込みなし、achievement=既存のデフォルト順)。setterは今は使わ
   // ないため取得しない。
@@ -896,6 +906,20 @@ function App() {
       return next;
     });
   };
+  // dailyFieldChangeHandlers(上記)と同じ理由・同じパターン: updateBatchField自体は
+  // totalSalesIsAutoCalculated等を参照するため毎レンダー再生成されるが、refで常に最新版を
+  // 指すようにした上で、フィールドごとのラッパー関数は初回だけ生成して以後ずっと同じ参照を
+  // 使い回す(memo化されたFieldへ安定したonChangeを渡すため。updateBatchField本体の
+  // 計算ロジックは無変更)。
+  const updateBatchFieldRef = useRef(updateBatchField);
+  updateBatchFieldRef.current = updateBatchField;
+  const [batchFieldChangeHandlers] = useState(() => {
+    const makeHandler = (field) => (value) => updateBatchFieldRef.current(field, value);
+    return ["technicalSales", "retailSales", "otherSales", "totalSales", "newCustomers", "repeatCustomers", "customers", "reviewCount", "cashAmount", "cashlessAmount", "pointAmount"].reduce((acc, field) => {
+      acc[field] = makeHandler(field);
+      return acc;
+    }, {});
+  });
   const [batchEditId, setBatchEditId] = useState("");
   const [batchFormStatus, setBatchFormStatus] = useState({ status: "idle", message: "" });
   const [batchFormBusy, setBatchFormBusy] = useState(false);
@@ -5635,7 +5659,19 @@ function App() {
         setDailyMode("view");
         setDailyOriginalEntry({ ...entry });
       }
-      setDailyInsight(buildDailyInsight({ form: entry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      // 文字入力時の画面ガクつき再調査で発見した実際の原因の1つ: buildDailyInsightは
+      // 入力中の金額・客数から文章を都度生成するため、文字数が入力内容によって変わる
+      // (例:「本日は目標を+¥5,000上回りました。」→「+¥52,000」で文字数が変化)。
+      // このinsight-cardは入力欄より下(カレンダーの上)にあるが、以前はサイレント自動保存
+      // (400msデバウンス、入力を続けている間も繰り返し発火する)のたびに再生成・再描画して
+      // おり、スマホの狭い画面では入力欄と同時に視界に入ることもあるため、高さが変わる
+      // たびに画面が上下に動く一因になっていた。入力継続中(サイレント自動保存)は更新せず、
+      // 明示的な保存確定(switchToView)・非サイレント保存の時だけ更新する——表示される
+      // 分析内容自体(計算ロジック)は無変更、更新タイミングだけを「入力が一区切りついた時」
+      // に限定する。
+      if (!autoSave) {
+        setDailyInsight(buildDailyInsight({ form: entry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
+      }
       lastAutoSaveSignatureRef.current = getDailyAutoSaveSignature(entry);
       persistSaveStatus("saved", "保存済み ✓", false);
       return { ok: true, data: entry, autoSave };
@@ -6014,6 +6050,17 @@ function App() {
     setTargetDraft((prev) => ({ ...prev, [field]: value }));
     setTargetDirty(true);
   };
+  // dailyFieldChangeHandlers等と同じ理由・同じパターン(memo化されたFieldへ安定した
+  // onChangeを渡す)。
+  const updateTargetDraftFieldRef = useRef(updateTargetDraftField);
+  updateTargetDraftFieldRef.current = updateTargetDraftField;
+  const [targetFieldChangeHandlers] = useState(() => {
+    const makeHandler = (field) => (value) => updateTargetDraftFieldRef.current(field, value);
+    return ["targetSales", "targetTechnicalSales", "targetRetailSales", "targetCustomers", "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers", "targetReviewCount"].reduce((acc, field) => {
+      acc[field] = makeHandler(field);
+      return acc;
+    }, {});
+  });
 
   const handleTargetMonthChange = (nextMonth) => {
     if (!nextMonth || nextMonth === targetSelectedMonth) return;
@@ -6498,6 +6545,21 @@ function App() {
 
   const setCostAmountDraft = (itemId, value) => {
     setCostAmountDrafts((prev) => ({ ...prev, [itemId]: value }));
+  };
+  // dailyFieldChangeHandlers等と同じ理由: 固定費・変動費の一覧は費用項目(item.id)の数だけ
+  // NumericInputが並ぶため、1行だけ入力してもmemo化されたNumericInputが安定した参照の
+  // onChangeを受け取れなければ、他の全行が毎回再レンダリングされてしまう。item.idは
+  // フィールド名のように事前に固定できない(項目の追加・削除で増減する)ため、ref経由の
+  // Mapへ初回アクセス時だけ生成してキャッシュする方式にする(setCostAmountDraft本体の
+  // ロジックは無変更)。
+  const setCostAmountDraftRef = useRef(setCostAmountDraft);
+  setCostAmountDraftRef.current = setCostAmountDraft;
+  const costAmountDraftHandlersRef = useRef(new Map());
+  const getCostAmountDraftHandler = (itemId) => {
+    if (!costAmountDraftHandlersRef.current.has(itemId)) {
+      costAmountDraftHandlersRef.current.set(itemId, (value) => setCostAmountDraftRef.current(itemId, value));
+    }
+    return costAmountDraftHandlersRef.current.get(itemId);
   };
 
   const copyPreviousMonthAmountFor = (item) => {
@@ -7720,31 +7782,31 @@ function App() {
 
                     <div className="daily-section-card">
                       <h3>売上</h3>
-                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={batchForm.technicalSales} onChange={(value) => updateBatchField("technicalSales", value)} suffix="円" placeholder="未入力" numeric /> : null}
-                      {showRetailSalesField ? <Field label="店販売上（税込）" value={batchForm.retailSales} onChange={(value) => updateBatchField("retailSales", value)} suffix="円" placeholder="未入力" numeric /> : null}
-                      {showOtherSalesField ? <Field label="その他売上（税込）" value={batchForm.otherSales} onChange={(value) => updateBatchField("otherSales", value)} suffix="円" placeholder="未入力" numeric /> : null}
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={batchForm.technicalSales} onChange={batchFieldChangeHandlers.technicalSales} suffix="円" placeholder="未入力" numeric /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={batchForm.retailSales} onChange={batchFieldChangeHandlers.retailSales} suffix="円" placeholder="未入力" numeric /> : null}
+                      {showOtherSalesField ? <Field label="その他売上（税込）" value={batchForm.otherSales} onChange={batchFieldChangeHandlers.otherSales} suffix="円" placeholder="未入力" numeric /> : null}
                       {totalSalesIsAutoCalculated ? (
                         <div className="summary-card compact">
                           <span>総売上（税込・自動計算）</span>
                           <strong>{batchForm.totalSales === "" ? "未入力" : money(parseNumber(batchForm.totalSales))}</strong>
                         </div>
                       ) : (
-                        <Field label="総売上（税込）" value={batchForm.totalSales} onChange={(value) => updateBatchField("totalSales", value)} suffix="円" placeholder="未入力" numeric />
+                        <Field label="総売上（税込）" value={batchForm.totalSales} onChange={batchFieldChangeHandlers.totalSales} suffix="円" placeholder="未入力" numeric />
                       )}
                     </div>
 
                     {showCustomersField ? (
                       <div className="daily-section-card">
                         <h3>客数</h3>
-                        {showNewCustomersField ? <Field label="新規客数" value={batchForm.newCustomers} onChange={(value) => updateBatchField("newCustomers", value)} suffix="名" placeholder="未入力" numeric /> : null}
-                        {showRepeatCustomersField ? <Field label="再来客数" value={batchForm.repeatCustomers} onChange={(value) => updateBatchField("repeatCustomers", value)} suffix="名" placeholder="未入力" numeric /> : null}
+                        {showNewCustomersField ? <Field label="新規客数" value={batchForm.newCustomers} onChange={batchFieldChangeHandlers.newCustomers} suffix="名" placeholder="未入力" numeric /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={batchForm.repeatCustomers} onChange={batchFieldChangeHandlers.repeatCustomers} suffix="名" placeholder="未入力" numeric /> : null}
                         {customersIsAutoCalculated ? (
                           <div className="summary-card compact">
                             <span>客数（自動計算）</span>
                             <strong>{batchForm.customers === "" ? "未入力" : `${number(parseNumber(batchForm.customers))}名`}</strong>
                           </div>
                         ) : (
-                          <Field label="客数" value={batchForm.customers} onChange={(value) => updateBatchField("customers", value)} suffix="名" placeholder="未入力" numeric />
+                          <Field label="客数" value={batchForm.customers} onChange={batchFieldChangeHandlers.customers} suffix="名" placeholder="未入力" numeric />
                         )}
                       </div>
                     ) : null}
@@ -7752,16 +7814,16 @@ function App() {
                     {showReviewCountField ? (
                       <div className="daily-section-card">
                         <h3>口コミ</h3>
-                        <Field label="口コミ数" value={batchForm.reviewCount} onChange={(value) => updateBatchField("reviewCount", value)} suffix="件" placeholder="未入力" numeric />
+                        <Field label="口コミ数" value={batchForm.reviewCount} onChange={batchFieldChangeHandlers.reviewCount} suffix="件" placeholder="未入力" numeric />
                       </div>
                     ) : null}
 
                     {useCashBreakdown ? (
                       <div className="daily-section-card">
                         <h3>日計</h3>
-                        <Field label="現金" value={batchForm.cashAmount} onChange={(value) => updateBatchField("cashAmount", value)} suffix="円" placeholder="未入力" numeric />
-                        <Field label="キャッシュレス" value={batchForm.cashlessAmount} onChange={(value) => updateBatchField("cashlessAmount", value)} suffix="円" placeholder="未入力" numeric />
-                        <Field label="ポイント利用" value={batchForm.pointAmount} onChange={(value) => updateBatchField("pointAmount", value)} suffix="円" placeholder="未入力" numeric />
+                        <Field label="現金" value={batchForm.cashAmount} onChange={batchFieldChangeHandlers.cashAmount} suffix="円" placeholder="未入力" numeric />
+                        <Field label="キャッシュレス" value={batchForm.cashlessAmount} onChange={batchFieldChangeHandlers.cashlessAmount} suffix="円" placeholder="未入力" numeric />
+                        <Field label="ポイント利用" value={batchForm.pointAmount} onChange={batchFieldChangeHandlers.pointAmount} suffix="円" placeholder="未入力" numeric />
                       </div>
                     ) : null}
 
@@ -8039,11 +8101,16 @@ function App() {
                       <details className="daily-section-card cash-breakdown-card" open>
                         <summary className="cash-breakdown-summary">
                           <h3>日計</h3>
-                          {cashBreakdownHasAnyValue ? (
-                            <span className={`cash-breakdown-summary-pill ${cashBreakdownIsMatched ? "match" : "mismatch"}`}>
-                              日計{"　"}{money(cashBreakdownTotal)}{"　"}{cashBreakdownIsMatched ? "✓" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
-                            </span>
-                          ) : null}
+                          {/* 文字入力時の画面ガクつき再調査で発見: 以前は{cashBreakdownHasAnyValue ?
+                              <span/> : null}でDOMへの挿入・削除自体を切り替えていたため、日計の
+                              いずれかの欄へ最初の1文字を入力した瞬間に要素が出現し、この
+                              <summary>の高さが変わって周辺(下のcash-breakdown-body全体)が
+                              ずれる原因になっていた。挿入・削除ではなくvisibilityの切り替えに
+                              変更し、常に同じ高さを確保する(表示するテキスト・判定ロジックは
+                              無変更)。 */}
+                          <span className={`cash-breakdown-summary-pill ${cashBreakdownIsMatched ? "match" : "mismatch"}${cashBreakdownHasAnyValue ? "" : " is-empty"}`}>
+                            日計{"　"}{money(cashBreakdownTotal)}{"　"}{cashBreakdownIsMatched ? "✓" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
+                          </span>
                         </summary>
                         <div className="cash-breakdown-body">
                           <Field label="現金" value={cashBreakdownForm.cashAmount || ""} onChange={cashBreakdownFieldChangeHandlers.cashAmount} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
@@ -8053,11 +8120,11 @@ function App() {
                             <span>日計合計</span>
                             <strong>{money(cashBreakdownTotal)}</strong>
                           </div>
-                          {cashBreakdownHasAnyValue ? (
-                            <div className={`value-pill ${cashBreakdownIsMatched ? "active" : "inactive"}`}>
-                              {cashBreakdownIsMatched ? "✓ 日計一致" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
-                            </div>
-                          ) : null}
+                          {/* 上のcash-breakdown-summary-pillと同じ理由・同じ対応(挿入・削除では
+                              なくvisibilityで切り替え、高さの変動を無くす)。 */}
+                          <div className={`value-pill ${cashBreakdownIsMatched ? "active" : "inactive"}${cashBreakdownHasAnyValue ? "" : " is-empty"}`}>
+                            {cashBreakdownIsMatched ? "✓ 日計一致" : `差額 ${money(Math.abs(cashBreakdownDiff))}`}
+                          </div>
                           <button type="button" className="text-button" onClick={() => setShowCashBreakdownMonthly(true)}>月別日計を見る</button>
                         </div>
                       </details>
@@ -8223,15 +8290,15 @@ function App() {
                     ) : (
                       <>
                         <div className="input-grid">
-                          {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={(value) => updateTargetDraftField("targetSales", value)} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={targetFieldChangeHandlers.targetSales} suffix="円" numeric /> : null}
                           {!isAllStoresView && activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={(value) => updateTargetDraftField("targetTechnicalSales", value)} suffix="円" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={(value) => updateTargetDraftField("targetRetailSales", value)} suffix="円" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={(value) => updateTargetDraftField("targetCustomers", value)} suffix="名" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={(value) => updateTargetDraftField("targetAverageSpend", value)} suffix="円" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={(value) => updateTargetDraftField("targetNewCustomers", value)} suffix="名" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={(value) => updateTargetDraftField("targetRepeatCustomers", value)} suffix="名" numeric /> : null}
-                          {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={(value) => updateTargetDraftField("targetReviewCount", value)} suffix="件" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={targetFieldChangeHandlers.targetTechnicalSales} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={targetFieldChangeHandlers.targetRetailSales} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={targetFieldChangeHandlers.targetCustomers} suffix="名" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={targetFieldChangeHandlers.targetAverageSpend} suffix="円" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={targetFieldChangeHandlers.targetNewCustomers} suffix="名" numeric /> : null}
+                          {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={targetFieldChangeHandlers.targetRepeatCustomers} suffix="名" numeric /> : null}
+                          {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={targetFieldChangeHandlers.targetReviewCount} suffix="件" numeric /> : null}
                         </div>
                         {isAllStoresView ? (
                           <div className="daily-settings-card">
@@ -8401,7 +8468,7 @@ function App() {
                               <NumericInput
                                 value={draftAmount}
                                 placeholder={savedAmount === undefined ? "未入力" : ""}
-                                onChange={(value) => setCostAmountDraft(item.id, value)}
+                                onChange={getCostAmountDraftHandler(item.id)}
                               />
                               {/* 要件6: 継続費用は基本値が毎月自動反映されるため「前月をコピー」は
                                   不要(常に基本値=前月扱いになってしまい紛らわしいため非表示にする)。
@@ -8923,11 +8990,11 @@ function App() {
                     </label>
                     <label className="field">
                       <span>在籍スタッフ数</span>
-                      <NumericInput value={storeForm.staffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, staffCount: value }))} placeholder="例: 6" />
+                      <NumericInput value={storeForm.staffCount} onChange={storeFieldChangeHandlers.staffCount} placeholder="例: 6" />
                     </label>
                     <label className="field">
                       <span>生産性計算人数（任意）</span>
-                      <NumericInput value={storeForm.productivityStaffCount} onChange={(value) => setStoreForm((prev) => ({ ...prev, productivityStaffCount: value }))} allowDecimal placeholder="例: 5.0" />
+                      <NumericInput value={storeForm.productivityStaffCount} onChange={storeFieldChangeHandlers.productivityStaffCount} allowDecimal placeholder="例: 5.0" />
                       <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
                     </label>
                   </div>
@@ -10172,4 +10239,8 @@ function FieldImpl({ label, value, onChange, suffix = "", type = "text", numeric
 // この行だけでmemo化の恩恵を受けられ、呼び出し側のJSXを1つも変更する必要が無い。
 const Field = memo(FieldImpl);
 
+// テスト専用のnamed export(総合品質チェック: 文字入力時のガクつき再測定)。デフォルト
+// exportのApp(main.jsxが使う唯一の経路)には一切影響しない、純粋な追加。実際に出荷される
+// memo化済みField/NumericInputそのものを、再構築コピーではなくこの経路で直接テストする。
+export { Field, NumericInput };
 export default App;

@@ -350,6 +350,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .cash-breakdown-card[open] .cash-breakdown-summary::after { transform: rotate(180deg); }
 .cash-breakdown-summary-pill { font-size: 0.84rem; font-weight: 700; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cash-breakdown-summary-pill.match { color: var(--success); }
+/* 文字入力時の画面ガクつき対策: displayのon/offではなくvisibilityで隠す(要素自体は常に
+   マウントされたまま、DOM挿入・削除による高さの変動を起こさない)。 */
+.cash-breakdown-summary-pill.is-empty { visibility: hidden; }
 .cash-breakdown-body { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
 
 /* 使い方・FAQ: アコーディオン(details/summary)の見た目は.cash-breakdown-cardと同じ
@@ -366,6 +369,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .value-pill.inactive { background: rgba(100, 116, 139, 0.12); color: var(--muted); }
+/* 上のcash-breakdown-summary-pill.is-emptyと同じ理由・同じ対応。 */
+.value-pill.is-empty { visibility: hidden; }
 /* 日次入力の保存ステータス表示(販売前総合チェックで発見: saveStatusは正しく更新されていたが
    表示するJSXが無かった)。保存中/成功/失敗を色だけでなく文言でも区別する(既存のnotice-box
    系の配色トークンを流用、新しい色は増やさない)。 */

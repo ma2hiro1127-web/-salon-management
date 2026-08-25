@@ -602,7 +602,19 @@
 // (3) 100vh→100dvh(フォールバック付き)にし、モバイルのソフトウェアキーボード表示中に
 // レイアウト全体の高さが変動する問題を修正(.app-shell/.sidebar/.auth-shell)。
 // 保存処理・権限判定・company_id/store_id分離は一切変更していない。
-const CACHE_NAME = 'salon-manager-cache-v74';
+// v75: 文字入力時の画面ガクつきを、実測(jsdomへ実際のField/NumericInputをマウントし、
+// React.Profiler/FieldImpl呼び出し回数を直接計測)によって前回修正(v74)のmemo機構自体は
+// 正しく機能していることを確認した上で、以下の実際のDOM高さ変動源を新たに特定・修正。
+// (1) buildDailyInsight(AI分析コメント)が入力中の金額から都度、文字数の異なる文章を
+// 生成しており、400msデバウンスのサイレント自動保存のたびに再描画・高さ変動していた
+// ——サイレント自動保存中は更新せず、明示的な保存確定時のみ更新するよう変更。
+// (2) 日計(現金/キャッシュレス/ポイント利用)の合計表示バッジが{条件 ? <span/> : null}で
+// DOM挿入・削除されており、最初の1文字入力でカードの高さが変わっていた——常時マウントし
+// visibilityで切り替える方式に変更(表示内容・判定ロジックは無変更)。
+// あわせて、まとめて入力・固定費/変動費金額一覧・月間目標・店舗情報(スタッフ数系)の
+// onChangeも日次入力と同じ「ref経由で安定した参照」パターンへ統一(v74の日次入力・日計の
+// 対応漏れ箇所への横展開)。保存処理・権限判定・company_id/store_id分離は無変更。
+const CACHE_NAME = 'salon-manager-cache-v75';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
