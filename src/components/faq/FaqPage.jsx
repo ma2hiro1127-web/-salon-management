@@ -1,11 +1,11 @@
 import { useMemo, useState } from "react";
-import { FAQ_CATEGORIES, FAQ_ITEMS } from "../../data/faq.js";
+import { FAQ_CATEGORIES, FAQ_ITEMS, searchFaqItems } from "../../data/faq.js";
 
 // 使い方・FAQ画面。AI機能とは完全に独立した通常機能 — このファイルはFAQ_ITEMS/
 // FAQ_CATEGORIES(src/data/faq.js、静的データ)を読んで表示・キーワード検索するだけで、
-// 外部AI API(Claude/OpenAI等)は一切呼び出さない。検索も単純な部分一致であり、AI要約や
-// 意味検索ではない。現時点ではAI相談への導線・リンクは意図的に設置しない。
-const normalizeSearchText = (value) => String(value || "").toLowerCase();
+// 外部AI API(Claude/OpenAI等)は一切呼び出さない。検索自体(searchFaqItems)もfaq.js側の
+// 純粋関数として切り出してあり、単純な部分一致であり、AI要約や意味検索ではない。現時点では
+// AI相談への導線・リンクは意図的に設置しない。
 
 // このFAQ画面から開いた場合に「発生している画面」欄へ自動入力する値。将来他の画面にも
 // 問い合わせ導線を追加する場合は、その画面から同じ形の値を渡せばよい(今回はFAQ画面のみ)。
@@ -89,14 +89,7 @@ export default function FaqPage() {
   const [showContactModal, setShowContactModal] = useState(false);
 
   const itemsByCategory = useMemo(() => {
-    const query = normalizeSearchText(searchQuery).trim();
-    const enabledItems = FAQ_ITEMS.filter((item) => item.enabled !== false);
-    const matched = query
-      ? enabledItems.filter((item) => {
-          const haystack = normalizeSearchText([item.question, item.answer, ...(item.keywords || [])].join(" "));
-          return haystack.includes(query);
-        })
-      : enabledItems;
+    const matched = searchFaqItems(FAQ_ITEMS, searchQuery);
     const byCategory = new Map();
     matched.forEach((item) => {
       const list = byCategory.get(item.category) || [];
@@ -144,7 +137,7 @@ export default function FaqPage() {
             <div className="faq-list">
               {(itemsByCategory.get(category.id) || []).map((item) => (
                 <details key={item.id} className="faq-item">
-                  <summary className="faq-question">{item.question}</summary>
+                  <summary className="faq-question"><span className="faq-question-text">{item.question}</span></summary>
                   <div className="faq-answer">{item.answer}</div>
                 </details>
               ))}

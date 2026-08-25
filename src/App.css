@@ -360,11 +360,19 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    横スクロールが起きないよう折り返す。 */
 .faq-list { display: flex; flex-direction: column; gap: 8px; }
 .faq-item { border: 1px solid var(--border); border-radius: 14px; background: var(--surface-strong); padding: 0 14px; }
-.faq-question { min-height: 44px; display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; padding: 10px 0; font-weight: 600; }
+.faq-question {
+  min-height: 44px; display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; padding: 10px 0;
+  /* 質問/回答の文字サイズ・太さの差を明確にする(要件)。 */
+  font-weight: 700; font-size: 0.98rem;
+}
 .faq-question::-webkit-details-marker { display: none; }
+/* 長い質問文がアイコンを押し出してカードからはみ出さないよう、テキスト側を可変幅の
+   flexアイテムにする(min-width:0が無いとテキストが縮まず折り返さない)。長い文字列の
+   折り返し対応(総合品質チェック)と同じパターン。 */
+.faq-question-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .faq-question::after { content: "+"; margin-left: auto; color: var(--muted); font-size: 1.1rem; flex-shrink: 0; }
 .faq-item[open] .faq-question::after { content: "−"; }
-.faq-answer { padding: 0 0 14px; color: var(--text); line-height: 1.7; white-space: pre-line; word-break: break-word; }
+.faq-answer { padding: 0 0 14px; color: var(--text); font-size: 0.92rem; line-height: 1.75; white-space: pre-line; overflow-wrap: anywhere; }
 .faq-version-footer { text-align: center; color: var(--muted); font-size: 0.75rem; margin: 4px 0 0; }
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }

@@ -4,121 +4,62 @@
 // 1件追加/編集するだけでよく、画面コンポーネントのロジックを変更する必要はない。
 //
 // カテゴリの追加・並び替えもFAQ_CATEGORIESに1件追加するだけでよい(displayOrderで並び順を
-// 制御する)。
+// 制御する)。表示順は「一般スタッフが最も頻繁に使う画面を上位に」という方針で並べている
+// (使い方・FAQの全面ブラッシュアップ、要件)。
 export const FAQ_CATEGORIES = [
   { id: "intro", label: "はじめに", displayOrder: 1 },
-  // 会社管理・システム管理者向けの操作(会社データ削除・アーカイブ等)は一般利用者向け
-  // FAQの対象外とし、このカテゴリは店舗追加のみに絞る。
-  { id: "companyStore", label: "店舗設定", displayOrder: 2 },
-  { id: "invitePermission", label: "スタッフ招待・権限", displayOrder: 3 },
-  { id: "sales", label: "売上", displayOrder: 4 },
-  { id: "daily", label: "日次入力・日締め", displayOrder: 5 },
-  { id: "monthlyTarget", label: "月間目標", displayOrder: 6 },
+  { id: "daily", label: "日次入力・日締め", displayOrder: 2 },
+  { id: "sales", label: "売上", displayOrder: 3 },
+  { id: "monthlyTarget", label: "月間目標", displayOrder: 4 },
+  { id: "monthlyDashboard", label: "月次ダッシュボード", displayOrder: 5 },
+  { id: "batchEntry", label: "まとめて入力", displayOrder: 6 },
   { id: "monthClosing", label: "月締め・損益表", displayOrder: 7 },
-  { id: "monthlyDashboard", label: "月次ダッシュボード", displayOrder: 8 },
-  { id: "csv", label: "CSV・レポート出力", displayOrder: 9 },
-  { id: "contract", label: "トライアル・契約・停止", displayOrder: 10 },
+  // 会社管理・システム管理者向けの操作(会社データ削除・アーカイブ等)は一般利用者向け
+  // FAQの対象外とし、このカテゴリは店舗追加・設定反映まわりに絞る。
+  { id: "companyStore", label: "店舗設定", displayOrder: 8 },
+  { id: "invitePermission", label: "スタッフ招待・権限", displayOrder: 9 },
+  { id: "csv", label: "CSV・レポート出力", displayOrder: 10 },
   { id: "account", label: "ログイン・アカウント", displayOrder: 11 },
-  { id: "trouble", label: "よくあるトラブル", displayOrder: 12 },
+  { id: "contract", label: "トライアル・契約・利用停止", displayOrder: 12 },
+  { id: "trouble", label: "よくあるトラブル", displayOrder: 13 },
 ];
 
 // 各項目: id / category(FAQ_CATEGORIESのidと一致させる) / question / answer / keywords
 // (検索対象の補助語、タイトル・本文に出てこない言い換えを補う) / displayOrder(カテゴリ内の
 // 並び順) / enabled(falseにすると一覧・検索から即座に非表示にできる — 行の削除ではなく
 // フラグ切り替えだけで一時的に隠せるようにするため)。
+// 検索(FaqPage.jsx)はquestion・answer・keywordsのすべてを対象に部分一致するため、回答本文に
+// しか出てこない言葉でも検索でヒットする。keywordsには、ユーザーが実際に打ち込みそうな
+// 短い言い換え語(「緑にならない」「編集できない」など)を優先して入れている。
 export const FAQ_ITEMS = [
+  // ==================== はじめに ====================
   {
     id: "intro-1",
     category: "intro",
     displayOrder: 1,
     enabled: true,
     question: "サロンマネージャーでは何ができますか？",
-    answer: "店舗の売上、客数、日次入力、月間目標、損益、月次ダッシュボードなどを管理できます。利用できる機能は権限や設定によって異なります。",
+    answer: "店舗の売上・客数・日次実績・月間目標・費用・月次結果などをまとめて管理できます。\n\n利用できる機能は、会社管理者・店舗管理者・一般スタッフなどの権限によって異なります。",
     keywords: ["できること", "機能", "概要", "サロンマネージャーとは"],
   },
-
   {
-    id: "companyStore-1",
-    category: "companyStore",
-    displayOrder: 1,
-    enabled: true,
-    question: "店舗を追加するには？",
-    answer: "管理権限を持つアカウントで店舗管理画面を開き、「店舗追加」から登録してください。",
-    keywords: ["店舗追加", "店舗登録", "新規店舗"],
-  },
-
-  {
-    id: "invitePermission-1",
-    category: "invitePermission",
-    displayOrder: 1,
-    enabled: true,
-    question: "スタッフを招待するには？",
-    answer: "ユーザー管理画面から、氏名・メールアドレス・権限を入力して招待してください。招待メールが届かない場合は「招待リンクをコピー」でリンクを直接共有することもできます。",
-    keywords: ["スタッフ招待", "ユーザー追加", "招待方法", "メール招待"],
-  },
-  {
-    id: "invitePermission-2",
-    category: "invitePermission",
+    id: "intro-2",
+    category: "intro",
     displayOrder: 2,
     enabled: true,
-    question: "店舗管理者と一般スタッフの違いは？",
-    answer: "店舗管理者は自店舗の管理機能（費用入力、月締め、日締めの解除など）を利用できます。一般スタッフは利用できる機能が制限されており、日締め済みのデータは編集できません。利用できる機能は権限によって異なります。",
-    keywords: ["権限の違い", "店舗管理者", "一般スタッフ", "role"],
-  },
-  {
-    id: "invitePermission-3",
-    category: "invitePermission",
-    displayOrder: 3,
-    enabled: true,
-    question: "別会社のデータを見ることはできますか？",
-    answer: "自分が所属していない別会社のデータを見ることはできません。会社ごとにデータは分離されており、他社の売上・スタッフ情報・経営データなどが表示されることはありません。ただし例外として、双方の会社が連携を承認した「加盟店」関係にある場合のみ、会社管理者は相手会社の店舗データを店舗単位で閲覧できます。この場合も編集はできず、閲覧した加盟店のデータが自社の売上・ランキング・損益・経営指標などに合算されることはありません。",
-    keywords: ["会社をまたぐ", "他社データ", "データ分離", "加盟店"],
-  },
-  {
-    id: "invitePermission-4",
-    category: "invitePermission",
-    displayOrder: 4,
-    enabled: true,
-    question: "権限によってできることは違いますか？",
-    answer: "サロンマネージャーでは、担当する役割に合わせて利用できる機能が分かれています。\n\n会社管理者\n自社の全店舗を管理できます。全店舗の売上確認、日次入力、まとめて入力、月間目標、費用、月締め、店舗・ユーザー管理などを利用できます。\n\n店舗管理者\n所属店舗を管理する権限です。自店舗の売上確認、日次入力、まとめて入力、月間目標、費用、月締め、スタッフ管理などを利用できます。他店舗や会社全体の管理はできません。\n\nスタッフ\n所属店舗の日々の確認・入力を行う権限です。日次入力は今日の分のみ入力できます。過去データの編集、まとめて入力、費用や月間目標などの管理者向け設定は利用できません。\n\n権限によって、表示されるメニューや操作できる項目が自動的に変わります。",
-    keywords: ["権限の違い", "会社管理者", "店舗管理者", "スタッフ", "できること", "role"],
-  },
-  {
-    id: "invitePermission-5",
-    category: "invitePermission",
-    displayOrder: 5,
-    enabled: true,
-    question: "「まとめて入力」は誰が使えますか？",
-    answer: "「まとめて入力」は、会社管理者・店舗管理者が利用できます。\n\n一般スタッフは通常の日次入力のみ利用でき、今日の分のみ入力できます。\n\n「まとめて入力」では、数日分や月単位など、過去の期間をまとめて入力できます。",
-    keywords: ["まとめて入力", "誰が使える", "期間入力", "まとめ入力"],
+    question: "初めて使う場合は何から始めればいいですか？",
+    answer: "日々の基本操作は、\n\n「日次入力 → 保存 → 日締め」\n\nの流れです。\n\n管理者は必要に応じて、店舗設定・月間目標・費用などを設定してください。",
+    keywords: ["初めて", "使い方", "最初にすること", "始め方"],
   },
 
-  {
-    id: "sales-1",
-    category: "sales",
-    displayOrder: 1,
-    enabled: true,
-    question: "総売上はどのように計算されますか？",
-    answer: "日次入力された売上データを、選択している月・店舗ごとに集計して表示します。",
-    keywords: ["総売上", "売上集計", "計算方法"],
-  },
-  {
-    id: "sales-2",
-    category: "sales",
-    displayOrder: 2,
-    enabled: true,
-    question: "月間目標を設定しなくても使えますか？",
-    answer: "売上だけを確認する使い方も可能です。月間目標は任意項目のため、設定していない場合は達成率などの目標系の表示だけが省略されます。",
-    keywords: ["目標なし", "任意設定", "月間目標"],
-  },
-
+  // ==================== 日次入力・日締め ====================
   {
     id: "daily-1",
     category: "daily",
     displayOrder: 1,
     enabled: true,
     question: "日次入力とは？",
-    answer: "その日の売上、客数、新規客数、再来客数などを入力する画面です。表示する項目は店舗ごとの設定から変更できます。",
+    answer: "その日の売上・客数・新規客数・再来客数などを入力する画面です。\n\n表示される入力項目は店舗ごとの設定によって異なります。",
     keywords: ["日次入力", "毎日の入力", "日報"],
   },
   {
@@ -126,9 +67,9 @@ export const FAQ_ITEMS = [
     category: "daily",
     displayOrder: 2,
     enabled: true,
-    question: "0と未入力は違いますか？",
-    answer: "0は「確認した結果0件だった」という入力済みデータとして扱われます。空欄は「まだ入力していない状態」として扱われるため、0と未入力は区別されます。",
-    keywords: ["0円", "未入力", "空欄", "ゼロ"],
+    question: "「0」と「未入力」は違いますか？",
+    answer: "違います。\n\n「0」は、確認した結果その日の実績が0だったという入力済みデータです。空欄は、まだ入力されていない状態として扱われます。\n\n日締めの判定などでは別の状態として扱われるため、実績が0の場合も必ず「0」と入力してください。",
+    keywords: ["0円", "未入力", "空欄", "ゼロ", "0"],
   },
   {
     id: "daily-3",
@@ -136,7 +77,7 @@ export const FAQ_ITEMS = [
     displayOrder: 3,
     enabled: true,
     question: "日締めとは？",
-    answer: "その日の入力が完了したことを確定する機能です。日締め済みのデータは、一般スタッフからは編集・削除できなくなります（店長以上は修正可能です）。",
+    answer: "その日の入力が完了したことを確定する機能です。\n\n日締め後は、一般スタッフからの編集・削除が制限されます。店舗管理者以上の権限を持つユーザーは、日締め後でも修正できます。",
     keywords: ["日締め", "締め処理", "確定"],
   },
   {
@@ -145,7 +86,7 @@ export const FAQ_ITEMS = [
     displayOrder: 4,
     enabled: true,
     question: "日締め後に編集すると日締めは解除されますか？",
-    answer: "日締め状態を維持する仕様の項目については、店長以上が編集しても日締め状態は自動的に解除されません。日締めを解除したい場合は「日締めを解除」ボタンで明示的に操作してください。",
+    answer: "解除されません。\n\n日締め状態を維持したまま、店舗管理者以上が内容を編集できます。日締め自体を解除したい場合は、「日締めを解除」ボタンから明示的に操作してください。",
     keywords: ["日締め解除", "編集で解除", "締め戻る"],
   },
   {
@@ -153,45 +94,84 @@ export const FAQ_ITEMS = [
     category: "daily",
     displayOrder: 5,
     enabled: true,
-    question: "口コミ数を入力するには？",
-    answer: "店舗管理画面の「日次入力項目の設定」で「口コミ数」をONにすると、日次入力画面に口コミ数の入力欄が表示されます。目標口コミ数を設定していなくても入力・管理できます。",
-    keywords: ["口コミ数", "レビュー数", "口コミ入力"],
+    question: "過去の日付を編集できません。",
+    answer: "権限や状況によって、過去日の編集が制限される場合があります。\n\n一般スタッフは、原則として当日分の入力のみ行えます（過去日・未来日は閲覧のみです）。\n\nまた、「まとめて入力」で登録済みの期間は、日次入力からではなく「まとめて入力」側から編集する仕様のため、日次入力の画面では編集できません。\n\n過去日の修正が必要な場合は、店舗管理者以上へご確認ください。",
+    keywords: ["過去", "過去日", "編集できない", "スタッフ 編集"],
   },
   {
     id: "daily-6",
     category: "daily",
     displayOrder: 6,
     enabled: true,
-    question: "現金・キャッシュレス・ポイント利用はどこで入力しますか？",
-    answer: "店舗管理画面で「日計管理を使う」をONにすると、日次入力画面に「日計」カードが表示され、そこから現金・キャッシュレス・ポイント利用を入力できます。",
-    keywords: ["日計管理", "現金", "キャッシュレス", "ポイント利用", "支払方法"],
+    question: "日締めしたのにカレンダーが緑になりません。",
+    answer: "その日の必要な入力が完了しているかご確認ください。実績が0の場合でも、空欄ではなく「0」と入力する必要があります。\n\nまた、「まとめて入力」で対象日をカバーしている場合も、通常の日締めとは別の扱いでカレンダーに反映されます。\n\nすべて入力済みでも表示が変わらない場合は、一度ページを再読み込みしてください。それでも改善しない場合は、店舗名・対象日を確認したうえで管理者へお問い合わせください。",
+    keywords: ["緑にならない", "カレンダー", "日締め 反映されない", "色が変わらない"],
   },
   {
     id: "daily-7",
     category: "daily",
     displayOrder: 7,
     enabled: true,
-    question: "日計管理の数字は売上に加算されますか？",
-    answer: "日計管理はあくまで総売上の支払方法の内訳を確認するための機能です。既存の総売上・損益・月次集計へは一切加算されません。",
-    keywords: ["日計 二重計上", "売上加算", "内訳確認"],
+    question: "口コミ数を入力するには？",
+    answer: "店舗設定の「日次入力項目の設定」で「口コミ数」をONにすると、日次入力画面に口コミ数の入力欄が表示されます。\n\n目標口コミ数を設定していなくても、口コミ数の入力・管理は可能です。",
+    keywords: ["口コミ数", "レビュー数", "口コミ入力", "口コミ"],
   },
   {
     id: "daily-8",
     category: "daily",
     displayOrder: 8,
     enabled: true,
+    question: "現金・キャッシュレス・ポイント利用はどこで入力しますか？",
+    answer: "店舗設定で「日計管理を使う」をONにすると、日次入力画面に「日計」カードが表示されます。そこから現金・キャッシュレス・ポイント利用を入力できます。",
+    keywords: ["日計管理", "現金", "キャッシュレス", "ポイント利用", "支払方法"],
+  },
+  {
+    id: "daily-9",
+    category: "daily",
+    displayOrder: 9,
+    enabled: true,
+    question: "日計管理の数字は売上に加算されますか？",
+    answer: "加算されません。\n\n日計は、総売上の支払方法の内訳を確認するための機能です。総売上・損益・月次集計へ二重に加算されることはありません。",
+    keywords: ["日計 二重計上", "売上加算", "内訳確認"],
+  },
+  {
+    id: "daily-10",
+    category: "daily",
+    displayOrder: 10,
+    enabled: true,
     question: "月の日計はどこで確認できますか？",
-    answer: "日次入力画面の「日計」カードにある「月別日計を見る」を開くと、現金・キャッシュレス・ポイント利用の月間合計と日別の内訳を確認できます。",
+    answer: "日次入力画面の「日計」カードにある「月別日計を見る」から、現金・キャッシュレス・ポイント利用の月間合計と日別内訳を確認できます。",
     keywords: ["月別日計", "日計の月間合計", "日計履歴"],
   },
 
+  // ==================== 売上 ====================
+  {
+    id: "sales-1",
+    category: "sales",
+    displayOrder: 1,
+    enabled: true,
+    question: "総売上はどのように計算されますか？",
+    answer: "日次入力で登録された売上データを、現在選択している店舗・対象月ごとに集計して表示します。\n\n数字が想定と違う場合は、まず「店舗」と「対象月」が正しいかご確認ください。",
+    keywords: ["総売上", "売上集計", "計算方法", "数字が違う"],
+  },
+  {
+    id: "sales-2",
+    category: "sales",
+    displayOrder: 2,
+    enabled: true,
+    question: "月間目標を設定しなくても売上管理はできますか？",
+    answer: "はい。月間目標は任意です。\n\n設定していない場合でも売上入力や日次管理は利用でき、目標達成率など目標に関連する表示のみ省略されます。",
+    keywords: ["目標なし", "任意設定", "月間目標"],
+  },
+
+  // ==================== 月間目標 ====================
   {
     id: "monthlyTarget-1",
     category: "monthlyTarget",
     displayOrder: 1,
     enabled: true,
     question: "月間目標は必須ですか？",
-    answer: "必要な項目だけ設定できます。設定していない項目は、ダッシュボード上でも目標系の表示だけが省略されます。",
+    answer: "いいえ。必要な項目だけ設定できます。\n\n設定していない項目は、ダッシュボード上でも目標関連の表示のみ省略されます。",
     keywords: ["月間目標", "必須ではない", "任意"],
   },
   {
@@ -200,7 +180,7 @@ export const FAQ_ITEMS = [
     displayOrder: 2,
     enabled: true,
     question: "目標口コミ数を設定しなくても口コミ数は管理できますか？",
-    answer: "日次入力項目の「口コミ数」だけをONにすれば、目標を設定しなくても口コミ数の入力・累計確認が可能です。",
+    answer: "はい。日次入力項目の「口コミ数」をONにしていれば、目標口コミ数を設定していなくても口コミ数の入力・累計確認ができます。",
     keywords: ["目標口コミ数", "口コミ数だけ", "口コミ管理"],
   },
   {
@@ -209,45 +189,27 @@ export const FAQ_ITEMS = [
     displayOrder: 3,
     enabled: true,
     question: "目標口コミ数を設定するとどうなりますか？",
-    answer: "売上ダッシュボードの口コミカードに、現在の累計口コミ数と月間目標口コミ数、達成率が表示されるようになります。",
+    answer: "売上ダッシュボードの口コミカードに、現在の累計口コミ数・月間目標口コミ数・達成率が表示されるようになります。",
     keywords: ["目標口コミ数", "口コミカード", "達成率"],
   },
-
   {
-    id: "monthClosing-1",
-    category: "monthClosing",
-    displayOrder: 1,
+    id: "monthlyTarget-4",
+    category: "monthlyTarget",
+    displayOrder: 4,
     enabled: true,
-    question: "月締めとは？",
-    answer: "その月の損益表作成に必要な費用等の項目を確認・入力するための機能です。",
-    keywords: ["月締め", "損益表作成"],
-  },
-  {
-    id: "monthClosing-2",
-    category: "monthClosing",
-    displayOrder: 2,
-    enabled: true,
-    question: "すべての費用を入力する必要がありますか？",
-    answer: "損益管理を行う店舗のみ、必要な項目を入力してください。使わない費用カテゴリは店舗ごとに対象外に設定できます。",
-    keywords: ["費用入力", "損益管理", "対象外"],
-  },
-  {
-    id: "monthClosing-3",
-    category: "monthClosing",
-    displayOrder: 3,
-    enabled: true,
-    question: "固定費と月ごとの費用の違いは？",
-    answer: "家賃など継続的に発生する費用は「固定費」として登録し、月ごとに金額が変わる費用は対象月ごとに金額を入力します。",
-    keywords: ["固定費", "変動費", "費用の種類"],
+    question: "スタッフが1人の場合も「1人あたり月間売上」は表示されますか？",
+    answer: "表示されません。「1人あたり月間売上」は、店舗の在籍スタッフ数（生産性計算人数を設定している場合はそちらを優先）が2人以上の場合にのみ表示されます。\n\n1人の場合は、この項目だけが省略される仕様です（他のKPIカードには影響しません）。",
+    keywords: ["1人あたり月間売上", "スタッフ生産性", "1人", "表示されない"],
   },
 
+  // ==================== 月次ダッシュボード ====================
   {
     id: "monthlyDashboard-1",
     category: "monthlyDashboard",
     displayOrder: 1,
     enabled: true,
     question: "月次ダッシュボードでは何が確認できますか？",
-    answer: "売上、目標達成状況、客数、客単価、スタッフ生産性、店舗ランキングなどを月単位で確認できます。",
+    answer: "売上、目標達成状況、客数、客単価、営業進捗、スタッフ生産性などを月単位で確認できます。\n\n複数店舗を管理している場合は、権限に応じて店舗ランキングや全店舗集計も確認できます。",
     keywords: ["月次ダッシュボード", "経営ダッシュボード", "確認できること"],
   },
   {
@@ -256,18 +218,162 @@ export const FAQ_ITEMS = [
     displayOrder: 2,
     enabled: true,
     question: "全店舗と店舗別を切り替えられますか？",
-    answer: "権限に応じて、店舗切替から「全店舗」（会社内の自社店舗の集計）または店舗ごとのデータを切り替えて確認できます。",
+    answer: "権限に応じて、店舗切替から「全店舗」または各店舗のデータを切り替えて確認できます。\n\n「全店舗」は自社店舗のみの集計です。加盟店として閲覧している別会社の店舗データが、自社の売上・損益・ランキング等へ合算されることはありません。",
     keywords: ["全店舗", "店舗別", "切り替え"],
   },
+  {
+    id: "monthlyDashboard-3",
+    category: "monthlyDashboard",
+    displayOrder: 3,
+    enabled: true,
+    question: "店舗ランキングはすべての会社で表示されますか？",
+    answer: "自社店舗を2店舗以上管理している場合に表示されます。\n\n自社店舗が1店舗のみの場合は、比較対象が無いため店舗ランキングは表示されません。",
+    keywords: ["店舗ランキング", "ランキング 表示されない", "1店舗"],
+  },
 
+  // ==================== まとめて入力 ====================
+  {
+    id: "batchEntry-1",
+    category: "batchEntry",
+    displayOrder: 1,
+    enabled: true,
+    question: "まとめて入力とは？",
+    answer: "指定した期間の売上・客数などを、営業日にまとめて登録するための機能です。\n\n毎日入力することが難しい店舗や、期間単位・月単位で実績を登録したい場合に利用できます。日々の日次入力とは別の入力・保存方法です。",
+    keywords: ["まとめて入力", "期間入力", "まとめ入力"],
+  },
+  {
+    id: "batchEntry-2",
+    category: "batchEntry",
+    displayOrder: 2,
+    enabled: true,
+    question: "「まとめて入力」は誰が使えますか？",
+    answer: "店舗管理者以上の権限で利用できます。一般スタッフの画面には表示されません。",
+    keywords: ["まとめて入力", "誰が使える", "権限"],
+  },
+  {
+    id: "batchEntry-3",
+    category: "batchEntry",
+    displayOrder: 3,
+    enabled: true,
+    question: "まとめて入力した期間は日次入力から編集できますか？",
+    answer: "できません。\n\nまとめて入力でカバーされている日付は、日次入力画面では内容の確認のみ行えます（読み取り専用）。内容を変更・削除したい場合は、「まとめて入力」の一覧から対象の期間を編集・削除してください。",
+    keywords: ["まとめて入力 編集", "編集できない", "日次入力から編集"],
+  },
+  {
+    id: "batchEntry-4",
+    category: "batchEntry",
+    displayOrder: 4,
+    enabled: true,
+    question: "店休日はまとめて入力の対象になりますか？",
+    answer: "なりません。店休日として設定した日は、自動的に配分の対象から除外されます。\n\n期間の途中で店休日を追加・解除した場合も、入力した合計金額は変えずに、残りの営業日へ自動的に再配分されます。",
+    keywords: ["店休日", "まとめて入力 店休日", "再配分"],
+  },
+
+  // ==================== 月締め・損益表 ====================
+  {
+    id: "monthClosing-1",
+    category: "monthClosing",
+    displayOrder: 1,
+    enabled: true,
+    question: "月締めとは？",
+    answer: "その月の売上や費用を確認し、月次の損益を確定するための機能です。\n\n必要な費用項目を入力したうえで、損益表の内容を確認・確定します。",
+    keywords: ["月締め", "損益表", "月次確定"],
+  },
+  {
+    id: "monthClosing-2",
+    category: "monthClosing",
+    displayOrder: 2,
+    enabled: true,
+    question: "すべての費用を入力する必要がありますか？",
+    answer: "損益管理を行う店舗のみ、必要な費用項目を入力してください。\n\n使用しない費用カテゴリは、店舗設定から対象外にできます。",
+    keywords: ["費用入力", "損益管理", "対象外"],
+  },
+  {
+    id: "monthClosing-3",
+    category: "monthClosing",
+    displayOrder: 3,
+    enabled: true,
+    question: "継続して発生する固定費は毎月入力する必要がありますか？",
+    answer: "いいえ。継続として登録した費用は、翌月以降も同じ金額で自動的に引き継がれます。\n\n特定の月だけ金額が変わる場合は、その月だけ金額を上書きできます。上書きしても、翌月以降の基準金額には影響しません。",
+    keywords: ["固定費", "継続費用", "毎月入力", "月ごとの変更"],
+  },
+
+  // ==================== 店舗設定 ====================
+  {
+    id: "companyStore-1",
+    category: "companyStore",
+    displayOrder: 1,
+    enabled: true,
+    question: "店舗を追加するには？",
+    answer: "会社管理者が「店舗管理」から店舗を追加できます。\n\n同じ店舗を重複して登録しないよう、既存店舗をご確認のうえ追加してください。",
+    keywords: ["店舗追加", "店舗登録", "新規店舗"],
+  },
+  {
+    id: "companyStore-2",
+    category: "companyStore",
+    displayOrder: 2,
+    enabled: true,
+    question: "設定を変更したのに画面へ反映されません。",
+    answer: "まず設定画面で「保存」が完了しているかご確認ください。\n\n保存後も反映されない場合は、一度ページを再読み込みしてください。それでも改善しない場合は、現在選択している店舗・対象月を確認したうえで管理者へお問い合わせください。",
+    keywords: ["設定が反映されない", "表示されない", "保存できない"],
+  },
+
+  // ==================== スタッフ招待・権限 ====================
+  {
+    id: "invitePermission-1",
+    category: "invitePermission",
+    displayOrder: 1,
+    enabled: true,
+    question: "スタッフを招待するには？",
+    answer: "「ユーザー管理」から、氏名・メールアドレス・権限を設定して招待できます。\n\n招待メールが届かない場合は、「招待リンクをコピー」して直接共有することもできます。",
+    keywords: ["スタッフ招待", "ユーザー追加", "招待方法", "招待"],
+  },
+  {
+    id: "invitePermission-2",
+    category: "invitePermission",
+    displayOrder: 2,
+    enabled: true,
+    question: "店舗管理者と一般スタッフの違いは？",
+    answer: "店舗管理者は、所属店舗の売上確認・日次入力・まとめて入力・月間目標・費用・月締め・スタッフ管理など、店舗運営に必要な管理機能を利用できます。\n\n一般スタッフは、所属店舗の日々の確認・入力を行う権限です。過去データの編集や管理者向け設定など、一部の機能は制限されます。",
+    keywords: ["権限の違い", "店舗管理者", "一般スタッフ", "role"],
+  },
+  {
+    id: "invitePermission-3",
+    category: "invitePermission",
+    displayOrder: 3,
+    enabled: true,
+    question: "会社管理者は何ができますか？",
+    answer: "自社の全店舗を管理できます。\n\n全店舗の売上確認・日次入力・まとめて入力・月間目標・費用・月締め・店舗管理・ユーザー管理など、会社全体の管理機能を利用できます。",
+    keywords: ["会社管理者", "できること", "全店舗管理"],
+  },
+  {
+    id: "invitePermission-4",
+    category: "invitePermission",
+    displayOrder: 4,
+    enabled: true,
+    question: "権限によってできることは違いますか？",
+    answer: "はい。権限に応じて、表示されるメニューや操作できる項目が自動的に変わります。\n\nメニューやボタンが表示されない場合でも、不具合ではなく権限による制限の場合があります。",
+    keywords: ["権限の違い", "会社管理者", "スタッフ", "メニューがない", "メニューがありません"],
+  },
+  {
+    id: "invitePermission-5",
+    category: "invitePermission",
+    displayOrder: 5,
+    enabled: true,
+    question: "別会社のデータを見ることはできますか？",
+    answer: "通常はできません。会社ごとにデータは分離されています。\n\n加盟店など正式な連携関係がある場合のみ、許可された範囲の店舗データを閲覧できます。この場合も編集はできず、閲覧した加盟店のデータが自社の売上・損益・ランキング・経営指標などへ合算されることはありません。",
+    keywords: ["会社をまたぐ", "他社データ", "データ分離", "加盟店"],
+  },
+
+  // ==================== CSV・レポート出力 ====================
   {
     id: "csv-1",
     category: "csv",
     displayOrder: 1,
     enabled: true,
     question: "CSVはどこから出力できますか？",
-    answer: "月次ダッシュボード画面で対象月・店舗を選択し、「CSV出力」ボタンからダウンロードできます。",
-    keywords: ["CSV出力", "ダウンロード", "レポート出力"],
+    answer: "月次ダッシュボードで対象月・店舗を選択し、「CSV出力」ボタンからダウンロードできます。\n\n印刷しやすい形式で確認したい場合は、同じ画面の「レポート出力」ボタンから出力できます。",
+    keywords: ["CSV出力", "ダウンロード", "レポート出力", "印刷"],
   },
   {
     id: "csv-2",
@@ -275,7 +381,7 @@ export const FAQ_ITEMS = [
     displayOrder: 2,
     enabled: true,
     question: "日計管理のデータもCSVに含まれますか？",
-    answer: "月次ダッシュボードのCSVには日計（現金・キャッシュレス・ポイント利用）の内訳は含まれません。日計のデータは、日次入力の「月別日計を見る」画面から別のCSVとして出力できます。",
+    answer: "月次ダッシュボードの通常のCSVには、日計の現金・キャッシュレス・ポイント利用の内訳は含まれません。\n\n日計データは、日次入力の「月別日計を見る」画面から別のCSVとして出力できます。",
     keywords: ["日計 CSV", "現金 CSV", "キャッシュレス CSV"],
   },
   {
@@ -284,17 +390,47 @@ export const FAQ_ITEMS = [
     displayOrder: 3,
     enabled: true,
     question: "月別日計だけCSV出力できますか？",
-    answer: "日次入力の「月別日計を見る」画面にある「CSV出力」から、選択している店舗・年月の日計データを出力できます。",
+    answer: "はい。日次入力の「月別日計を見る」画面にある「CSV出力」から、現在選択している店舗・年月の日計データを出力できます。",
     keywords: ["月別日計 CSV", "日計出力"],
   },
+  {
+    id: "csv-4",
+    category: "csv",
+    displayOrder: 4,
+    enabled: true,
+    question: "CSVの数字が画面と違って見えます。",
+    answer: "CSVを出力した「店舗」と「対象月」が、現在画面で確認している条件と一致しているかご確認ください。\n\n日計など、一部のデータは通常のCSVとは別のCSVとして出力される仕様です。",
+    keywords: ["CSV 数字が違う", "CSV 合わない"],
+  },
 
+  // ==================== ログイン・アカウント ====================
+  {
+    id: "account-1",
+    category: "account",
+    displayOrder: 1,
+    enabled: true,
+    question: "招待メールが届かない場合は？",
+    answer: "迷惑メールフォルダをご確認ください。\n\n届かない場合は、管理者に「招待メールを再送」または「招待リンクをコピー」して共有してもらってください。",
+    keywords: ["招待メール 届かない", "招待メール再送", "招待リンク", "メール届かない"],
+  },
+  {
+    id: "account-2",
+    category: "account",
+    displayOrder: 2,
+    enabled: true,
+    question: "パスワードを忘れた場合は？",
+    answer: "ログイン画面の「パスワード再設定」から、登録済みメールアドレス宛に再設定用リンクを送信できます。",
+    keywords: ["パスワード忘れた", "パスワード再設定", "ログインできない", "パスワード"],
+  },
+
+  // ==================== トライアル・契約・利用停止 ====================
   {
     id: "contract-1",
     category: "contract",
     displayOrder: 1,
     enabled: true,
-    question: "トライアル中のデータは契約後も残りますか？",
-    answer: "正式契約へ移行した場合も、それまで入力したデータはそのまま引き継がれます。",
+    question: "トライアル中のデータは正式契約後も残りますか？",
+    answer: "はい。正式契約へ移行した場合も、それまでに入力したデータはそのまま引き継がれます。",
     keywords: ["トライアル", "契約後", "データ引き継ぎ"],
   },
   {
@@ -303,7 +439,7 @@ export const FAQ_ITEMS = [
     displayOrder: 2,
     enabled: true,
     question: "利用を停止するとデータは消えますか？",
-    answer: "契約状態を「停止」にしてもデータは削除されず保持されます。",
+    answer: "通常の利用停止だけで、すぐに会社データが削除されることはありません。契約状態を「停止」にしてもデータは保持されます。",
     keywords: ["利用停止", "契約停止", "データ保持"],
   },
   {
@@ -311,37 +447,19 @@ export const FAQ_ITEMS = [
     category: "contract",
     displayOrder: 3,
     enabled: true,
-    question: "完全に不要になった会社データはどうしますか？",
-    answer: "誤操作防止のため、通常の停止とは別に、専用の権限を持つ運営側の操作で会社データの削除（30日間は復元できる状態）、その後さらに完全削除（元に戻せません）という2段階の操作が必要です。会社管理者・店舗管理者からこの操作を行うことはできません。ご希望の場合は「管理者に問い合わせる」からご連絡ください。",
+    question: "会社データを完全に削除したい場合は？",
+    answer: "完全削除は、通常の利用停止とは別の手続きです。\n\n誤操作防止のため、会社管理者・店舗管理者の画面から直接完全削除することはできません。必要な場合は、下の「管理者に問い合わせる」からご連絡ください。",
     keywords: ["会社削除", "データ削除", "完全削除", "退会"],
   },
 
-  {
-    id: "account-1",
-    category: "account",
-    displayOrder: 1,
-    enabled: true,
-    question: "招待メールが届かない場合は？",
-    answer: "迷惑メールフォルダをご確認ください。それでも届かない場合は、管理者に「招待メールを再送」または「招待リンクをコピー」しての共有を依頼してください。",
-    keywords: ["招待メール 届かない", "招待メール再送", "招待リンク"],
-  },
-  {
-    id: "account-2",
-    category: "account",
-    displayOrder: 2,
-    enabled: true,
-    question: "パスワードを忘れた場合は？",
-    answer: "ログイン画面の「パスワード再設定」から、登録済みメールアドレス宛に再設定用のリンクを送信できます。",
-    keywords: ["パスワード忘れた", "パスワード再設定", "ログインできない"],
-  },
-
+  // ==================== よくあるトラブル ====================
   {
     id: "trouble-1",
     category: "trouble",
     displayOrder: 1,
     enabled: true,
     question: "設定をONにしたのに入力欄が表示されません。",
-    answer: "設定画面で「保存」ボタンを押して保存が完了しているかご確認ください。保存後も表示されない場合は、一度ページを再読み込みしてください。それでも解決しない場合は下の「管理者に問い合わせる」からご連絡ください。",
+    answer: "設定画面で「保存」が完了しているかご確認ください。\n\n保存後も表示されない場合は、一度ページを再読み込みしてください。それでも改善しない場合は、現在の店舗・対象月・画面名を確認したうえで管理者へお問い合わせください。",
     keywords: ["表示されない", "設定が反映されない", "入力欄が出ない"],
   },
   {
@@ -350,7 +468,7 @@ export const FAQ_ITEMS = [
     displayOrder: 2,
     enabled: true,
     question: "数字が違って見える場合は？",
-    answer: "現在選択している店舗・対象年月をご確認ください。別の店舗や月のデータを見ている場合があります。",
+    answer: "まず、現在選択している「店舗」「対象月」「対象日」をご確認ください。別の店舗・月・日付を表示している場合があります。\n\n条件が正しいにもかかわらず数字が異なる場合は、管理者へお問い合わせください。",
     keywords: ["数字が違う", "集計がおかしい", "金額が合わない"],
   },
   {
@@ -358,8 +476,50 @@ export const FAQ_ITEMS = [
     category: "trouble",
     displayOrder: 3,
     enabled: true,
-    question: "全店舗から別店舗に勝手に切り替わる場合は？",
-    answer: "通常の動作ではありません。ページを再読み込みしても発生する場合は、状況をメモのうえ下の「管理者に問い合わせる」からご報告ください。",
+    question: "全店舗から別店舗へ勝手に切り替わる場合は？",
+    answer: "通常の動作ではありません。\n\n一度ページを再読み込みしてください。再読み込み後も発生する場合は、「発生した店舗・対象月・操作直前の画面」を確認したうえで管理者へお問い合わせください。",
     keywords: ["勝手に切り替わる", "店舗が変わる", "全店舗が戻る"],
   },
+  {
+    id: "trouble-4",
+    category: "trouble",
+    displayOrder: 4,
+    enabled: true,
+    question: "保存した内容が元に戻っています。",
+    answer: "まず、保存が完了したことを確認してから画面を移動しているかご確認ください。\n\n再読み込み後も保存内容が元に戻る場合は、正常な動作ではありません。「店舗・対象月・対象日・変更した項目」を確認したうえで管理者へお問い合わせください。",
+    keywords: ["保存が消える", "元に戻る", "保存されない"],
+  },
+  {
+    id: "trouble-5",
+    category: "trouble",
+    displayOrder: 5,
+    enabled: true,
+    question: "画面の数字が更新されません。",
+    answer: "通信状況をご確認のうえ、一度ページを再読み込みしてください。\n\nそれでも更新されない場合は、現在選択している店舗・対象月が正しいかご確認ください。同じ状態が続く場合は管理者へお問い合わせください。",
+    keywords: ["更新されない", "反映されない", "最新にならない"],
+  },
+  {
+    id: "trouble-6",
+    category: "trouble",
+    displayOrder: 6,
+    enabled: true,
+    question: "メニューやボタンが表示されません。",
+    answer: "権限によって利用できる機能が異なります。表示されない場合、不具合とは限らないため、まずご自身の権限をご確認ください。\n\n本来利用できるはずの権限にもかかわらず表示されない場合は、管理者へお問い合わせください。",
+    keywords: ["メニューがない", "メニューがありません", "ボタンが表示されない"],
+  },
 ];
+
+// FAQ検索の実処理(純粋関数、FaqPage.jsxとテストの両方から使う)。質問文だけでなく回答本文・
+// keywordsも検索対象にする(要件: 「緑にならない」のように回答本文にしか出てこない言葉でも
+// 見つかる必要がある)。単純な部分一致(大文字小文字を無視)であり、AI要約や意味検索ではない。
+export const normalizeFaqSearchText = (value) => String(value || "").toLowerCase();
+
+export const searchFaqItems = (items, query) => {
+  const enabledItems = (items || []).filter((item) => item.enabled !== false);
+  const normalizedQuery = normalizeFaqSearchText(query).trim();
+  if (!normalizedQuery) return enabledItems;
+  return enabledItems.filter((item) => {
+    const haystack = normalizeFaqSearchText([item.question, item.answer, ...(item.keywords || [])].join(" "));
+    return haystack.includes(normalizedQuery);
+  });
+};
