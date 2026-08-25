@@ -725,7 +725,13 @@
 // - 招待・権限・二重登録防止・エラーメッセージの日本語化・入力中のガクつき・セッション
 //   復元等、既存の主要な安定性対策(v69〜v82)を再点検し、いずれも健在であることを確認。
 // 既存データ・スキーマの破壊的変更は無し(今回のmigrationは新規テーブル2つの追加のみ)。
-const CACHE_NAME = 'salon-manager-cache-v83';
+// v84: 新規オーナー・セルフサインアップ機能を追加(招待制とは別導線、非公開のfeature flag
+//   `app_feature_flags.self_signup_enabled` 付き、デフォルトOFF)。company/store作成は新設の
+//   self-signup Edge Function(service-role)でのみ行い、既存のcompanies_insert_system_only
+//   等のRLSは無変更。ログイン画面に新モード「ownerSignup」を追加(招待受諾のsignupモードとは
+//   完全分離)。既存の招待フロー・既存company/store/userへの変更・破壊的DBスキーマ変更は無し
+//   (companies/profilesへnullable列を追加したのみ)。
+const CACHE_NAME = 'salon-manager-cache-v84';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
