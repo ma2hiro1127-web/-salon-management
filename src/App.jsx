@@ -9868,7 +9868,13 @@ function App() {
             reviewContextKey={`${appState.currentCompanyId}::${isAllStoresView ? "all" : selectedStoreId}::${selectedMonth}`}
           />
         )}
-        {activePage === "faq" && <FaqPage />}
+        {activePage === "faq" && (
+          <FaqPage
+            companyId={appState.currentCompanyId}
+            storeId={selectedStoreId}
+            userId={appState.currentUserId}
+          />
+        )}
       </main>
       {/* AI分析はaiAnalysisSettings(companies.ai_analysis_enabledの独立した取得結果)が
           trueの会社のみ表示する(要件: OFFの会社ではAI分析ボタン・AIコメント等を一切表示

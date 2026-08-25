@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { FAQ_CATEGORIES, FAQ_ITEMS, searchFaqItems } from "../../data/faq.js";
+import { submitBetaFeedback } from "../../utils/supabase.js";
 
 // 使い方・FAQ画面。AI機能とは完全に独立した通常機能 — このファイルはFAQ_ITEMS/
 // FAQ_CATEGORIES(src/data/faq.js、静的データ)を読んで表示・キーワード検索するだけで、
@@ -84,9 +85,90 @@ function ContactModal({ onClose }) {
   );
 }
 
-export default function FaqPage() {
+// βテスト用「不具合・改善要望」送信モーダル(要件8)。上のContactModal(コピー専用・即時の
+// 個別サポート向け)とは目的が異なる別モーダル——こちらはSupabase(beta_feedbackテーブル、
+// system_admin限定で閲覧)へ直接保存し、β運営側が後からまとめて確認・分析できるようにする
+// ためのもの。大規模な新規システムは不要という要件のため、既存のContactModalと同じ最小限の
+// フィールド構成(対象画面・何をしようとしたか・何が起きたか・自由記述)にとどめる。
+// スクリーンショット添付は今回未対応(別途Storageバケット・アップロードUIが必要になり、
+// 「大規模な新規システムは不要」という方針とバランスを取り、テキストのみに絞った)。
+function BetaFeedbackModal({ onClose, companyId, storeId, userId }) {
+  const [screen, setScreen] = useState("");
+  const [situation, setSituation] = useState("");
+  const [whatHappened, setWhatHappened] = useState("");
+  const [freeText, setFreeText] = useState("");
+  const [status, setStatus] = useState({ state: "idle", message: "" });
+
+  const handleSubmit = async () => {
+    if (status.state === "saving") return;
+    setStatus({ state: "saving", message: "送信中…" });
+    const result = await submitBetaFeedback({
+      companyId,
+      storeId,
+      userId,
+      screen,
+      situation,
+      whatHappened,
+      freeText,
+      appVersion: typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev",
+    });
+    if (result.ok) {
+      setStatus({ state: "sent", message: "送信しました。ご協力ありがとうございます。" });
+      return;
+    }
+    // 通信失敗時に入力内容を消さない(要件3と同じ方針) — フォームの値はstateのまま維持し、
+    // エラー表示だけを出す。ユーザーは内容を直さずそのまま再送を試せる。
+    setStatus({ state: "error", message: "送信に失敗しました。通信環境をご確認のうえ、もう一度お試しください。" });
+  };
+
+  const isSent = status.state === "sent";
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+        <div className="panel-heading compact">
+          <div>
+            <p className="eyebrow">BETA FEEDBACK</p>
+            <h3>不具合・改善要望を送る</h3>
+          </div>
+        </div>
+        <p className="helper-text">
+          βテスト期間中の不具合報告・改善要望はこちらからお送りください。運営チームが内容を確認します(個別の返信は行わない場合があります)。
+        </p>
+        <label className="field">
+          <span>対象画面</span>
+          <input value={screen} onChange={(event) => { setScreen(event.target.value); setStatus({ state: "idle", message: "" }); }} placeholder="例：日次入力" disabled={isSent} />
+        </label>
+        <label className="field">
+          <span>何をしようとしたか</span>
+          <textarea value={situation} onChange={(event) => { setSituation(event.target.value); setStatus({ state: "idle", message: "" }); }} rows={2} placeholder="例：口コミ数を入力しようとした" disabled={isSent} />
+        </label>
+        <label className="field">
+          <span>何が起きたか</span>
+          <textarea value={whatHappened} onChange={(event) => { setWhatHappened(event.target.value); setStatus({ state: "idle", message: "" }); }} rows={2} placeholder="例：入力欄が表示されなかった" disabled={isSent} />
+        </label>
+        <label className="field">
+          <span>自由記述（任意）</span>
+          <textarea value={freeText} onChange={(event) => { setFreeText(event.target.value); setStatus({ state: "idle", message: "" }); }} rows={3} placeholder="その他、気づいた点があればご記入ください" disabled={isSent} />
+        </label>
+        {status.message ? <div className={`notice-box${status.state === "error" ? " error" : ""}`}>{status.message}</div> : null}
+        <div className="button-row">
+          <button type="button" className="secondary-button" onClick={onClose}>{isSent ? "閉じる" : "キャンセル"}</button>
+          {!isSent ? (
+            <button type="button" className="primary-button" onClick={handleSubmit} disabled={status.state === "saving"}>
+              {status.state === "saving" ? "送信中…" : "送信する"}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function FaqPage({ companyId = "", storeId = "", userId = "" }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [showContactModal, setShowContactModal] = useState(false);
+  const [showBetaFeedbackModal, setShowBetaFeedbackModal] = useState(false);
 
   const itemsByCategory = useMemo(() => {
     const matched = searchFaqItems(FAQ_ITEMS, searchQuery);
@@ -151,6 +233,11 @@ export default function FaqPage() {
       <section className="panel">
         <p className="helper-text">解決しませんでしたか？</p>
         <button type="button" className="secondary-button" onClick={() => setShowContactModal(true)}>管理者に問い合わせる</button>
+        {/* βテスト用の不具合・改善要望導線(要件8)。「管理者に問い合わせる」ほど目立たせず、
+            text-button(控えめな見た目、既存の共通クラス)で並べるだけにとどめる。 */}
+        <p className="faq-beta-feedback-row">
+          <button type="button" className="text-button" onClick={() => setShowBetaFeedbackModal(true)}>不具合・改善要望を送る（β）</button>
+        </p>
       </section>
 
       {/* アプリバージョン表示(要件5): 不具合報告時に、古いキャッシュ/古いビルドを使って
@@ -159,6 +246,7 @@ export default function FaqPage() {
       <p className="faq-version-footer">Version {typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev"}</p>
 
       {showContactModal ? <ContactModal onClose={() => setShowContactModal(false)} /> : null}
+      {showBetaFeedbackModal ? <BetaFeedbackModal onClose={() => setShowBetaFeedbackModal(false)} companyId={companyId} storeId={storeId} userId={userId} /> : null}
     </div>
   );
 }

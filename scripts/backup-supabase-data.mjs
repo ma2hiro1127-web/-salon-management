@@ -32,6 +32,14 @@ const supabase = createClient(url, serviceKey, { auth: { persistSession: false, 
 
 // Every table this app writes to. Keep this list in sync with supabase/migrations/ — a table
 // added there without being added here silently falls out of the backup.
+//
+// βテスト開始前の総点検(2026-09時点)で発見: 以下10テーブルがこのリストから漏れており、
+// バックアップが「成功はするが実際には一部テーブルを含んでいない」状態になっていた
+// (`create table public.<name>` をsupabase/migrations/*.sqlから全件抽出し、このリストと
+// 突き合わせて特定): company_all_stores_holidays, company_all_stores_targets,
+// company_partnerships, cost_monthly_amounts, daily_batch_entries(まとめて入力),
+// daily_cash_breakdown(日計), monthly_reviews(月次レビュー), store_business_holidays,
+// store_inventory_balances, store_status_audit_log。追加済み。
 const TABLES = [
   "companies",
   "stores",
@@ -47,6 +55,16 @@ const TABLES = [
   "company_settings",
   "store_profiles",
   "tenant_snapshots",
+  "company_all_stores_holidays",
+  "company_all_stores_targets",
+  "company_partnerships",
+  "cost_monthly_amounts",
+  "daily_batch_entries",
+  "daily_cash_breakdown",
+  "monthly_reviews",
+  "store_business_holidays",
+  "store_inventory_balances",
+  "store_status_audit_log",
 ];
 
 const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

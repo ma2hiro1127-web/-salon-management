@@ -373,6 +373,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .faq-item[open] .faq-question::after { content: "−"; }
 .faq-answer { padding: 0 0 14px; color: var(--text); font-size: 0.92rem; line-height: 1.75; white-space: pre-line; overflow-wrap: anywhere; }
 .faq-version-footer { text-align: center; color: var(--muted); font-size: 0.75rem; margin: 4px 0 0; }
+/* βテスト用の不具合・改善要望導線(要件8): 「管理者に問い合わせる」ボタンの下に、
+   目立ちすぎない形で控えめに配置する。 */
+.faq-beta-feedback-row { margin: 8px 0 0; }
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .value-pill.inactive { background: rgba(100, 116, 139, 0.12); color: var(--muted); }

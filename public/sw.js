@@ -709,7 +709,23 @@
 // - 旧settingsページへ到達しようとした場合(廃止ページが開かれた状態でアプリが更新
 //   された等)に、行き止まりの「アクセス権限がありません」画面へ取り残されないよう、
 //   自動的にログイン直後と同じ遷移先(売上画面)へリダイレクトする安全網を追加。
-const CACHE_NAME = 'salon-manager-cache-v82';
+// v83: βテスト開始前の総点検。
+// - バックアップ/復元スクリプト(scripts/backup-supabase-data.mjs・restore-supabase-data.mjs)
+//   のテーブル一覧が10テーブル分(daily_batch_entries/daily_cash_breakdown/monthly_reviews/
+//   company_partnerships等)古いままだった実際のバグを発見・修正。本番の自動バックアップ
+//   本体(GitHub Actions + scripts/backup/run_backup.sh、supabase db dumpベース)はテーブル名を
+//   毎回のダンプから動的に抽出する設計のため、このリストのズレの影響を受けていなかった
+//   (既に安全)ことも確認済み。
+// - 「使い方・FAQ」画面付近に、β運営がフィードバックを収集するための「不具合・改善要望を
+//   送る」導線を追加(新規テーブルbeta_feedback、system_admin限定閲覧のRLS)。
+// - 障害調査用ログ(新規テーブルclient_diagnostic_logs、system_admin限定閲覧のRLS)を追加し、
+//   既存のlogSupabaseError(アプリ全体のSupabaseエラーが必ず経由する共通関数)へ1箇所だけ
+//   配線——個別の呼び出し元(数十箇所)を書き換えずに全画面へ横展開。売上詳細・個人情報・
+//   認証トークンは記録しない設計。
+// - 招待・権限・二重登録防止・エラーメッセージの日本語化・入力中のガクつき・セッション
+//   復元等、既存の主要な安定性対策(v69〜v82)を再点検し、いずれも健在であることを確認。
+// 既存データ・スキーマの破壊的変更は無し(今回のmigrationは新規テーブル2つの追加のみ)。
+const CACHE_NAME = 'salon-manager-cache-v83';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

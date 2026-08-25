@@ -141,6 +141,21 @@ export const logSupabaseError = ({ operation, table, userId = null, companyId = 
     hint: error?.hint || null,
   };
   console.error("[supabase-error]", detail, error);
+  // 障害調査用ログ(要件9)。アプリ全体のSupabaseエラーがすべてこの1関数を経由するため、
+  // ここに1箇所追加するだけで既存の全呼び出し元(App.jsx側、数十箇所)へ横展開される
+  // ——個別の呼び出し元を1つずつ書き換える必要はない。message欄には売上金額・氏名・
+  // メールアドレス等ではなく、operation/table/error codeという既存の構造化情報だけを渡す
+  // (logClientDiagnostic自体もベストエフォートで失敗を握りつぶすため、ここが失敗しても
+  // 元のエラー処理・UI表示には一切影響しない)。
+  logClientDiagnostic({
+    companyId,
+    storeId,
+    userId,
+    screen: table || "unknown",
+    actionType: operation || "unknown",
+    errorType: detail.code || "unknown",
+    message: `${detail.operation}/${detail.table}: ${detail.code || detail.message || "unknown error"}`,
+  });
   return detail;
 };
 
@@ -2504,5 +2519,55 @@ export const markStoreInitialSetupCompleted = async ({ companyId, storeId, userI
   } catch (error) {
     logSupabaseError({ operation: "markStoreInitialSetupCompleted", table: "store_profiles", userId, companyId, storeId, error });
     return { ok: false, error };
+  }
+};
+
+// βテスト用「不具合・改善要望」送信(要件8)。使い方・FAQ画面付近の目立たない導線から呼ぶ。
+// 送信専用(閲覧UIは提供しない、RLSもsystem_adminのみSELECT可)——失敗してもUIをブロックせず、
+// 呼び出し元がエラー文言を出す前提でok:falseを返すだけにする。
+export const submitBetaFeedback = async ({ companyId = null, storeId = null, userId, screen = "", situation = "", whatHappened = "", freeText = "", appVersion = "" }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!userId) return { ok: false, error: new Error("ユーザー情報を確認できませんでした") };
+  try {
+    const { error } = await supabase.from("beta_feedback").insert({
+      company_id: companyId || null,
+      store_id: storeId || null,
+      created_by: userId,
+      screen,
+      situation,
+      what_happened: whatHappened,
+      free_text: freeText,
+      app_version: appVersion,
+    });
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "submitBetaFeedback", table: "beta_feedback", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+// 障害調査用ログ(要件9)。売上金額・氏名・メールアドレス・認証トークン等の機密情報は
+// 一切含めないこと——messageには構造化された非機密情報(operation/table/error code程度)
+// だけを渡す(呼び出し元の責務、logSupabaseErrorから最小限の情報だけを転記する)。
+// ベストエフォート専用: 失敗しても例外を投げず、呼び出し元の処理(実際のエラー表示等)を
+// 一切妨げない。ログ自体の失敗をさらにログしようとする無限再帰も起こさない
+// (catchの中では console.warn のみ、logSupabaseError は呼ばない)。
+export const logClientDiagnostic = ({ companyId = null, storeId = null, userId = null, screen = "", actionType = "", errorType = "", message = "" } = {}) => {
+  if (!isSupabaseConfigured) return;
+  try {
+    void supabase.from("client_diagnostic_logs").insert({
+      company_id: companyId || null,
+      store_id: storeId || null,
+      user_id: userId || null,
+      screen,
+      action_type: actionType,
+      error_type: errorType,
+      message: String(message || "").slice(0, 500),
+    }).then(({ error }) => {
+      if (error) console.warn("[diagnostic-log] insert failed (non-fatal)", error.message);
+    });
+  } catch (error) {
+    console.warn("[diagnostic-log] unexpected failure (non-fatal)", error);
   }
 };

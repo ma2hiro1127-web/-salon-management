@@ -31,6 +31,10 @@ if (!backupDir || !existsSync(backupDir)) {
 const supabase = createClient(url, serviceKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
 // Order matters: a child table's FK must have its parent already restored.
+// βテスト開始前の総点検で発見: backup-supabase-data.mjsと同じ理由で、以下10テーブルが
+// このリストから漏れていた(バックアップ側の同じ調査・同じ修正を参照)。復元スクリプトが
+// これらのテーブルを一切知らないと、たとえbackup側を直しても「復元できないデータ」が
+// 残ってしまうため、両方を必ず同期させる。
 const TABLES_IN_ORDER = [
   { name: "companies", pk: "id" },
   { name: "stores", pk: "id" },
@@ -46,6 +50,16 @@ const TABLES_IN_ORDER = [
   { name: "company_settings", pk: "company_id" },
   { name: "store_profiles", pk: "store_id" },
   { name: "tenant_snapshots", pk: "id" },
+  { name: "company_all_stores_holidays", pk: "id" },
+  { name: "company_all_stores_targets", pk: "id" },
+  { name: "company_partnerships", pk: "id" },
+  { name: "cost_monthly_amounts", pk: "id" },
+  { name: "daily_batch_entries", pk: "id" },
+  { name: "daily_cash_breakdown", pk: "id" },
+  { name: "monthly_reviews", pk: "id" },
+  { name: "store_business_holidays", pk: "id" },
+  { name: "store_inventory_balances", pk: "id" },
+  { name: "store_status_audit_log", pk: "id" },
 ];
 
 const scopeFilter = (row) => {
