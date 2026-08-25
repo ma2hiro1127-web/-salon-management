@@ -654,7 +654,20 @@
 // 完全に同じフィールド一覧を比較対象から除外(src/utils/storage.js)。これにより
 // 無駄な書き込み・Realtime自己通知・再取得の連鎖が構造的に無くなる。日次データ編集など
 // 実際にtenant_snapshotsのpayloadに含まれるフィールドの変更検知には一切影響しない。
-const CACHE_NAME = 'salon-manager-cache-v78';
+// v79: 一部ユーザーでブラウザ更新のたびにログイン画面へ戻される不具合を修正。
+// 根本原因: initializeAuth(App.jsx、ページ読み込み時に1回だけ走る認証復元処理)が、
+// Supabaseセッション自体は有効に確認できているにもかかわらず、その後のプロフィール/
+// テナント情報取得(ensureProfileForAuthUser・loadTenantStateFromSupabase、複数回の
+// Supabase往復を伴う)で一時的なネットワーク不調等が起きただけで例外を投げ、それを外側の
+// catchが「未ログイン」と一律扱いしてauthMode("login")へ落としていた。回線状況・
+// タイミングは端末やユーザーごとに異なるため、これが「一部ユーザーだけ再現し、開発者の
+// 環境では再現しない」という報告と一致する。
+// 修正: プロフィール/テナント情報の取得を専用関数(loadProfileAndEnterApp)に分離し、
+// 失敗時は最大3回まで自動リトライ(バックオフ付き)。全て失敗した場合もログイン画面へは
+// 絶対に戻さず、「セッションは有効だがプロフィールが読み込めない」専用のエラー画面
+// (再試行/明示的なログアウトの選択肢付き)を表示する。本当にセッションが無い場合の
+// 挙動・ログアウトボタンの動作は無変更。
+const CACHE_NAME = 'salon-manager-cache-v79';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

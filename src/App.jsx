@@ -643,6 +643,15 @@ function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [authError, setAuthError] = useState("");
+  // 一部ユーザーでブラウザ更新のたびにログイン画面へ戻される不具合の修正: 有効なSupabase
+  // セッションが確認できた後、プロフィール/テナント情報の取得(ensureProfileForAuthUser/
+  // loadTenantStateFromSupabase、複数回のSupabase往復を伴う)が一時的なネットワーク不調等で
+  // 失敗しても、認証セッション自体は失われていない——にもかかわらず以前はこの失敗を
+  // initializeAuthの外側のcatchで一律「未ログイン」扱いにし、authMode("login")へ落として
+  // いた。この状態(セッションは有効だがプロフィール取得だけ失敗)を専用に表す状態を持たせ、
+  // ログイン画面へは絶対に戻さず、再試行可能なエラー画面を出す(下のloadProfileAndEnterApp
+  // 参照)。
+  const [authProfileLoadError, setAuthProfileLoadError] = useState("");
   const [authSuccess, setAuthSuccess] = useState(() => {
     if (typeof window === "undefined") return "";
     const params = new URLSearchParams(window.location.search);
@@ -1292,6 +1301,72 @@ function App() {
   const activeBusinessType = companyForm.businessType || currentCompany?.businessType || "salon";
   const storeNamePlaceholder = getBusinessTypeDefaultStoreName(activeBusinessType);
 
+  // 一部ユーザーでブラウザ更新のたびにログイン画面へ戻される不具合の修正(本体)。
+  // ensureProfileForAuthUser/loadTenantStateFromSupabaseは複数回のSupabase往復を伴うため、
+  // 遅い回線・一時的なネットワーク不調・瞬間的なRLS/タイミングの問題で失敗し得る——だが
+  // これはあくまで「アプリ側のプロフィール/テナント情報が今取れなかった」だけであり、
+  // Supabase Auth自体のセッション(呼び出し元がsession.userの存在を既に確認済み)には
+  // 何の問題も無い。ここで例外を外側へ投げず、この関数内で数回自動リトライし、それでも
+  // 失敗した場合はauthMode(login/signup/app等)を一切変更せずauthProfileLoadErrorだけを
+  // 設定する——ログイン画面表示の判定(!currentUser && !authLoading)より前で
+  // authProfileLoadErrorをチェックする分岐を設けており(下のJSX参照)、有効なセッションを
+  // 持つユーザーが誤ってログイン画面へ戻されることは無い。
+  const PROFILE_LOAD_MAX_ATTEMPTS = 3;
+  const PROFILE_LOAD_RETRY_DELAY_MS = 1500;
+  const loadProfileAndEnterApp = async (session, attempt = 1) => {
+    try {
+      const profile = await ensureProfileForAuthUser({ authUserId: session.user.id, email: session.user.email, role: resolveRoleForEmail(session.user.email) });
+      if (!profile) {
+        throw new Error("プロフィール情報を取得できませんでした");
+      }
+      const tenantState = await loadTenantStateFromSupabase({ authUserId: session.user.id, email: session.user.email, currentProfile: profile });
+      const localRecoveredState = normalizeAppState(readAppState());
+      const nextUser = buildAuthenticatedUser({ profile, authUser: session.user });
+      setCurrentUser(nextUser);
+      setCurrentRole(normalizeRole(profile?.role || "staff"));
+      const reconciledCompanies = tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [];
+      const reconciledCurrentCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
+      const { selectedStore: preferredSelectedStore, selectedStoreId: preferredSelectedStoreId } = resolvePreferredStoreSelection({
+        tenantState: { ...tenantState, companies: reconciledCompanies },
+        localRecoveredState,
+        currentCompanyId: reconciledCurrentCompanyId,
+        role: profile?.role || "staff",
+      });
+      const reconciledState = {
+        ...tenantState,
+        ...localRecoveredState,
+        currentCompanyId: reconciledCurrentCompanyId,
+        currentUserId: nextUser.profileId,
+        currentAuthUserId: nextUser.authUserId,
+        companies: reconciledCompanies,
+        users: tenantState.users?.length ? tenantState.users : localRecoveredState.users || [],
+        companySnapshots: tenantState.companySnapshots || localRecoveredState.companySnapshots || {},
+        stores: tenantState.stores?.length ? tenantState.stores : localRecoveredState.stores || [],
+        selectedStore: preferredSelectedStore,
+        selectedStoreId: preferredSelectedStoreId,
+        selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+        isViewingFranchise: false,
+        homeCompanyIdBeforeFranchiseView: "",
+      };
+      writeAppState(reconciledState);
+      setAppState(reconciledState);
+      setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
+      void hydrateFromSupabase({ authUser: session.user, profile, tenantState: reconciledState });
+      await refreshAuthDebugInfo({ sessionUser: session.user, role: profile?.role, profile, hasSession: true, authUser: session.user, setDebugInfo });
+      setAuthProfileLoadError("");
+      setAuthMode("app");
+      setActivePage(resolveDefaultPage(profile?.role || "staff"));
+    } catch (error) {
+      if (attempt < PROFILE_LOAD_MAX_ATTEMPTS) {
+        await new Promise((resolve) => window.setTimeout(resolve, PROFILE_LOAD_RETRY_DELAY_MS * attempt));
+        await loadProfileAndEnterApp(session, attempt + 1);
+        return;
+      }
+      console.error("[auth-init] profile/tenant load failed after retries — keeping session, not logging out", error);
+      setAuthProfileLoadError(getLocalizedSupabaseErrorMessage(error));
+    }
+  };
+
   useEffect(() => {
     // A brand-new invitee opening /signup?invite=TOKEN has no Supabase session yet — this whole
     // effect's job on that first load is exactly to notice that and fall through to the
@@ -1376,63 +1451,11 @@ function App() {
           return;
         }
         if (session?.user) {
-          const profile = await ensureProfileForAuthUser({ authUserId: session.user.id, email: session.user.email, role: resolveRoleForEmail(session.user.email) });
-          if (!profile) {
-            throw new Error("プロフィール情報を取得できませんでした");
-          }
-          const tenantState = await loadTenantStateFromSupabase({ authUserId: session.user.id, email: session.user.email, currentProfile: profile });
-          const localRecoveredState = normalizeAppState(readAppState());
-          const nextUser = buildAuthenticatedUser({ profile, authUser: session.user });
-          setCurrentUser(nextUser);
-          setCurrentRole(normalizeRole(profile?.role || "staff"));
-          const reconciledCompanies = tenantState.companies?.length ? tenantState.companies : localRecoveredState.companies || [];
-          const reconciledCurrentCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
-          // Single source of truth for "which store should this session resume on" — see
-          // resolvePreferredStoreSelection's own comments (id-first resolution so a rename never
-          // strands the session, and an explicit ALL_STORES_VALUE guard so "全店舗" survives a
-          // session restore instead of being treated as "no store selected"). Substituting
-          // reconciledCompanies in here preserves this call site's own companies fallback
-          // (tenantState's list, or the locally-cached one if tenantState's hasn't loaded yet).
-          const { selectedStore: preferredSelectedStore, selectedStoreId: preferredSelectedStoreId } = resolvePreferredStoreSelection({
-            tenantState: { ...tenantState, companies: reconciledCompanies },
-            localRecoveredState,
-            currentCompanyId: reconciledCurrentCompanyId,
-            role: profile?.role || "staff",
-          });
-          const reconciledState = {
-            ...tenantState,
-            ...localRecoveredState,
-            currentCompanyId: reconciledCurrentCompanyId,
-            currentUserId: nextUser.profileId,
-            currentAuthUserId: nextUser.authUserId,
-            companies: reconciledCompanies,
-            users: tenantState.users?.length ? tenantState.users : localRecoveredState.users || [],
-            companySnapshots: tenantState.companySnapshots || localRecoveredState.companySnapshots || {},
-            stores: tenantState.stores?.length ? tenantState.stores : localRecoveredState.stores || [],
-            selectedStore: preferredSelectedStore,
-            selectedStoreId: preferredSelectedStoreId,
-            // Same class of bug as the store-selection fix above: loadTenantStateFromSupabase's
-            // tenantState.selectedMonth is always just "today's real month" (createInitialAppState's
-            // default), never the month the user actually had open — putting it first here meant a
-            // session viewing, say, next month's fixed costs would silently snap back to the
-            // current month on every refresh/re-login. Prefer the device's own cached month.
-            selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
-            // セッション復元(ページ再読み込み・再ログイン)は常に自社(本来のcompany_id)から
-            // 始める、という意図的な単純化(加盟店の閲覧状態はセッションをまたいで保持しない)。
-            // ここで明示的にfalse/""へ戻さないと、直前のlocalStorageキャッシュに残っている
-            // isViewingFranchise: true(...localRecoveredStateの展開経由)が生き残ってしまい、
-            // currentCompanyIdは正しく自社へ戻っているのにisViewingFranchiseだけtrueのまま、
-            // という不整合な状態でページが再開してしまう。
-            isViewingFranchise: false,
-            homeCompanyIdBeforeFranchiseView: "",
-          };
-          writeAppState(reconciledState);
-          setAppState(reconciledState);
-          setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
-          void hydrateFromSupabase({ authUser: session.user, profile, tenantState: reconciledState });
-          await refreshAuthDebugInfo({ sessionUser: session.user, role: profile?.role, profile, hasSession: true, authUser: session.user, setDebugInfo });
-          setAuthMode("app");
-          setActivePage(resolveDefaultPage(profile?.role || "staff"));
+          // プロフィール/テナント情報の取得(複数回のSupabase往復)はloadProfileAndEnterApp
+          // 側で内部的にリトライし、それでも失敗した場合もこのtry/catchの外側(=ここより下の
+          // 「セッション無し」判定やauthMode("login")falling back)へは絶対に落とさない
+          // ——有効なセッションが確認できている以上、ログイン画面へ戻す理由が無いため。
+          await loadProfileAndEnterApp(session);
           return;
         }
 
@@ -2596,6 +2619,10 @@ function App() {
       setSyncStatus({ status: "idle", message: "同期待機中", timestamp: "", error: false });
       setAuthError("");
       setAuthSuccess("");
+      // プロフィール取得エラー画面(authProfileLoadError)からの「ログアウトしてやり直す」
+      // 経由でもここを通るため、必ずクリアする——さもないと明示的にログアウトした後も
+      // そのエラー画面がcurrentUser===nullより先に表示され続けてしまう。
+      setAuthProfileLoadError("");
     }
   };
 
@@ -7101,6 +7128,31 @@ function App() {
             <p className="eyebrow">AUTH</p>
             <h2>権限を確認しています</h2>
             <p>ログイン情報とプロフィールを読み込んでいます。しばらくお待ちください。</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 一部ユーザーでブラウザ更新のたびにログイン画面へ戻される不具合の修正: この判定は
+  // 「セッションは確認できたが、プロフィール/テナント情報の取得だけがリトライ後も失敗した」
+  // 状態専用で、!currentUser && !authLoadingの判定(下)より必ず先に置く——currentUserは
+  // まだnullのままなので、ここで先に拾わないとログイン画面が誤って表示されてしまう。
+  // ログイン画面には絶対に落とさず、再試行(ページ再読み込みで最初からやり直す)・
+  // またはこのセッション自体を明示的に破棄してログイン画面へ戻る、の2つの選択肢を出す。
+  if (authProfileLoadError) {
+    return (
+      <div className="auth-shell">
+        <div className="auth-card">
+          <div className="auth-title-block">
+            <p className="eyebrow">AUTH</p>
+            <h2>プロフィールを読み込めませんでした</h2>
+            <p>ログイン状態は保持されています。通信環境をご確認のうえ、再試行してください。</p>
+            <p className="auth-error-detail">{authProfileLoadError}</p>
+          </div>
+          <div className="button-row">
+            <button type="button" className="primary-button" onClick={() => window.location.reload()}>再試行</button>
+            <button type="button" className="secondary-button" onClick={handleLogout}>ログアウトしてやり直す</button>
           </div>
         </div>
       </div>

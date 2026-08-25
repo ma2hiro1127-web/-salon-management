@@ -634,6 +634,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .auth-card { width: min(100%, 460px); padding: 28px; border-radius: 24px; background: var(--surface-strong); border: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 16px; }
 .auth-title-block h2 { margin: 0 0 8px; }
 .auth-title-block p { margin: 0; color: var(--muted); line-height: 1.5; }
+/* セッション有効・プロフィール取得失敗時のエラー画面(authProfileLoadError)用。
+   案内文と実際のエラー詳細を視覚的に区別する。 */
+.auth-title-block p.auth-error-detail { margin-top: 8px; font-size: 0.82rem; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; }
 .auth-form button { width: 100%; }
 .user-role-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.78rem; font-weight: 700; }
