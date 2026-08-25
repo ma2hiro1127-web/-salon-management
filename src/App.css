@@ -1093,6 +1093,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .monthly-review-save-chip.saving { background: var(--accent-soft); color: var(--accent); }
 .monthly-review-save-chip.saved { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .monthly-review-save-chip.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
+/* 文字入力時の画面ガクつき対策: displayのon/offではなくvisibilityで隠す(要素自体は常に
+   マウントされたまま、DOM挿入・削除による高さの変動を起こさない)。 */
+.monthly-review-save-chip.is-empty { visibility: hidden; }
 
 .monthly-review-metric-list { display: flex; flex-direction: column; gap: 10px; }
 /* 「今月」「前月」「前月比」が一目で並ぶ1行(要件4)。狭い画面ではラベル→3つの値、を

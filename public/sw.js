@@ -614,7 +614,19 @@
 // あわせて、まとめて入力・固定費/変動費金額一覧・月間目標・店舗情報(スタッフ数系)の
 // onChangeも日次入力と同じ「ref経由で安定した参照」パターンへ統一(v74の日次入力・日計の
 // 対応漏れ箇所への横展開)。保存処理・権限判定・company_id/store_id分離は無変更。
-const CACHE_NAME = 'salon-manager-cache-v75';
+// v76: 月次レビュー画面の文字入力時ガクつきを、実ブラウザ計測(Playwright/WebKit、
+// iPhone13相当のviewport)で特定・修正。日次入力(v74/v75)とは別ファイル
+// (MonthlyReviewPage.jsx)の別の原因だった。
+// 原因: SaveStatusChip(自動保存の状態表示)がsaveStatus.status==="idle"の間はnullを返し
+// DOMに存在しなかったため、入力開始から400ms後(デバウンス保存が初めて発火した瞬間)に
+// 要素が新規挿入され、ページ最上部の高さが変わり、入力中のtextarea自体の画面上の位置が
+// 実測で約39px下にずれていた(その後は再現しない一過性の変化だが、自然な入力には
+// 400ms以上の間が頻繁に入るため、入力のたびに起きているように感じられていた)。
+// 修正: 挿入・削除ではなく常時マウントしvisibilityで切り替える方式に変更
+// (MonthlyReviewPage.jsx: SaveStatusChip、App.css: .monthly-review-save-chip.is-empty)。
+// 修正後、同じ手法で「振り返り/課題/改善したこと/来月への改善アクション」の4つの入力欄
+// すべてで、デバウンス保存をまたいでも高さ・スクロール位置の変動が無いことを実測確認した。
+const CACHE_NAME = 'salon-manager-cache-v76';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

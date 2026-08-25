@@ -40,10 +40,16 @@ const TEXT_FIELD_DEFS = [
 ];
 
 // 自動保存のstatusチップ(要件7: 保存中/保存済み/保存失敗を安全に管理・表示する)。
+// 文字入力時の画面ガクつき調査で発見した実際の原因: 以前はsaveStatus.status==="idle"の
+// 間はnullを返しDOMに一切存在しなかったため、入力開始から400ms後(デバウンス保存が初めて
+// 発火した瞬間)にこの要素が新規挿入され、.panel-heading.compact(ページ最上部)の高さが
+// 変わり、下にある入力中のtextarea自体の画面上の位置がずれる(実測: 約39px)原因になって
+// いた。挿入・削除ではなく常時マウントしvisibilityで切り替える方式にし、この高さの変動を
+// 無くす(表示ロジック・文言は無変更)。
 function SaveStatusChip({ saveStatus }) {
-  if (saveStatus.status === "idle") return null;
-  const tone = saveStatus.status === "error" ? "error" : saveStatus.status === "saving" ? "saving" : "saved";
-  return <span className={`monthly-review-save-chip ${tone}`}>{saveStatus.message}</span>;
+  const tone = saveStatus.status === "error" ? "error" : saveStatus.status === "saving" ? "saving" : saveStatus.status === "saved" ? "saved" : "";
+  const isIdle = saveStatus.status === "idle";
+  return <span className={`monthly-review-save-chip ${tone}${isIdle ? " is-empty" : ""}`}>{saveStatus.message || " "}</span>;
 }
 
 export default function MonthlyReviewPage({ summary, text, monthValue, isAllStoresView, storeName, canEdit, saveStatus, onSaveFields, onFlushFields, reviewContextKey }) {
