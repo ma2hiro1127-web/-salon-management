@@ -626,7 +626,19 @@
 // (MonthlyReviewPage.jsx: SaveStatusChip、App.css: .monthly-review-save-chip.is-empty)。
 // 修正後、同じ手法で「振り返り/課題/改善したこと/来月への改善アクション」の4つの入力欄
 // すべてで、デバウンス保存をまたいでも高さ・スクロール位置の変動が無いことを実測確認した。
-const CACHE_NAME = 'salon-manager-cache-v76';
+// v77: 月次レビューの文字入力時ガクつきの真因を特定・修正(v76とは別原因)。
+// 実ブラウザ計測(Playwright/WebKit、iPhone13 viewport、requestAnimationFrameで毎フレーム
+// window.scrollY・フォーカス中要素の位置を継続記録+MutationObserverでDOM変化と突合)により
+// 判明: 4つの文章入力欄がrows={4}固定高さ+内部スクロールのtextareaだったため、記入内容が
+// その高さを超えると、キャレットが可視範囲外に出た瞬間にブラウザ標準の「キャレットを画面内に
+// 保つ」機能がページ全体を自動スクロールしていた(実測: 最大63px)。v76で修正した保存状態
+// チップの高さ変動とは別の、textarea自体の構造的な原因。
+// 修正: 固定高さ+内部スクロールをやめ、入力内容に応じて高さ自体を自然に伸ばす方式
+// (AutoResizeTextarea、useLayoutEffectで同期的に測定・適用するため、縮小→拡大のちらつきは
+// 発生しない)。修正後、空欄から30文字以上・改行を含む入力で画面移動ゼロを実測確認。
+// (内容が画面下端に到達するほど長くなった場合のみ、ブラウザ標準のキャレット追従スクロールが
+// 発生するが、これはこのアプリ固有の不具合ではなく一般的なブラウザの標準動作)。
+const CACHE_NAME = 'salon-manager-cache-v77';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

@@ -1113,8 +1113,13 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .monthly-review-metric-diff.negative { color: var(--danger); }
 
 .monthly-review-textarea {
+  /* 文字入力時の画面ガクつき対策: 固定高さ+内部スクロールをやめ、内容に応じて高さ自体を
+     伸ばす(AutoResizeTextarea、MonthlyReviewPage.jsx参照)。resize:noneにするのは、
+     手動リサイズを許すとJS側の自動調整と競合し、次の入力で意図せずサイズが戻ってしまう
+     ため。overflow:hiddenは内部スクロールバー・スクロールを発生させないため
+     (高さは常にscrollHeight分だけ確保されるので、切り取られる心配はない)。 */
   width: 100%; box-sizing: border-box; min-height: 110px; border: 1px solid var(--border); border-radius: 14px;
-  padding: 12px; background: var(--surface-strong); color: var(--text); font: inherit; line-height: 1.6; resize: vertical;
+  padding: 12px; background: var(--surface-strong); color: var(--text); font: inherit; line-height: 1.6; resize: none; overflow: hidden;
 }
 .monthly-review-readonly-text { white-space: pre-wrap; line-height: 1.7; color: var(--text); min-height: 44px; }
 

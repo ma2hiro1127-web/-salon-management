@@ -1,5 +1,41 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, formatMonthLabel } from "../../utils/storage.js";
+
+// 文字入力時の画面ガクつき再調査(3回目)で実ブラウザ計測(Playwright/WebKit、iPhone13
+// viewport、requestAnimationFrameで毎フレームwindow.scrollY等を継続記録)により特定した
+// 真因: この欄はrows={4}の固定高さ(min-height 110px/モバイル90px)で内部スクロールする
+// textareaだったため、既存の記入済み文章がその高さを超えている状態で入力を続けると、
+// キャレット(カーソル)がtextarea内の可視範囲より下に出た瞬間、ブラウザ標準の
+// 「キャレットを画面内に保つ」機能がページ全体を自動スクロールしていた(実測:
+// 最大63px、改行時は42pxの一括ジャンプ)。日次入力側で調査したReactの再レンダリング・
+// 保存タイミングの問題とは全く別種の原因——固定高さtextareaの内部スクロールという、
+// textarea自体の構造的な問題だった。
+// 対策: 入力内容に応じて高さそのものを自然に伸ばし、内部スクロールが起こらないように
+// する(=キャレットが可視範囲外に出ることが無くなり、ブラウザの自動スクロールも発生
+// しなくなる)。要求されている「height=auto→scrollHeightを毎入力で行うと一瞬縮んでから
+// 伸びるフラッシュが起きる」問題を避けるため、useLayoutEffect(DOM更新後・ブラウザが
+// 実際に描画する前に同期実行される)内で測定・適用する——ユーザーには常に1回の
+// 更新にしか見えず、縮小→拡大のちらつきは発生しない。
+function AutoResizeTextarea({ value, onChange, onBlur, placeholder, className }) {
+  const textareaRef = useRef(null);
+  useLayoutEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [value]);
+  return (
+    <textarea
+      ref={textareaRef}
+      className={className}
+      value={value}
+      onChange={onChange}
+      onBlur={onBlur}
+      placeholder={placeholder}
+      rows={4}
+    />
+  );
+}
 
 // 数字・前月比の1行(要件2・4): 「今月」「前月」「前月比」が一目で並ぶ。前月データが無い/
 // 比較不能な場合はformatDiffOrDash自身がダッシュ("－")を返す(0/NaN/Infinityを表示しない
@@ -168,7 +204,7 @@ export default function MonthlyReviewPage({ summary, text, monthValue, isAllStor
         <section className="panel" key={field.key}>
           <div className="panel-heading compact"><h3>{field.label}</h3></div>
           {canEdit ? (
-            <textarea
+            <AutoResizeTextarea
               className="monthly-review-textarea"
               value={draft[field.key]}
               onChange={(event) => handleFieldChange(field.key, event.target.value)}
@@ -176,7 +212,6 @@ export default function MonthlyReviewPage({ summary, text, monthValue, isAllStor
               // debounceを待たず即座に保存する(要件7: 保存漏れ防止)。
               onBlur={() => onFlushFields(draft)}
               placeholder={field.placeholder}
-              rows={4}
             />
           ) : (
             <div className="monthly-review-readonly-text">{draft[field.key] || "（未記入）"}</div>
