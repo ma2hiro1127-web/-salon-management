@@ -638,7 +638,23 @@
 // 発生しない)。修正後、空欄から30文字以上・改行を含む入力で画面移動ゼロを実測確認。
 // (内容が画面下端に到達するほど長くなった場合のみ、ブラウザ標準のキャレット追従スクロールが
 // 発生するが、これはこのアプリ固有の不具合ではなく一般的なブラウザの標準動作)。
-const CACHE_NAME = 'salon-manager-cache-v77';
+// v78: 月次レビュー(および実は日次入力等も含む)の「文字入力を止めて数秒後に画面が
+// ガクつく」真因を特定・修正。コード調査(実ブラウザ計測では再現しない=タイミング依存の
+// 事象だったため、Realtime連携経路を静的に追跡)で判明:
+// buildTenantSnapshotRow(supabaseRemote.js)は、日次データ・費用・目標・月次レビュー等
+// 「独自のSupabaseテーブルを持つフィールド」をtenant_snapshotsのpayloadへ意図的に
+// 一切含めない(statement timeout対策として既に実装済み)。ところが自動保存の要否を
+// 判定するbuildPersistenceComparableStateはそれを知らずappStateをそのまま比較していた
+// ため、月次レビューの文章を保存してmonthlyReviewsだけが変わっても「差分あり」と誤判定し、
+// 実際には中身が1バイトも変わらない完全に無駄なtenant_snapshots書き込みを発生させていた。
+// この書き込みがSupabase Realtimeのpostgres_changesイベントを発火させ、それを自分自身が
+// 購読しているため、保存の1〜3秒後(書き込み・Realtime往復分の遅延)に自分自身の
+// hydrateFromSupabase(全面的な再取得)が誘発され、画面全体が再レンダリングされていた。
+// 修正: buildPersistenceComparableStateで、buildTenantSnapshotRowが除外しているのと
+// 完全に同じフィールド一覧を比較対象から除外(src/utils/storage.js)。これにより
+// 無駄な書き込み・Realtime自己通知・再取得の連鎖が構造的に無くなる。日次データ編集など
+// 実際にtenant_snapshotsのpayloadに含まれるフィールドの変更検知には一切影響しない。
+const CACHE_NAME = 'salon-manager-cache-v78';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

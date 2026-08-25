@@ -1102,12 +1102,49 @@ export const canonicalStringifyForComparison = (value) => {
 // 必ず同じ「形」から作るための共通の下ごしらえ。companySnapshots内の入れ子companySnapshots
 // (自己参照的に肥大化するだけで比較に意味が無い)を取り除く点だけを行う——それ以外は
 // 呼び出し側がappStateそのもの(hydrate後のmerged結果、または現在のappState)を渡す。
+//
+// 文字入力時の画面ガクつき調査(月次レビュー)で発見した実際の原因の1つ: buildTenantSnapshotRow
+// (supabaseRemote.js)は、日次データ・費用・目標・月次レビュー等の「独自のSupabaseテーブルを
+// 持つフィールド」をtenant_snapshotsのpayloadへ意図的に一切含めない(理由はそちら側のコメント
+// 参照——statement timeout不具合の再発防止)。ところがこの比較関数はそれを知らずappState
+// そのものをそのまま比較していたため、月次レビューの文章を保存してmonthlyReviewsだけが
+// 変わっても「差分あり」と誤判定し、実際には中身が1バイトも変わらない(=完全に無駄な)
+// tenant_snapshots書き込みを発生させていた。この書き込みがSupabase Realtimeの
+// postgres_changesイベントを発火させ、それを自分自身が購読している(App.jsx側の
+// remoteSyncChannelRef)ため、保存の1〜3秒後(書き込み・Realtimeの往復分の遅延)に
+// 自分自身のhydrateFromSupabase(全面的な再取得)が誘発され、月次レビュー画面に限らず
+// 「入力を止めてしばらくしてから画面全体がガクつく」現象の真因になっていた。
+// buildTenantSnapshotRowが除外しているフィールドと完全に同じ一覧をここでも除外することで、
+// これらのフィールドの変更だけではtenant_snapshotsへの書き込み自体が発生しなくなる
+// (=無駄な書き込み・Realtime自己通知・再取得の連鎖が構造的に無くなる)。日次データや
+// 会社/店舗構造など、実際にtenant_snapshotsのpayloadに含まれるフィールドの変更検知には
+// 一切影響しない。
 export const buildPersistenceComparableState = (state = {}) => ({
   ...state,
   companySnapshots: Object.fromEntries(Object.entries(state.companySnapshots || {}).map(([key, value]) => [key, {
     ...(value || {}),
     companySnapshots: undefined,
   }])),
+  dailyResults: undefined,
+  targets: undefined,
+  fixedCosts: undefined,
+  costMonthlyAmounts: undefined,
+  storeInventoryBalances: undefined,
+  variableCosts: undefined,
+  monthClosing: undefined,
+  monthClosingStatus: undefined,
+  storeHolidays: undefined,
+  allStoresTargets: undefined,
+  allStoresBusinessDaySettings: undefined,
+  allStoresHolidays: undefined,
+  monthlyReviews: undefined,
+  storeStatusAuditLog: undefined,
+  cashBreakdownResults: undefined,
+  dailyBatchEntries: undefined,
+  businessDaySettings: undefined,
+  dayClosingStates: undefined,
+  dayClosingUpdatedAt: undefined,
+  dailyResultBackups: undefined,
 });
 
 // Combines a freshly-fetched Supabase snapshot into the in-memory app state without

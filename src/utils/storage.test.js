@@ -3330,9 +3330,12 @@ test("buildPersistenceComparableState: companySnapshots内の入れ子companySna
   assert.equal(result.companySnapshots["company-1"].companySnapshots, undefined);
 });
 
-test("回帰再現: overlay適用前(nextRemoteState相当、日次売上等のフィールドを含まない)と適用後(merged相当、含む)を同じ変換で比較すると『違う』と正しく判定され、hydrate直後は必ず1回だけ再同期が必要と判定できる一方、2回目以降(mergedどうしの比較)は内容が同じなら『同じ』と判定され、無限ループへ発展しない", () => {
-  const nextRemoteStateShaped = { selectedStore: "A店", currentCompanyId: "c1" }; // overlay(dailyResults等)適用前
-  const mergedShaped = { selectedStore: "A店", currentCompanyId: "c1", dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }] } }; // overlay適用後
+test("回帰再現: overlay適用前(nextRemoteState相当、店舗選択等のフィールドを含まない)と適用後(merged相当、含む)を同じ変換で比較すると『違う』と正しく判定され、hydrate直後は必ず1回だけ再同期が必要と判定できる一方、2回目以降(mergedどうしの比較)は内容が同じなら『同じ』と判定され、無限ループへ発展しない", () => {
+  // 比較対象のフィールドはbuildPersistenceComparableStateが除外しない(=tenant_snapshotsの
+  // payloadに実際含まれる)ものを使う——dailyResults等の除外対象フィールドでは、この
+  // シナリオ自体が起こり得なくなった(下の専用テスト参照)。
+  const nextRemoteStateShaped = { selectedStore: "", currentCompanyId: "c1" }; // overlay適用前
+  const mergedShaped = { selectedStore: "A店", currentCompanyId: "c1" }; // overlay適用後(店舗名が確定した状態)
   // 修正前の実装が比較していた2つの値: 形が違うため必ず「違う」と判定され続けていた。
   const oldSignature = canonicalStringifyForComparison(buildPersistenceComparableState(nextRemoteStateShaped));
   const persistSignature = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
@@ -3343,6 +3346,47 @@ test("回帰再現: overlay適用前(nextRemoteState相当、日次売上等の�
   const hydrateSignature = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
   const persistEffectSignatureNextTick = canonicalStringifyForComparison(buildPersistenceComparableState(mergedShaped));
   assert.equal(hydrateSignature, persistEffectSignatureNextTick, "修正後は同じ形どうしを比較するため、内容が同じなら一致し、無限ループへ発展しない");
+});
+
+// 文字入力時の画面ガクつき調査(月次レビュー)で発見した問題の回帰テスト: buildTenantSnapshotRow
+// (supabaseRemote.js)が独自テーブルを持つ(=tenant_snapshotsのpayloadに含めない)フィールドと
+// 完全に同じ一覧を、この比較関数でも除外できているかを直接検証する。除外できていないと、
+// これらのフィールドだけが変わった場合でも「差分あり」と誤判定され、実際には中身が1バイトも
+// 変わらない無駄なtenant_snapshots書き込み→Realtime自己通知→自分自身の再取得、という連鎖が
+// 発生する(月次レビューの保存後、数秒遅れて画面全体がガクつく不具合の真因だった)。
+test("buildPersistenceComparableState: monthlyReviews/dailyResults等、独自のSupabaseテーブルを持ちtenant_snapshotsのpayloadに含まれないフィールドは比較対象から除外され、その変更だけでは「差分あり」と判定されない(無駄な書き込み・Realtime自己通知・再取得連鎖の防止)", () => {
+  const baseState = { selectedStore: "A店", currentCompanyId: "c1" };
+  const excludedFieldChanges = {
+    dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }] },
+    targets: { "A店__2026-08": { targetSales: 1000000 } },
+    fixedCosts: { "A店__2026-08": [{ id: "f1", name: "家賃" }] },
+    costMonthlyAmounts: { "cost-1__2026-08": 50000 },
+    storeInventoryBalances: { "A店__2026-08": 10000 },
+    variableCosts: { "A店__2026-08": [{ id: "v1" }] },
+    monthClosing: { "A店__2026-08": [] },
+    monthClosingStatus: { "A店__2026-08": { closed: true } },
+    storeHolidays: { "A店__2026-08": ["2026-08-01"] },
+    allStoresTargets: { "c1__2026-08": { targetSales: 5000000 } },
+    allStoresBusinessDaySettings: { "c1__2026-08": {} },
+    allStoresHolidays: { "c1__2026-08": [] },
+    monthlyReviews: { "c1::A店::2026-08": { reflection: "今月は好調でした" } },
+    storeStatusAuditLog: [{ storeId: "s1", status: "suspended" }],
+    cashBreakdownResults: { "A店__2026-08": { "2026-08-01": { cashAmount: 1000 } } },
+    dailyBatchEntries: { "A店__2026-08": [{ id: "b1" }] },
+    businessDaySettings: { "A店__2026-08": { mode: "auto" } },
+    dayClosingStates: { "A店__2026-08": { "2026-08-01": true } },
+    dayClosingUpdatedAt: { "A店__2026-08": { "2026-08-01": "2026-08-01T00:00:00Z" } },
+    dailyResultBackups: { "A店__2026-08": [{ id: "bk1" }] },
+  };
+  const baseSignature = canonicalStringifyForComparison(buildPersistenceComparableState(baseState));
+  for (const [field, value] of Object.entries(excludedFieldChanges)) {
+    const changedSignature = canonicalStringifyForComparison(buildPersistenceComparableState({ ...baseState, [field]: value }));
+    assert.equal(changedSignature, baseSignature, `${field}だけの変更は比較シグネチャに影響してはいけない(tenant_snapshotsのpayloadに含まれないため)`);
+  }
+  // 対照: tenant_snapshotsのpayloadに実際に含まれるフィールド(例: selectedStore)の変更は、
+  // これまで通り正しく「差分あり」と判定される(除外し過ぎていないことの確認)。
+  const realChangeSignature = canonicalStringifyForComparison(buildPersistenceComparableState({ ...baseState, selectedStore: "B店" }));
+  assert.notEqual(realChangeSignature, baseSignature, "tenant_snapshotsのpayloadに含まれるフィールドの変更は引き続き検知されるべき");
 });
 
 // 「月次レビュー機能」対応分のテスト。
