@@ -587,7 +587,22 @@
 // ユーザー名/メール(.user-staff-row-identity)、会社/店舗/加盟店カードの名前
 // (.info-card-head)、店舗ランキング(StoreRankingCard)の店舗名、の4箇所で長い文字列が
 // 隣接するバッジ・数値を押し出してはみ出す問題を修正。
-const CACHE_NAME = 'salon-manager-cache-v73';
+// v74: 文字入力時の画面ガクつき・スクロール不具合の根本修正。
+// 調査で判明した主因: App()が約9000行1つの巨大なコンポーネントで、日次入力(dailyForm)は
+// 既にローカルstate+400msデバウンス自動保存という正しい設計だったが、Field/NumericInput
+// (アプリ内のほぼ全入力画面が共有する部品)がmemo化されておらず、かつonChangeを毎レンダー
+// 新しい関数で渡していたため、1文字入力するたびにApp()全体が再実行され、同じフォーム内の
+// 「今操作していない他の入力欄」まで毎回作り直されていた。他の全入力画面(会社/店舗/
+// ユーザー/固定費・変動費/月間目標/初期設定等)は元々ローカルstate+明示保存ボタン方式で
+// 1文字ごとのDB書き込み・再取得は無かったことも確認済み(この観点の新規バグは無し)。
+// 修正: (1) NumericInput/Fieldをmemo化(既存の全呼び出し元、50箇所以上へ自動適用、
+// JSX側の変更不要)。(2) 最も自動保存頻度が高い日次入力・日計フォームで、onChangeを
+// ref経由の安定した参照に変更(updateDailyField/updateCashBreakdownField本体は無変更)
+// ——これでmemoが実際に効き、他の入力欄への影響無く該当欄だけが再レンダリングされる。
+// (3) 100vh→100dvh(フォールバック付き)にし、モバイルのソフトウェアキーボード表示中に
+// レイアウト全体の高さが変動する問題を修正(.app-shell/.sidebar/.auth-shell)。
+// 保存処理・権限判定・company_id/store_id分離は一切変更していない。
+const CACHE_NAME = 'salon-manager-cache-v74';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

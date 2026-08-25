@@ -14,7 +14,13 @@
   background: linear-gradient(135deg, #f7fbff 0%, #f4f8ff 45%, #f8fcff 100%);
   color: var(--text);
   display: flex;
+  /* 文字入力時の画面ガクつき対策(総合品質チェック要件5): 100vhはモバイルSafari/Chromeで
+     アドレスバーの出し入れ・ソフトウェアキーボード表示のたびに実際の値が変わり得るため、
+     レイアウトが上下に動く原因になっていた。100dvh(動的ビューポート単位)に対応した
+     ブラウザではそちらを優先し(cssカスケードで後勝ち)、未対応ブラウザでは無効な値として
+     無視され100vhのまま動作する(安全なプログレッシブエンハンスメント)。 */
   min-height: 100vh;
+  min-height: 100dvh;
   width: 100%;
   max-width: 100%;
   box-sizing: border-box;
@@ -76,6 +82,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   position: sticky;
   top: 0;
   height: 100vh;
+  height: 100dvh;
 }
 
 .app-shell.theme-dark .sidebar { background: rgba(2, 6, 23, 0.66); }
@@ -618,7 +625,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .summary-card-tone { background: rgba(47, 125, 246, 0.08); }
 .priority-card-tone { background: rgba(245, 158, 11, 0.1); }
 .action-card-tone { background: rgba(46, 163, 97, 0.08); }
-.auth-shell { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f8fbff, #f4f6fb); }
+.auth-shell { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 24px; background: linear-gradient(135deg, #f8fbff, #f4f6fb); }
 .auth-card { width: min(100%, 460px); padding: 28px; border-radius: 24px; background: var(--surface-strong); border: 1px solid var(--border); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 16px; }
 .auth-title-block h2 { margin: 0 0 8px; }
 .auth-title-block p { margin: 0; color: var(--muted); line-height: 1.5; }

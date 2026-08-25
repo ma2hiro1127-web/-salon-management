@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
 import {
@@ -821,6 +821,22 @@ function App() {
       return next;
     });
   };
+  // 文字入力時の画面ガクつき対策(総合品質チェック): updateDailyField自体は
+  // totalSalesIsAutoCalculated等(このApp()内でこの後定義される値)を参照するため、
+  // レンダーのたびに新しい関数として作られる——そのままFieldのonChangeへ渡すと、
+  // Fieldをmemo化していても「propsが毎回変わる」ことになり再レンダリングをスキップ
+  // できない。refで常に最新のupdateDailyFieldを指すようにした上で、フィールドごとの
+  // ラッパー関数は初回だけ生成して以後ずっと同じ参照を使い回す(updateDailyField本体の
+  // 計算ロジック・呼び出しタイミングは一切変更していない)。
+  const updateDailyFieldRef = useRef(updateDailyField);
+  updateDailyFieldRef.current = updateDailyField;
+  const [dailyFieldChangeHandlers] = useState(() => {
+    const makeHandler = (field) => (value) => updateDailyFieldRef.current(field, value);
+    return ["technicalSales", "retailSales", "otherSales", "totalSales", "newCustomers", "repeatCustomers", "customers", "reviewCount"].reduce((acc, field) => {
+      acc[field] = makeHandler(field);
+      return acc;
+    }, {});
+  });
   const [dailyMode, setDailyMode] = useState("create");
   const [dailyOriginalEntry, setDailyOriginalEntry] = useState(null);
   const [dailyInsight, setDailyInsight] = useState("");
@@ -832,6 +848,17 @@ function App() {
   const updateCashBreakdownField = (field, value) => {
     setCashBreakdownForm((prev) => ({ ...prev, [field]: value }));
   };
+  // 上のdailyFieldChangeHandlersと同じ理由・同じパターン(参照が安定したonChangeを
+  // Fieldへ渡し、memo化の効果を実際に効かせる)。
+  const updateCashBreakdownFieldRef = useRef(updateCashBreakdownField);
+  updateCashBreakdownFieldRef.current = updateCashBreakdownField;
+  const [cashBreakdownFieldChangeHandlers] = useState(() => {
+    const makeHandler = (field) => (value) => updateCashBreakdownFieldRef.current(field, value);
+    return ["cashAmount", "cashlessAmount", "pointAmount"].reduce((acc, field) => {
+      acc[field] = makeHandler(field);
+      return acc;
+    }, {});
+  });
   // 月別日計一覧モーダルの開閉のみを持つ(月・店舗はモーダル側のローカルstateで完結させ、
   // 日次入力側のselectedMonth/dailyFormには一切影響しない)。
   const [showCashBreakdownMonthly, setShowCashBreakdownMonthly] = useState(false);
@@ -7968,16 +7995,16 @@ function App() {
                           correctly. Save-time parseNumber()/buildDailyEntryPayload treat "" and
                           0 identically, so totals/KPIs/progress are never affected — this is
                           display-only. */}
-                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={(value) => updateDailyField("technicalSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
-                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={(value) => updateDailyField("retailSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
-                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={(value) => updateDailyField("otherSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                      {showTechnicalSalesField ? <Field label="技術売上（税込）" value={dailyForm.technicalSales || ""} onChange={dailyFieldChangeHandlers.technicalSales} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                      {showRetailSalesField ? <Field label="店販売上（税込）" value={dailyForm.retailSales || ""} onChange={dailyFieldChangeHandlers.retailSales} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                      {showOtherSalesField ? <Field label="その他売上（税込）" value={dailyForm.otherSales || ""} onChange={dailyFieldChangeHandlers.otherSales} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric /> : null}
                       {totalSalesIsAutoCalculated ? (
                         <div className="summary-card compact">
                           <span>総売上（税込）</span>
                           <strong>{money(parseNumber(dailyForm.totalSales))}</strong>
                         </div>
                       ) : (
-                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={(value) => updateDailyField("totalSales", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
+                        <Field label="総売上（税込）" value={dailyForm.totalSales || ""} onChange={dailyFieldChangeHandlers.totalSales} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
                       )}
                     </div>
 
@@ -7987,15 +8014,15 @@ function App() {
                         {/* 総売上と同じ考え方: 入力項目(新規・再来)を先に並べ、自動合計される
                             客数は結果として一番下に置く(要件: どこが入力でどこが自動計算か
                             直感的に分かるように)。 */}
-                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={(value) => updateDailyField("newCustomers", value)} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric /> : null}
-                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={(value) => updateDailyField("repeatCustomers", value)} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                        {showNewCustomersField ? <Field label="新規客数" value={dailyForm.newCustomers || ""} onChange={dailyFieldChangeHandlers.newCustomers} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric /> : null}
+                        {showRepeatCustomersField ? <Field label="再来客数" value={dailyForm.repeatCustomers || ""} onChange={dailyFieldChangeHandlers.repeatCustomers} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric /> : null}
                         {customersIsAutoCalculated ? (
                           <div className="summary-card compact">
                             <span>客数</span>
                             <strong>{number(parseNumber(dailyForm.customers))}名</strong>
                           </div>
                         ) : (
-                          <Field label="客数" value={dailyForm.customers || ""} onChange={(value) => updateDailyField("customers", value)} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric />
+                          <Field label="客数" value={dailyForm.customers || ""} onChange={dailyFieldChangeHandlers.customers} suffix="名" placeholder="人数を入力" disabled={!canEditDailyEntry} numeric />
                         )}
                       </div>
                     ) : null}
@@ -8019,9 +8046,9 @@ function App() {
                           ) : null}
                         </summary>
                         <div className="cash-breakdown-body">
-                          <Field label="現金" value={cashBreakdownForm.cashAmount || ""} onChange={(value) => updateCashBreakdownField("cashAmount", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
-                          <Field label="キャッシュレス" value={cashBreakdownForm.cashlessAmount || ""} onChange={(value) => updateCashBreakdownField("cashlessAmount", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
-                          <Field label="ポイント利用" value={cashBreakdownForm.pointAmount || ""} onChange={(value) => updateCashBreakdownField("pointAmount", value)} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
+                          <Field label="現金" value={cashBreakdownForm.cashAmount || ""} onChange={cashBreakdownFieldChangeHandlers.cashAmount} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
+                          <Field label="キャッシュレス" value={cashBreakdownForm.cashlessAmount || ""} onChange={cashBreakdownFieldChangeHandlers.cashlessAmount} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
+                          <Field label="ポイント利用" value={cashBreakdownForm.pointAmount || ""} onChange={cashBreakdownFieldChangeHandlers.pointAmount} suffix="円" placeholder="金額を入力" disabled={!canEditDailyEntry} numeric />
                           <div className="summary-card compact">
                             <span>日計合計</span>
                             <strong>{money(cashBreakdownTotal)}</strong>
@@ -8039,7 +8066,7 @@ function App() {
                     {showReviewCountField ? (
                       <div className="daily-section-card">
                         <h3>口コミ</h3>
-                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={(value) => updateDailyField("reviewCount", value)} suffix="件" placeholder="件数を入力" disabled={!canEditDailyEntry} numeric />
+                        <Field label="口コミ数" value={dailyForm.reviewCount || ""} onChange={dailyFieldChangeHandlers.reviewCount} suffix="件" placeholder="件数を入力" disabled={!canEditDailyEntry} numeric />
                       </div>
                     ) : null}
 
@@ -10075,7 +10102,17 @@ function SalesCompositionCard({ items }) {
 // 行わない — 変換途中の文字を書き換えると、入力中の文字が消えたりカーソル位置がずれたり
 // するため(要件3)。生の入力値はそのままstateへ反映し、変換確定時(compositionend)に
 // 初めて正規化する。
-function NumericInput({ value, onChange, allowDecimal = false, onBlur, ...rest }) {
+// 文字入力時の画面ガクつき対策(総合品質チェック): NumericInput/Fieldはアプリ内の
+// ほぼ全ての入力画面(日次入力・まとめて入力・月間目標・固定費/変動費・店舗情報等)で
+// 共有される最も呼び出し回数の多いコンポーネント。App()自体は1つの巨大な関数コンポーネント
+// のため、1文字入力するたびにApp()全体が再実行され、同じフォーム内の「今入力していない
+// 他の入力欄」まで含めて毎回JSXが再生成・再diffされていた。React.memoを付けることで、
+// 呼び出し元から渡されるprops(value/onChange等)が前回と同じ(参照が変わらない)場合は
+// 再レンダリング自体をスキップできるようにする——ただしこれが実際に効くには、呼び出し元が
+// onChangeを安定した参照で渡す必要がある(日次入力フォーム側の対応は下記updateDailyField/
+// updateCashBreakdownField参照)。propsが安定していない呼び出し元では従来通り毎回
+// 再レンダリングされるだけで、表示・保存の挙動そのものは一切変わらない(安全な追加)。
+function NumericInputImpl({ value, onChange, allowDecimal = false, onBlur, ...rest }) {
   const composingRef = useRef(false);
   return (
     <input
@@ -10104,8 +10141,11 @@ function NumericInput({ value, onChange, allowDecimal = false, onBlur, ...rest }
     />
   );
 }
+// memo化: propsの参照が呼び出し元で安定していれば、この入力欄が今まさに操作対象で
+// なくても不要な再レンダリングをスキップできる(挙動は無変更、純粋な最適化)。
+const NumericInput = memo(NumericInputImpl);
 
-function Field({ label, value, onChange, suffix = "", type = "text", numeric = false, allowDecimal = false, disabled = false, placeholder = "", displayLabel = "" }) {
+function FieldImpl({ label, value, onChange, suffix = "", type = "text", numeric = false, allowDecimal = false, disabled = false, placeholder = "", displayLabel = "" }) {
   const normalizedValue = value === undefined || value === null ? "" : value;
   return (
     <label className="field">
@@ -10126,5 +10166,10 @@ function Field({ label, value, onChange, suffix = "", type = "text", numeric = f
     </label>
   );
 }
+// memo化(NumericInputと同じ理由): アプリ内のほぼ全ての入力画面(日次入力・まとめて入力・
+// 月間目標・固定費/変動費・店舗情報・スタッフ招待・初期設定等)が共有する最も呼び出し
+// 回数の多いコンポーネント。既存の全呼び出し元(<Field .../>、50箇所以上)は
+// この行だけでmemo化の恩恵を受けられ、呼び出し側のJSXを1つも変更する必要が無い。
+const Field = memo(FieldImpl);
 
 export default App;
