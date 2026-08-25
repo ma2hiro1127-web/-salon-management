@@ -657,10 +657,12 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("invite")) return "signup";
     // ?owner-signup=1 はfeature flagが非公開の間もテスト専用に新規オーナー登録フォームへ
-    // 直接到達できるようにするための導線(要件12)。実際に送信できるかどうかはself-signup
-    // Edge Function側のflag判定が最終的な権威で、このURLパラメータはフォームの表示だけを
-    // 制御する。
-    if (params.get("owner-signup") === "1") return "ownerSignup";
+    // 直接到達できるようにするための導線(要件12)。testKeyの正誤自体はself-signup Edge
+    // Function側のflag判定が最終的な権威(送信時に検証、フロントは正誤を検証しない=秘密を
+    // クライアントへ持たせない)だが、testKeyパラメータ自体が無い状態ではフォームすら
+    // 出さない——owner-signup=1だけを知っている一般利用者にフォームの存在自体を晒さないため
+    // (「testKeyなしには非公開」)。
+    if (params.get("owner-signup") === "1" && params.get("testKey")) return "ownerSignup";
     return "login";
   });
   const [currentRole, setCurrentRole] = useState("staff");
@@ -1396,7 +1398,7 @@ function App() {
     // 上書きするため、ここで拾っておかないと初期useStateで設定した"ownerSignup"がこの直後に
     // "login"へ巻き戻され、ownerSignupVisible(flag)がfalseの間はテストURLで開いても
     // 常にログイン画面へ戻ってしまう(要件12の直接の不具合)。
-    const hasOwnerSignupIntent = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("owner-signup") === "1";
+    const hasOwnerSignupIntent = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("owner-signup") === "1" && Boolean(new URLSearchParams(window.location.search).get("testKey"));
     const fallbackAuthMode = () => (hasInviteIntent ? "signup" : hasOwnerSignupIntent ? "ownerSignup" : "login");
     const initializeAuth = async () => {
       authLog("auth初期化開始");
