@@ -1391,13 +1391,20 @@ function App() {
     // registration. Preserving "signup" here (and only here) whenever the URL still carries an
     // invite token is the fix; an authenticated session always still wins and goes to "app".
     const hasInviteIntent = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("invite"));
+    // 新規オーナー・セルフサインアップのテスト専用導線(?owner-signup=1)も、招待と全く同じ
+    // 理由で保護する必要がある——このeffectはセッション未確立時に必ず一度authModeを
+    // 上書きするため、ここで拾っておかないと初期useStateで設定した"ownerSignup"がこの直後に
+    // "login"へ巻き戻され、ownerSignupVisible(flag)がfalseの間はテストURLで開いても
+    // 常にログイン画面へ戻ってしまう(要件12の直接の不具合)。
+    const hasOwnerSignupIntent = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("owner-signup") === "1";
+    const fallbackAuthMode = () => (hasInviteIntent ? "signup" : hasOwnerSignupIntent ? "ownerSignup" : "login");
     const initializeAuth = async () => {
       authLog("auth初期化開始");
       try {
         if (!isSupabaseConfigured) {
           setCurrentUser(null);
           setCurrentRole("staff");
-          setAuthMode(hasInviteIntent ? "signup" : "login");
+          setAuthMode(fallbackAuthMode());
           setActivePage("dashboard");
           setAppState(initialAppStateValue);
           return;
@@ -1477,14 +1484,14 @@ function App() {
         authLog("redirect理由: 有効なセッションが確認できなかった(未ログイン)");
         setCurrentUser(null);
         setCurrentRole("staff");
-        setAuthMode(hasInviteIntent ? "signup" : "login");
+        setAuthMode(fallbackAuthMode());
         setActivePage("dashboard");
         setAppState(initialAppStateValue);
       } catch (error) {
         authLog("redirect理由: session取得自体が失敗(getSupabaseSession/exchangeCodeForSession等)", error?.message);
         setCurrentUser(null);
         setCurrentRole("staff");
-        setAuthMode(hasInviteIntent ? "signup" : "login");
+        setAuthMode(fallbackAuthMode());
         setActivePage("dashboard");
         setAuthError(getLocalizedSupabaseErrorMessage(error));
       } finally {
