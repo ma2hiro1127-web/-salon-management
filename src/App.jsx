@@ -74,6 +74,7 @@ import {
   buildMonthlyReviewKey,
   monthlyReviewRowToEntry,
   resolvePreferredStoreSelection,
+  resolveCurrentCompany,
   resolveHydrateDispatch,
   normalizeStoreNameForDuplicateCheck,
   calculateAllStoresMonthSummary,
@@ -98,7 +99,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import { computeAnchoredPopoverPosition } from "./utils/popoverPosition.js";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -238,25 +239,6 @@ const resolveInviteEmailErrorMessage = (error) => {
     return "短時間に複数回送信されたため、少し時間を空けて再送してください。";
   }
   return getSupabaseErrorMessage(error);
-};
-
-// ユーザー管理画面で、ある行の編集・削除ボタンを表示してよいかどうかのクライアント側の判定。
-// あくまでUIをわかりやすくするためのもので、実際の可否はSupabase RLS/Edge Function側の
-// チェックが最終的な担保(要件5: UIを隠すだけでなくサーバー側でも保護する)。
-// - system_adminは誰からも削除できない(自分自身を含め、他のsystem_adminからも)。
-// - company_adminはsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)。
-// - store_managerが見る一覧(manageableUsers)は、そもそも自分の管理する店舗のstaffのみに
-//   絞り込み済みなので、そこに並ぶ行は常に操作対象になり得る。
-const getUserRowPermissions = (currentRole, targetUser) => {
-  const role = normalizeRole(currentRole);
-  if (role === "system_admin") {
-    return { canEdit: true, canDelete: targetUser.role !== "system_admin" };
-  }
-  if (role === "company_admin") {
-    const isTargetSystemAdmin = targetUser.role === "system_admin";
-    return { canEdit: !isTargetSystemAdmin, canDelete: !isTargetSystemAdmin };
-  }
-  return { canEdit: true, canDelete: true };
 };
 
 const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = null, hasSession = false, authUser = null, setDebugInfo = null } = {}) => {
@@ -1037,7 +1019,20 @@ function App() {
   // 「全店舗」はcompany_admin専用の仮想ビュー(storesテーブルに実店舗として存在しない)。
   // selectedStoreがこの予約値のときは、以降のすべての店舗依存ロジックを分岐させる。
   const isAllStoresView = selectedStore === ALL_STORES_VALUE;
-  const currentCompany = useMemo(() => appState.companies?.find((company) => company.id === appState.currentCompanyId) || appState.companies?.[0] || null, [appState.companies, appState.currentCompanyId]);
+  // 権限判定・company/store解決の重複整理(総合品質チェックで発見した問題F): 以前は
+  // currentCompanyIdがどのcompanyとも一致しない場合、appState.companies[0](=先頭の会社、
+  // 誰の会社かは配列の並び順次第)へ静かにフォールバックしていた。一方、書き込み系の
+  // resolveTargetCompanyAndStore(下方で定義)は同じ状況でnull(=保存不可、明示的なエラー)を
+  // 返す設計になっており、両者の挙動が食い違っていた——UI(このcurrentCompany)は「別の会社の
+  // データ」を表示し続けるのに、保存だけは静かに失敗する、というcompany_idの境界が実質的に
+  // 崩れかねない状態を招いていた(特にsystem_adminのように複数社を扱うロールで、
+  // currentCompanyIdが指す会社が削除された直後などに顕在化し得る)。currentCompanyIdが
+  // companiesと一致しない状態は「読み込み中」または「壊れた状態」のいずれかであり、
+  // どちらの場合も任意の別の会社のデータへ静かに切り替えるのではなくnullを返すのが正しい
+  // (companies?.[0]と同じ「読み込み中はnull」という既存の挙動へ揃えるだけで、currentCompanyを
+  // 参照している全箇所は元々null許容の書き方(currentCompany?.や早期returnガード)に
+  // なっているため、新たな崩れ方は生まない)。
+  const currentCompany = useMemo(() => resolveCurrentCompany(appState.companies, appState.currentCompanyId), [appState.companies, appState.currentCompanyId]);
   // ログイン時、および会社一覧の中身(id構成)が変わった時にだけ、companiesテーブルから
   // AI分析設定を直接取得し直す。tenant_snapshotのhydrate/persistとは完全に別経路 — display-
   // modeやPWA判定による分岐も持たない(Chrome/PWAで常に同じ処理を使う)。
@@ -1805,15 +1800,15 @@ function App() {
   );
   const [monthlyReviewSaveStatus, setMonthlyReviewSaveStatus] = useState({ status: "idle", message: "" });
   const monthlyReviewSaveTimerRef = useRef(null);
-  // 【緊急障害の直接原因】isFranchiseReadOnlyForCurrentUser はこのコンポーネント関数内で
-  // もっと後ろ(line ~3485)でconstとして定義されている。JavaScriptのconstは巻き上げされても
-  // 初期化前にアクセスするとReferenceError(TDZ)になるため、ここで直接呼び出すと
-  // 「毎回のレンダーで、ログイン後の全ユーザーが必ずクラッシュする」不具合になっていた
-  // (ErrorBoundaryの「予期しない問題が発生しました」の直接の原因)。同じ関数を呼ぶのではなく
-  // 判定式そのものをここに複製する(後方で定義されるisFranchiseReadOnlyForCurrentUser関数
-  // 自体は変更しない、変更すると2箇所の判定が将来ズレる可能性があるため、ロジックは
-  // 1行だけの単純な式なのでコメントで対応関係を明記するに留める)。
-  const canEditMonthlyReview = canEditMonthlyData(currentRole) && !(appState.isViewingFranchise && normalizeRole(currentRole) !== "system_admin");
+  // 権限判定の二重実装を解消(総合品質チェックで発見した問題E): 以前はコンポーネント内で
+  // もっと後ろに定義されるisFranchiseReadOnlyForCurrentUser(const、TDZの対象)を呼べず、
+  // 判定式そのものをここへ手書きで複製していた(【緊急障害の直接原因】として過去に修正した
+  // TDZクラッシュの再発防止コメントが残っていた箇所)。isFranchiseReadOnly(isViewingFranchise,
+  // role)をpermissions.js側の純粋関数として切り出し、モジュールレベルでimportする形に
+  // したことで、コンポーネント内のconst宣言順序(TDZ)に一切依存しなくなった——
+  // isFranchiseReadOnlyForCurrentUser(下記)もこの同じ関数を呼ぶだけになり、判定が
+  // 将来ズレる余地が構造的に無くなっている。
+  const canEditMonthlyReview = canEditMonthlyData(currentRole) && !isFranchiseReadOnly(appState.isViewingFranchise, currentRole);
   // 保存直後にDBが実際に保存した値でappStateを更新する(「送ったつもりの値」で信じない、
   // 直近の保存/削除/停止/招待の各修正と同じ方針)。company_id・store_id・target_monthの
   // 3つで一意に定まるため、店舗Aと店舗B、全店舗ビューのレビューが混ざることは無い(要件6)。
@@ -3267,7 +3262,9 @@ function App() {
       setSyncStatus({ status: "idle", message: "ログイン後に同期を開始します", timestamp: new Date().toISOString(), error: false });
       return { ok: true, skipped: true };
     }
-    const company = (nextState.companies || []).find((item) => item.id === nextState.currentCompanyId);
+    // resolveCurrentCompanyと同じ「id一致のみ、フォールバックなし」ロジック
+    // (見つからなければnextStateはスキップ対象——下のif (!company...)で正しく弾かれる)。
+    const company = resolveCurrentCompany(nextState.companies, nextState.currentCompanyId);
     // Id-first, same reasoning as everywhere else this pattern appears: a stale selectedStore
     // name must never make this tag a snapshot with the wrong store's id.
     const store = (nextState.selectedStoreId && company?.stores?.find((item) => item.id === nextState.selectedStoreId))
@@ -3994,8 +3991,9 @@ function App() {
   // 加盟店連携(閲覧専用)中の書き込みガード。system_adminは元々全社に対して正規の読み書き
   // 権限を持つため対象外(既存挙動そのまま)。実際のセキュリティ境界はRLS(加盟店データへの
   // INSERT/UPDATE/DELETEポリシーは一切追加していない)であり、これはUX目的の早期returnに
-  // すぎない — 保存ハンドラの先頭で呼び、trueが返れば以降の処理を中断する。
-  const isFranchiseReadOnlyForCurrentUser = () => appState.isViewingFranchise && normalizeRole(currentRole) !== "system_admin";
+  // すぎない — 保存ハンドラの先頭で呼び、trueが返れば以降の処理を中断する。判定式自体は
+  // permissions.jsのisFranchiseReadOnlyへ集約済み(canEditMonthlyReviewと同じ実装を共有)。
+  const isFranchiseReadOnlyForCurrentUser = () => isFranchiseReadOnly(appState.isViewingFranchise, currentRole);
   const guardFranchiseReadOnly = () => {
     if (!isFranchiseReadOnlyForCurrentUser()) return false;
     setNotice("加盟店データは閲覧のみです（編集・保存はできません）");

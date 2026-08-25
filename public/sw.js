@@ -564,7 +564,30 @@
 // getLatestCompanyByIdヘルパーも新設した。あわせて、ユーザー招待失敗時のフォールバック処理に
 // 潜在していたユーザー重複追加のリスクも合わせて修正。保存先のSupabaseテーブル・RLS・権限
 // 判定は無変更。
-const CACHE_NAME = 'salon-manager-cache-v72';
+// v73: 総合品質チェックで発見した問題E・F・D・Cをまとめて修正。
+// E(権限判定の二重実装): canEditMonthlyReviewとisFranchiseReadOnlyForCurrentUserが
+// TDZ制約(App.jsxコンポーネント内でのconst定義順)により同じ判定式を手書きで複製していた。
+// 新規モジュールレベル関数isFranchiseReadOnly(permissions.js)へ統一し、両方の呼び出し元を
+// それ経由に変更。getUserRowPermissionsもApp.jsxからpermissions.jsへ移設(ロジック自体は
+// 無変更)。system_admin/company_admin/store_manager/staffの既存権限・加盟店閲覧時の
+// 読み取り専用化は一切変わらない。
+// F(company/store解決のフォールバック不一致): currentCompanyId(useMemo)が
+// appState.companies?.[0]という無条件フォールバックを持っており、currentCompanyIdが
+// 一時的に無効な値になった場合、resolveTargetCompanyAndStore等の書き込み経路が正しく
+// nullを返す(=保存ブロック)のに対し、画面表示側は別の会社のデータを黙って表示し得る
+// 状態だった(system_adminの複数会社切替時に特に危険)。新規純粋関数resolveCurrentCompany
+// (storage.js)を追加し、フォールバック無し(一致しなければnull)に統一。persistToSupabase
+// の同種の会社解決ロジックも同じ関数へ統一(元々フォールバック無しで動作は不変)。
+// D(円グラフの未定義CSSクラス): StoreSalesCompositionCard(全店舗ダッシュボードの店舗別
+// 売上構成比)がsales-composition-pie(conic-gradient円グラフ)を使っていたが、対応する
+// CSSが一度も定義されておらず常に不可視だった。単店舗版(SalesCompositionCard)が既に
+// 移行済みの100%積み上げ横棒グラフパターンへ統一(新規CSSクラスを増やさず、動作確認済みの
+// 既存.sales-composition-bar系を再利用)。
+// C(長い文字列の折り返し未対応): ユーザー管理の店舗名見出し(.user-store-group-header)・
+// ユーザー名/メール(.user-staff-row-identity)、会社/店舗/加盟店カードの名前
+// (.info-card-head)、店舗ランキング(StoreRankingCard)の店舗名、の4箇所で長い文字列が
+// 隣接するバッジ・数値を押し出してはみ出す問題を修正。
+const CACHE_NAME = 'salon-manager-cache-v73';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

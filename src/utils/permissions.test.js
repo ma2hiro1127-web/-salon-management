@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage, getInvitableRoles } from "./permissions.js";
+import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage, getInvitableRoles, isFranchiseReadOnly, getUserRowPermissions } from "./permissions.js";
 
 test("system and company admins can access all stores in their company", () => {
   assert.deepEqual(getAllowedStoreIdsForRole({ role: "system_admin", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s1"] }), ["s1", "s2"]);
@@ -98,4 +98,43 @@ test("system_adminであっても、通常の会社ユーザー招待/編集か�
   assert.ok(!getInvitableRoles("system_admin").includes("system_admin"));
   assert.deepEqual(getInvitableRoles("company_admin"), ["company_admin", "store_manager", "staff"]);
   assert.deepEqual(getInvitableRoles("store_manager"), ["staff"]);
+});
+
+// 総合品質チェックで発見した問題E(権限判定の二重実装)の回帰テスト: 以前はApp.jsx内で
+// isFranchiseReadOnlyForCurrentUser(書き込みガード用)とcanEditMonthlyReview(月次レビューの
+// 編集可否)が同じ判定式を手書きで複製していた(TDZ制約が理由)。isFranchiseReadOnlyという
+// 1つの純粋関数へ統一したので、両方の呼び出し元が同じ結果になることをここで直接検証する。
+test("isFranchiseReadOnly: 加盟店閲覧中はsystem_admin以外すべて読み取り専用、system_adminのみ書き込み可能", () => {
+  assert.equal(isFranchiseReadOnly(true, "system_admin"), false);
+  assert.equal(isFranchiseReadOnly(true, "company_admin"), true);
+  assert.equal(isFranchiseReadOnly(true, "store_manager"), true);
+  assert.equal(isFranchiseReadOnly(true, "staff"), true);
+  // owner/adminのようなロールのエイリアスもnormalizeRole経由で正しく解決される。
+  assert.equal(isFranchiseReadOnly(true, "owner"), false);
+  assert.equal(isFranchiseReadOnly(true, "admin"), true);
+});
+
+test("isFranchiseReadOnly: 加盟店を閲覧していない(通常時)は誰であっても読み取り専用にしない", () => {
+  assert.equal(isFranchiseReadOnly(false, "system_admin"), false);
+  assert.equal(isFranchiseReadOnly(false, "company_admin"), false);
+  assert.equal(isFranchiseReadOnly(false, "store_manager"), false);
+  assert.equal(isFranchiseReadOnly(false, "staff"), false);
+  // isViewingFranchiseがfalsy値(undefined/null/空文字)の場合も同様に読み取り専用にしない。
+  assert.equal(isFranchiseReadOnly(undefined, "company_admin"), false);
+  assert.equal(isFranchiseReadOnly(null, "company_admin"), false);
+});
+
+test("getUserRowPermissions: system_adminは誰の行も編集できるが、system_admin自身の行だけは削除できない", () => {
+  assert.deepEqual(getUserRowPermissions("system_admin", { role: "company_admin" }), { canEdit: true, canDelete: true });
+  assert.deepEqual(getUserRowPermissions("system_admin", { role: "system_admin" }), { canEdit: true, canDelete: false });
+});
+
+test("getUserRowPermissions: company_adminはsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)", () => {
+  assert.deepEqual(getUserRowPermissions("company_admin", { role: "system_admin" }), { canEdit: false, canDelete: false });
+  assert.deepEqual(getUserRowPermissions("company_admin", { role: "store_manager" }), { canEdit: true, canDelete: true });
+  assert.deepEqual(getUserRowPermissions("company_admin", { role: "staff" }), { canEdit: true, canDelete: true });
+});
+
+test("getUserRowPermissions: store_manager/staffが見る一覧は既に自分の管理範囲へ絞り込み済みのため、並んでいる行は常に編集・削除可能", () => {
+  assert.deepEqual(getUserRowPermissions("store_manager", { role: "staff" }), { canEdit: true, canDelete: true });
 });

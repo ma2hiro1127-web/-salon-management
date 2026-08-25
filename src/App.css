@@ -380,6 +380,12 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .list-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; }
 .list-row strong { display: block; }
 .list-row small { color: var(--muted); }
+/* 問題C: 店舗ランキング(StoreRankingCard)の店舗名が長い場合に金額を押し出してはみ出す
+   のを防ぐ。既存.ranking-row-name(売上ダッシュボードの店舗ランキング)と同じ
+   「省略記号で1行に収める」パターンをここでも踏襲する。 */
+.store-ranking-row { gap: 10px; }
+.store-ranking-row-name { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.store-ranking-row-value { flex-shrink: 0; }
 /* 加盟店追加モーダルの会社検索結果など、クリック可能な.list-row用のボタンリセット。 */
 button.list-row { width: 100%; background: var(--surface-strong); border: 1px solid var(--border); border-radius: 14px; cursor: pointer; text-align: left; font: inherit; color: inherit; }
 button.list-row:hover { border-color: var(--accent); }
@@ -862,6 +868,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .info-card { border: 1px solid var(--border); border-radius: 18px; background: var(--surface-strong); padding: 14px; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04); transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease; }
 .info-card:hover { transform: translateY(-2px); border-color: rgba(37, 99, 235, 0.24); box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08); }
 .info-card-head { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+/* 問題C: 会社名・店舗名・加盟店名が長い場合に右側のstatus-pillを押し出してカードから
+   はみ出さないよう、名前側の最初の子要素だけ可変幅で折り返す。 */
+.info-card-head > *:first-child { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .info-card-head small { color: var(--muted); display: block; margin-top: 4px; }
 .info-card-meta { display: flex; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 0.82rem; }
 .info-card-meta span { background: rgba(148, 163, 184, 0.12); padding: 4px 8px; border-radius: 999px; }
@@ -965,6 +974,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   width: 100%; display: flex; align-items: center; gap: 10px; padding: 14px 16px;
   background: transparent; border: 0; text-align: left; cursor: pointer; font-size: 0.95rem; color: var(--text);
 }
+/* 総合品質チェックで発見した問題C: 長い店舗名がchevron/件数バッジを押し出して
+   はみ出す(折り返し未対応)のを防ぐ。店舗名<strong>だけを可変幅にして折り返す。 */
+.user-store-group-header strong { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .user-store-group-header:hover { background: rgba(37, 99, 235, 0.05); }
 .user-store-group-header .chevron { display: inline-block; transition: transform 160ms ease; color: var(--muted); }
 .user-store-group-header .chevron.collapsed { transform: rotate(-90deg); }
@@ -974,7 +986,9 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .user-staff-list { display: flex; flex-direction: column; gap: 8px; }
 .user-staff-row { border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; background: var(--surface); }
 .user-staff-row-main { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.user-staff-row-identity { display: flex; flex-direction: column; }
+/* 問題C: 長いユーザー名・メールアドレスが右側のstatus-pillを押し出さないよう、
+   可変幅にした上で単語区切りが無くても折り返す(メールアドレスはスペースを含まないため)。 */
+.user-staff-row-identity { display: flex; flex-direction: column; min-width: 0; overflow-wrap: anywhere; }
 .user-staff-row-identity small { color: var(--muted); }
 .user-staff-row-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--muted); font-size: 0.78rem; }
 

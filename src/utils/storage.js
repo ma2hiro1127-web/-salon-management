@@ -14,6 +14,22 @@ import { canViewAllStores } from "./permissions.js";
 
 export { createInitialAppState } from "../data/defaults.js";
 
+// company_id境界の整理(総合品質チェックで発見した問題F): currentCompanyId(appState.
+// currentCompanyId、またはpersistToSupabase等が扱う任意のstateスナップショットの同名
+// フィールド)がcompanies配列のどのidとも一致しない場合、companies[0](=配列の先頭、実際には
+// 「誰の会社か」は並び順次第の任意の会社)へ静かにフォールバックしない——書き込み系
+// (resolveTargetCompanyAndStore、persistToSupabase)は元々このケースをnull(=保存不可)として
+// 明示的にブロックしていたが、表示系(App.jsxのcurrentCompany)だけがcompanies[0]へ
+// フォールバックしており、「画面には別会社のデータが表示され続けるのに保存だけ静かに失敗する」
+// というcompany_idの境界が実質的に崩れかねない不整合があった(system_adminのように複数社を
+// 扱うロールで、currentCompanyIdが指す会社が削除された直後などに顕在化し得る)。
+// currentCompanyIdが一致しない状態は「読み込み中」または「壊れた状態」のどちらかであり、
+// どちらの場合も任意の別会社のデータへ静かに切り替えるのではなくnullを返すのが正しい——
+// 単体テストできる純粋関数として切り出し、表示系・書き込み系の両方がこの1つの実装だけを
+// 参照するようにする。
+export const resolveCurrentCompany = (companies, currentCompanyId) =>
+  (Array.isArray(companies) ? companies : []).find((company) => company.id === currentCompanyId) || null;
+
 // loadTenantStateFromSupabase always defaults selectedStore to the alphabetically-first store in
 // the company. Every login/session-restore path needs to override that with whatever store this
 // device actually had selected — but resolving that by NAME alone breaks the instant another

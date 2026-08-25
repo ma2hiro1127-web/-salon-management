@@ -63,11 +63,9 @@ export default function StoreRankingCard({ storeRows = [] }) {
                 ? formatPercentOrDash(item.metric.value)
                 : formatMoneyOrDash(item.metric.value);
             return (
-              <div key={item.row.storeId} className="list-row">
-                <div>
-                  <strong>{rank ? (RANK_MEDAL[rank] || `${rank}位`) : "－"} {item.row.storeName}</strong>
-                </div>
-                <strong>{formattedValue}</strong>
+              <div key={item.row.storeId} className="list-row store-ranking-row">
+                <strong className="store-ranking-row-name">{rank ? (RANK_MEDAL[rank] || `${rank}位`) : "－"} {item.row.storeName}</strong>
+                <strong className="store-ranking-row-value">{formattedValue}</strong>
               </div>
             );
           })}

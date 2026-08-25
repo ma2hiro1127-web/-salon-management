@@ -161,6 +161,41 @@ export const getTopbarVisibility = (role) => ({
   showMonthSelector: true,
 });
 
+// 加盟店閲覧中(読み取り専用)かどうかの判定。以前はApp.jsx内に「isFranchiseReadOnlyFor
+// CurrentUser」(guardFranchiseReadOnly等の書き込みガードが呼ぶ)と「canEditMonthlyReview」
+// (月次レビューの編集可否)の2箇所で、全く同じ式(appState.isViewingFranchise &&
+// normalizeRole(currentRole) !== "system_admin")が手書きで複製されていた——コード内コメント
+// 自体が「変更すると2箇所の判定が将来ズレる可能性がある」と明記していた既知のリスクだった
+// (原因: canEditMonthlyReviewの定義がisFranchiseReadOnlyForCurrentUserの定義より前の行に
+// あり、素直に呼び出すとTDZ(const初期化前参照)でReferenceErrorになるため複製されていた)。
+// ここでisViewingFranchise/roleの2値だけから判定する純粋関数として切り出すことで、
+// モジュールレベルでimportされる側になり、コンポーネント内の宣言順序(TDZ)に一切依存しなく
+// なる——両呼び出し元はこの1つの実装だけを参照すればよくなり、今後も判定がズレる余地が
+// 構造的に無くなる。system_adminだけは加盟店閲覧中でも正規の読み書き権限を持つ(元々全社に
+// 対して正規の読み書き権限を持つ最上位ロールのため、加盟店閲覧という状態自体に左右されない)。
+export const isFranchiseReadOnly = (isViewingFranchise, role) => Boolean(isViewingFranchise) && normalizeRole(role) !== "system_admin";
+
+// ユーザー管理画面で、ある行の編集・削除ボタンを表示してよいかどうかの判定。あくまでUIを
+// わかりやすくするためのもので、実際の可否はSupabase RLS/Edge Function側のチェックが
+// 最終的な担保(要件5: UIを隠すだけでなくサーバー側でも保護する)。
+// - system_adminは誰からも削除できない(自分自身を含め、他のsystem_adminからも)。
+// - company_adminはsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)。
+// - store_managerが見る一覧(manageableUsers)は、そもそも自分の管理する店舗のstaffのみに
+//   絞り込み済みなので、そこに並ぶ行は常に操作対象になり得る。
+// 以前はApp.jsx内のコンポーネント外(モジュールレベル)にあったが、他の役割別権限判定と
+// 同じくpermissions.jsへ集約し、単体テストできるようにした(ロジック自体は無変更)。
+export const getUserRowPermissions = (currentRole, targetUser) => {
+  const role = normalizeRole(currentRole);
+  if (role === "system_admin") {
+    return { canEdit: true, canDelete: targetUser.role !== "system_admin" };
+  }
+  if (role === "company_admin") {
+    const isTargetSystemAdmin = targetUser.role === "system_admin";
+    return { canEdit: !isTargetSystemAdmin, canDelete: !isTargetSystemAdmin };
+  }
+  return { canEdit: true, canDelete: true };
+};
+
 export const getAllowedStoreIdsForRole = ({ role, companyStoreIds = [], currentUserStoreIds = [] }) => {
   if (!Array.isArray(companyStoreIds) || companyStoreIds.length === 0) return [];
   const normalizedRole = normalizeRole(role);
