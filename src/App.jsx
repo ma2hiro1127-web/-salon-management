@@ -180,6 +180,8 @@ import {
   updateProfileStoreAssignments,
   getInviteInfo,
   acceptInvite,
+  isSelfSignupEnabled,
+  selfSignup,
   sendInviteEmail,
   generateInviteLink,
   deleteUserAccount,
@@ -653,13 +655,29 @@ function App() {
   const [authMode, setAuthMode] = useState(() => {
     if (typeof window === "undefined") return "login";
     const params = new URLSearchParams(window.location.search);
-    return params.get("invite") ? "signup" : "login";
+    if (params.get("invite")) return "signup";
+    // ?owner-signup=1 はfeature flagが非公開の間もテスト専用に新規オーナー登録フォームへ
+    // 直接到達できるようにするための導線(要件12)。実際に送信できるかどうかはself-signup
+    // Edge Function側のflag判定が最終的な権威で、このURLパラメータはフォームの表示だけを
+    // 制御する。
+    if (params.get("owner-signup") === "1") return "ownerSignup";
+    return "login";
   });
   const [currentRole, setCurrentRole] = useState("staff");
   const [inviteToken, setInviteToken] = useState(() => {
     if (typeof window === "undefined") return "";
     const params = new URLSearchParams(window.location.search);
     return params.get("invite") || "";
+  });
+  // 新規オーナー・セルフサインアップのfeature flag(招待制とは別導線、要件11)。DBから
+  // is_self_signup_enabled() RPC(匿名でも呼べる)経由で取得するまではfalse=非表示扱いにする
+  // (フェイルクローズ)。テスト専用バイパス用キー(要件12)はURLからそのまま読み取り、
+  // self-signup Edge Functionへ渡すだけ——このキー自体をフロント側の許可判定には使わない。
+  const [selfSignupEnabled, setSelfSignupEnabled] = useState(false);
+  const [ownerSignupTestKey] = useState(() => {
+    if (typeof window === "undefined") return "";
+    const params = new URLSearchParams(window.location.search);
+    return params.get("testKey") || "";
   });
   // 招待リンクの宛先メールアドレス(get_invite_infoから取得)。新規登録フォームのメール欄を
   // これで事前入力・固定することで、招待されたメールアドレスと違うメールアドレスを手入力して
@@ -1513,6 +1531,20 @@ function App() {
       cancelled = true;
     };
   }, [inviteToken]);
+
+  // 新規オーナー・セルフサインアップの一般公開状態を、未ログインの段階で一度だけ取得する
+  // (要件11: フロントの表示制御にも使うが、実際の許可判定はself-signup Edge Function側)。
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    let cancelled = false;
+    (async () => {
+      const enabled = await isSelfSignupEnabled();
+      if (!cancelled) setSelfSignupEnabled(enabled);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (currentCompany) {
@@ -2514,6 +2546,84 @@ function App() {
       }
     } catch (error) {
       setAuthError(getLocalizedSupabaseErrorMessage(error));
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  // 新規オーナー・セルフサインアップ(要件2)。招待受諾(handleSignUp)とは完全に別の関数・
+  // 別のEdge Function(self-signup)を使う——処理を混同しない(要件7)。company/store作成・
+  // company_admin付与・二重生成防止・途中離脱復旧はすべてself-signup Edge Function側の責務
+  // (supabase/functions/self-signup/index.ts参照)。ここでは、その成功後にhandleLoginと
+  // 同じ「サインイン→プロフィール取得→テナント状態取得→アプリへ入る」処理を1回だけ追加で
+  // 行う(3箇所目のコピー、既存のhandleLogin/handleSignUpと同じ並び)。
+  const handleOwnerSignUp = async ({ ownerName, companyName, email, password }) => {
+    setAuthLoading(true);
+    setAuthError("");
+    setAuthSuccess("");
+    const normalizedEmail = normalizeEmail(email);
+
+    if (!isSupabaseConfigured) {
+      setAuthError("Supabase Authに接続できませんでした。Supabaseの接続状態を確認してください。");
+      setAuthLoading(false);
+      return;
+    }
+
+    try {
+      const signUpResult = await selfSignup({ email: normalizedEmail, password, ownerName, companyName, testKey: ownerSignupTestKey });
+      if (!signUpResult.ok) {
+        // 生のSupabase/Postgresエラーではなく、self-signup Edge Functionが返す日本語文言を
+        // そのまま表示する(要件15)。
+        setAuthError(getSupabaseErrorMessage(signUpResult.error));
+        setAuthLoading(false);
+        return;
+      }
+
+      const { data, error } = await signInWithEmail(normalizedEmail, password);
+      if (error) throw error;
+      const authUser = data?.user;
+      if (!authUser) throw new Error("認証ユーザーを取得できませんでした");
+
+      const profile = await ensureProfileForAuthUser({ authUserId: authUser.id, email: authUser.email, role: resolveRoleForEmail(authUser.email) });
+      if (!profile) throw new Error("プロフィール情報を取得できませんでした");
+      const tenantState = await loadTenantStateFromSupabase({ authUserId: authUser.id, email: authUser.email, currentProfile: profile });
+      const nextUser = buildAuthenticatedUser({ profile, authUser, role: normalizeRole(profile?.role) });
+      const nextRole = normalizeRole(profile?.role || "company_admin");
+      setCurrentUser(nextUser);
+      setCurrentRole(nextRole);
+      const ownerCompanyId = profile?.company_id || tenantState.currentCompanyId || "";
+      const ownerLocalRecoveredState = normalizeAppState(readAppState());
+      const { selectedStore: ownerPreferredSelectedStore, selectedStoreId: ownerPreferredSelectedStoreId } = resolvePreferredStoreSelection({
+        tenantState,
+        localRecoveredState: ownerLocalRecoveredState,
+        currentCompanyId: ownerCompanyId,
+        role: nextRole,
+      });
+      setAppState({
+        ...tenantState,
+        currentCompanyId: ownerCompanyId,
+        currentUserId: nextUser.profileId,
+        currentAuthUserId: nextUser.authUserId,
+        selectedStore: ownerPreferredSelectedStore,
+        selectedStoreId: ownerPreferredSelectedStoreId,
+        selectedMonth: ownerLocalRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
+        isViewingFranchise: false,
+        homeCompanyIdBeforeFranchiseView: "",
+      });
+      window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
+      window.localStorage.setItem("salon-role", nextRole);
+      setAuthMode("app");
+      // 新規に作られたばかりの1店舗はstore_profiles未作成=初期設定チェックリスト
+      // (setupChecklist、ダッシュボードで自動表示)がそのまま未完了として表示される——新しい
+      // 専用オンボーディングUIを作らず、既存のダッシュボード起点の案内へ自然につなげる
+      // (要件10)。resolveDefaultPage(company_admin)は元々dashboardを返すため、他の
+      // ログイン経路と同じ既定ページのままでよい。
+      setActivePage(resolveDefaultPage(nextRole));
+    } catch (error) {
+      // selfSignup自体は既に成功している(アカウントは作成済み)可能性が高いので、
+      // handleSignUpの招待受諾フォールバックと同じく、登録失敗と誤解させない文言にする。
+      setAuthMode("login");
+      setAuthError(`アカウントの作成は完了しましたが、自動ログインに失敗しました(${getLocalizedSupabaseErrorMessage(error)})。お手数ですが、上のログイン画面から設定したメールアドレスとパスワードでログインしてください。`);
     } finally {
       setAuthLoading(false);
     }
@@ -7163,7 +7273,7 @@ function App() {
   }
 
   if (!currentUser && !authLoading) {
-    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} />;
+    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onOwnerSignUp={handleOwnerSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} hasInviteToken={Boolean(inviteToken)} ownerSignupVisible={selfSignupEnabled} />;
   }
 
   // 停止中、または削除(論理削除)済みの会社は、データを保持したまま通常ユーザー

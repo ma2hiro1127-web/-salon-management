@@ -410,6 +410,46 @@ export const acceptInvite = async ({ token, email, password }) => {
   return { ok: true, data };
 };
 
+// 新規オーナー・セルフサインアップのfeature flag状態(要件11)。get_invite_infoと同じ、
+// 未ログインでも呼べるSECURITY DEFINER RPC(20260903000000)経由——テーブル自体はsystem_admin
+// のみ閲覧可のため、このRPCがフロントから読める唯一の窓口。取得失敗時はfalse側に倒す
+// (フラグが読めない=非公開として扱う、フェイルクローズ)。
+export const isSelfSignupEnabled = async () => {
+  if (!isSupabaseConfigured) return false;
+  try {
+    const { data, error } = await supabase.rpc("is_self_signup_enabled");
+    if (error) throw error;
+    return Boolean(data);
+  } catch (error) {
+    logSupabaseError({ operation: "isSelfSignupEnabled", table: "app_feature_flags", error });
+    return false;
+  }
+};
+
+// 新規オーナーのセルフサインアップ本体 — self-signup Edge Function(service-role)経由。
+// company/store/company_admin付与を1回のサーバー側呼び出しでまとめて行う(冪等・途中離脱
+// 復旧はEdge Function側の責務、詳細はsupabase/functions/self-signup/index.ts参照)。招待
+// フロー(acceptInvite)とは完全に別の関数・別のEdge Function——処理を混同しない(要件7)。
+export const selfSignup = async ({ email, password, ownerName, companyName, testKey }) => {
+  const { data, error } = await supabase.functions.invoke("self-signup", {
+    body: { email, password, ownerName, companyName, testKey },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
 // Actually sends the invitation email via the send-invite-email Edge Function (service-role,
 // calls supabase.auth.admin.inviteUserByEmail) — see that function for why this has to run
 // server-side. Unlike the old client-only "招待メール再発行" button, this can genuinely fail

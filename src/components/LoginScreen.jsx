@@ -1,20 +1,26 @@
 import { useState } from "react";
+import { validateOwnerSignUpInput } from "../utils/selfSignup.js";
 
 const modeLabels = {
   login: { title: "ログイン", button: "ログイン", helper: "登録済みのアカウントでサインインできます。" },
   signup: { title: "新規登録", button: "アカウント作成", helper: "メールアドレスとパスワードで新規アカウントを作成します。" },
   reset: { title: "パスワード再設定", button: "再設定メールを送る", helper: "登録済みメールアドレスへ再設定用のリンクを送ります。" },
   recover: { title: "新しいパスワードを設定", button: "パスワードを設定", helper: "アカウントの新しいパスワードを設定してください。" },
+  // 招待受諾(signup)とは別導線 — 新規オーナーが自分でcompany_adminとして登録する専用モード。
+  ownerSignup: { title: "サロンマネージャーを無料で始める", button: "無料で始める", helper: "美容室経営の数字管理を、もっとシンプルに。" },
 };
 
-const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onResetPassword, onSetNewPassword, loading, error, success, inviteEmail = "" }) => {
+const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onOwnerSignUp, onResetPassword, onSetNewPassword, loading, error, success, inviteEmail = "", hasInviteToken = false, ownerSignupVisible = false }) => {
   const [emailInput, setEmailInput] = useState("");
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [ownerName, setOwnerName] = useState("");
+  const [companyName, setCompanyName] = useState("");
   const [formError, setFormError] = useState("");
 
   const currentMode = modeLabels[mode] || modeLabels.login;
   const isInviteSignup = mode === "signup" && Boolean(inviteEmail);
+  const isOwnerSignup = mode === "ownerSignup";
   // 招待リンク経由の場合はinviteEmail(get_invite_infoで判明したメールアドレス)を優先する。
   // 招待されたメールアドレスと違うメールアドレスを手入力してしまい、後段の「招待メール
   // アドレスと一致するメールアドレスで登録してください」で詰まる事故を防ぐため、この場合は
@@ -59,6 +65,16 @@ const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onResetPassword, 
       return;
     }
 
+    if (mode === "ownerSignup") {
+      const validationError = validateOwnerSignUpInput({ ownerName, companyName, email, password, passwordConfirm });
+      if (validationError) {
+        setFormError(validationError);
+        return;
+      }
+      onOwnerSignUp({ ownerName, companyName, email, password });
+      return;
+    }
+
     onSubmit({ email, password });
   };
 
@@ -74,12 +90,37 @@ const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onResetPassword, 
         {isRecoverMode ? null : (
           <div className="button-row" style={{ marginBottom: 4 }}>
             <button className={mode === "login" ? "primary-button" : "secondary-button"} type="button" onClick={() => onModeChange("login")}>ログイン</button>
-            <button className={mode === "signup" ? "primary-button" : "secondary-button"} type="button" onClick={() => onModeChange("signup")}>新規登録</button>
+            {/* 招待受諾専用モード — 招待リンク経由(inviteTokenあり)の時だけ表示する。
+                招待の無い状態でこのボタンを常時表示すると、下の新規オーナー登録と紛らわしく
+                なるうえ、招待トークンの無いこのモードは現状メール確認の壁で実質完了しない。 */}
+            {hasInviteToken ? (
+              <button className={mode === "signup" ? "primary-button" : "secondary-button"} type="button" onClick={() => onModeChange("signup")}>新規登録</button>
+            ) : null}
             <button className={mode === "reset" ? "primary-button" : "secondary-button"} type="button" onClick={() => onModeChange("reset")}>パスワード再設定</button>
           </div>
         )}
+        {/* 新規オーナー・セルフサインアップ導線。招待受諾(signup)とは別ボタン・別モード。
+            ownerSignupVisible はfeature flag(is_self_signup_enabled)がON、またはテスト専用
+            URLパラメータ経由の時だけtrueになる(App.jsx側で判定)。 */}
+        {!isRecoverMode && ownerSignupVisible && mode !== "ownerSignup" ? (
+          <div className="button-row" style={{ marginBottom: 4 }}>
+            <button className="secondary-button" type="button" onClick={() => onModeChange("ownerSignup")}>サロンマネージャーを無料で始める</button>
+          </div>
+        ) : null}
 
         <form className="auth-form" onSubmit={handleSubmit}>
+          {isOwnerSignup ? (
+            <>
+              <label className="field">
+                <span>オーナー名</span>
+                <input type="text" value={ownerName} onChange={(event) => setOwnerName(event.target.value)} required />
+              </label>
+              <label className="field">
+                <span>サロン名（会社名）</span>
+                <input type="text" value={companyName} onChange={(event) => setCompanyName(event.target.value)} required />
+              </label>
+            </>
+          ) : null}
           {isRecoverMode ? null : (
             <label className="field">
               <span>メールアドレス</span>
@@ -93,7 +134,7 @@ const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onResetPassword, 
               <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={8} required />
             </label>
           ) : null}
-          {mode === "signup" || isRecoverMode ? (
+          {mode === "signup" || mode === "ownerSignup" || isRecoverMode ? (
             <label className="field">
               <span>{isRecoverMode ? "新しいパスワード（確認）" : "パスワード（確認）"}</span>
               <input type="password" value={passwordConfirm} onChange={(event) => setPasswordConfirm(event.target.value)} minLength={8} required />
@@ -102,6 +143,9 @@ const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onResetPassword, 
           {formError || error ? <div className="notice-box">{formError || error}</div> : null}
           {success ? <div className="notice-box" style={{ background: "rgba(46, 163, 97, 0.12)", color: "#2ea361" }}>{success}</div> : null}
           <button className="primary-button" type="submit" disabled={loading}>{loading ? "処理中..." : currentMode.button}</button>
+          {isOwnerSignup ? (
+            <button type="button" className="text-button" onClick={() => onModeChange("login")}>すでにアカウントをお持ちの方はこちら</button>
+          ) : null}
         </form>
       </div>
     </div>
