@@ -1289,12 +1289,6 @@ export const refreshInviteState = async ({ profileId, inviteToken, inviteExpires
   }
 };
 
-export const getProfilesForDebug = async () => {
-  const { data, error } = await supabase.from("profiles").select("*").order("created_at", { ascending: false }).limit(20);
-  if (error) throw error;
-  return data || [];
-};
-
 // The Users management page's 権限変更/所属店舗変更 buttons used to only update appState.users
 // (local state + the legacy tenant_snapshots blob) — never the profiles/user_stores rows that
 // RLS and every other read path actually check. That made a role "change" pure UI theater: the

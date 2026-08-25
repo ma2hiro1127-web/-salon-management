@@ -175,7 +175,6 @@ import {
   markStoreInitialSetupCompleted,
   logSupabaseError,
   signUpWithEmail,
-  getProfilesForDebug,
   resolveRoleForEmail,
   updateProfileRole,
   updateProfileStoreAssignments,
@@ -241,23 +240,12 @@ const resolveInviteEmailErrorMessage = (error) => {
   return getSupabaseErrorMessage(error);
 };
 
-const refreshAuthDebugInfo = async ({ sessionUser = null, role = "", profile = null, hasSession = false, authUser = null, setDebugInfo = null } = {}) => {
-  if (!setDebugInfo) return;
-  try {
-    const { data: sessionData } = await getSupabaseSession();
-    const activeUser = sessionData?.session?.user || sessionUser || authUser || null;
-    const resolvedRole = normalizeRole(role || profile?.role || "staff");
-    const profiles = await getProfilesForDebug();
-    return setDebugInfo({
-      userId: activeUser?.id || profile?.auth_user_id || "",
-      email: activeUser?.email || profile?.email || "",
-      role: resolvedRole,
-      hasSession: Boolean(sessionData?.session || hasSession),
-      profiles,
-    });
-  } catch {
-    return setDebugInfo((prev) => ({ ...prev, hasSession: false, profiles: [] }));
-  }
+// 認証・セッション不具合の追跡用ログ(開発環境限定)。import.meta.env.DEVは本番ビルドでは
+// 常にfalse(`vite build`の出力自体にこの呼び出しが到達しないコードとして扱われる)ため、
+// 本番環境に一切出力されない。トークン・メールアドレス等の機密情報は引数に含めないこと
+// ——ここで渡すのは「何が起きたか」を表す短い文字列と、真偽値・件数程度の非機密情報のみ。
+const authLog = (...args) => {
+  if (import.meta.env.DEV) console.info("[auth-flow]", ...args);
 };
 
 const coerceId = (...values) => values.find((value) => typeof value === "string" && value.trim()) || "";
@@ -663,7 +651,6 @@ function App() {
     return params.get("invite") ? "signup" : "login";
   });
   const [currentRole, setCurrentRole] = useState("staff");
-  const [debugInfo, setDebugInfo] = useState({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
   const [inviteToken, setInviteToken] = useState(() => {
     if (typeof window === "undefined") return "";
     const params = new URLSearchParams(window.location.search);
@@ -1314,12 +1301,15 @@ function App() {
   const PROFILE_LOAD_MAX_ATTEMPTS = 3;
   const PROFILE_LOAD_RETRY_DELAY_MS = 1500;
   const loadProfileAndEnterApp = async (session, attempt = 1) => {
+    authLog(`profile取得開始 attempt=${attempt}/${PROFILE_LOAD_MAX_ATTEMPTS}`);
     try {
       const profile = await ensureProfileForAuthUser({ authUserId: session.user.id, email: session.user.email, role: resolveRoleForEmail(session.user.email) });
       if (!profile) {
         throw new Error("プロフィール情報を取得できませんでした");
       }
+      authLog("profile取得成功", { role: normalizeRole(profile?.role || "staff"), hasCompanyId: Boolean(profile?.company_id) });
       const tenantState = await loadTenantStateFromSupabase({ authUserId: session.user.id, email: session.user.email, currentProfile: profile });
+      authLog("company/store取得成功", { companyCount: tenantState.companies?.length || 0 });
       const localRecoveredState = normalizeAppState(readAppState());
       const nextUser = buildAuthenticatedUser({ profile, authUser: session.user });
       setCurrentUser(nextUser);
@@ -1352,17 +1342,19 @@ function App() {
       setAppState(reconciledState);
       setSyncStatus({ status: "syncing", message: "同期中です…", timestamp: new Date().toISOString(), error: false });
       void hydrateFromSupabase({ authUser: session.user, profile, tenantState: reconciledState });
-      await refreshAuthDebugInfo({ sessionUser: session.user, role: profile?.role, profile, hasSession: true, authUser: session.user, setDebugInfo });
       setAuthProfileLoadError("");
       setAuthMode("app");
       setActivePage(resolveDefaultPage(profile?.role || "staff"));
+      authLog("認証完了、appへ遷移");
     } catch (error) {
       if (attempt < PROFILE_LOAD_MAX_ATTEMPTS) {
+        authLog(`profile/company/store取得失敗、${PROFILE_LOAD_RETRY_DELAY_MS * attempt}ms後にリトライ(セッションは維持したまま)`, error?.message);
         await new Promise((resolve) => window.setTimeout(resolve, PROFILE_LOAD_RETRY_DELAY_MS * attempt));
         await loadProfileAndEnterApp(session, attempt + 1);
         return;
       }
       console.error("[auth-init] profile/tenant load failed after retries — keeping session, not logging out", error);
+      authLog("redirect理由: profile/company/store取得が全リトライ失敗(ログイン画面へは戻さず専用エラー画面を表示)");
       setAuthProfileLoadError(getLocalizedSupabaseErrorMessage(error));
     }
   };
@@ -1377,11 +1369,11 @@ function App() {
     // invite token is the fix; an authenticated session always still wins and goes to "app".
     const hasInviteIntent = typeof window !== "undefined" && Boolean(new URLSearchParams(window.location.search).get("invite"));
     const initializeAuth = async () => {
+      authLog("auth初期化開始");
       try {
         if (!isSupabaseConfigured) {
           setCurrentUser(null);
           setCurrentRole("staff");
-          setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
           setAuthMode(hasInviteIntent ? "signup" : "login");
           setActivePage("dashboard");
           setAppState(initialAppStateValue);
@@ -1409,6 +1401,7 @@ function App() {
 
         const { data: { session }, error } = await getSupabaseSession();
         if (error) throw error;
+        authLog("session取得成功", { hasSession: Boolean(session?.user) });
         // supabase-jsのdetectSessionInUrlは、access_token等をURLのハッシュ(#…)から読み取った
         // 時点でセッションを確立するが、ハッシュ自体はブラウザのアドレスバーに残り続ける。
         // getSupabaseSession()が完了した今、ハッシュに含まれていた情報は既に処理済みなので、
@@ -1442,7 +1435,6 @@ function App() {
           await signOutFromSupabase();
           setCurrentUser(null);
           setCurrentRole("staff");
-          setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
           setAuthMode("signup");
           setActivePage("dashboard");
           setAppState(initialAppStateValue);
@@ -1459,16 +1451,16 @@ function App() {
           return;
         }
 
+        authLog("redirect理由: 有効なセッションが確認できなかった(未ログイン)");
         setCurrentUser(null);
         setCurrentRole("staff");
-        setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
         setAuthMode(hasInviteIntent ? "signup" : "login");
         setActivePage("dashboard");
         setAppState(initialAppStateValue);
       } catch (error) {
+        authLog("redirect理由: session取得自体が失敗(getSupabaseSession/exchangeCodeForSession等)", error?.message);
         setCurrentUser(null);
         setCurrentRole("staff");
-        setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
         setAuthMode(hasInviteIntent ? "signup" : "login");
         setActivePage("dashboard");
         setAuthError(getLocalizedSupabaseErrorMessage(error));
@@ -2303,7 +2295,6 @@ function App() {
         if (!authUser) {
           throw new Error("認証ユーザーを取得できませんでした");
         }
-        const session = data?.session;
         const { data: sessionData, error: sessionError } = await getSupabaseSession();
         console.info("[supabase-login] getSession result", { sessionData, sessionError });
         const { data: userData, error: userError } = await supabase.auth.getUser();
@@ -2336,7 +2327,6 @@ function App() {
           isViewingFranchise: false,
           homeCompanyIdBeforeFranchiseView: "",
         });
-        await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: Boolean(session || sessionData?.session), authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
         window.localStorage.setItem("salon-role", normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
         setAuthLoading(false);
@@ -2448,7 +2438,6 @@ function App() {
           isViewingFranchise: false,
           homeCompanyIdBeforeFranchiseView: "",
         });
-        await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
         window.localStorage.setItem("salon-role", nextRole);
         setAuthMode("app");
@@ -2506,7 +2495,6 @@ function App() {
           isViewingFranchise: false,
           homeCompanyIdBeforeFranchiseView: "",
         });
-        await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
         window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
         window.localStorage.setItem("salon-role", normalizeRole(profile?.role || resolveRoleForEmail(authUser.email)));
         setAuthMode("app");
@@ -2584,7 +2572,6 @@ function App() {
         isViewingFranchise: false,
         homeCompanyIdBeforeFranchiseView: "",
       });
-      await refreshAuthDebugInfo({ sessionUser: authUser, role: profile?.role, profile, hasSession: true, authUser, setDebugInfo });
       window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
       window.localStorage.setItem("salon-role", nextRole);
       setAuthMode("app");
@@ -2597,6 +2584,7 @@ function App() {
   };
 
   const handleLogout = async () => {
+    authLog("logout理由: ユーザーが明示的にログアウトを実行");
     try {
       if (isSupabaseConfigured) {
         await signOutFromSupabase();
@@ -2611,7 +2599,6 @@ function App() {
       // via readAppState()'s same-company fallback before their own fresh Supabase fetch lands.
       window.localStorage.removeItem(STORAGE_KEYS.appState);
       setCurrentUser(null);
-      setDebugInfo({ userId: "", email: "", role: "staff", hasSession: false, profiles: [] });
       setCurrentRole("staff");
       setAuthMode("login");
       setActivePage("dashboard");

@@ -667,7 +667,22 @@
 // 絶対に戻さず、「セッションは有効だがプロフィールが読み込めない」専用のエラー画面
 // (再試行/明示的なログアウトの選択肢付き)を表示する。本当にセッションが無い場合の
 // 挙動・ログアウトボタンの動作は無変更。
-const CACHE_NAME = 'salon-manager-cache-v79';
+// v80: 認証・セッション不安定性の追加調査・修正(v79の続き)。
+// 発見1: refreshAuthDebugInfo/getProfilesForDebug(画面には一切表示されない、完全に
+// 未使用のデバッグ用state「debugInfo」のためだけの仕組み)が、ログイン・セッション復元・
+// 招待受諾等の認証クリティカルパス上で、無条件にSELECT * FROM profiles LIMIT 20という
+// 余分なSupabase往復を発生させていた——回線が遅い/不安定なユーザーほど、この不要な
+// 待ち時間の分だけタイムアウト・失敗の確率が上がっていた可能性がある。完全に未使用
+// だったため削除し、認証クリティカルパスの往復回数を削減。
+// 発見2(確認事項、コード変更なし): React StrictModeのeffect二重実行は開発時のみで
+// 本番ビルドには影響しない。onAuthStateChangeは元々未使用(セッション確認は
+// ページ読み込み時の1回のgetSession()のみ)で、リスナー多重登録・競合のリスクは無い。
+// Supabase clientの生成は1箇所のみ。
+// 発見3: 開発環境限定の診断ログ(authLog、本番ビルドには一切出力されない)を認証フローの
+// 主要な分岐点(auth初期化開始・session取得成功/失敗・profile/company/store取得成功/
+// 失敗/リトライ・redirect理由・logout理由)に追加——今後同種の不具合が再発した場合の
+// 原因追跡を容易にする。トークン・メールアドレス等の機密情報は出力しない。
+const CACHE_NAME = 'salon-manager-cache-v80';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
