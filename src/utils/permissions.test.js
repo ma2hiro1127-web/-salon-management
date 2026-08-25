@@ -138,3 +138,33 @@ test("getUserRowPermissions: company_adminはsystem_admin行を編集・削除�
 test("getUserRowPermissions: store_manager/staffが見る一覧は既に自分の管理範囲へ絞り込み済みのため、並んでいる行は常に編集・削除可能", () => {
   assert.deepEqual(getUserRowPermissions("store_manager", { role: "staff" }), { canEdit: true, canDelete: true });
 });
+
+// 設定ページ削除(要件): "settings"はどのロールからもナビゲーション・URL直接アクセスとも
+// 到達できない状態にする。この1テストで「サイドメニューに出ない」(getVisibleNavItems)と
+// 「直接activePageを"settings"にしても弾かれる」(canAccessPage、AccessDeniedへの根拠)の
+// 両方を、実在する全ロール(エイリアス含む)について直接検証する。
+test("設定ページ削除: 'settings'はどのロール(owner/admin エイリアス含む)からもナビゲーション・アクセス許可のいずれにも現れない", () => {
+  const allRoleInputs = ["system_admin", "company_admin", "store_manager", "staff", "owner", "admin"];
+  allRoleInputs.forEach((role) => {
+    assert.equal(canAccessPage(role, "settings"), false, `${role} should not be able to access "settings"`);
+    assert.ok(!getVisibleNavItems(role).some((item) => item.id === "settings"), `${role}'s nav items should not include "settings"`);
+  });
+});
+
+// 設定ページ削除によって、各ロールの「settings以外」の既存アクセス可能ページが一切変わって
+// いないことを直接検証する(要件: company_admin/store_manager/staffの既存編集権限・
+// アクセス範囲を壊さない、の橋渡しとしてページ到達可否を保証する)。
+test("設定ページ削除: company_admin/store_manager/staffそれぞれの、settings以外の既存アクセス可能ページは変わっていない", () => {
+  assert.deepEqual(getVisibleNavItems("company_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "franchise", "faq"]);
+  assert.deepEqual(getVisibleNavItems("store_manager").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "faq"]);
+  assert.deepEqual(getVisibleNavItems("staff").map((item) => item.id), ["dashboard", "daily", "monthlyReview"]);
+  assert.deepEqual(getVisibleNavItems("system_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "faq"]);
+});
+
+// resolveDefaultPage(ログイン直後・旧settingsページへのアクセス試行時の安全なリダイレクト先
+// として使う)が、settings削除後も各ロールで正しく「売上」画面を指すことを確認する。
+test("設定ページ削除: resolveDefaultPageは全ロールでsettings以外の有効なページ(dashboard)を返す", () => {
+  ["system_admin", "company_admin", "store_manager", "staff"].forEach((role) => {
+    assert.equal(resolveDefaultPage(role), "dashboard");
+  });
+});

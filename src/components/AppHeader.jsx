@@ -42,7 +42,12 @@ export default function AppHeader({
   onMonthChange,
   onLogout,
 }) {
-  const title = PAGE_TITLES[activePage] || "設定";
+  // 「設定」ページ削除(要件)に伴うフォールバック文言の見直し: 以前はPAGE_TITLESに存在
+  // しない唯一のページが"settings"だったため、このフォールバック自体が実質的に settings
+  // ページ専用のタイトルとして機能していた。settingsページ自体を削除した今、フォールバックは
+  // 特定のページ名を連想させない汎用的な文言にする(通常、現行ページはすべてPAGE_TITLESに
+  // 存在するため、実運用でこの分岐に入ることは無い想定)。
+  const title = PAGE_TITLES[activePage] || "サロンマネージャー";
 
   return (
     <header className="topbar topbar-compact-mobile">

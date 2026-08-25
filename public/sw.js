@@ -695,7 +695,21 @@
 // - 長い質問文がアイコンを押し出してはみ出さないようCSSを調整(総合品質チェックの折り返し
 //   対応と同じパターン)、質問/回答の文字サイズ・太さの差を明確化。
 // 既存データ・認証・権限・売上・日締め等の動作には一切影響しない(FAQページのみの変更)。
-const CACHE_NAME = 'salon-manager-cache-v81';
+// v82: 「設定」ページを削除(要件: 将来Stripe導入時に契約・請求管理ページとして再設計する
+// 想定のため、現時点では中途半端な設定ページを残さない)。
+// - ナビゲーション定義(permissions.js: NAV_ITEMS_BY_ROLE)から"settings"を削除。
+//   PC/スマホ/PWAとも同じ1つのサイドメニュー描画(getVisibleNavItems経由)のため、
+//   CSSでの非表示ではなくこの定義変更だけで全環境から消える。
+// - 設定ページ内の3項目(ダークモード切替・過去データ編集期限/一般スタッフの過去編集・
+//   消費税引当のON/OFF・税率)のUIを削除。ダークモードの共通テーマ処理(theme値の
+//   読み込み・.theme-dark適用)、消費税設定(会社管理画面の損益表内に既に統合済みの
+//   同じUIが残っている)、editDeadlineDays/allowStaffPastEdit(元々どの権限判定からも
+//   参照されておらず、削除しても既存の編集権限には一切影響しない)は、いずれもDB・
+//   状態・保存処理を一切削除していない——設定ページ側のUIだけを削除した。
+// - 旧settingsページへ到達しようとした場合(廃止ページが開かれた状態でアプリが更新
+//   された等)に、行き止まりの「アクセス権限がありません」画面へ取り残されないよう、
+//   自動的にログイン直後と同じ遷移先(売上画面)へリダイレクトする安全網を追加。
+const CACHE_NAME = 'salon-manager-cache-v82';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

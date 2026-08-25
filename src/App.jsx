@@ -626,7 +626,12 @@ const canManageUsers = (role) => canManageUsersByRole(role);
 const HYDRATE_MAX_AUTO_RETRY_ATTEMPTS = 5;
 
 function App() {
-  const [theme, setTheme] = useState(() => (readStorage(STORAGE_KEYS.theme, "light") === "dark" ? "dark" : "light"));
+  // 設定ページ削除(要件)に伴い、ダークモードの切替UI(トグルボタン)は削除した。テーマ処理
+  // 自体(theme値の読み込み・.theme-dark適用・localStorageへの保存effect)は他画面へ影響
+  // する可能性があるため削除せず維持する——切替手段が無くなっただけで、以前にダークモードへ
+  // 切り替えていた利用者の見た目は変わらない。setTheme(変更する手段)は今回使われなくなった
+  // ため、useStateから受け取らない(themeの読み取り専用化)。
+  const [theme] = useState(() => (readStorage(STORAGE_KEYS.theme, "light") === "dark" ? "dark" : "light"));
   const [activePage, setActivePage] = useState("dashboard");
   const [currentUser, setCurrentUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -2614,6 +2619,17 @@ function App() {
   };
 
   const canAccessCurrentPage = canAccessPage(currentRole, activePage);
+  // 設定ページ削除(要件): activePageが今のロールで開けなくなった場合(例: 廃止したページ
+  // "settings"が既に開かれた状態でアプリが更新された、権限が変更された等)に、行き止まりの
+  // 「アクセス権限がありません」画面(AccessDenied、サイドメニューへ戻る導線が無い)へ
+  // 誰も取り残されないようにする安全網。同じロールの初回ログイン時の遷移先
+  // (resolveDefaultPage、NAV_ITEMS_BY_ROLEの先頭)へ自動的に切り替える——特定のページ名を
+  // ハードコードしないため、将来別のページが同様の理由で廃止された場合にも同じ仕組みで
+  // 安全に動作する。
+  useEffect(() => {
+    if (authLoading || !currentUser || canAccessCurrentPage) return;
+    setActivePage(resolveDefaultPage(currentRole));
+  }, [canAccessCurrentPage, authLoading, currentUser, currentRole]);
   const isAdminUser = isAdminRole(currentRole);
 
   // companyIdOverride: 加盟店連携(閲覧専用)で、自社のprofile.company_idではなく明示的に
@@ -9853,72 +9869,6 @@ function App() {
           />
         )}
         {activePage === "faq" && <FaqPage />}
-
-        {activePage === "settings" && (
-          <div className="stack settings-stack">
-            <section className="panel">
-              <div className="panel-heading">
-                <h2>表示設定</h2>
-              </div>
-              <div className="toggle-panel">
-                <div>
-                  <strong>ダークモード</strong>
-                  <small>{theme === "dark" ? "オン" : "オフ"}</small>
-                </div>
-                <button className="secondary-button" type="button" onClick={() => setTheme((prev) => (prev === "dark" ? "light" : "dark"))}>
-                  {theme === "dark" ? "ライトに切替" : "ダークに切替"}
-                </button>
-              </div>
-            </section>
-
-            <section className="panel">
-              <div className="panel-heading">
-                <h2>入力・編集設定</h2>
-              </div>
-              <div className="input-grid">
-                <label className="field">
-                  <span>過去データの編集期限（日）</span>
-                  <input type="number" value={companySettingsForm.editDeadlineDays || 7} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, editDeadlineDays: Number(event.target.value) }))} />
-                </label>
-                <label className="field">
-                  <span>一般スタッフの過去編集</span>
-                  <select value={companySettingsForm.allowStaffPastEdit ? "on" : "off"} onChange={(event) => setCompanySettingsForm((prev) => ({ ...prev, allowStaffPastEdit: event.target.value === "on" }))}>
-                    <option value="off">不可</option>
-                    <option value="on">可</option>
-                  </select>
-                </label>
-              </div>
-              <div className="button-row">
-                <button className="secondary-button" type="button" onClick={handleSaveCompanySettings}>入力・編集設定を保存</button>
-              </div>
-            </section>
-
-            <section className="panel">
-              <div className="panel-heading">
-                <h2>損益・税設定</h2>
-              </div>
-              <p className="helper-text">損益表に資金確保用の概算消費税引当額を表示します。正式な納税額の自動計算ではありません。</p>
-              <div className="input-grid">
-                <label className="field">
-                  <span>消費税引当を表示する</span>
-                  <select value={taxSettingsForm.considerConsumptionTax ? "on" : "off"} onChange={(event) => setTaxSettingsForm((prev) => ({ ...prev, considerConsumptionTax: event.target.value === "on" }))}>
-                    <option value="off">OFF</option>
-                    <option value="on">ON</option>
-                  </select>
-                </label>
-                {taxSettingsForm.considerConsumptionTax ? (
-                  <label className="field">
-                    <span>消費税率（%）</span>
-                    <NumericInput value={taxSettingsForm.consumptionTaxReserveRate} onChange={(value) => setTaxSettingsForm((prev) => ({ ...prev, consumptionTaxReserveRate: value }))} allowDecimal placeholder="例: 10" />
-                  </label>
-                ) : null}
-              </div>
-              <div className="button-row">
-                <button className="secondary-button" type="button" onClick={handleSaveTaxSettings}>損益・税設定を保存</button>
-              </div>
-            </section>
-          </div>
-        )}
       </main>
       {/* AI分析はaiAnalysisSettings(companies.ai_analysis_enabledの独立した取得結果)が
           trueの会社のみ表示する(要件: OFFの会社ではAI分析ボタン・AIコメント等を一切表示

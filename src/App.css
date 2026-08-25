@@ -209,7 +209,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .panel-heading.compact { margin-bottom: 10px; }
 .eyebrow { margin: 0 0 4px; color: var(--muted); font-size: 0.72rem; letter-spacing: 0.14em; font-weight: 600; }
 .stack { display: flex; flex-direction: column; gap: 16px; }
-.settings-stack { max-width: 720px; }
 .notice-box { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; }
 .notice-box.warning { background: rgba(180, 83, 9, 0.12); color: var(--warning); }
 .notice-box.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
