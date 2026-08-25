@@ -735,7 +735,11 @@
 //   セッション未確立時のauthMode確定処理(招待?invite=の有無だけを見ていた)がauthModeを
 //   毎回"login"へ上書きしてしまい、常にログイン画面に戻っていた。招待と同じ形でこの
 //   パラメータも保持するよう修正。self_signup_enabledはfalseのまま、機能フラグ・DB変更なし。
-const CACHE_NAME = 'salon-manager-cache-v85';
+// v86: owner-signupのテストURLを、testKeyパラメータが無い状態ではフォームごと非表示に
+//   (以前はowner-signup=1だけで表示されていた)。実機のChromiumブラウザで、正しいtestKey→
+//   フォーム表示・登録成功して初期設定チェックリストへ到達、testKeyなし→ログイン画面のまま、
+//   不正なtestKey→送信時に安全なエラー文言、の3ケースを実際に確認済み。
+const CACHE_NAME = 'salon-manager-cache-v86';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
