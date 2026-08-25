@@ -731,7 +731,11 @@
 //   等のRLSは無変更。ログイン画面に新モード「ownerSignup」を追加(招待受諾のsignupモードとは
 //   完全分離)。既存の招待フロー・既存company/store/userへの変更・破壊的DBスキーマ変更は無し
 //   (companies/profilesへnullable列を追加したのみ)。
-const CACHE_NAME = 'salon-manager-cache-v84';
+// v85: v84の直後に判明した不具合を修正——?owner-signup=1のテスト専用URLで開いても、
+//   セッション未確立時のauthMode確定処理(招待?invite=の有無だけを見ていた)がauthModeを
+//   毎回"login"へ上書きしてしまい、常にログイン画面に戻っていた。招待と同じ形でこの
+//   パラメータも保持するよう修正。self_signup_enabledはfalseのまま、機能フラグ・DB変更なし。
+const CACHE_NAME = 'salon-manager-cache-v85';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
