@@ -209,6 +209,9 @@ export const createInitialAppState = () => {
     // store_inventory_balances — 在庫管理ONの店舗の対象月末在庫金額。`${storeId}__${targetMonth}`
     // でキー化する(costMonthlyAmountsと同じ3か月ウィンドウでフェッチする)。
     storeInventoryBalances: {},
+    // store_monthly_cost_overrides — 人件費・仕入(材料・発注費)の「その月だけの手動確定額」。
+    // `${storeId}__${targetMonth}`でキー化する(costMonthlyAmountsと同じ会社全体・無制限取得)。
+    storeMonthlyCostOverrides: {},
     variableCosts: {},
     monthClosing: {},
     monthClosingStatus: {},

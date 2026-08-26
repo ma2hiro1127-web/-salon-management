@@ -819,6 +819,25 @@ export const buildStoreInventoryBalancesStateFromRows = (rows = []) => {
   return { storeInventoryBalances };
 };
 
+// store_monthly_cost_overrides — 人件費・仕入の「その月だけの手動確定額」、店舗×対象月で
+// keyed `${store_id}__${target_month}`(store_inventory_balancesと同じ規約)。該当列がnullの
+// 場合はundefinedとして扱う(getStoreMonthlyCostOverrideが「未確定」と正しく判定できるよう、
+// 0円と未確定を混同しない)。
+export const buildStoreMonthlyCostOverridesStateFromRows = (rows = []) => {
+  const storeMonthlyCostOverrides = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.store_id || !row.target_month) return;
+    const key = `${row.store_id}__${row.target_month}`;
+    storeMonthlyCostOverrides[key] = {
+      id: row.id,
+      laborCostOverride: row.labor_cost_override === null || row.labor_cost_override === undefined ? undefined : Number(row.labor_cost_override),
+      purchaseCostOverride: row.purchase_cost_override === null || row.purchase_cost_override === undefined ? undefined : Number(row.purchase_cost_override),
+      updatedAt: row.updated_at || "",
+    };
+  });
+  return { storeMonthlyCostOverrides };
+};
+
 // variable_costs (販管費) — direct month lookup (target_month), no carry-forward.
 export const buildVariableCostsStateFromRows = (rows = []) => {
   const variableCosts = {};
@@ -1130,6 +1149,7 @@ export const buildPersistenceComparableState = (state = {}) => ({
   fixedCosts: undefined,
   costMonthlyAmounts: undefined,
   storeInventoryBalances: undefined,
+  storeMonthlyCostOverrides: undefined,
   variableCosts: undefined,
   monthClosing: undefined,
   monthClosingStatus: undefined,
@@ -1166,6 +1186,7 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   fixedCosts: mergeItemArrayMap(localState.fixedCosts, remoteState.fixedCosts),
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
+  storeMonthlyCostOverrides: mergeShallowMap(localState.storeMonthlyCostOverrides, remoteState.storeMonthlyCostOverrides),
   monthlyReviews: mergeShallowMap(localState.monthlyReviews, remoteState.monthlyReviews),
   cashBreakdownResults: mergeShallowMap(localState.cashBreakdownResults, remoteState.cashBreakdownResults),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
@@ -1515,6 +1536,7 @@ export const normalizeAppState = (value) => {
     fixedCosts: normalizeObjectMap(source.fixedCosts),
     costMonthlyAmounts: normalizeObjectMap(source.costMonthlyAmounts),
     storeInventoryBalances: normalizeObjectMap(source.storeInventoryBalances),
+    storeMonthlyCostOverrides: normalizeObjectMap(source.storeMonthlyCostOverrides),
     variableCosts: normalizeObjectMap(source.variableCosts),
     monthClosing: normalizeObjectMap(source.monthClosing),
     monthClosingStatus: normalizeObjectMap(source.monthClosingStatus),
@@ -1889,6 +1911,32 @@ export const sumByCategoryKey = (items = []) => {
   return { totals, hasEntry };
 };
 
+// 人件費・仕入(材料・発注費)の「その月だけの手動確定額」。行が無い/該当列がnullなら未確定
+// (自動推定・固定額側にフォールバック)。store_monthly_cost_overridesはstoreId__targetMonthを
+// キーにしたmapとしてstateへ格納する(costMonthlyAmountsのcostItemId__monthValueと同じ規約)。
+export const getStoreMonthlyCostOverride = (state, storeId, monthValue) =>
+  state.storeMonthlyCostOverrides?.[`${storeId}__${monthValue}`] || {};
+
+// 人件費・仕入の「月途中は売上連動で自動推定、実額確定後はそれを優先する」共通ロジック
+// (要件22: UIコンポーネントへ計算式を直接ベタ書きしない)。優先順位(要件5):
+//   1. 手動確定額(override)がある → それを使う
+//   2. 手動確定額が無い かつ 売上連動モード → 実売上×率(1円単位に丸め、要件23)
+//   3. それ以外(固定額モード) → 既存の費用入力(fixed_costs/cost_monthly_amounts)の合計
+// 人件費・仕入で計算式は完全に同一のため、labor/purchase用に個別exportしつつ内部実装は共有する。
+const resolveCostAmountAndSource = ({ mode, rate, override, fixedAmount, sales }) => {
+  if (override !== null && override !== undefined) return { amount: Number(override) || 0, source: "manual" };
+  if (mode === "sales_linked") return { amount: roundCurrency((Number(sales) || 0) * (Number(rate) || 0) / 100), source: "auto" };
+  return { amount: Number(fixedAmount) || 0, source: "fixed" };
+};
+
+export const calculateLaborCost = (args) => resolveCostAmountAndSource(args);
+export const calculatePurchaseCost = (args) => resolveCostAmountAndSource(args);
+
+// 実額確定後の「実績率」(要件15): 確定額 ÷ 実売上 × 100。laborRate/costOfGoodsSoldRateと
+// 同じ式(sales?amount/sales*100:0)だが、単体で使えるようexportしておく——計算ロジックの
+// 分離という要件22の趣旨を満たすための切り出し(既存2フィールドの計算式自体は変更しない)。
+export const calculateActualCostRate = (amount, sales) => (sales ? (Number(amount) || 0) / sales * 100 : 0);
+
 export const calculateMonthSummary = (state, storeId, monthValue, options = {}) => {
   const target = getTargetForStoreMonth(state, storeId, monthValue);
   const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
@@ -1968,10 +2016,27 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     if (key in categoryHasEntry) categoryHasEntry[key] = true;
   });
 
-  const laborCost = costsByCategory.labor;
+  // 人件費・仕入(材料・発注費)の「月途中は売上連動で自動推定、実額確定後はそれを優先」
+  // 仕様(要件1-5)。sales(この時点で既に確定している当月実売上、まとめ入力分を含む)を
+  // そのまま使う——目標売上ではなく必ず実際の当月売上を使うことが要件3の核心。
+  const laborCostOverride = getStoreMonthlyCostOverride(state, storeId, monthValue).laborCostOverride;
+  const { amount: laborCost, source: laborCostSource } = calculateLaborCost({
+    mode: options.laborCostMode, rate: options.laborCostRate, override: laborCostOverride, fixedAmount: costsByCategory.labor, sales,
+  });
   // 材料・発注費(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
-  // 入力してもよいし、月中に複数回に分けて入力してその月の合計として扱ってもよい)。
-  const purchaseAmount = costsByCategory.materials;
+  // 入力してもよいし、月中に複数回に分けて入力してその月の合計として扱ってもよい)。人件費と
+  // 同じ自動推定/実額確定の仕様(要件6-8)。
+  const purchaseCostOverride = getStoreMonthlyCostOverride(state, storeId, monthValue).purchaseCostOverride;
+  const { amount: purchaseAmount, source: purchaseCostSource } = calculatePurchaseCost({
+    mode: options.purchaseCostMode, rate: options.purchaseCostRate, override: purchaseCostOverride, fixedAmount: costsByCategory.materials, sales,
+  });
+  // 人件費・仕入とも、実際に使用中の金額の出所が確定していれば(固定額モードで実入力がある／
+  // 売上連動で自動推定できている／手動確定額がある、のいずれか)「未入力」扱いにしない
+  // (isProvisionalProfit・月締めチェックリスト双方が参照するcategoryHasEntryを、費用入力の
+  // 有無だけでなく実際に使える金額があるかどうかに広げる、要件1の目的そのもの——売上連動に
+  // 切り替えただけで損益表が「算出できません」のまま止まってしまわないようにする)。
+  if (laborCostSource !== "fixed") categoryHasEntry.labor = true;
+  if (purchaseCostSource !== "fixed") categoryHasEntry.materials = true;
   // 設備投資は新カテゴリに対応枠を持たない(要件3: 必要以上に細かい分類を避ける) — 過去の
   // 月締め項目(closingItems)に残っている旧カテゴリ「設備投資」の行だけ、後方互換のため
   // 引き続き集計する(新規入力では発生しない)。
@@ -2128,7 +2193,9 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     retailCustomerCount,
     retailRatio: retailRatioValue,
     laborCost,
+    laborCostSource,
     purchaseAmount,
+    purchaseCostSource,
     costOfGoodsSold,
     costOfGoodsSoldRate,
     equipmentInvestmentCost,
@@ -2253,6 +2320,9 @@ export const needsMonthReconfirmation = (state, storeId, monthValue) => {
       : state.costMonthlyAmounts?.[`${item.id}__${monthValue}`]?.updatedAt || "")),
     ...getClosingItemsForStoreMonth(state, storeId, monthValue).map((item) => item.updatedAt || ""),
     state.storeInventoryBalances?.[`${storeId}__${monthValue}`]?.updatedAt || "",
+    // 人件費・仕入の手動確定額(store_monthly_cost_overrides)の変更も損益に直結するため、
+    // 月締め後にこれだけを変更した場合も再確定が必要な状態として検知する。
+    state.storeMonthlyCostOverrides?.[`${storeId}__${monthValue}`]?.updatedAt || "",
   ].filter(Boolean);
   return timestamps.some((timestamp) => timestamp > status.lockedAt);
 };
@@ -2519,8 +2589,16 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
     // 「未入力」として扱われず、営業利益等の計算(isProvisionalProfit)が対象外設定のせいで
     // ブロックされ続けることがない(月締めの対象外機能と同じ規約、店舗比較表が壊れないため)。
     const hiddenCategories = store.settings?.hiddenClosingCategories || [];
-    const summary = calculateMonthSummary(state, store.id, monthValue, { useInventoryTracking, hiddenCategories });
-    const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, { useInventoryTracking, hiddenCategories });
+    // 人件費・仕入の計算方法・率も店舗ごとの設定(要件17: 全店舗ビューは各店舗ごとに
+    // calculateMonthSummaryを呼んでから合算する既存の設計そのままで、平均率×全社売上のような
+    // 近似計算はしない)。
+    const costOptions = {
+      useInventoryTracking, hiddenCategories,
+      laborCostMode: store.settings?.laborCostMode, laborCostRate: store.settings?.laborCostRate,
+      purchaseCostMode: store.settings?.purchaseCostMode, purchaseCostRate: store.settings?.purchaseCostRate,
+    };
+    const summary = calculateMonthSummary(state, store.id, monthValue, costOptions);
+    const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, costOptions);
     const productivity = getStaffProductivitySummary({
       sales: summary.sales, forecast: summary.displayForecast,
       staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,

@@ -60,6 +60,7 @@ import {
   getInventoryBalance,
   getPreviousMonthInventoryBalance,
   buildStoreInventoryBalancesStateFromRows,
+  buildStoreMonthlyCostOverridesStateFromRows,
   formatLocalDate,
   getMonthInfo,
   getMonthOffset,
@@ -130,6 +131,8 @@ import {
   normalizeHiddenClosingCategories,
   loadStoreInputSettingsForCompany,
   upsertStoreInputSettings,
+  loadStoreMonthlyCostOverridesForCompany,
+  upsertStoreMonthlyCostOverride,
   createUserProfileRecord,
   checkExistingProfilesByEmail,
   upsertDailySalesEntry,
@@ -340,6 +343,15 @@ const createStoreSettingsDefaults = () => ({
   // .hidden_closing_categoriesが実体)。その店舗では基本的に使わない項目を一覧から非表示に
   // するためのもので、データは消さない・いつでも解除できる(要件に基づく)。
   hiddenClosingCategories: [],
+  // 人件費・仕入(材料・発注費)の計算方法("fixed"=固定額、既存の費用入力の合計をそのまま
+  // 使う／"sales_linked"=売上連動、当月実売上×率で自動推定し実額へ手動確定できる)。
+  // 既定は"fixed"——既存店舗の損益計算を1円も変えない(store_input_settings.labor_cost_mode/
+  // purchase_cost_modeが実体、hydrateFromSupabaseのapplyStoreInputSettingsToCompaniesで
+  // 上書きされる)。
+  laborCostMode: "fixed",
+  laborCostRate: 0,
+  purchaseCostMode: "fixed",
+  purchaseCostRate: 0,
 });
 
 const dailyFieldLabels = {
@@ -1876,7 +1888,14 @@ function App() {
   const summary = useMemo(
     () => (isAllStoresView
       ? calculateAllStoresMonthSummary(appState, currentCompany, selectedMonth)
-      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking, hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [] })),
+      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, {
+          useInventoryTracking,
+          hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [],
+          laborCostMode: selectedStoreEntity?.settings?.laborCostMode,
+          laborCostRate: selectedStoreEntity?.settings?.laborCostRate,
+          purchaseCostMode: selectedStoreEntity?.settings?.purchaseCostMode,
+          purchaseCostRate: selectedStoreEntity?.settings?.purchaseCostRate,
+        })),
     [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth, useInventoryTracking, selectedStoreEntity]
   );
   const businessDaySummary = useMemo(
@@ -2031,7 +2050,14 @@ function App() {
     return appState.monthClosingStatus?.[key] || { closed: false, lockedAt: "", note: "" };
   }, [appState.monthClosingStatus, selectedStoreId, selectedMonth]);
   const monthClosingChecklist = useMemo(
-    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, { useInventoryTracking, hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [] }),
+    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, {
+      useInventoryTracking,
+      hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [],
+      laborCostMode: selectedStoreEntity?.settings?.laborCostMode,
+      laborCostRate: selectedStoreEntity?.settings?.laborCostRate,
+      purchaseCostMode: selectedStoreEntity?.settings?.purchaseCostMode,
+      purchaseCostRate: selectedStoreEntity?.settings?.purchaseCostRate,
+    }),
     [appState, selectedStoreId, selectedMonth, useInventoryTracking, selectedStoreEntity]
   );
   const monthNeedsReconfirmation = useMemo(
@@ -2876,6 +2902,7 @@ function App() {
         companySettingsResult,
         storeProfilesResult,
         storeInputSettingsResult,
+        storeMonthlyCostOverridesResult,
       ] = await Promise.all([
         // daily_sales is the authoritative source for daily sales figures + day-closing state
         // (see upsertDailySalesEntry/updateDailySalesClosingState) — not the tenant_snapshots
@@ -2952,6 +2979,10 @@ function App() {
         // below wherever appState.companies gets (re)built, the same way those other two tables
         // overlay onto dailyResults/dayClosingStates/monthClosingStatus.
         timeHydrateQuery("storeInputSettings", loadStoreInputSettingsForCompany({ companyId })),
+        // store_monthly_cost_overrides(人件費・仕入の「その月だけの手動確定額」)。
+        // cost_monthly_amountsと同じ理由(過去月の確定状態を正しく復元する必要がある)で
+        // 3か月窓には絞らず会社の全件を取得する。
+        timeHydrateQuery("storeMonthlyCostOverrides", loadStoreMonthlyCostOverridesForCompany({ companyId })),
       ]);
       console.info("[hydrate-query] total (Promise.all batch)", { durationMs: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - hydrateBatchStartedAt) });
 
@@ -3003,6 +3034,9 @@ function App() {
       if (!monthlyClosingItemsResult.ok) throw monthlyClosingItemsResult.error || new Error("月締め項目データの取得に失敗しました");
       const monthlyClosingItemsOverlay = buildMonthlyClosingItemsStateFromRows(monthlyClosingItemsResult.data);
 
+      if (!storeMonthlyCostOverridesResult.ok) throw storeMonthlyCostOverridesResult.error || new Error("人件費・仕入の確定額データの取得に失敗しました");
+      const storeMonthlyCostOverridesOverlay = buildStoreMonthlyCostOverridesStateFromRows(storeMonthlyCostOverridesResult.data);
+
       const companySettingsOverlay = buildCompanySettingsFromRow(companySettingsResult.data);
       const storeProfilesByStoreId = buildStoreProfilesByStoreId(storeProfilesResult.data);
       const storeInputSettingsByStoreId = Object.fromEntries(
@@ -3028,6 +3062,10 @@ function App() {
                 useInventoryTracking: Boolean(inputRow.use_inventory_tracking),
                 useCashBreakdown: Boolean(inputRow.use_cash_breakdown),
                 hiddenClosingCategories: normalizeHiddenClosingCategories(inputRow.hidden_closing_categories),
+                laborCostMode: inputRow.labor_cost_mode === "sales_linked" ? "sales_linked" : "fixed",
+                laborCostRate: Number(inputRow.labor_cost_rate) || 0,
+                purchaseCostMode: inputRow.purchase_cost_mode === "sales_linked" ? "sales_linked" : "fixed",
+                purchaseCostRate: Number(inputRow.purchase_cost_rate) || 0,
               } : {}),
             },
           };
@@ -3086,6 +3124,14 @@ function App() {
       const monthlyReviewsExpectedKeysFor = (mergedMonthlyReviews) => new Set(
         Object.keys(mergedMonthlyReviews || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)) || key.startsWith(`${companyId}__`))
       );
+      // store_monthly_cost_overridesもcost_monthly_amounts/monthly_reviewsと同じく会社全体を
+      // 無制限取得している(過去月の確定額を月ウィンドウの外でも正しく復元する必要があるため)。
+      // キー形状は`${storeId}__${targetMonth}`(storeInventoryBalancesと同じ)だが、windowed
+      // ExpectedKeysは対象月ウィンドウ限定のため使えない — monthlyReviewsExpectedKeysForと
+      // 同じ考え方で、この会社の店舗プレフィックスに一致する既存キーを丸ごと期待キーとする。
+      const storeMonthlyCostOverridesExpectedKeysFor = (mergedStoreMonthlyCostOverrides) => new Set(
+        Object.keys(mergedStoreMonthlyCostOverrides || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)))
+      );
       const applyDailySalesOverlay = (state) => {
         const merged = mergeRemoteAppState(state, {
           dailyResults: dailySalesState.dailyResults,
@@ -3113,6 +3159,7 @@ function App() {
           monthlyReviews: monthlyReviewsOverlay.monthlyReviews,
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
+          storeMonthlyCostOverrides: storeMonthlyCostOverridesOverlay.storeMonthlyCostOverrides,
           cashBreakdownResults: cashBreakdownState.cashBreakdownResults,
           variableCosts: variableCostsOverlay.variableCosts,
           monthClosing: monthlyClosingItemsOverlay.monthClosing,
@@ -3215,6 +3262,7 @@ function App() {
           // storeInventoryBalances keys are `${storeId}__${targetMonth}` — the same shape
           // windowedExpectedKeys already uses, so it can be reused directly (unlike costMonthlyAmounts).
           storeInventoryBalances: pruneStaleKeys(merged.storeInventoryBalances, windowedExpectedKeys, storeInventoryBalancesOverlay.storeInventoryBalances),
+          storeMonthlyCostOverrides: pruneStaleKeys(merged.storeMonthlyCostOverrides, storeMonthlyCostOverridesExpectedKeysFor(merged.storeMonthlyCostOverrides), storeMonthlyCostOverridesOverlay.storeMonthlyCostOverrides),
           variableCosts: pruneStaleKeys(merged.variableCosts, windowedExpectedKeys, variableCostsOverlay.variableCosts),
           monthClosing: pruneStaleKeys(merged.monthClosing, windowedExpectedKeys, monthlyClosingItemsOverlay.monthClosing),
         };
@@ -5134,6 +5182,75 @@ function App() {
             : s
         )),
       })),
+    }));
+  };
+
+  // 人件費・仕入の計算方法(固定額/売上連動)・率の保存(店舗単位、store_input_settings.
+  // labor_cost_mode/labor_cost_rate/purchase_cost_mode/purchase_cost_rate)。他の店舗設定
+  // トグルと同じくdraft/dirty管理は持たず切り替え次第すぐ保存する。costTypeは"labor"|"purchase"。
+  const handleSaveCostRateSettings = async (costType, mode, rate) => {
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("人件費・仕入の設定を変更できるのは会社管理者・店舗管理者以上です。");
+      return;
+    }
+    if (guardFranchiseReadOnly()) return;
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+    const normalizedRate = Math.max(0, Number(rate) || 0);
+    const payload = costType === "labor"
+      ? { laborCostMode: mode, laborCostRate: normalizedRate }
+      : { purchaseCostMode: mode, purchaseCostRate: normalizedRate };
+    if (isSupabaseConfigured) {
+      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, ...payload });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => ({
+      ...prev,
+      companies: (prev.companies || []).map((company) => ({
+        ...company,
+        stores: (company.stores || []).map((s) => (
+          s.id === store.id
+            ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), ...payload } }
+            : s
+        )),
+      })),
+    }));
+  };
+
+  // 人件費・仕入の「その月だけの手動確定額」の保存/自動計算への解除(店舗×対象月、
+  // store_monthly_cost_overrides)。overrideValueにnullを渡すと自動計算に戻す(要件11)。
+  const handleSaveCostOverride = async (costType, overrideValue) => {
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("人件費・仕入の確定額を変更できるのは会社管理者・店舗管理者以上です。");
+      return;
+    }
+    if (guardFranchiseReadOnly()) return;
+    const { store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return;
+    }
+    const payload = costType === "labor" ? { laborCostOverride: overrideValue } : { purchaseCostOverride: overrideValue };
+    if (isSupabaseConfigured) {
+      const result = await upsertStoreMonthlyCostOverride({ companyId: appState.currentCompanyId, storeId: store.id, targetMonth: selectedMonth, ...payload });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    const key = `${store.id}__${selectedMonth}`;
+    setAppState((prev) => ({
+      ...prev,
+      storeMonthlyCostOverrides: {
+        ...prev.storeMonthlyCostOverrides,
+        [key]: { ...(prev.storeMonthlyCostOverrides?.[key] || {}), ...payload },
+      },
     }));
   };
 
@@ -8519,6 +8636,32 @@ function App() {
                         <h2>費用入力</h2>
                       </div>
                     </div>
+                    <CostRateEstimationPanel
+                      key={`labor-${selectedStoreId}-${selectedMonth}`}
+                      costType="labor"
+                      title="人件費"
+                      rateLabel="人件費率"
+                      summaryAmount={summary.laborCost}
+                      summarySource={summary.laborCostSource}
+                      mode={selectedStoreEntity?.settings?.laborCostMode || "fixed"}
+                      rate={selectedStoreEntity?.settings?.laborCostRate || 0}
+                      canEdit={canEditMonthlyData(currentRole)}
+                      onSaveSettings={handleSaveCostRateSettings}
+                      onSaveOverride={handleSaveCostOverride}
+                    />
+                    <CostRateEstimationPanel
+                      key={`purchase-${selectedStoreId}-${selectedMonth}`}
+                      costType="purchase"
+                      title="仕入・発注額"
+                      rateLabel="仕入率"
+                      summaryAmount={summary.purchaseAmount}
+                      summarySource={summary.purchaseCostSource}
+                      mode={selectedStoreEntity?.settings?.purchaseCostMode || "fixed"}
+                      rate={selectedStoreEntity?.settings?.purchaseCostRate || 0}
+                      canEdit={canEditMonthlyData(currentRole)}
+                      onSaveSettings={handleSaveCostRateSettings}
+                      onSaveOverride={handleSaveCostOverride}
+                    />
                     <form className="inline-form cost-item-form" onSubmit={submitFixedCost}>
                       <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="費用名（例: 家賃、HPB）" />
                       <select
@@ -8818,10 +8961,26 @@ function App() {
                     <div className="summary-grid">
                       {/* 在庫管理OFFの店舗は仕入・発注額=材料・仕入原価がそのまま同額になるため、
                           重複を避けて原価の内訳(仕入・発注額)は在庫管理ONの店舗だけ表示する。 */}
+                      {/* 補助表示(要件13): 自動計算中は「◯◯率◯%から自動計算」、手動確定後は
+                          「確定値」。スマホでも読める短い文言にする。useInventoryTracking OFFの
+                          店舗では仕入・発注額カード自体が非表示のため、その場合は同じ金額を
+                          表示している材料・仕入原価カード側に補助表示を出す。 */}
                       {useInventoryTracking ? (
-                        <div className="summary-card"><span>仕入・発注額</span><strong>{formatMoneyOrDash(summary.purchaseAmount, summary.categoryHasEntry.materials)}</strong></div>
+                        <div className="summary-card">
+                          <span>仕入・発注額</span>
+                          <strong>{formatMoneyOrDash(summary.purchaseAmount, summary.categoryHasEntry.materials)}</strong>
+                          {summary.purchaseCostSource === "manual" ? <small className="cost-source-caption">確定値</small>
+                            : summary.purchaseCostSource === "auto" ? <small className="cost-source-caption">仕入率{Number(selectedStoreEntity?.settings?.purchaseCostRate || 0).toFixed(1)}%から自動計算</small>
+                            : null}
+                        </div>
                       ) : null}
-                      <div className="summary-card"><span>材料・仕入原価</span><strong>{formatMoneyOrDash(summary.costOfGoodsSold, summary.categoryHasEntry.materials)}</strong></div>
+                      <div className="summary-card">
+                        <span>材料・仕入原価</span>
+                        <strong>{formatMoneyOrDash(summary.costOfGoodsSold, summary.categoryHasEntry.materials)}</strong>
+                        {!useInventoryTracking && summary.purchaseCostSource === "manual" ? <small className="cost-source-caption">確定値</small>
+                          : !useInventoryTracking && summary.purchaseCostSource === "auto" ? <small className="cost-source-caption">仕入率{Number(selectedStoreEntity?.settings?.purchaseCostRate || 0).toFixed(1)}%から自動計算</small>
+                          : null}
+                      </div>
                       <div className="summary-card"><span>材料・仕入原価率</span><strong>{formatPercentOrDash(summary.costOfGoodsSoldRate, summary.categoryHasEntry.materials)}</strong></div>
                     </div>
 
@@ -8832,7 +8991,13 @@ function App() {
                       </div>
                     </div>
                     <div className="summary-grid">
-                      <div className="summary-card"><span>人件費</span><strong>{formatMoneyOrDash(summary.laborCost, summary.categoryHasEntry.labor)}</strong></div>
+                      <div className="summary-card">
+                        <span>人件費</span>
+                        <strong>{formatMoneyOrDash(summary.laborCost, summary.categoryHasEntry.labor)}</strong>
+                        {summary.laborCostSource === "manual" ? <small className="cost-source-caption">確定値</small>
+                          : summary.laborCostSource === "auto" ? <small className="cost-source-caption">人件費率{Number(selectedStoreEntity?.settings?.laborCostRate || 0).toFixed(1)}%から自動計算</small>
+                          : null}
+                      </div>
                       <div className="summary-card"><span>人件費率</span><strong>{formatPercentOrDash(summary.laborRate, summary.categoryHasEntry.labor)}</strong></div>
                       <div className="summary-card"><span>経費合計</span><strong>{formatMoneyOrDash(summary.expenseCost, summary.hasExpenseCostData)}</strong></div>
                     </div>
@@ -10097,6 +10262,81 @@ function TargetSetupHint({ onGoToTarget }) {
     <div className="setup-card target-setup-hint">
       <p className="helper-text">月間目標を設定すると、達成率・目標までの残額・1日あたり必要売上が表示されます。</p>
       <button type="button" className="secondary-button" onClick={onGoToTarget}>目標を設定する</button>
+    </div>
+  );
+}
+
+// 人件費・仕入(材料・発注費)の「月途中は売上連動で自動推定、実額確定後は手動で上書き」
+// 設定パネル。costType("labor"|"purchase")ごとに費用入力タブへ2枚並べる(人件費・仕入)。
+// モード切替は即保存(useInventoryTrackingトグルと同じ規約、離散的な選択のため)。率・確定額
+// (override)はどちらも金額/数値入力なので、期首在庫・当月末在庫と同じdraft+明示保存ボタンの
+// 形にする(1文字入力するたびにSupabaseへ書き込まないため)。呼び出し元がstoreId・対象月を
+// 含むkeyを渡しており、店舗/対象月の切替では別インスタンスとして再マウントされるため、draft
+// をuseEffectで同期する必要が無い(react-hooks/set-state-in-effectの警告対象になる書き方を
+// 避ける、Reactの推奨パターン)。
+function CostRateEstimationPanel({ costType, title, rateLabel, summaryAmount, summarySource, mode, rate, canEdit, onSaveSettings, onSaveOverride }) {
+  const [rateDraft, setRateDraft] = useState(rate || "");
+  const [overrideDraft, setOverrideDraft] = useState("");
+  const isSalesLinked = mode === "sales_linked";
+  const sourceLabel = summarySource === "manual" ? "確定値" : summarySource === "auto" ? `${rateLabel}${Number(rate).toFixed(1)}%から自動計算` : "";
+
+  return (
+    <div className="setup-card cost-rate-estimation-panel">
+      <div className="panel-heading compact">
+        <div>
+          <p className="eyebrow">{costType === "labor" ? "LABOR" : "PURCHASE"}</p>
+          <h3>{title}の自動計算設定</h3>
+        </div>
+      </div>
+      <div className="segmented-control" role="group" aria-label={`${title}の計算方法`}>
+        <button
+          type="button"
+          className={!isSalesLinked ? "segmented-button active" : "segmented-button"}
+          disabled={!canEdit}
+          onClick={() => onSaveSettings(costType, "fixed", rate)}
+        >
+          固定額
+        </button>
+        <button
+          type="button"
+          className={isSalesLinked ? "segmented-button active" : "segmented-button"}
+          disabled={!canEdit}
+          onClick={() => onSaveSettings(costType, "sales_linked", rate)}
+        >
+          売上連動
+        </button>
+      </div>
+      {isSalesLinked ? (
+        <>
+          <div className="inline-form">
+            <label className="field">
+              <span>{rateLabel}（%）</span>
+              <NumericInput value={rateDraft} onChange={setRateDraft} allowDecimal placeholder="例: 40" disabled={!canEdit} />
+            </label>
+            {canEdit ? (
+              <button type="button" className="secondary-button" onClick={() => onSaveSettings(costType, "sales_linked", rateDraft)}>率を保存</button>
+            ) : null}
+          </div>
+          <p className="helper-text cost-rate-current-amount">
+            現在の使用額: {money(summaryAmount || 0)}{sourceLabel ? `（${sourceLabel}）` : ""}
+          </p>
+          {canEdit ? (
+            <div className="inline-form">
+              <NumericInput value={overrideDraft} onChange={setOverrideDraft} placeholder="実額へ修正" />
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => { onSaveOverride(costType, Number(overrideDraft) || 0); setOverrideDraft(""); }}
+              >
+                実額へ修正
+              </button>
+              {summarySource === "manual" ? (
+                <button type="button" className="text-button" onClick={() => onSaveOverride(costType, null)}>自動計算に戻す</button>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }

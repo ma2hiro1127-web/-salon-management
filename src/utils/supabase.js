@@ -279,6 +279,10 @@ const createDefaultStoreSettings = () => ({
   dailyFieldSettings: defaultDailyFieldSettings(),
   managerName: "",
   staffIds: [],
+  laborCostMode: "fixed",
+  laborCostRate: 0,
+  purchaseCostMode: "fixed",
+  purchaseCostRate: 0,
 });
 
 // Merges a stores.daily_field_settings JSON value (possibly null, or saved before a field
@@ -330,7 +334,7 @@ export const loadStoreInputSettingsForCompany = async ({ companyId }) => {
 // Partial upserts are safe here: PostgREST's upsert only sets the columns present in the
 // payload, so saving just dailyFields (or just monthlyTargetFields) can never null out the
 // other column on an existing row.
-export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking, useCashBreakdown, hiddenClosingCategories }) => {
+export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields, monthlyTargetFields, useInventoryTracking, useCashBreakdown, hiddenClosingCategories, laborCostMode, laborCostRate, purchaseCostMode, purchaseCostRate }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId, storeId });
   if (validationError) {
@@ -343,12 +347,57 @@ export const upsertStoreInputSettings = async ({ companyId, storeId, dailyFields
   if (useInventoryTracking !== undefined) payload.use_inventory_tracking = Boolean(useInventoryTracking);
   if (useCashBreakdown !== undefined) payload.use_cash_breakdown = Boolean(useCashBreakdown);
   if (hiddenClosingCategories !== undefined) payload.hidden_closing_categories = hiddenClosingCategories;
+  // 人件費・仕入の計算方法(固定額/売上連動)・率(要件2・6)。率は0以上の数値に正規化する
+  // (NaN・負値がDBへ渡ってcheck制約以外のところで壊れないようにする)。
+  if (laborCostMode !== undefined) payload.labor_cost_mode = laborCostMode === "sales_linked" ? "sales_linked" : "fixed";
+  if (laborCostRate !== undefined) payload.labor_cost_rate = Math.max(0, Number(laborCostRate) || 0);
+  if (purchaseCostMode !== undefined) payload.purchase_cost_mode = purchaseCostMode === "sales_linked" ? "sales_linked" : "fixed";
+  if (purchaseCostRate !== undefined) payload.purchase_cost_rate = Math.max(0, Number(purchaseCostRate) || 0);
   try {
     const { data, error } = await supabase.from("store_input_settings").upsert(payload, { onConflict: "company_id,store_id" }).select().single();
     if (error) throw error;
     return { ok: true, data };
   } catch (error) {
     logSupabaseError({ operation: "upsertStoreInputSettings", table: "store_input_settings", companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
+// 人件費・仕入の「その月だけの手動確定額」(store_monthly_cost_overrides)。company全体を
+// 1回で取得する — store_input_settings/fixed_costs等と同じ規約(RLSが可視範囲を自然に絞る)。
+export const loadStoreMonthlyCostOverridesForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase.from("store_monthly_cost_overrides").select("*").eq("company_id", companyId);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreMonthlyCostOverridesForCompany", table: "store_monthly_cost_overrides", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+// 部分更新: laborCostOverride/purchaseCostOverrideのうち渡された方だけを書き換える
+// (upsertStoreInputSettingsと同じ「undefinedなら触れない」パターン)。「自動計算に戻す」は
+// 該当引数へ明示的にnullを渡す呼び出し——行の削除ではなく、該当列をnullへ戻すUPDATE/INSERTに
+// なる(要件11: 押すたびに最新の実売上×設定率で再計算されるようにするため、値そのものを
+// 消して自動推定側へフォールバックさせる)。
+export const upsertStoreMonthlyCostOverride = async ({ companyId, storeId, targetMonth, laborCostOverride, purchaseCostOverride }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, targetMonth });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertStoreMonthlyCostOverride", table: "store_monthly_cost_overrides", companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const payload = { company_id: companyId, store_id: storeId, target_month: targetMonth };
+  if (laborCostOverride !== undefined) payload.labor_cost_override = laborCostOverride === null ? null : Number(laborCostOverride);
+  if (purchaseCostOverride !== undefined) payload.purchase_cost_override = purchaseCostOverride === null ? null : Number(purchaseCostOverride);
+  try {
+    const { data, error } = await supabase.from("store_monthly_cost_overrides").upsert(payload, { onConflict: "store_id,target_month" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertStoreMonthlyCostOverride", table: "store_monthly_cost_overrides", companyId, storeId, error });
     return { ok: false, error };
   }
 };

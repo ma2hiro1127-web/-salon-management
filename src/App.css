@@ -866,6 +866,15 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .setup-body { display: flex; flex-direction: column; gap: 12px; }
 .setup-card { padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface-strong); box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04); }
 
+/* 人件費・仕入の自動計算設定パネル(費用入力タブ)。setup-cardを2枚並べるため、間の余白だけ
+   追加する。 */
+.cost-rate-estimation-panel { margin-bottom: 16px; }
+.cost-rate-estimation-panel .cost-rate-current-amount { margin: 8px 0; }
+
+/* 損益表の人件費・仕入・発注額カードの補助表示(要件13)。「◯◯率◯%から自動計算」/
+   「確定値」をスマホでも読める短い文言で、金額の下に小さく表示する。 */
+.cost-source-caption { color: var(--muted); font-size: 0.72rem; }
+
 /* 初回利用時の設定チェックリスト(要件9)。.dashboard-layoutの2カラムグリッドの直下に
    置かれるため、.target-setup-hintと同じくgrid-column: 1 / -1で両カラムいっぱいに広げ、
    バナーとして正しく全幅表示させる。 */
