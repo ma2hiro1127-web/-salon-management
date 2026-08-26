@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage, getInvitableRoles, isFranchiseReadOnly, getUserRowPermissions } from "./permissions.js";
+import { getAllowedStoreIdsForRole, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canManageUsers, canEditMonthlyData, canViewUserManagement, normalizeRole, canAccessPage, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, getVisibleNavItems, resolveDefaultPage, getInvitableRoles, isFranchiseReadOnly, getUserRowPermissions, canManageAdOps } from "./permissions.js";
 
 test("system and company admins can access all stores in their company", () => {
   assert.deepEqual(getAllowedStoreIdsForRole({ role: "system_admin", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s1"] }), ["s1", "s2"]);
@@ -18,6 +18,23 @@ test("role normalization and page access stay consistent for owner/admin aliases
   assert.equal(canAccessPage("owner", "users"), true);
   assert.equal(canAccessPage("company_admin", "monthly"), true);
   assert.equal(isAdminRole("staff"), false);
+});
+
+test("AI広告運用(adOps): system_admin以外はナビゲーション・ページアクセス・操作権限のいずれからも一切見えない(要件2)", () => {
+  assert.equal(canAccessPage("system_admin", "adOps"), true);
+  assert.equal(canAccessPage("company_admin", "adOps"), false);
+  assert.equal(canAccessPage("store_manager", "adOps"), false);
+  assert.equal(canAccessPage("staff", "adOps"), false);
+  assert.equal(canManageAdOps("system_admin"), true);
+  assert.equal(canManageAdOps("company_admin"), false);
+  assert.equal(canManageAdOps("store_manager"), false);
+  assert.equal(canManageAdOps("staff"), false);
+  const systemAdminNav = getVisibleNavItems("system_admin").map((item) => item.id);
+  assert.ok(systemAdminNav.includes("adOps"));
+  ["company_admin", "store_manager", "staff"].forEach((role) => {
+    const nav = getVisibleNavItems(role).map((item) => item.id);
+    assert.ok(!nav.includes("adOps"), `${role} should never see adOps in navigation`);
+  });
 });
 
 test("role-based management permissions are scoped correctly", () => {
@@ -158,7 +175,9 @@ test("設定ページ削除: company_admin/store_manager/staffそれぞれの、
   assert.deepEqual(getVisibleNavItems("company_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "franchise", "faq"]);
   assert.deepEqual(getVisibleNavItems("store_manager").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "faq"]);
   assert.deepEqual(getVisibleNavItems("staff").map((item) => item.id), ["dashboard", "daily", "monthlyReview"]);
-  assert.deepEqual(getVisibleNavItems("system_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "faq"]);
+  // adOps(AI広告運用)はAI広告自動運用システム追加時にsystem_admin専用として新設された
+  // ページのため、settings削除後の既存範囲チェックとしては末尾への追加のみを許容する。
+  assert.deepEqual(getVisibleNavItems("system_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "faq", "adOps"]);
 });
 
 // resolveDefaultPage(ログイン直後・旧settingsページへのアクセス試行時の安全なリダイレクト先

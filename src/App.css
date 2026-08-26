@@ -1167,3 +1167,21 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .monthly-review-metric-diff { text-align: left; }
   .monthly-review-textarea { min-height: 90px; font-size: 16px; }
 }
+
+/* AI広告自動運用システム(V1、system_admin専用)。常設の注意書きバナー・広告一覧の
+   カード型リスト・勝ち広告/停止候補バッジ。スマホでも横にはみ出さないよう、リスト項目は
+   縦積みのflex-wrapにする。 */
+.ad-ops-disclaimer { background: rgba(227, 87, 87, 0.06); border-color: rgba(227, 87, 87, 0.18); }
+.ad-ops-list { display: flex; flex-direction: column; gap: 8px; }
+.ad-ops-list-item {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px;
+  width: 100%; text-align: left; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px;
+  background: var(--surface-strong); cursor: pointer;
+}
+.ad-ops-list-item.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12); }
+.ad-ops-list-item strong { display: block; }
+.ad-ops-list-item small { color: var(--muted); }
+.ad-ops-list-item-metrics { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ad-ops-badge { border-radius: 999px; padding: 3px 10px; font-size: 0.72rem; font-weight: 700; }
+.ad-ops-badge.win { background: rgba(46, 163, 97, 0.14); color: #2ea361; }
+.ad-ops-badge.stop { background: rgba(227, 87, 87, 0.14); color: var(--danger); }

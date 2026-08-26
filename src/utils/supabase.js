@@ -479,9 +479,12 @@ export const isSelfSignupEnabled = async () => {
 // company/store/company_admin付与を1回のサーバー側呼び出しでまとめて行う(冪等・途中離脱
 // 復旧はEdge Function側の責務、詳細はsupabase/functions/self-signup/index.ts参照)。招待
 // フロー(acceptInvite)とは完全に別の関数・別のEdge Function——処理を混同しない(要件7)。
-export const selfSignup = async ({ email, password, ownerName, companyName, testKey }) => {
+// utmSource/utmCampaign/utmContent(要件6・7、AI広告自動運用システムV1)は任意——広告経由
+// ではない通常のセルフ登録では空のまま渡ってよく、self-signup Edge Function側もutm_sourceが
+// 空ならコンバージョンイベントを記録しない。
+export const selfSignup = async ({ email, password, ownerName, companyName, testKey, utmSource, utmCampaign, utmContent }) => {
   const { data, error } = await supabase.functions.invoke("self-signup", {
-    body: { email, password, ownerName, companyName, testKey },
+    body: { email, password, ownerName, companyName, testKey, utmSource, utmCampaign, utmContent },
   });
   if (error) {
     let message = error.message;

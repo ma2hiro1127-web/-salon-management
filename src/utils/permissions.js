@@ -33,7 +33,10 @@ export const NAV_ITEMS_BY_ROLE = {
   // "faq"(使い方・FAQ)は権限体系の正式仕様(会社管理画面・まとめて入力の権限整理)により
   // system_admin/company_admin/store_managerの管理者向けヘルプとして扱う — staffには
   // ナビゲーション・URL直接アクセスとも表示しない(要件8)。
-  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "faq"],
+  // "adOps"(AI広告運用)はsystem_admin専用の完全に独立したモジュール(要件2: 一般ユーザーには
+  // 絶対に表示しない)。company_admin以下には一切追加しない——この配列がURLの存在しないこの
+  // SPAにおける唯一の認可ゲートのため、ここに含めないこと自体が直接アクセス拒否になる。
+  system_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "faq", "adOps"],
   company_admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "franchise", "faq"],
   // store_manager gets "users" too, but scoped down to "invite staff into my own store(s) only"
   // — see canManageUsers/getInvitableRoles below and the ユーザー管理 page's own store_manager
@@ -62,6 +65,10 @@ export const canAccessPage = (role, page) => {
 };
 
 export const canManageCompanies = (role) => normalizeRole(role) === "system_admin";
+// AI広告運用(要件2・23): system_admin限定。canAccessPage("adOps")と同じ判定だが、ページ
+// 遷移とは別に個々のボタン(保存・AI評価実行・予算承認/却下・緊急停止等)を直接ガードする
+// 場所でも使えるよう、canManageCompaniesと同じ形の専用関数として公開する。
+export const canManageAdOps = (role) => normalizeRole(role) === "system_admin";
 export const canManageStores = (role) => normalizeRole(role) === "system_admin" || normalizeRole(role) === "company_admin";
 // 停止/再開/アーカイブ/復元 — canManageStoresと同じ対象(system_admin/company_admin)。
 // store_managerはこれらの操作を一切行えない(店舗管理画面自体には店舗名編集のみ許可されて
@@ -130,6 +137,7 @@ const NAV_ITEM_CATEGORY = {
   companies: "management",
   franchise: "management",
   faq: "other",
+  adOps: "management",
 };
 
 export const getVisibleNavItems = (role) => {
@@ -149,6 +157,7 @@ export const getVisibleNavItems = (role) => {
       users: "ユーザー管理",
       franchise: "加盟店連携",
       faq: "使い方・FAQ",
+      adOps: "AI広告運用",
     }[page] || page,
   }));
 };

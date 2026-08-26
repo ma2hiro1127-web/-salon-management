@@ -41,6 +41,38 @@ async function logDiagnostic(admin: ReturnType<typeof createClient>, { companyId
   }
 }
 
+// AI広告自動運用システム(V1)向け: 広告経由の登録をcompany_id/profile_idと紐付けて記録する
+// (要件6・7)。utm_sourceが空(=広告経由ではない通常のセルフ登録)の場合は記録しない——
+// 広告と無関係な登録をコンバージョンとして水増ししないため。ベストエフォート(失敗しても
+// サインアップ自体は止めない、logDiagnosticと同じ方針)。ad_idはutm3点の完全一致で
+// ad_campaignsから解決する(log_ad_conversion_event RPCと同じロジック)。
+async function logSignupCompletedConversion(
+  admin: ReturnType<typeof createClient>,
+  { companyId, profileId, utmSource, utmCampaign, utmContent }: { companyId: string; profileId: string; utmSource: string; utmCampaign: string; utmContent: string }
+) {
+  if (!utmSource) return;
+  try {
+    const { data: ad } = await admin
+      .from("ad_campaigns")
+      .select("id")
+      .eq("utm_source", utmSource)
+      .eq("utm_campaign", utmCampaign)
+      .eq("utm_content", utmContent)
+      .maybeSingle();
+    await admin.from("ad_conversion_events").insert({
+      event_type: "signup_completed",
+      company_id: companyId,
+      profile_id: profileId,
+      ad_id: ad?.id || null,
+      utm_source: utmSource,
+      utm_campaign: utmCampaign,
+      utm_content: utmContent,
+    });
+  } catch (error) {
+    console.error("self-signup: logSignupCompletedConversion failed (non-fatal)", error instanceof Error ? error.message : error);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -54,6 +86,9 @@ Deno.serve(async (req) => {
   let ownerName = "";
   let companyName = "";
   let testKey = "";
+  let utmSource = "";
+  let utmCampaign = "";
+  let utmContent = "";
   try {
     const body = await req.json();
     email = String(body?.email || "").trim().toLowerCase();
@@ -61,6 +96,11 @@ Deno.serve(async (req) => {
     ownerName = String(body?.ownerName || "").trim();
     companyName = String(body?.companyName || "").trim();
     testKey = String(body?.testKey || "");
+    // AI広告自動運用システム(V1、要件6・7)。空でも許容する——広告経由ではない通常の
+    // セルフ登録も引き続き成立させる(この登録方式はあくまで既存の一般セルフ登録の拡張)。
+    utmSource = String(body?.utmSource || "").trim();
+    utmCampaign = String(body?.utmCampaign || "").trim();
+    utmContent = String(body?.utmContent || "").trim();
   } catch {
     return json({ error: "リクエストの形式が不正です" }, 400);
   }
@@ -246,6 +286,8 @@ Deno.serve(async (req) => {
         is_primary: true,
       });
       if (userStoreError) throw userStoreError;
+
+      await logSignupCompletedConversion(admin, { companyId: company.id, profileId: claimProfile.id, utmSource, utmCampaign, utmContent });
     }
 
     return json({ ok: true });

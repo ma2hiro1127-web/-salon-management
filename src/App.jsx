@@ -100,7 +100,7 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions, canManageAdOps } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import { computeAnchoredPopoverPosition } from "./utils/popoverPosition.js";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -197,6 +197,8 @@ import {
   updateFranchiseRelationship,
   loadCompanyPartnerships,
 } from "./utils/supabase.js";
+import { logAdConversionEvent } from "./utils/adOpsSupabase.js";
+import AdOpsPage from "./components/adOps/AdOpsPage.jsx";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot, buildTenantSnapshotRow } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
@@ -692,6 +694,34 @@ function App() {
     if (typeof window === "undefined") return "";
     const params = new URLSearchParams(window.location.search);
     return params.get("testKey") || "";
+  });
+  // AI広告自動運用システム(V1、要件6・7)。広告リンク経由でオーナー登録画面へ着地した場合の
+  // UTM。本リポジトリには外部マーケティングLPが無いため、このオーナー登録画面自体が実質の
+  // 計測起点になる——lp_view相当のイベントもここで記録する(下のuseEffect)。
+  const [ownerSignupUtm] = useState(() => {
+    if (typeof window === "undefined") return { utmSource: "", utmCampaign: "", utmContent: "", adId: "" };
+    const params = new URLSearchParams(window.location.search);
+    return {
+      utmSource: params.get("utm_source") || "",
+      utmCampaign: params.get("utm_campaign") || "",
+      utmContent: params.get("utm_content") || "",
+      adId: params.get("ad_id") || "",
+    };
+  });
+  // 匿名(会員化前)の行動を後から同一人物として紐付けるための、ブラウザ生成の識別子。
+  // localStorageで永続化する(セッションをまたいでも同じ訪問者として扱えるようにするため、
+  // sessionStorageではなくlocalStorageを使う)。
+  const [adSessionId] = useState(() => {
+    if (typeof window === "undefined") return "";
+    try {
+      const existing = window.localStorage.getItem("salon-ad-session-id");
+      if (existing) return existing;
+      const generated = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      window.localStorage.setItem("salon-ad-session-id", generated);
+      return generated;
+    } catch {
+      return "";
+    }
   });
   // 招待リンクの宛先メールアドレス(get_invite_infoから取得)。新規登録フォームのメール欄を
   // これで事前入力・固定することで、招待されたメールアドレスと違うメールアドレスを手入力して
@@ -1566,6 +1596,24 @@ function App() {
       cancelled = true;
     };
   }, []);
+
+  // AI広告自動運用システム(V1、要件6・7)。広告リンク(utm_source付き)経由でオーナー登録
+  // 画面へ到達した最初の瞬間だけ、1回だけsignup_startedを記録する(要件11の二重イベント
+  // 防止: authModeがownerSignupのまま再レンダリングされても再送しないようrefで一度きりに
+  // する)。ベストエフォート——失敗してもサインアップ画面自体には一切影響させない。
+  const ownerSignupStartedLoggedRef = useRef(false);
+  useEffect(() => {
+    if (authMode !== "ownerSignup" || !ownerSignupUtm.utmSource) return;
+    if (ownerSignupStartedLoggedRef.current) return;
+    ownerSignupStartedLoggedRef.current = true;
+    logAdConversionEvent({
+      eventType: "signup_started",
+      sessionId: adSessionId,
+      utmSource: ownerSignupUtm.utmSource,
+      utmCampaign: ownerSignupUtm.utmCampaign,
+      utmContent: ownerSignupUtm.utmContent,
+    });
+  }, [authMode, ownerSignupUtm, adSessionId]);
 
   useEffect(() => {
     if (currentCompany) {
@@ -2605,7 +2653,10 @@ function App() {
     }
 
     try {
-      const signUpResult = await selfSignup({ email: normalizedEmail, password, ownerName, companyName, testKey: ownerSignupTestKey });
+      const signUpResult = await selfSignup({
+        email: normalizedEmail, password, ownerName, companyName, testKey: ownerSignupTestKey,
+        utmSource: ownerSignupUtm.utmSource, utmCampaign: ownerSignupUtm.utmCampaign, utmContent: ownerSignupUtm.utmContent,
+      });
       if (!signUpResult.ok) {
         // 生のSupabase/Postgresエラーではなく、self-signup Edge Functionが返す日本語文言を
         // そのまま表示する(要件15)。
@@ -10244,6 +10295,13 @@ function App() {
             storeId={selectedStoreId}
             userId={appState.currentUserId}
           />
+        )}
+        {/* AI広告自動運用システム(V1)。system_admin専用の完全に独立したモジュール
+            (要件2・23)——company_id/store_idに紐づかない社内マーケティングデータのみを扱う。
+            canManageAdOps(currentRole)はNAV_ITEMS_BY_ROLEによる遷移不可に加えた二重の防御
+            (URLを直接いじって別ページからactivePageだけ変更されても表示しない)。 */}
+        {activePage === "adOps" && canManageAdOps(currentRole) && (
+          <AdOpsPage userId={appState.currentUserId} />
         )}
       </main>
       {/* AI分析はaiAnalysisSettings(companies.ai_analysis_enabledの独立した取得結果)が
