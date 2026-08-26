@@ -739,7 +739,12 @@
 //   (以前はowner-signup=1だけで表示されていた)。実機のChromiumブラウザで、正しいtestKey→
 //   フォーム表示・登録成功して初期設定チェックリストへ到達、testKeyなし→ログイン画面のまま、
 //   不正なtestKey→送信時に安全なエラー文言、の3ケースを実際に確認済み。
-const CACHE_NAME = 'salon-manager-cache-v86';
+// v87: 損益機能 — 人件費・仕入(材料・発注費)を「月途中は売上連動で自動推定、月末は実額へ
+//   手動確定」仕様に統一。費用入力タブに設定パネルを追加(固定額/売上連動、率、実額修正、
+//   自動計算に戻す)。既定は全店舗"固定額"のため既存の損益計算・既存データは無変更。
+//   新規テーブルstore_monthly_cost_overrides追加、store_input_settingsへ列4つ追加のみで、
+//   既存テーブル・既存RLSポリシーへの変更は無し。
+const CACHE_NAME = 'salon-manager-cache-v87';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
