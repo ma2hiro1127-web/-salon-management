@@ -750,7 +750,13 @@
 //   案内に切り替え、既存データは変更しない)。費用入力タブを「売上連動費」「固定費・
 //   その他費用」の2ブロックへ視覚整理。計算ロジック(calculateLaborCost/
 //   calculatePurchaseCost)・DBスキーマは無変更。
-const CACHE_NAME = 'salon-manager-cache-v88';
+// v89: AI広告自動運用システム(V1)を追加。system_admin専用の完全に独立したページ
+//   「AI広告運用」(company_admin以下には一切表示・アクセス不可)。広告→登録→有料化までの
+//   計測・AI評価(SCALE/KEEP/WATCH/STOP)・予算変更提案(人間承認式)を扱うが、Meta/TikTok
+//   広告APIへは一切接続せず、実際の広告の入稿・停止・増額は行わない(内部の記録・分析専用)。
+//   新規テーブル6つ追加、既存の会社・店舗・ユーザー機能への変更は無し(self-signupに
+//   UTM記録の小さな追記のみ)。
+const CACHE_NAME = 'salon-manager-cache-v89';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
