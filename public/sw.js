@@ -744,7 +744,13 @@
 //   自動計算に戻す)。既定は全店舗"固定額"のため既存の損益計算・既存データは無変更。
 //   新規テーブルstore_monthly_cost_overrides追加、store_input_settingsへ列4つ追加のみで、
 //   既存テーブル・既存RLSポリシーへの変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v87';
+// v88: 費用入力画面の人件費・仕入(売上連動)UIを改善——「現在の使用額」を「自動計算額+
+//   現在売上×率の計算根拠」表示へ、「実額へ修正」を「実額に修正（任意）」+補足文へ変更。
+//   固定額モードはシンプルな「月額」入力へ(複数項目データがある店舗は既存の費用入力欄への
+//   案内に切り替え、既存データは変更しない)。費用入力タブを「売上連動費」「固定費・
+//   その他費用」の2ブロックへ視覚整理。計算ロジック(calculateLaborCost/
+//   calculatePurchaseCost)・DBスキーマは無変更。
+const CACHE_NAME = 'salon-manager-cache-v88';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
