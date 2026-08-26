@@ -3990,6 +3990,12 @@ test("calculateLaborCost ケースC: 250万円へ手動確定 → 損益では25
   assert.equal(result.source, "manual");
 });
 
+test("calculateLaborCost: 手動確定額を使用中でも自動計算額(autoEstimate)は常に併記できるよう返す(600万円×40%=240万円、実額250万円とは別に確認できる)", () => {
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 6000000 });
+  assert.equal(result.amount, 2500000);
+  assert.equal(result.autoEstimate, 2400000);
+});
+
 test("calculateLaborCost ケースD: 手動確定後に売上が700万円へ変わっても、確定額250万円を保持する(自動計算で上書きしない)", () => {
   const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 7000000 });
   assert.equal(result.amount, 2500000);
@@ -4091,13 +4097,19 @@ test("calculateMonthSummary(要件26の月またぎ): 8月に人件費率40%・�
   assert.equal(augustSummary.laborCostSource, "manual");
   assert.equal(augustSummary.purchaseAmount, 500000);
   assert.equal(augustSummary.purchaseCostSource, "manual");
+  // 手動確定後も自動計算額自体は消えず、実額と比較できる状態を維持する(要件3)。
+  // 8月の実売上500万円×40%=200万円/×8%=40万円が、実額(215万/50万)とは別に確認できる。
+  assert.equal(augustSummary.laborCostAutoEstimate, 2000000);
+  assert.equal(augustSummary.purchaseCostAutoEstimate, 400000);
 
   // 9月は率(40%・8%)だけが引き継がれ、確定額は引き継がれず自動計算(売上×率)から再開する。
   const septemberSummary = calculateMonthSummary(state, store, "2026-09", options);
   assert.equal(septemberSummary.laborCost, 2400000); // 600万円×40%
   assert.equal(septemberSummary.laborCostSource, "auto");
+  assert.equal(septemberSummary.laborCostAutoEstimate, 2400000);
   assert.equal(septemberSummary.purchaseAmount, 480000); // 600万円×8%
   assert.equal(septemberSummary.purchaseCostSource, "auto");
+  assert.equal(septemberSummary.purchaseCostAutoEstimate, 480000);
 });
 
 test("calculateMonthSummary: 売上連動モードでは、費用項目を1件も登録していなくてもisProvisionalProfitがfalseになる(要件1の目的: 月途中でも自動推定額で概算損益を確認できる)", () => {

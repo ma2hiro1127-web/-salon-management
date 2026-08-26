@@ -1924,9 +1924,14 @@ export const getStoreMonthlyCostOverride = (state, storeId, monthValue) =>
 //   3. それ以外(固定額モード) → 既存の費用入力(fixed_costs/cost_monthly_amounts)の合計
 // 人件費・仕入で計算式は完全に同一のため、labor/purchase用に個別exportしつつ内部実装は共有する。
 const resolveCostAmountAndSource = ({ mode, rate, override, fixedAmount, sales }) => {
-  if (override !== null && override !== undefined) return { amount: Number(override) || 0, source: "manual" };
-  if (mode === "sales_linked") return { amount: roundCurrency((Number(sales) || 0) * (Number(rate) || 0) / 100), source: "auto" };
-  return { amount: Number(fixedAmount) || 0, source: "fixed" };
+  // autoEstimate(現在売上×率)は、実際にどの金額が採用されているか(source)に関わらず常に
+  // 算出しておく——手動確定後も「自動計算額」と「反映中の実額」を並べて比較できるようにする
+  // (要件3: 自動計算額自体は消さない)。UI側で同じ式を再計算しない(要件14: 計算ロジックの
+  // 重複を作らない)ための、唯一の計算箇所。
+  const autoEstimate = roundCurrency((Number(sales) || 0) * (Number(rate) || 0) / 100);
+  if (override !== null && override !== undefined) return { amount: Number(override) || 0, source: "manual", autoEstimate };
+  if (mode === "sales_linked") return { amount: autoEstimate, source: "auto", autoEstimate };
+  return { amount: Number(fixedAmount) || 0, source: "fixed", autoEstimate };
 };
 
 export const calculateLaborCost = (args) => resolveCostAmountAndSource(args);
@@ -2020,14 +2025,14 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // 仕様(要件1-5)。sales(この時点で既に確定している当月実売上、まとめ入力分を含む)を
   // そのまま使う——目標売上ではなく必ず実際の当月売上を使うことが要件3の核心。
   const laborCostOverride = getStoreMonthlyCostOverride(state, storeId, monthValue).laborCostOverride;
-  const { amount: laborCost, source: laborCostSource } = calculateLaborCost({
+  const { amount: laborCost, source: laborCostSource, autoEstimate: laborCostAutoEstimate } = calculateLaborCost({
     mode: options.laborCostMode, rate: options.laborCostRate, override: laborCostOverride, fixedAmount: costsByCategory.labor, sales,
   });
   // 材料・発注費(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
   // 入力してもよいし、月中に複数回に分けて入力してその月の合計として扱ってもよい)。人件費と
   // 同じ自動推定/実額確定の仕様(要件6-8)。
   const purchaseCostOverride = getStoreMonthlyCostOverride(state, storeId, monthValue).purchaseCostOverride;
-  const { amount: purchaseAmount, source: purchaseCostSource } = calculatePurchaseCost({
+  const { amount: purchaseAmount, source: purchaseCostSource, autoEstimate: purchaseCostAutoEstimate } = calculatePurchaseCost({
     mode: options.purchaseCostMode, rate: options.purchaseCostRate, override: purchaseCostOverride, fixedAmount: costsByCategory.materials, sales,
   });
   // 人件費・仕入とも、実際に使用中の金額の出所が確定していれば(固定額モードで実入力がある／
@@ -2194,8 +2199,10 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
     retailRatio: retailRatioValue,
     laborCost,
     laborCostSource,
+    laborCostAutoEstimate,
     purchaseAmount,
     purchaseCostSource,
+    purchaseCostAutoEstimate,
     costOfGoodsSold,
     costOfGoodsSoldRate,
     equipmentInvestmentCost,

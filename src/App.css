@@ -869,7 +869,22 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 /* 人件費・仕入の自動計算設定パネル(費用入力タブ)。setup-cardを2枚並べるため、間の余白だけ
    追加する。 */
 .cost-rate-estimation-panel { margin-bottom: 16px; }
-.cost-rate-estimation-panel .cost-rate-current-amount { margin: 8px 0; }
+/* 「売上連動費」「固定費・その他費用」の区切り見出し。既存のpanel-heading.compactに
+   helper-textを重ねているだけで、既存の費用入力フォーム自体のレイアウトには触れない。 */
+.cost-section-heading { margin-top: 4px; margin-bottom: 8px; }
+.cost-rate-inline-form { align-items: center; gap: 10px 8px; margin-bottom: 8px; }
+/* NumericInput+ボタン+「保存しました」がスマホ幅でも折り返して潰れないようにする
+   (inline-formの既存flex-wrapに乗るが、保存済み表示だけ幅を固定させない)。 */
+.cost-save-flash { flex: 0 0 auto; color: var(--accent); font-size: 0.82rem; font-weight: 600; white-space: nowrap; }
+/* 自動計算額(要件1): 金額は少し目立たせる程度で、派手な色・カードは使わない。 */
+.cost-auto-estimate { margin: 4px 0 12px; }
+.cost-auto-estimate-amount { font-size: 1.15rem; font-weight: 700; margin: 0 0 2px; }
+.cost-auto-estimate-basis { margin: 0; }
+.cost-override-section { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 4px; }
+.cost-override-label { font-weight: 600; margin: 0 0 8px; }
+.cost-override-hint { margin: 0 0 4px; }
+.cost-override-active { margin-top: 10px; }
+.cost-rate-multi-item-note { margin: 4px 0 0; }
 
 /* 損益表の人件費・仕入・発注額カードの補助表示(要件13)。「◯◯率◯%から自動計算」/
    「確定値」をスマホでも読める短い文言で、金額の下に小さく表示する。 */

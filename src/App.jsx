@@ -5191,13 +5191,13 @@ function App() {
   const handleSaveCostRateSettings = async (costType, mode, rate) => {
     if (!canEditMonthlyData(currentRole)) {
       setNotice("人件費・仕入の設定を変更できるのは会社管理者・店舗管理者以上です。");
-      return;
+      return false;
     }
-    if (guardFranchiseReadOnly()) return;
+    if (guardFranchiseReadOnly()) return false;
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
       setNotice("店舗情報を確認できませんでした");
-      return;
+      return false;
     }
     const normalizedRate = Math.max(0, Number(rate) || 0);
     const payload = costType === "labor"
@@ -5207,7 +5207,7 @@ function App() {
       const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, ...payload });
       if (!result.ok) {
         setNotice(getSupabaseErrorMessage(result.error));
-        return;
+        return false;
       }
     }
     setAppState((prev) => ({
@@ -5221,6 +5221,7 @@ function App() {
         )),
       })),
     }));
+    return true;
   };
 
   // 人件費・仕入の「その月だけの手動確定額」の保存/自動計算への解除(店舗×対象月、
@@ -5228,20 +5229,20 @@ function App() {
   const handleSaveCostOverride = async (costType, overrideValue) => {
     if (!canEditMonthlyData(currentRole)) {
       setNotice("人件費・仕入の確定額を変更できるのは会社管理者・店舗管理者以上です。");
-      return;
+      return false;
     }
-    if (guardFranchiseReadOnly()) return;
+    if (guardFranchiseReadOnly()) return false;
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
       setNotice("店舗情報を確認できませんでした");
-      return;
+      return false;
     }
     const payload = costType === "labor" ? { laborCostOverride: overrideValue } : { purchaseCostOverride: overrideValue };
     if (isSupabaseConfigured) {
       const result = await upsertStoreMonthlyCostOverride({ companyId: appState.currentCompanyId, storeId: store.id, targetMonth: selectedMonth, ...payload });
       if (!result.ok) {
         setNotice(getSupabaseErrorMessage(result.error));
-        return;
+        return false;
       }
     }
     const key = `${store.id}__${selectedMonth}`;
@@ -5252,6 +5253,63 @@ function App() {
         [key]: { ...(prev.storeMonthlyCostOverrides?.[key] || {}), ...payload },
       },
     }));
+    return true;
+  };
+
+  // 人件費・仕入が「固定額」モードの時の「月額」入力(要件7)。既存の費用入力(fixed_costs+
+  // cost_monthly_amounts)の仕組みをそのまま使う——新しい保存先は作らない。対象カテゴリの
+  // 項目が0件なら単月項目(labor/materialsは既存仕様通り常にperiodType:"limited")として
+  // 新規作成、1件ならその項目の対象月金額を更新する。2件以上ある場合はこの関数を呼ばない
+  // (呼び出し元のUIが「月額」入力自体を出さず、既存の費用入力欄への案内に切り替える) ——
+  // 複数の給与明細等を1つに勝手にまとめてしまうと、INTRO社の実データ(スタッフ別給与を
+  // 複数項目で管理)のような既存データを壊しかねないため、安全側に倒す。
+  const handleSaveCostFixedAmount = async (costType, amount) => {
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("人件費・仕入の金額を変更できるのは会社管理者・店舗管理者以上です。");
+      return false;
+    }
+    if (guardFranchiseReadOnly()) return false;
+    const categoryKey = costType === "labor" ? "labor" : "materials";
+    const items = getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth).filter((item) => item.categoryKey === categoryKey);
+    if (items.length > 1) return false;
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return false;
+    }
+    if (items.length === 1) {
+      return persistCostMonthlyAmount({ costItemId: items[0].id, targetMonth: selectedMonth, amount });
+    }
+    // 0件: 単月の新規項目として作成する(既存のsubmitFixedCostInnerの新規作成経路と同じ形)。
+    if (isSupabaseConfigured && !company?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return false;
+    }
+    const itemId = crypto.randomUUID();
+    const nextItem = {
+      id: itemId,
+      name: costType === "labor" ? "人件費" : "仕入・発注費",
+      category: "",
+      categoryKey,
+      memo: "",
+      periodType: "limited",
+      startMonth: selectedMonth,
+      endMonth: selectedMonth,
+      baseAmount: 0,
+      sortOrder: fixedCosts.reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 0) + 1,
+    };
+    if (isSupabaseConfigured) {
+      const result = await upsertFixedCostToSupabase({ id: itemId, companyId: company.id, storeId: store.id, entryMonth: selectedMonth, userId: appState.currentUserId, item: nextItem });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return false;
+      }
+    }
+    setAppState((prev) => {
+      const key = buildMonthKey(selectedStoreId, selectedMonth);
+      return { ...prev, fixedCosts: { ...prev.fixedCosts, [key]: [...(prev.fixedCosts[key] || []), nextItem] } };
+    });
+    return persistCostMonthlyAmount({ costItemId: itemId, targetMonth: selectedMonth, amount });
   };
 
   const handleInviteEmail = async (user) => {
@@ -8636,32 +8694,60 @@ function App() {
                         <h2>費用入力</h2>
                       </div>
                     </div>
+                    <div className="panel-heading compact cost-section-heading">
+                      <div>
+                        <p className="eyebrow">SALES-LINKED</p>
+                        <h3>売上連動費</h3>
+                        <p className="helper-text">売上に応じて自動計算される費用です</p>
+                      </div>
+                    </div>
                     <CostRateEstimationPanel
                       key={`labor-${selectedStoreId}-${selectedMonth}`}
                       costType="labor"
                       title="人件費"
                       rateLabel="人件費率"
+                      sales={summary.sales}
+                      autoEstimate={summary.laborCostAutoEstimate}
                       summaryAmount={summary.laborCost}
                       summarySource={summary.laborCostSource}
                       mode={selectedStoreEntity?.settings?.laborCostMode || "fixed"}
                       rate={selectedStoreEntity?.settings?.laborCostRate || 0}
+                      fixedAmount={summary.laborCost}
+                      hasMultipleFixedItems={fixedCosts.filter((item) => item.categoryKey === "labor").length > 1}
+                      fixedItemsCount={fixedCosts.filter((item) => item.categoryKey === "labor").length}
+                      fixedItemsTotal={summary.laborCost}
                       canEdit={canEditMonthlyData(currentRole)}
                       onSaveSettings={handleSaveCostRateSettings}
                       onSaveOverride={handleSaveCostOverride}
+                      onSaveFixedAmount={handleSaveCostFixedAmount}
                     />
                     <CostRateEstimationPanel
                       key={`purchase-${selectedStoreId}-${selectedMonth}`}
                       costType="purchase"
                       title="仕入・発注額"
                       rateLabel="仕入率"
+                      sales={summary.sales}
+                      autoEstimate={summary.purchaseCostAutoEstimate}
                       summaryAmount={summary.purchaseAmount}
                       summarySource={summary.purchaseCostSource}
                       mode={selectedStoreEntity?.settings?.purchaseCostMode || "fixed"}
                       rate={selectedStoreEntity?.settings?.purchaseCostRate || 0}
+                      fixedAmount={summary.purchaseAmount}
+                      hasMultipleFixedItems={fixedCosts.filter((item) => item.categoryKey === "materials").length > 1}
+                      fixedItemsCount={fixedCosts.filter((item) => item.categoryKey === "materials").length}
+                      fixedItemsTotal={summary.purchaseAmount}
                       canEdit={canEditMonthlyData(currentRole)}
                       onSaveSettings={handleSaveCostRateSettings}
                       onSaveOverride={handleSaveCostOverride}
+                      onSaveFixedAmount={handleSaveCostFixedAmount}
                     />
+                    <div className="panel-heading compact cost-section-heading">
+                      <div>
+                        <p className="eyebrow">FIXED</p>
+                        <h3>固定費・その他費用</h3>
+                        <p className="helper-text">毎月固定または個別に入力する費用です</p>
+                      </div>
+                    </div>
                     <form className="inline-form cost-item-form" onSubmit={submitFixedCost}>
                       <input value={fixedForm.name} onChange={(event) => setFixedForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="費用名（例: 家賃、HPB）" />
                       <select
@@ -10268,75 +10354,159 @@ function TargetSetupHint({ onGoToTarget }) {
 
 // 人件費・仕入(材料・発注費)の「月途中は売上連動で自動推定、実額確定後は手動で上書き」
 // 設定パネル。costType("labor"|"purchase")ごとに費用入力タブへ2枚並べる(人件費・仕入)。
-// モード切替は即保存(useInventoryTrackingトグルと同じ規約、離散的な選択のため)。率・確定額
-// (override)はどちらも金額/数値入力なので、期首在庫・当月末在庫と同じdraft+明示保存ボタンの
-// 形にする(1文字入力するたびにSupabaseへ書き込まないため)。呼び出し元がstoreId・対象月を
-// 含むkeyを渡しており、店舗/対象月の切替では別インスタンスとして再マウントされるため、draft
-// をuseEffectで同期する必要が無い(react-hooks/set-state-in-effectの警告対象になる書き方を
-// 避ける、Reactの推奨パターン)。
-function CostRateEstimationPanel({ costType, title, rateLabel, summaryAmount, summarySource, mode, rate, canEdit, onSaveSettings, onSaveOverride }) {
+// 表示順序は「1.固定額/売上連動 2.率設定(または月額) 3.自動計算額 4.計算根拠 5.実額修正」
+// (初めて使う人にも流れが伝わるようにする要件)。
+// モード切替は即保存(useInventoryTrackingトグルと同じ規約、離散的な選択のため)。率・月額・
+// 確定額(override)はどれも金額/数値入力なので、期首在庫・当月末在庫と同じdraft+明示保存
+// ボタンの形にする(1文字入力するたびにSupabaseへ書き込まないため)。呼び出し元がstoreId・
+// 対象月を含むkeyを渡しており、店舗/対象月の切替では別インスタンスとして再マウントされる
+// ため、draftをuseEffectで同期する必要が無い(react-hooks/set-state-in-effectの警告対象に
+// なる書き方を避ける、Reactの推奨パターン)。
+// 保存の成否をbusyAction/savedFlashで管理し、ボタン付近に小さく「保存しました」を一時表示
+// する(大きな通知バナーは使わない)。busyActionが立っている間は全ボタンをdisabledにして
+// 連打による二重保存を防ぐ。
+function CostRateEstimationPanel({
+  costType, title, rateLabel, sales, autoEstimate, summaryAmount, summarySource,
+  mode, rate, fixedAmount, hasMultipleFixedItems, fixedItemsCount, fixedItemsTotal,
+  canEdit, onSaveSettings, onSaveOverride, onSaveFixedAmount,
+}) {
   const [rateDraft, setRateDraft] = useState(rate || "");
+  const [fixedAmountDraft, setFixedAmountDraft] = useState(fixedAmount || "");
   const [overrideDraft, setOverrideDraft] = useState("");
+  const [busyAction, setBusyAction] = useState("");
+  const [savedFlash, setSavedFlash] = useState("");
+  const flashTimerRef = useRef(null);
+  useEffect(() => () => { if (flashTimerRef.current) clearTimeout(flashTimerRef.current); }, []);
+
+  const runAction = async (actionKey, fn) => {
+    if (busyAction) return; // 連打による二重保存防止
+    setBusyAction(actionKey);
+    try {
+      const ok = await fn();
+      if (ok !== false) {
+        setSavedFlash(actionKey);
+        if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+        flashTimerRef.current = setTimeout(() => setSavedFlash(""), 2000);
+      }
+    } finally {
+      setBusyAction("");
+    }
+  };
+
   const isSalesLinked = mode === "sales_linked";
-  const sourceLabel = summarySource === "manual" ? "確定値" : summarySource === "auto" ? `${rateLabel}${Number(rate).toFixed(1)}%から自動計算` : "";
+  const isBusy = Boolean(busyAction);
+  const savedNote = (actionKey) => (savedFlash === actionKey ? <span className="cost-save-flash">保存しました</span> : null);
 
   return (
     <div className="setup-card cost-rate-estimation-panel">
       <div className="panel-heading compact">
         <div>
           <p className="eyebrow">{costType === "labor" ? "LABOR" : "PURCHASE"}</p>
-          <h3>{title}の自動計算設定</h3>
+          <h3>{title}</h3>
         </div>
       </div>
+
+      {/* 1. 固定額/売上連動の切替 */}
       <div className="segmented-control" role="group" aria-label={`${title}の計算方法`}>
         <button
           type="button"
           className={!isSalesLinked ? "segmented-button active" : "segmented-button"}
-          disabled={!canEdit}
-          onClick={() => onSaveSettings(costType, "fixed", rate)}
+          disabled={!canEdit || isBusy}
+          onClick={() => runAction("mode", () => onSaveSettings(costType, "fixed", rate))}
         >
           固定額
         </button>
         <button
           type="button"
           className={isSalesLinked ? "segmented-button active" : "segmented-button"}
-          disabled={!canEdit}
-          onClick={() => onSaveSettings(costType, "sales_linked", rate)}
+          disabled={!canEdit || isBusy}
+          onClick={() => runAction("mode", () => onSaveSettings(costType, "sales_linked", rate))}
         >
           売上連動
         </button>
       </div>
-      {isSalesLinked ? (
-        <>
-          <div className="inline-form">
+
+      {!isSalesLinked ? (
+        // 固定額モード: 率・自動計算額・計算根拠は出さず、シンプルに月額だけを表示する。
+        hasMultipleFixedItems ? (
+          <p className="helper-text cost-rate-multi-item-note">
+            費用入力欄に{fixedItemsCount}件登録されています（合計 {money(fixedItemsTotal || 0)}）。個別に編集する場合は下の「固定費・その他費用」の費用入力欄をご利用ください。
+          </p>
+        ) : (
+          <div className="inline-form cost-rate-inline-form">
             <label className="field">
-              <span>{rateLabel}（%）</span>
-              <NumericInput value={rateDraft} onChange={setRateDraft} allowDecimal placeholder="例: 40" disabled={!canEdit} />
+              <span>月額</span>
+              <NumericInput value={fixedAmountDraft} onChange={setFixedAmountDraft} placeholder="金額を入力" disabled={!canEdit || isBusy} />
             </label>
             {canEdit ? (
-              <button type="button" className="secondary-button" onClick={() => onSaveSettings(costType, "sales_linked", rateDraft)}>率を保存</button>
+              <button type="button" className="secondary-button" disabled={isBusy} onClick={() => runAction("fixedAmount", () => onSaveFixedAmount(costType, fixedAmountDraft))}>
+                月額を保存
+              </button>
+            ) : null}
+            {savedNote("fixedAmount")}
+          </div>
+        )
+      ) : (
+        <>
+          {/* 2. 率設定 */}
+          <div className="inline-form cost-rate-inline-form">
+            <label className="field">
+              <span>{rateLabel}（%）</span>
+              <NumericInput value={rateDraft} onChange={setRateDraft} allowDecimal placeholder="例: 40" disabled={!canEdit || isBusy} />
+            </label>
+            {canEdit ? (
+              <button type="button" className="secondary-button" disabled={isBusy} onClick={() => runAction("rate", () => onSaveSettings(costType, "sales_linked", rateDraft))}>
+                {rateLabel}を保存
+              </button>
+            ) : null}
+            {savedNote("rate")}
+          </div>
+
+          {/* 3-4. 自動計算額と計算根拠(現在売上に応じてリアルタイムに変わる、常にautoEstimateを表示する) */}
+          <div className="cost-auto-estimate">
+            <p className="cost-auto-estimate-amount">自動計算額 {money(autoEstimate || 0)}</p>
+            <p className="cost-auto-estimate-basis helper-text">現在売上 {money(sales || 0)} × {rateLabel}{Number(rate || 0).toFixed(1)}%</p>
+          </div>
+
+          {/* 5. 実額修正 */}
+          <div className="cost-override-section">
+            <p className="cost-override-label">実額に修正（任意）</p>
+            <div className="inline-form cost-rate-inline-form">
+              <label className="field">
+                <span>¥ 実際の金額を入力</span>
+                <NumericInput value={overrideDraft} onChange={setOverrideDraft} placeholder="例: 1920000" disabled={!canEdit || isBusy} />
+              </label>
+              {canEdit ? (
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={isBusy}
+                  onClick={() => runAction("override", async () => {
+                    const ok = await onSaveOverride(costType, Number(overrideDraft) || 0);
+                    if (ok !== false) setOverrideDraft("");
+                    return ok;
+                  })}
+                >
+                  実額を反映
+                </button>
+              ) : null}
+              {savedNote("override")}
+            </div>
+            <p className="helper-text cost-override-hint">給与・請求額など実際の金額が確定した場合のみ入力してください</p>
+            {summarySource === "manual" ? (
+              <div className="cost-override-active">
+                <p className="helper-text">自動計算額：{money(autoEstimate || 0)} ／ 反映中の実額：{money(summaryAmount || 0)}</p>
+                {canEdit ? (
+                  <div className="inline-form cost-rate-inline-form">
+                    <button type="button" className="text-button" disabled={isBusy} onClick={() => runAction("reset", () => onSaveOverride(costType, null))}>自動計算に戻す</button>
+                    {savedNote("reset")}
+                  </div>
+                ) : null}
+              </div>
             ) : null}
           </div>
-          <p className="helper-text cost-rate-current-amount">
-            現在の使用額: {money(summaryAmount || 0)}{sourceLabel ? `（${sourceLabel}）` : ""}
-          </p>
-          {canEdit ? (
-            <div className="inline-form">
-              <NumericInput value={overrideDraft} onChange={setOverrideDraft} placeholder="実額へ修正" />
-              <button
-                type="button"
-                className="secondary-button"
-                onClick={() => { onSaveOverride(costType, Number(overrideDraft) || 0); setOverrideDraft(""); }}
-              >
-                実額へ修正
-              </button>
-              {summarySource === "manual" ? (
-                <button type="button" className="text-button" onClick={() => onSaveOverride(costType, null)}>自動計算に戻す</button>
-              ) : null}
-            </div>
-          ) : null}
         </>
-      ) : null}
+      )}
     </div>
   );
 }
