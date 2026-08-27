@@ -768,7 +768,11 @@
 //   クリック可能に。入力設定タブに未保存の変更がある状態でのタブ/ページ離脱に確認を追加。
 //   新規店舗のみ日次入力項目・在庫管理の初期値を明示的に書き込み(既存店舗は無変更)。
 //   日締め機能は対象外(無改修)。DBスキーマ変更なし。
-const CACHE_NAME = 'salon-manager-cache-v91';
+// v92: 管理画面「目標設定」タブを「①使用する目標項目→②月間目標を入力」の2ステップ構成へ
+//   改善。ON/OFFトグルに文字併記、対象年月セレクトを‹ 2026年8月 ›形式の月切替へ統一、
+//   目標値入力欄にplaceholder追加、保存ボタンを「目標を保存」に変更。ON/OFF設定と目標数値
+//   保存の内部処理・DBスキーマは無変更(表示・操作導線の改善のみ)。
+const CACHE_NAME = 'salon-manager-cache-v92';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
