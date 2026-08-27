@@ -756,7 +756,12 @@
 //   広告APIへは一切接続せず、実際の広告の入稿・停止・増額は行わない(内部の記録・分析専用)。
 //   新規テーブル6つ追加、既存の会社・店舗・ユーザー機能への変更は無し(self-signupに
 //   UTM記録の小さな追記のみ)。
-const CACHE_NAME = 'salon-manager-cache-v89';
+// v90: 店舗管理ページを2段階UI(店舗管理トップ=追加+一覧+選択/店舗設定=基本設定・
+//   入力設定・目標設定・日計管理・その他タブ)へ全面リデザイン。店舗カードの操作を
+//   主CTA+「…」サブメニューに統一、未集計データと実数0の区別、保存状態のインライン
+//   表示化などを実施。保存処理・権限判定ロジック・DBスキーマは無変更(JSX構造とCSSの
+//   再構成のみ)。
+const CACHE_NAME = 'salon-manager-cache-v90';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
