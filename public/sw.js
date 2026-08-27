@@ -772,7 +772,13 @@
 //   改善。ON/OFFトグルに文字併記、対象年月セレクトを‹ 2026年8月 ›形式の月切替へ統一、
 //   目標値入力欄にplaceholder追加、保存ボタンを「目標を保存」に変更。ON/OFF設定と目標数値
 //   保存の内部処理・DBスキーマは無変更(表示・操作導線の改善のみ)。
-const CACHE_NAME = 'salon-manager-cache-v92';
+// v93: 初期設定チェックリスト(GETTING STARTED)を現在の管理画面構成(基本設定/入力設定/
+//   目標設定/費用入力/月締め/損益表)に完全連動。「月間目標」「固定費設定」クリック時に
+//   タブ指定漏れで直前のタブへ着地するバグを修正、5項目を店舗基本設定/入力項目設定(新設)/
+//   月間目標/営業日設定/固定費設定へ再構成、完了判定はチェックリスト専用フラグを持たず
+//   既存の実データをそのまま参照、固定費設定のみ任意項目化(必須4/4で以後非表示)、初期設定
+//   経由時のみ「戻る」バナーを表示。DBスキーマ変更なし。
+const CACHE_NAME = 'salon-manager-cache-v93';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
