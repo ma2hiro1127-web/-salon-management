@@ -216,8 +216,6 @@ import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBre
 import FaqPage from "./components/faq/FaqPage.jsx";
 import MonthlyReviewPage from "./components/monthlyReview/MonthlyReviewPage.jsx";
 
-const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0"));
-
 // "fixed" の内部idはSupabase保存先(fixed_costsテーブル)に合わせて維持しつつ、旧「固定費」
 // 「販管費」の2画面をユーザーからは区別させない単一の「費用入力」タブへ統合。
 const monthlyTabs = [
@@ -1004,16 +1002,6 @@ function App() {
   const targetSaveInFlightRef = useRef(false);
   const targetAutoSaveTimerRef = useRef(null);
   const lastTargetAutoSaveSignatureRef = useRef("");
-  // Past and future months both need to be selectable (spec: "過去月と未来月も選択可能"). A
-  // fixed ±5 year window around "now" comfortably covers that, plus the currently selected
-  // year in case it's ever outside the window for any reason (e.g. data from an unusual date).
-  const targetYearOptions = useMemo(() => {
-    const currentYear = new Date().getFullYear();
-    const selectedYear = Number(targetSelectedMonth.slice(0, 4)) || currentYear;
-    const years = new Set([selectedYear]);
-    for (let offset = -5; offset <= 5; offset += 1) years.add(currentYear + offset);
-    return Array.from(years).sort((a, b) => a - b);
-  }, [targetSelectedMonth]);
   // 日次入力項目の設定(店舗ごと、月の概念はない)。stores.daily_field_settings は他の店舗情報と
   // 同じタイミングでロードされるため、対象月選択のような専用フェッチは不要。
   const [dailyFieldDraft, setDailyFieldDraft] = useState(() => defaultDailyFieldSettings());
@@ -6457,7 +6445,7 @@ function App() {
           allStoresBusinessDaySettings: { ...prev.allStoresBusinessDaySettings, [key]: { ...(prev.allStoresBusinessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
         }));
         setTargetDirty(false);
-        setTargetSaveStatus({ status: "saved", message: `保存しました（ローカル） / 全店舗 ${savedMonthLabel}` });
+        setTargetSaveStatus({ status: "saved", message: `${savedMonthLabel}の全店舗目標を保存しました（ローカル）` });
         lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft, targetHolidayDraft });
         return { ok: true };
       }
@@ -6485,7 +6473,7 @@ function App() {
           allStoresBusinessDaySettings: { ...prev.allStoresBusinessDaySettings, [key]: { ...(prev.allStoresBusinessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
         }));
         setTargetDirty(false);
-        setTargetSaveStatus({ status: "saved", message: `保存しました / 全店舗 ${savedMonthLabel}` });
+        setTargetSaveStatus({ status: "saved", message: `${savedMonthLabel}の全店舗目標を保存しました` });
         lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft, targetHolidayDraft });
         return { ok: true };
       } catch (error) {
@@ -6497,7 +6485,6 @@ function App() {
       }
     }
 
-    const savedStoreName = selectedStore;
     const { company, store } = resolveTargetCompanyAndStore();
     // 停止中の店舗は新規入力不可(要件1)。全店舗目標(上のisAllStoresView分岐)は個別店舗の
     // 状態とは無関係のため対象外 — ここは個別店舗の目標保存のみをガードする。
@@ -6516,7 +6503,7 @@ function App() {
         businessDaySettings: { ...prev.businessDaySettings, [key]: { ...(prev.businessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
       }));
       setTargetDirty(false);
-      setTargetSaveStatus({ status: "saved", message: `保存しました（ローカル） / ${savedStoreName} ${savedMonthLabel}` });
+      setTargetSaveStatus({ status: "saved", message: `${savedMonthLabel}の目標を保存しました（ローカル）` });
       lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft, targetHolidayDraft });
       return { ok: true };
     }
@@ -6547,7 +6534,7 @@ function App() {
         businessDaySettings: { ...prev.businessDaySettings, [key]: { ...(prev.businessDaySettings?.[key] || {}), holidayCount: parseNumber(targetHolidayDraft) } },
       }));
       setTargetDirty(false);
-      setTargetSaveStatus({ status: "saved", message: `保存しました / ${savedStoreName} ${savedMonthLabel}` });
+      setTargetSaveStatus({ status: "saved", message: `${savedMonthLabel}の目標を保存しました` });
       lastTargetAutoSaveSignatureRef.current = JSON.stringify({ targetDraft, targetHolidayDraft });
       return { ok: true };
     } catch (error) {
@@ -8745,22 +8732,21 @@ function App() {
                   <section className="panel">
                     <div className="panel-heading">
                       <div>
-                        <p className="eyebrow">TARGET</p>
-                        <h2>{isAllStoresView ? "全店舗目標設定" : "月間目標設定"}</h2>
+                        <h2>目標設定</h2>
                       </div>
                     </div>
-                    {isAllStoresView ? (
-                      <p className="helper-text">会社全体の目標として保存されます。各店舗の月間目標は変更されません。休業日はここで設定した値が全店舗共通の営業日数として使われます(店舗ごとの休業日数の合計ではありません)。</p>
-                    ) : (
+
+                    {!isAllStoresView && (
                       <div className="setup-card">
-                        <div className="panel-heading compact"><div><h3>表示する目標項目</h3></div></div>
-                        <p className="helper-text">この店舗の目標設定で使う項目を選べます。OFFにした項目は下の入力欄に表示されません。</p>
+                        <div className="panel-heading compact"><div><h3>① 使用する目標項目</h3></div></div>
+                        <p className="helper-text">この店舗で管理する目標項目を選択してください。OFFにした項目は、下の目標入力欄や各画面に表示されません。</p>
                         <FieldToggleList
                           keys={monthlyTargetFieldKeys}
                           labels={monthlyTargetFieldLabels}
                           values={monthlyTargetFieldDraft.fields}
                           editable={inputSettingsEditable}
                           onToggle={updateMonthlyTargetFieldToggle}
+                          showStateLabel
                         />
                         {inputSettingsEditable ? (
                           <div className="toggle-panel">
@@ -8772,73 +8758,60 @@ function App() {
                         ) : null}
                       </div>
                     )}
-                    <div className="filters">
-                      <label className="field">
-                        <span>対象年</span>
-                        <select
-                          value={targetSelectedMonth.slice(0, 4)}
-                          onChange={(event) => handleTargetMonthChange(`${event.target.value}-${targetSelectedMonth.slice(5, 7)}`)}
-                        >
-                          {targetYearOptions.map((year) => <option key={year} value={year}>{year}年</option>)}
-                        </select>
-                      </label>
-                      <label className="field">
-                        <span>対象月</span>
-                        <select
-                          value={targetSelectedMonth.slice(5, 7)}
-                          onChange={(event) => handleTargetMonthChange(`${targetSelectedMonth.slice(0, 4)}-${event.target.value}`)}
-                        >
-                          {targetMonthOptions.map((month) => <option key={month} value={month}>{Number(month)}月</option>)}
-                        </select>
-                      </label>
-                      <div className="value-pill">{formatMonthLabel(targetSelectedMonth)}</div>
-                    </div>
 
-                    {targetLoadStatus.status === "loading" ? (
-                      <div className="empty-card">読み込み中…</div>
-                    ) : (
-                      <>
-                        <div className="input-grid">
-                          {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={targetFieldChangeHandlers.targetSales} suffix="円" numeric /> : null}
-                          {!isAllStoresView && activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={targetFieldChangeHandlers.targetTechnicalSales} suffix="円" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={targetFieldChangeHandlers.targetRetailSales} suffix="円" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={targetFieldChangeHandlers.targetCustomers} suffix="名" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={targetFieldChangeHandlers.targetAverageSpend} suffix="円" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={targetFieldChangeHandlers.targetNewCustomers} suffix="名" numeric /> : null}
-                          {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={targetFieldChangeHandlers.targetRepeatCustomers} suffix="名" numeric /> : null}
-                          {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={targetFieldChangeHandlers.targetReviewCount} suffix="件" numeric /> : null}
-                        </div>
-                        {isAllStoresView ? (
-                          <div className="daily-settings-card">
-                            <h4>全店舗共通の店休日設定</h4>
-                            <p className="helper-text">日付をクリックすると全店舗共通の店休日として設定・解除できます（複数選択可）。各店舗個別の店休日設定とは別管理で、店舗ごとの設定は変更されません。営業日数はここで選択した日付から自動計算されます。</p>
-                            <BusinessCalendarGrid
-                              monthValue={targetSelectedMonth}
-                              closedDates={[]}
-                              holidayDates={getAllStoresHolidayDates(appState, appState.currentCompanyId, targetSelectedMonth)}
-                              onDayClick={toggleAllStoresHolidayDate}
-                            />
-                            <div className="summary-card compact" style={{ marginTop: 10 }}>
-                              <span>全店舗の今月営業日数（自動計算）</span>
-                              <strong>{getAllStoresBusinessDaySummary(appState, appState.currentCompanyId, currentCompanyStores, targetSelectedMonth).businessDayCount}日</strong>
+                    <div className="setup-card target-values-card">
+                      <div className="panel-heading compact"><div><h3>{isAllStoresView ? "① 全店舗共通の月間目標を入力" : "② 月間目標を入力"}</h3></div></div>
+                      <p className="helper-text">
+                        {isAllStoresView
+                          ? "会社全体の目標として保存されます。各店舗の月間目標は変更されません。休業日はここで設定した値が全店舗共通の営業日数として使われます(店舗ごとの休業日数の合計ではありません)。"
+                          : "対象月の目標数値を入力してください。"}
+                      </p>
+                      <div className="month-switcher">
+                        <button type="button" className="month-switcher-arrow" aria-label="前月" onClick={() => handleTargetMonthChange(getMonthOffset(targetSelectedMonth, -1))}>‹</button>
+                        <span className="month-switcher-label">対象月：{formatMonthLabel(targetSelectedMonth)}</span>
+                        <button type="button" className="month-switcher-arrow" aria-label="翌月" onClick={() => handleTargetMonthChange(getMonthOffset(targetSelectedMonth, 1))}>›</button>
+                      </div>
+
+                      {targetLoadStatus.status === "loading" ? (
+                        <div className="empty-card">読み込み中…</div>
+                      ) : (
+                        <>
+                          <div className="input-grid">
+                            {activeMonthlyTargetFieldSettings.fields.targetSales ? <Field label="月間目標売上（税込）" value={targetDraft.targetSales} onChange={targetFieldChangeHandlers.targetSales} suffix="円" numeric placeholder="例: 5,000,000" /> : null}
+                            {!isAllStoresView && activeMonthlyTargetFieldSettings.fields.holidayCount ? <Field label="休業日" value={targetHolidayDraft} onChange={(value) => { setTargetHolidayDraft(value); setTargetDirty(true); }} suffix="日" numeric placeholder="例: 4" /> : null}
+                            {activeMonthlyTargetFieldSettings.fields.targetTechnicalSales ? <Field label="技術売上目標（税込）" value={targetDraft.targetTechnicalSales} onChange={targetFieldChangeHandlers.targetTechnicalSales} suffix="円" numeric placeholder="例: 4,500,000" /> : null}
+                            {activeMonthlyTargetFieldSettings.fields.targetRetailSales ? <Field label="店販売上目標（税込）" value={targetDraft.targetRetailSales} onChange={targetFieldChangeHandlers.targetRetailSales} suffix="円" numeric placeholder="例: 500,000" /> : null}
+                            {activeMonthlyTargetFieldSettings.fields.targetCustomers ? <Field label="客数目標" value={targetDraft.targetCustomers} onChange={targetFieldChangeHandlers.targetCustomers} suffix="名" numeric placeholder="例: 400" /> : null}
+                            {activeMonthlyTargetFieldSettings.fields.targetAverageSpend ? <Field label="客単価目標" value={targetDraft.targetAverageSpend} onChange={targetFieldChangeHandlers.targetAverageSpend} suffix="円" numeric placeholder="例: 12,500" /> : null}
+                            {activeMonthlyTargetFieldSettings.fields.targetNewCustomers ? <Field label="新規客数目標" value={targetDraft.targetNewCustomers} onChange={targetFieldChangeHandlers.targetNewCustomers} suffix="名" numeric placeholder="例: 80" /> : null}
+                            {activeMonthlyTargetFieldSettings.fields.targetRepeatCustomers ? <Field label="再来客数目標" value={targetDraft.targetRepeatCustomers} onChange={targetFieldChangeHandlers.targetRepeatCustomers} suffix="名" numeric placeholder="例: 320" /> : null}
+                            {showReviewCountTargetField ? <Field label="目標口コミ数" value={targetDraft.targetReviewCount} onChange={targetFieldChangeHandlers.targetReviewCount} suffix="件" numeric placeholder="例: 20" /> : null}
+                          </div>
+                          {isAllStoresView ? (
+                            <div className="daily-settings-card">
+                              <h4>全店舗共通の店休日設定</h4>
+                              <p className="helper-text">日付をクリックすると全店舗共通の店休日として設定・解除できます（複数選択可）。各店舗個別の店休日設定とは別管理で、店舗ごとの設定は変更されません。営業日数はここで選択した日付から自動計算されます。</p>
+                              <BusinessCalendarGrid
+                                monthValue={targetSelectedMonth}
+                                closedDates={[]}
+                                holidayDates={getAllStoresHolidayDates(appState, appState.currentCompanyId, targetSelectedMonth)}
+                                onDayClick={toggleAllStoresHolidayDate}
+                              />
+                              <div className="summary-card compact" style={{ marginTop: 10 }}>
+                                <span>全店舗の今月営業日数（自動計算）</span>
+                                <strong>{getAllStoresBusinessDaySummary(appState, appState.currentCompanyId, currentCompanyStores, targetSelectedMonth).businessDayCount}日</strong>
+                              </div>
                             </div>
+                          ) : null}
+                          <div className="toggle-panel target-save-row">
+                            <SaveStatusInline dirty={targetDirty} status={targetSaveStatus} />
+                            <button className="primary-button target-save-button" type="button" onClick={handleSaveMonthlyTarget} disabled={targetSaveStatus.status === "saving"}>
+                              {targetSaveStatus.status === "saving" ? "保存中…" : "目標を保存"}
+                            </button>
                           </div>
-                        ) : null}
-                        <div className="toggle-panel">
-                          <div>
-                            {targetSaveStatus.status === "error" ? (
-                              <strong className="danger-text">{targetSaveStatus.message}</strong>
-                            ) : (
-                              <strong>{targetSaveStatus.message || (targetDirty ? "未保存の変更があります" : "変更はありません")}</strong>
-                            )}
-                          </div>
-                          <button className="primary-button" type="button" onClick={handleSaveMonthlyTarget} disabled={targetSaveStatus.status === "saving"}>
-                            {targetSaveStatus.status === "saving" ? "保存中…" : "保存"}
-                          </button>
-                        </div>
-                      </>
-                    )}
+                        </>
+                      )}
+                    </div>
                   </section>
                 )}
 

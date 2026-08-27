@@ -1238,6 +1238,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 }
 .store-field-row + .store-field-row { border-top: 1px solid var(--border); }
 .store-field-row span { font-size: 0.92rem; }
+.store-field-row-control { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+/* ON/OFFの文字併記(showStateLabel時のみ)。初めて使う人でも、スイッチの向きだけでなく
+   文字でも今の状態がON/OFFどちらかを判断できるようにする。 */
+.store-field-state { font-size: 0.78rem; font-weight: 700; color: var(--muted); min-width: 28px; text-align: right; }
+.store-field-state.on { color: var(--accent); }
 /* 素のチェックボックスではなく、一般的なピル型トグルスイッチとして表示する
    (ON=青、OFF=薄いグレー)。disabled時は見た目でも明確に分かるよう薄くする
    (権限的に編集不可の項目が「反応しない」と誤解されないようにするため)。 */
@@ -1262,7 +1267,20 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .save-status-inline.saved { color: #2ea361; }
 .save-status-inline.error { color: var(--danger); }
 
+/* 対象月の切替(‹ 2026年8月 ›)。年・月の2つのセレクトへ分けず、1つの操作でまとめて
+   前月/翌月へ移動できるようにする。 */
+.month-switcher { display: flex; align-items: center; justify-content: center; gap: 14px; margin: 10px 0; }
+.month-switcher-arrow {
+  width: 36px; height: 36px; border-radius: 999px; border: 1px solid var(--border);
+  background: var(--surface); font-size: 1.1rem; line-height: 1; cursor: pointer; color: var(--text);
+}
+.month-switcher-arrow:hover { background: var(--surface-strong); }
+.month-switcher-label { font-size: 1.05rem; font-weight: 700; min-width: 8em; text-align: center; }
+
 @media (max-width: 640px) {
   .store-card-grid { grid-template-columns: 1fr; }
   .store-card-menu-popover { right: 0; left: auto; min-width: 160px; }
+  /* 目標設定「②月間目標を入力」の保存ボタン: スマホでは横幅いっぱいに近いボタンにする。 */
+  .target-save-row { flex-direction: column; align-items: stretch; }
+  .target-save-button { width: 100%; }
 }
