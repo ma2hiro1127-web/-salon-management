@@ -358,6 +358,11 @@ const createStoreSettingsDefaults = () => ({
   laborCostRate: 0,
   purchaseCostMode: "fixed",
   purchaseCostRate: 0,
+  // store_input_settings行が実際に存在するか(初期設定チェックリストの「入力項目設定」の
+  // 完了判定に使う——dailyFieldSettings等は行が無くてもデフォルト値にフォールバックする
+  // ため、この専用フラグでのみ「一度でも保存されたか」を区別できる)。DBの列ではなく、
+  // hydrate時にstore_input_settingsの行の有無から導出するクライアント側のみの値。
+  hasInputSettingsRow: false,
 });
 
 const createStoreFormDefaults = () => ({
@@ -2180,6 +2185,23 @@ function App() {
     setActivePage("monthly");
     setActiveMonthlyTab("target");
   };
+  // 初期設定チェックリストの各項目から、管理画面の該当タブ(または営業日設定の場合はカレンダー
+  // 編集UI)へ直接遷移する(要件6: トップへ飛ばして探させない)。「戻る」バナー表示フラグは
+  // ここでのみ立てる。
+  const goToSetupChecklistItem = (item) => {
+    setSetupChecklistReturnPending(true);
+    if (item.key === "target") {
+      goToMonthlyTargetSetting();
+      return;
+    }
+    if (item.monthlyTab) {
+      setActivePage("monthly");
+      setActiveMonthlyTab(item.monthlyTab);
+      return;
+    }
+    setActivePage(item.page);
+    if (item.openBusinessDayEditor) setIsBusinessDayEditing(true);
+  };
   const openAiChat = (question = "") => {
     setAiChatInitialQuestion(question);
     setAiChatOpen(true);
@@ -2206,37 +2228,48 @@ function App() {
   // 「未入力=常に赤警告」にはせず、5項目すべて完了したら自動的にカード自体を非表示にする
   // (要件: 常に大きな案内を表示して邪魔にならないように/設定完了後は通常画面を優先)。
   // 全店舗ビューは特定の1店舗の設定状況を表すものが無いため対象外。
+  // 管理画面(basic/input/target/fixed/closing/pnlタブ構成)と同じ実データを参照し、初期設定
+  // 専用の完了フラグは持たない。「店舗基本設定」「入力項目設定」「月間目標」「営業日設定」を
+  // 必須、「固定費設定」を任意(あとから設定可能)とする(要件3・9)。各項目のクリック先は
+  // 管理画面の該当タブへ直接遷移する(goToSetupChecklistItem参照)。
   const setupChecklist = useMemo(() => {
     if (isAllStoresView || !selectedStoreEntity) return [];
-    // 「店舗基本設定」は店舗追加(店舗名の登録)と役割が重複しないよう、店舗名の再入力を
-    // 完了条件にしない——店舗追加が終わった時点で、この店舗はシステム上作成済みであり、
-    // 基本設定に必須の追加入力は無い(現状、在籍スタッフ数等はどれも任意項目)。そのため
-    // 「店舗が存在する(=selectedStoreEntityがある)」だけで完了扱いにする。将来この画面に
-    // 本当に必須の項目が増えた場合は、ここへその条件を追加する。
-    const hasStoreBasicSetting = true;
+    // 店舗名は店舗作成時の必須項目(handleSaveStore/handleCreateNewStoreで検証済み)なので、
+    // 実際に保存されている店舗名の有無がそのまま「店舗基本設定が完了しているか」の実データ
+    // 判定になる。
+    const hasStoreBasicSetting = Boolean(selectedStoreEntity?.name?.trim());
+    // store_input_settings行が実際に保存されているか(dailyFieldSettings自体は行が無くても
+    // デフォルト値にフォールバックするため、hasInputSettingsRowでのみ区別できる)。
+    const hasInputSettingsRow = Boolean(selectedStoreEntity?.settings?.hasInputSettingsRow);
     const hasHolidaySetting = businessDaySettings.mode === "manual"
       ? parseNumber(businessDaySettings.businessDayCount) > 0
       : (getStoreHolidayDates(appState, selectedStoreId, selectedMonth).length > 0 || parseNumber(businessDaySettings.holidayCount) > 0);
     const hasFixedCostSetting = fixedCosts.length > 0;
-    // 日次入力実績: 通常の日次入力(daily_sales)だけでなく、まとめて入力(daily_batch_entries)
-    // だけで済ませている店舗も「入力済み」とみなす(不具合修正: getStoreMonthSalesTotal等と
-    // 同じ理由——まとめ入力オンリーの店舗がこの項目だけ永久に未完了のままになっていた)。
-    const hasDailyEntry = dailyEntries.length > 0 || batchEntries.length > 0;
     return [
-      { key: "store", label: "店舗基本設定", done: hasStoreBasicSetting, page: "stores" },
-      { key: "target", label: "月間目標", done: hasAnyTarget, page: "monthly" },
-      { key: "holidays", label: "営業日・休業日", done: hasHolidaySetting, page: "daily" },
-      { key: "fixedCosts", label: "固定費設定", done: hasFixedCostSetting, page: "monthly" },
-      { key: "daily", label: "日次入力", done: hasDailyEntry, page: "daily" },
+      { key: "store", label: "店舗基本設定", description: "店舗名など、店舗の基本情報を設定", done: hasStoreBasicSetting, page: "monthly", monthlyTab: "basic" },
+      { key: "inputSettings", label: "入力項目設定", description: "毎日の売上入力で使用する項目を選択", done: hasInputSettingsRow, page: "monthly", monthlyTab: "input" },
+      { key: "target", label: "月間目標", description: "売上・客数など今月の目標を設定", done: hasAnyTarget, page: "monthly", monthlyTab: "target" },
+      { key: "holidays", label: "営業日設定", description: "営業日と休業日を設定", done: hasHolidaySetting, page: "daily", openBusinessDayEditor: true },
+      { key: "fixedCosts", label: "固定費設定", description: "家賃など毎月発生する費用を設定（あとから設定できます）", done: hasFixedCostSetting, optional: true, page: "monthly", monthlyTab: "fixed" },
     ];
-  }, [isAllStoresView, selectedStoreEntity, businessDaySettings, appState, selectedStoreId, selectedMonth, fixedCosts, dailyEntries, batchEntries, hasAnyTarget]);
+  }, [isAllStoresView, selectedStoreEntity, businessDaySettings, appState, selectedStoreId, selectedMonth, fixedCosts, hasAnyTarget]);
   const [setupChecklistDismissed, setSetupChecklistDismissed] = useState(false);
+  // 初期設定チェックリスト経由で管理画面/日次入力へ移動した間だけtrueにし、「初期設定に
+  // 戻る」バナーを表示する(要件7)。通常のサイドバーnav遷移やgoToMonthlyTargetSetting単体
+  // (TargetSetupHint等、チェックリスト以外からの既存呼び出し元)ではセットしない——通常の
+  // 管理画面利用時にバナーが出ないようにするため。
+  const [setupChecklistReturnPending, setSetupChecklistReturnPending] = useState(false);
   // 初期設定は「対象月ごとの状態」ではなく「店舗単位で一度完了すれば恒久的に完了」として
   // 扱う(不具合修正: 過去月・翌月など対象月を切り替えるたびに、その月にデータが無いことを
   // 理由に初期設定案内が再表示されていた)。store_profiles.initial_setup_completed(店舗単位の
   // 永続フラグ)が既にtrueなら、setupChecklistの各項目がその月にたまたま無くても表示しない。
   const isStoreInitialSetupCompleted = Boolean(selectedStoreEntity?.initialSetupCompleted);
-  const showSetupChecklist = !isStoreInitialSetupCompleted && setupChecklist.length > 0 && setupChecklist.some((item) => !item.done) && !setupChecklistDismissed;
+  // 必須項目(固定費設定を除く4項目)が揃っていれば十分に使用開始できるとみなす(要件9:
+  // 「5/5にしないと使えない」仕様を避ける)——表示・自動完了判定ともに必須項目のみで判断する。
+  // useMemoで安定した参照にする(下のuseEffectの依存配列に使うため——.filter()を直接使うと
+  // 毎レンダーで新しい配列参照になり、effectが不要に再実行され続けてしまう)。
+  const requiredSetupChecklist = useMemo(() => setupChecklist.filter((item) => !item.optional), [setupChecklist]);
+  const showSetupChecklist = !isStoreInitialSetupCompleted && requiredSetupChecklist.length > 0 && requiredSetupChecklist.some((item) => !item.done) && !setupChecklistDismissed;
   // 店舗を切り替えたら、別の店舗の設定状況に対する「閉じる」操作を引き継がない(要件: 店舗
   // 切替でデータが混ざらない、の一種——ここでのdismiss状態も一種の店舗ごとの表示状態)。
   useEffect(() => {
@@ -2249,7 +2282,7 @@ function App() {
   // 静かにskip扱いにする(要件: エラー表示にしない、他の操作をブロックしない)。
   useEffect(() => {
     if (isStoreInitialSetupCompleted) return;
-    if (!setupChecklist.length || setupChecklist.some((item) => !item.done)) return;
+    if (!requiredSetupChecklist.length || requiredSetupChecklist.some((item) => !item.done)) return;
     if (!isSupabaseConfigured || !appState.currentCompanyId || !selectedStoreId || !appState.currentUserId) return;
     if (markingInitialSetupCompletedRef.current) return;
     markingInitialSetupCompletedRef.current = true;
@@ -2268,7 +2301,7 @@ function App() {
       markingInitialSetupCompletedRef.current = false;
     });
     return () => { cancelled = true; };
-  }, [isStoreInitialSetupCompleted, setupChecklist, appState.currentCompanyId, appState.currentUserId, selectedStoreId]);
+  }, [isStoreInitialSetupCompleted, requiredSetupChecklist, appState.currentCompanyId, appState.currentUserId, selectedStoreId]);
   // ⑤ 月末着地予測 vs 目標: forecast itself doesn't need a target to compute (it's pace-based),
   // only this comparison line does.
   const forecastVsTarget = summary.displayForecast - parseNumber(target.targetSales);
@@ -3085,6 +3118,7 @@ function App() {
             ...(profile || {}),
             settings: {
               ...(store.settings || createStoreSettingsDefaults()),
+              hasInputSettingsRow: Boolean(inputRow),
               ...(inputRow ? {
                 dailyFieldSettings: normalizeDailyFieldSettings(inputRow.daily_fields),
                 monthlyTargetFields: normalizeMonthlyTargetFieldSettings(inputRow.monthly_target_fields),
@@ -3972,7 +4006,7 @@ function App() {
         openingDate: "", openingHour: "09:00", closingHour: "20:00", closedDays: "月", businessHours: "09:00-20:00",
         description: "", website: "", instagram: "", googleMapUrl: "", serviceTypes: [], urls: [],
         status: "active", isActive: true, staffCount: 0, productivityStaffCount: 0,
-        settings: { ...createStoreSettingsDefaults(), dailyFieldSettings: newStoreDailyFieldSettings, useInventoryTracking: false },
+        settings: { ...createStoreSettingsDefaults(), dailyFieldSettings: newStoreDailyFieldSettings, useInventoryTracking: false, hasInputSettingsRow: true },
       };
       if (isSupabaseConfigured) {
         const profileResult = await upsertStoreProfile({ companyId, storeId, userId: appState.currentUserId, profile: nextStore });
@@ -5124,7 +5158,7 @@ function App() {
           ...company,
           stores: (company.stores || []).map((store) => (
             store.name === selectedStore
-              ? { ...store, settings: { ...(store.settings || createStoreSettingsDefaults()), dailyFieldSettings: dailyFieldDraft, useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft } }
+              ? { ...store, settings: { ...(store.settings || createStoreSettingsDefaults()), dailyFieldSettings: dailyFieldDraft, useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft, hasInputSettingsRow: true } }
               : store
           )),
         })),
@@ -5160,7 +5194,7 @@ function App() {
           ...company,
           stores: (company.stores || []).map((s) => (
             s.id === store.id
-              ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), dailyFieldSettings: dailyFieldDraft, useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft } }
+              ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), dailyFieldSettings: dailyFieldDraft, useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft, hasInputSettingsRow: true } }
               : s
           )),
         })),
@@ -7696,6 +7730,7 @@ function App() {
                   className={`nav-button${activePage === item.id ? " active" : ""}${isNewGroup ? " nav-group-start" : ""}`}
                   onClick={() => {
                     if (activePage === "monthly" && activeMonthlyTab === "input" && item.id !== "monthly" && !confirmLeaveInputSettings()) return;
+                    setSetupChecklistReturnPending(false);
                     setActivePage(item.id);
                     setMobileNavOpen(false);
                   }}
@@ -7810,7 +7845,7 @@ function App() {
             {showSetupChecklist ? (
               <SetupChecklistCard
                 items={setupChecklist}
-                onGoToPage={(page) => setActivePage(page)}
+                onNavigate={goToSetupChecklistItem}
                 onDismiss={() => setSetupChecklistDismissed(true)}
               />
             ) : null}
@@ -8107,6 +8142,12 @@ function App() {
               <div className="empty-card">全店舗ビューでは日次入力はできません。実績は登録店舗ごとの日締め済みデータから自動集計されます。入力する場合は店舗を選択してください。</div>
             ) : (
               <>
+                {setupChecklistReturnPending && (
+                  <div className="notice-box setup-return-banner">
+                    <span>初期設定から移動しました</span>
+                    <button className="text-button" type="button" onClick={() => { setActivePage("dashboard"); setSetupChecklistReturnPending(false); }}>← 初期設定に戻る</button>
+                  </div>
+                )}
                 {selectedStoreEntity?.status === "suspended" && (
                   <div className="notice-box warning">この店舗は現在停止中です。新規の売上・日次入力はできません(過去のデータは引き続き確認できます)。「店舗管理」から運営を再開できます。</div>
                 )}
@@ -8617,6 +8658,12 @@ function App() {
 
         {activePage === "monthly" && (
           <div className="stack">
+            {setupChecklistReturnPending && (
+              <div className="notice-box setup-return-banner">
+                <span>初期設定から移動しました</span>
+                <button className="text-button" type="button" onClick={() => { setActivePage("dashboard"); setSetupChecklistReturnPending(false); }}>← 初期設定に戻る</button>
+              </div>
+            )}
             <div className="subnav">
               {visibleMonthlyTabs.map((tab) => (
                 <button
@@ -10160,18 +10207,20 @@ function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", s
 // せず、この1枚だけをkpi-hero-gridの先頭に出す。警告・エラーではなく中立トーン(.setup-card)
 // にし、目標を1つでも登録すればhasAnyTargetがtrueになり自動的に消える(表示ON/OFFの設定は
 // 持たない)。
-// 初回利用時の設定チェックリスト(要件9)。項目をクリックすると該当ページへ移動するだけの
-// シンプルな案内——タスク管理・期限管理までは今回作らない。5項目すべて完了すると
-// (呼び出し元のshowSetupChecklistがfalseになり)このカード自体が描画されなくなるため、
-// 設定完了後にずっと居座って邪魔になることは無い。
-function SetupChecklistCard({ items, onGoToPage, onDismiss }) {
-  const doneCount = items.filter((item) => item.done).length;
+// 初回利用時の設定チェックリスト(要件9)。項目をクリックすると管理画面の該当タブ(または
+// 営業日設定のカレンダー編集UI)へ直接移動する——タスク管理・期限管理までは今回作らない。
+// 必須項目(固定費設定を除く4項目)がすべて完了すると(呼び出し元のshowSetupChecklistが
+// falseになり)このカード自体が描画されなくなるため、設定完了後にずっと居座って邪魔になる
+// ことは無い。固定費設定は任意項目として区別し、完了状況の分母(X/Y)には含めない。
+function SetupChecklistCard({ items, onNavigate, onDismiss }) {
+  const requiredItems = items.filter((item) => !item.optional);
+  const doneCount = requiredItems.filter((item) => item.done).length;
   return (
     <div className="setup-card setup-checklist-card">
       <div className="setup-checklist-card-heading">
         <div>
           <p className="eyebrow">GETTING STARTED</p>
-          <strong>初期設定 {doneCount}/{items.length}</strong>
+          <strong>初期設定 {doneCount}/{requiredItems.length} 完了</strong>
         </div>
         <button type="button" className="setup-checklist-close" onClick={onDismiss} aria-label="閉じる">×</button>
       </div>
@@ -10181,10 +10230,14 @@ function SetupChecklistCard({ items, onGoToPage, onDismiss }) {
           <button
             key={item.key}
             type="button"
-            className={`setup-checklist-item ${item.done ? "done" : "pending"}`}
-            onClick={() => onGoToPage(item.page)}
+            className={`setup-checklist-item ${item.done ? "done" : item.optional ? "optional" : "pending"}`}
+            onClick={() => onNavigate(item)}
           >
-            {item.done ? "✓" : "○"} {item.label}
+            <span className="setup-checklist-item-top">
+              <span className="setup-checklist-item-label">{item.done ? "✓" : "○"} {item.label}</span>
+              <span className="setup-checklist-item-status">{item.done ? "設定済み" : item.optional ? "任意" : "未設定"}</span>
+            </span>
+            <span className="setup-checklist-item-desc">{item.description}</span>
           </button>
         ))}
       </div>

@@ -895,14 +895,28 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    バナーとして正しく全幅表示させる。 */
 .setup-checklist-card { grid-column: 1 / -1; }
 .setup-checklist-card-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
-.setup-checklist-list { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 縦list表示: 各項目を「アイコン+ラベル+状態語」の1行と、その下に1行説明文の2段構成にする
+   (要件2・8)。状態が一目で分かるよう、完了=緑系、未完了=通常色、任意=薄い表示で区別する。 */
+.setup-checklist-list { display: flex; flex-direction: column; gap: 8px; }
 .setup-checklist-item {
-  display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px;
-  border: 1px solid var(--border); background: var(--surface); font-size: 0.85rem; font-weight: 600; cursor: pointer;
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%;
+  padding: 10px 14px; min-height: 44px; border-radius: 12px;
+  border: 1px solid var(--border); background: var(--surface); text-align: left; cursor: pointer;
 }
+.setup-checklist-item-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.setup-checklist-item-label { font-size: 0.92rem; font-weight: 700; }
+.setup-checklist-item-status { font-size: 0.78rem; font-weight: 600; color: var(--muted); flex-shrink: 0; }
+.setup-checklist-item-desc { font-size: 0.82rem; color: var(--muted); }
 .setup-checklist-item.done { color: var(--success); border-color: rgba(22, 163, 74, 0.3); background: rgba(22, 163, 74, 0.08); }
+.setup-checklist-item.done .setup-checklist-item-status { color: var(--success); }
 .setup-checklist-item.pending { color: var(--text); }
+.setup-checklist-item.optional { border-style: dashed; }
+.setup-checklist-item.optional .setup-checklist-item-label,
+.setup-checklist-item.optional .setup-checklist-item-status { color: var(--muted); }
 .setup-checklist-close { border: none; background: transparent; color: var(--muted); font-size: 1.1rem; line-height: 1; cursor: pointer; padding: 4px; }
+
+/* 初期設定チェックリスト経由で管理画面/日次入力を開いた時だけ表示する「戻る」導線(要件7)。 */
+.setup-return-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .store-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .store-form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
