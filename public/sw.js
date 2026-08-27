@@ -781,7 +781,11 @@
 // v94: 入力設定タブのトグルにON/OFF文字表示を追加(目標設定タブと共通コンポーネント
 //   FieldToggleListを使っているにも関わらずshowStateLabelが渡されておらず表示が
 //   欠けていたのを修正)。見た目のみの変更、保存処理・DBスキーマは無変更。
-const CACHE_NAME = 'salon-manager-cache-v94';
+// v95: 月次ダッシュボードの「レポート出力」を「レポート印刷」に改名し、印刷前に内容
+//   (A4/縦向き/プリンタ未設定時のMac案内)を説明する確認モーダルを追加。印刷結果にのみ
+//   店舗名・対象月の見出しを表示、印刷CSSに確認モーダルの非表示・比較表の幅調整を追加。
+//   window.print()を使う既存の印刷機構自体は無変更。
+const CACHE_NAME = 'salon-manager-cache-v95';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
