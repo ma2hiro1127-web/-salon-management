@@ -8744,6 +8744,7 @@ function App() {
                             values={dailyFieldDraft.fields}
                             editable={inputSettingsEditable}
                             onToggle={updateDailyFieldToggle}
+                            showStateLabel
                           />
                         </div>
                         <div className="setup-card">
@@ -8754,6 +8755,7 @@ function App() {
                             values={{ useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft }}
                             editable={inputSettingsEditable}
                             onToggle={(key, value) => (key === "useCashBreakdown" ? updateCashBreakdownDraft(value) : updateInventoryTrackingDraft(value))}
+                            showStateLabel
                           />
                           <p className="helper-text">
                             日計管理: 日々の売上を、現金・キャッシュレス・ポイント利用など支払方法別に記録できます。※ 総売上や損益には重複して加算されません。
