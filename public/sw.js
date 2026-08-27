@@ -785,7 +785,10 @@
 //   (A4/縦向き/プリンタ未設定時のMac案内)を説明する確認モーダルを追加。印刷結果にのみ
 //   店舗名・対象月の見出しを表示、印刷CSSに確認モーダルの非表示・比較表の幅調整を追加。
 //   window.print()を使う既存の印刷機構自体は無変更。
-const CACHE_NAME = 'salon-manager-cache-v95';
+// v96: 月次ダッシュボードの店舗別CSV出力で「スタッフ換算人数」が欠落していた不具合を修正
+//   (全店舗CSVは元々正しく出力済み)。CSV出力はBlob+<a download>によるブラウザ標準
+//   ダウンロードのみで、外部アプリ・エディタを起動する処理は元々存在しないことを確認済み。
+const CACHE_NAME = 'salon-manager-cache-v96';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
