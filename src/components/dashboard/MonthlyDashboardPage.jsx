@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   buildMonthKey, calculateMonthSummary, formatMonthLabel, getMonthOffset,
   getCompanyDashboardSummary, getStaffProductivitySummary,
@@ -64,6 +64,12 @@ export default function MonthlyDashboardPage({
 
   const canExport = isAllStoresView ? Boolean(companySummary?.storeRows?.length) : Boolean(storeSummary);
 
+  const [showPrintConfirm, setShowPrintConfirm] = useState(false);
+  const handleOpenPrintDialog = () => {
+    setShowPrintConfirm(false);
+    window.print();
+  };
+
   return (
     <div className="stack">
       <section className="panel dashboard-print-hide">
@@ -76,12 +82,19 @@ export default function MonthlyDashboardPage({
           </div>
           <div className="dashboard-actions">
             <button type="button" className="secondary-button" onClick={handleExportCsv} disabled={!canExport}>CSV出力</button>
-            <button type="button" className="secondary-button" onClick={() => window.print()} disabled={!canExport}>レポート出力</button>
+            <button type="button" className="secondary-button" onClick={() => setShowPrintConfirm(true)} disabled={!canExport}>レポート印刷</button>
           </div>
         </div>
       </section>
 
       <div className="dashboard-print-area">
+        {/* 画面上は非表示、印刷時のみ表示(要件4: 店舗名・対象月は印刷結果に表示する)。
+            通常の月ナビ(上のdashboard-toolbar)は印刷対象外(dashboard-print-hide)のため、
+            印刷結果だけを見た時にどの店舗・どの月のレポートか分からなくならないようにする。 */}
+        <div className="dashboard-print-header">
+          <strong>{isAllStoresView ? "全店舗" : (selectedStoreEntity?.name || "")}</strong>
+          <span>{formatMonthLabel(selectedMonth)}</span>
+        </div>
         {isAllStoresView ? (
           companySummary ? <CompanyDashboardView companySummary={companySummary} /> : <div className="empty-card">店舗を追加してください。</div>
         ) : storeSummary ? (
@@ -96,6 +109,30 @@ export default function MonthlyDashboardPage({
           <div className="empty-card">店舗を選択してください。</div>
         )}
       </div>
+
+      {showPrintConfirm ? (
+        <div className="modal-overlay" onClick={() => setShowPrintConfirm(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="panel-heading compact">
+              <div>
+                <p className="eyebrow">PRINT REPORT</p>
+                <h3>月次レポートを印刷</h3>
+              </div>
+            </div>
+            <p className="helper-text">この端末に設定されているプリンタから印刷します。</p>
+            <ul className="print-confirm-list">
+              <li>A4サイズ</li>
+              <li>縦向き</li>
+              <li>月次レポート全体を印刷</li>
+            </ul>
+            <p className="helper-text">プリンタが表示されない場合は、Macの「システム設定 → プリンタとスキャナ」からプリンタを追加してください。</p>
+            <div className="row-actions" style={{ marginTop: 12 }}>
+              <button className="secondary-button" type="button" onClick={() => setShowPrintConfirm(false)}>キャンセル</button>
+              <button className="primary-button" type="button" onClick={handleOpenPrintDialog}>印刷画面を開く</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

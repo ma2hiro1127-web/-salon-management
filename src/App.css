@@ -1079,6 +1079,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .dashboard-month-nav { display: flex; align-items: center; gap: 10px; }
 .dashboard-month-nav strong { font-size: 1.05rem; min-width: 96px; text-align: center; }
 .dashboard-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+/* 印刷結果にのみ表示する店舗名・対象月の見出し(画面上は非表示 — 通常の月ナビで既に
+   見えているため、印刷時にdashboard-print-hideで隠れる代わりにこちらを表示する)。 */
+.dashboard-print-header { display: none; }
+/* 印刷確認モーダルの案内リスト(A4サイズ/縦向き/印刷範囲)。 */
+.print-confirm-list { margin: 0; padding-left: 20px; color: var(--muted); font-size: 0.9rem; display: flex; flex-direction: column; gap: 2px; }
 
 .dashboard-bar-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }
 .dashboard-bar-group:last-child { margin-bottom: 0; }
@@ -1112,10 +1117,14 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    操作系(.dashboard-print-hide)は隠し、.dashboard-print-area の中身だけを印刷する。 */
 @media print {
   /* month-picker-overlay/panelはdocument.body直下へportalで描画されるため.topbarの子孫では
-     ない — 個別に隠す(印刷実行時にたまたま開いていても紙面に出さない)。 */
-  .sidebar, .topbar, .dashboard-print-hide, .ai-floating-button, .month-picker-overlay, .month-picker-panel, .unclosed-stores-popover-overlay, .unclosed-stores-popover { display: none !important; }
+     ない — 個別に隠す(印刷実行時にたまたま開いていても紙面に出さない)。.modal-overlayは
+     印刷確認モーダル自体を含む全モーダル共通クラス — 「印刷画面を開く」クリック直後の
+     再レンダー猶予中に万一DOM上へ残っていても紙面に出ないようにする安全策。 */
+  .sidebar, .topbar, .dashboard-print-hide, .ai-floating-button, .month-picker-overlay, .month-picker-panel, .unclosed-stores-popover-overlay, .unclosed-stores-popover, .modal-overlay { display: none !important; }
   .app-shell, .main-content { display: block !important; background: #fff !important; padding: 0 !important; }
   .dashboard-print-area { display: block !important; }
+  /* 画面上は非表示の店舗名・対象月見出しを、印刷時だけ表示する(要件4)。 */
+  .dashboard-print-header { display: flex !important; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; font-size: 1.05rem; }
   .dashboard-print-area .summary-grid,
   .dashboard-print-area .kpi-grid,
   .dashboard-print-area .dashboard-layout { grid-template-columns: repeat(2, 1fr) !important; }
@@ -1124,6 +1133,11 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .dashboard-print-area .ranking-row,
   .dashboard-print-area .summary-card { box-shadow: none !important; border: 1px solid #ccc !important; break-inside: avoid; }
   .dashboard-print-area .table-wrap { overflow-x: visible !important; }
+  /* 店舗数が多い会社の比較表は列数が増えて横に切れやすいため、印刷時のみ折り返し可+やや
+     小さめのフォントで幅に収める(要件4: 横幅が切れない/小さくなりすぎない、のバランス)。 */
+  .dashboard-print-area .comparison-table { font-size: 0.78rem; }
+  .dashboard-print-area .comparison-table td,
+  .dashboard-print-area .comparison-table th { white-space: normal; }
   @page { size: A4 portrait; margin: 12mm; }
 }
 
