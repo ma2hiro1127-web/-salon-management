@@ -80,6 +80,17 @@ export const defaultDailyEntry = {
 // 制御していたが、他の日次入力項目と同じ「店舗ごとにON/OFF」に統一した(表示設定からは削除)。
 export const dailyFieldKeys = ["technicalSales", "retailSales", "customers", "newCustomers", "repeatCustomers", "memo", "reviewCount", "otherSales"];
 
+export const dailyFieldLabels = {
+  technicalSales: "技術売上",
+  retailSales: "店販売上",
+  customers: "来店客数",
+  newCustomers: "新規客数",
+  repeatCustomers: "再来客数",
+  memo: "メモ",
+  reviewCount: "口コミ数",
+  otherSales: "その他売上",
+};
+
 export const dailyFieldPresets = {
   simple: { technicalSales: false, retailSales: false, customers: false, newCustomers: false, repeatCustomers: false, memo: false, reviewCount: false, otherSales: false },
   detailed: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true, reviewCount: false, otherSales: false },
@@ -111,6 +122,22 @@ export const monthlyTargetFieldKeys = [
   "targetSales", "targetTechnicalSales", "targetRetailSales", "targetCustomers",
   "targetAverageSpend", "targetNewCustomers", "targetRepeatCustomers", "targetReviewCount", "holidayCount",
 ];
+
+export const monthlyTargetFieldLabels = {
+  targetSales: "月間目標売上",
+  targetTechnicalSales: "技術売上目標",
+  targetRetailSales: "店販売上目標",
+  targetCustomers: "目標客数",
+  targetAverageSpend: "目標客単価",
+  targetNewCustomers: "目標新規数",
+  targetRepeatCustomers: "目標再来数",
+  targetReviewCount: "目標口コミ数",
+  targetLaborRate: "人件費率",
+  targetMaterialRate: "材料費率",
+  targetAdRate: "広告費率",
+  targetOperatingMargin: "営業利益率",
+  holidayCount: "休業日",
+};
 
 export const defaultMonthlyTargetFieldSettings = () => ({
   fields: {

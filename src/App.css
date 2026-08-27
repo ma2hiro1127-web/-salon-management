@@ -1185,3 +1185,78 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ad-ops-badge { border-radius: 999px; padding: 3px 10px; font-size: 0.72rem; font-weight: 700; }
 .ad-ops-badge.win { background: rgba(46, 163, 97, 0.14); color: #2ea361; }
 .ad-ops-badge.stop { background: rgba(227, 87, 87, 0.14); color: var(--danger); }
+
+/* 店舗管理ページ 90点改修。店舗一覧⇄店舗設定の2段階UI(要件: 情報を詰め込みすぎない、
+   SaaSらしい上品さ)。既存のpanel/setup-card/subnav/segmented-control等は流用し、
+   このページ固有の見た目だけを新クラスで追加する。 */
+.store-management-page .panel-heading + .helper-text { margin-top: -6px; }
+
+/* 店舗カード: メインCTA(この店舗を管理)を主役にし、複製/停止/アーカイブ等は「⋯」メニュー
+   にまとめる(要件1-3)。info-cardと同じ質感(角丸・淡い影・ホバーで少し浮く)を踏襲しつつ、
+   店舗一覧専用の新クラスとして独立させる。 */
+.store-card {
+  border: 1px solid var(--border); border-radius: 18px; background: var(--surface-strong);
+  padding: 16px; display: flex; flex-direction: column; gap: 12px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+.store-card:hover { transform: translateY(-2px); border-color: rgba(37, 99, 235, 0.2); box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08); }
+.store-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.14); }
+.store-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.store-card-head strong { font-size: 1.02rem; min-width: 0; overflow-wrap: anywhere; }
+
+/* ステータスバッジ(要件1-4): 運営中=淡いグリーン、停止中=淡いアンバー、アーカイブ=淡いグレー。
+   status-pillとは独立させ、このページの3状態専用の控えめな配色にする。 */
+.store-status-badge { display: inline-flex; align-items: center; flex: 0 0 auto; border-radius: 999px; padding: 4px 10px; font-size: 0.74rem; font-weight: 700; white-space: nowrap; }
+.store-status-badge.active { background: rgba(46, 163, 97, 0.12); color: #2ea361; }
+.store-status-badge.suspended { background: rgba(217, 119, 6, 0.12); color: #b45309; }
+.store-status-badge.archived { background: rgba(100, 116, 139, 0.14); color: var(--muted); }
+
+.store-card-actions { display: flex; align-items: center; gap: 8px; }
+.store-card-cta { flex: 1 1 auto; }
+
+/* サブ操作メニュー(要件1-3): 「⋯」ボタン1つに複製/停止/再開/アーカイブ/完全削除を集約する。 */
+.store-card-menu { position: relative; flex: 0 0 auto; }
+.store-card-menu-trigger { min-width: 44px; min-height: 44px; font-size: 1.1rem; line-height: 1; padding: 8px; }
+.store-card-menu-popover {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 148px;
+  display: flex; flex-direction: column; gap: 2px; padding: 6px;
+  border: 1px solid var(--border); border-radius: 14px; background: var(--surface-strong);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
+}
+.store-card-menu-popover .text-button { text-align: left; width: 100%; padding: 8px 10px; }
+
+.store-archive-toggle { align-self: flex-start; margin-top: 4px; color: var(--muted); }
+
+/* 店舗設定ビュー: 上部ヘッダー(店舗名+ステータス+一覧へ戻る)とタブ(subnavを流用)。 */
+.store-settings-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
+.store-settings-header-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.store-settings-header-title h2 { margin: 0; }
+
+/* 入力設定/目標設定を「カードが並ぶ」形から縦リストへ(要件2-3・2-4)。項目名を主役にし、
+   スイッチは右側に小さく添えるだけにする。 */
+.store-field-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; margin: 10px 0; }
+.store-field-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 12px 14px; background: var(--surface-strong);
+}
+.store-field-row + .store-field-row { border-top: 1px solid var(--border); }
+.store-field-row span { font-size: 0.92rem; }
+/* チェックボックスをやや小さい、青(ON)/薄いグレー(OFF)のトグルとして統一表示する。 */
+.store-field-row input[type="checkbox"] { width: 34px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+
+/* 日計管理・在庫管理: トグル1つを主役にする単一行。 */
+.store-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; }
+.store-toggle-row input[type="checkbox"] { width: 34px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+
+/* 保存状態の表示(要件3-4): 未変更時は非表示、変更中/保存後だけ小さく出す。 */
+.save-status-inline { font-size: 0.82rem; font-weight: 600; }
+.save-status-inline.dirty { color: var(--muted); }
+.save-status-inline.saved { color: #2ea361; }
+.save-status-inline.error { color: var(--danger); }
+
+@media (max-width: 640px) {
+  .store-card-grid { grid-template-columns: 1fr; }
+  .store-card-menu-popover { right: 0; left: auto; min-width: 160px; }
+  .store-settings-header { align-items: flex-start; }
+}

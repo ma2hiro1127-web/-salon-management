@@ -1,8 +1,9 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import "./App.css";
+import NumericInput from "./components/common/NumericInput.jsx";
+import StoreManagementPage from "./components/stores/StoreManagementPage.jsx";
 import {
-  dailyFieldKeys,
   dailyFieldPresets,
   defaultDailyEntry,
   defaultDailyFieldSettings,
@@ -11,7 +12,6 @@ import {
   defaultTarget,
   costCategoryKeys,
   getCostCategoryLabel,
-  monthlyTargetFieldKeys,
   ALL_STORES_VALUE,
 } from "./data/defaults.js";
 import {
@@ -96,11 +96,10 @@ import {
   percent,
   readAppState,
   readStorage,
-  sanitizeNumericInputValue,
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canChangeStoreLifecycle, canHardDeleteStore, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions, canManageAdOps } from "./utils/permissions.js";
+import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions, canManageAdOps } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import { computeAnchoredPopoverPosition } from "./utils/popoverPosition.js";
 import LoginScreen from "./components/LoginScreen.jsx";
@@ -203,7 +202,7 @@ import { loadLatestTenantSnapshot, upsertTenantSnapshot, buildTenantSnapshotRow 
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta, classifyEmailDuplicateForInvite } from "./utils/invitations.js";
-import { computeStoreSummary, sortStoresForManagement } from "./utils/storeManagement.js";
+import { sortStoresForManagement } from "./utils/storeManagement.js";
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
@@ -355,33 +354,6 @@ const createStoreSettingsDefaults = () => ({
   purchaseCostMode: "fixed",
   purchaseCostRate: 0,
 });
-
-const dailyFieldLabels = {
-  technicalSales: "技術売上",
-  retailSales: "店販売上",
-  customers: "来店客数",
-  newCustomers: "新規客数",
-  repeatCustomers: "再来客数",
-  memo: "メモ",
-  reviewCount: "口コミ数",
-  otherSales: "その他売上",
-};
-
-const monthlyTargetFieldLabels = {
-  targetSales: "月間目標売上",
-  targetTechnicalSales: "技術売上目標",
-  targetRetailSales: "店販売上目標",
-  targetCustomers: "目標客数",
-  targetAverageSpend: "目標客単価",
-  targetNewCustomers: "目標新規数",
-  targetRepeatCustomers: "目標再来数",
-  targetReviewCount: "目標口コミ数",
-  targetLaborRate: "人件費率",
-  targetMaterialRate: "材料費率",
-  targetAdRate: "広告費率",
-  targetOperatingMargin: "営業利益率",
-  holidayCount: "休業日",
-};
 
 const createStoreFormDefaults = () => ({
   name: "",
@@ -776,10 +748,9 @@ function App() {
   const [freeReasonSavingId, setFreeReasonSavingId] = useState("");
   // 契約状態(トライアル/契約中/停止中)ボタンの多重クリック防止。
   const [companyStatusSavingId, setCompanyStatusSavingId] = useState("");
-  // Inline feedback right next to the 店舗追加 button — the shared top-of-page `notice` can be
-  // scrolled out of view once the store form is scrolled into view (via focusStoreForm), making
-  // a real success/failure result look like nothing happened. This always renders in the same
-  // spot the user is already looking at.
+  // Inline feedback rendered right next to the 店舗基本設定 save button (StoreManagementPage) —
+  // the shared top-of-page `notice` could be scrolled out of view, making a real success/failure
+  // result look like nothing happened. This always renders in the same spot the user is looking at.
   const [storeFormStatus, setStoreFormStatus] = useState({ status: "idle", message: "" });
   // storeFormStatusのstate更新は次のレンダーまでボタンのdisabledに反映されないため、
   // ほぼ同時に2回押された場合はstateだけのガードでは両方すり抜けてしまう(その場合、店舗名の
@@ -839,18 +810,10 @@ function App() {
   // 新規作成・既存編集の両方に共有しない(初期設定「店舗情報」の重複整理、要件7)。
   const [newStoreName, setNewStoreName] = useState("");
   const [newStoreFormStatus, setNewStoreFormStatus] = useState({ status: "idle", message: "" });
-  // 店舗プロフィールフォームはモーダルではなく常時表示のインラインフォーム(店舗一覧より
-  // 前に描画される)なので、「店舗を追加」/「編集」ボタンを押しても画面内に変化が見えず、
-  // 「ボタンが反応しない」ように見えていた — フォームへスクロール+フォーカスして明示的に
-  // 開いたことが分かるようにする。
-  const storeFormSectionRef = useRef(null);
+  // 店舗設定ビュー(StoreManagementPage)の「基本設定」タブを開いた際に店舗名欄へ自動
+  // フォーカスするためのref(店舗管理ページ90点改修で2段階UIへ再構成——スクロール誘導は
+  // 「一覧→設定」の画面遷移自体が代わりを果たすため、フォーカスのみ残す)。
   const storeFormNameInputRef = useRef(null);
-  const focusStoreForm = () => {
-    window.requestAnimationFrame(() => {
-      storeFormSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      storeFormNameInputRef.current?.focus();
-    });
-  };
   // ユーザー編集モーダル用。招待フォーム(userForm)とは完全に独立させている — 編集は
   // 名前・メール・権限・所属店舗・有効状態をSupabaseへ直接保存する専用フローで、招待フォーム
   // を流用していた旧実装は実際にはSupabaseへ何も保存していなかった(ローカル状態のみ)。
@@ -9410,313 +9373,43 @@ function App() {
         )}
 
         {activePage === "stores" && (
-          <section className="panel">
-            <div className="panel-heading">
-              <div>
-                <p className="eyebrow">STORE</p>
-                <h2>店舗管理</h2>
-              </div>
-            </div>
-            <p className="management-help">店舗名を登録するだけで、日次売上・月間目標・費用・月締め・スタッフ所属・権限・店舗ランキング等を店舗ごとに紐づけて管理できます。</p>
-            {isFranchiseReadOnlyForCurrentUser() ? (
-              <div className="empty-card">加盟店の店舗情報は閲覧専用です（登録・編集・各種設定の変更はできません）。</div>
-            ) : null}
-            {canManageStore(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (
-            // 「店舗追加」= 新しい店舗を作る専用カード。店舗名だけを入力する(要件1)。
-            // 「店舗基本設定」(下)とは状態もフォームも完全に別——ここで店舗名を再入力させて
-            // いるのは新規作成の時だけで、既存店舗の設定を開いてもこのカードは店舗名の再入力を
-            // 求めない(要件2・7)。
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">STORE</p>
-                  <h3>店舗を追加</h3>
-                </div>
-              </div>
-              <p className="helper-text">新しい店舗を作成します。店舗名を登録するだけで作成でき、スタッフ数などの詳細は作成後に「店舗基本設定」から設定できます。</p>
-              <div className="inline-form">
-                <input value={newStoreName} onChange={(event) => setNewStoreName(event.target.value)} placeholder="新しい店舗名" />
-                <button className="primary-button" type="button" onClick={handleCreateNewStore} disabled={newStoreFormStatus.status === "saving"}>
-                  {newStoreFormStatus.status === "saving" ? "追加中…" : "店舗を追加"}
-                </button>
-              </div>
-              {newStoreFormStatus.message ? <div className="notice-box">{newStoreFormStatus.message}</div> : null}
-            </div>
-            )}
-            {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (
-            // 「店舗基本設定」= 既に作成済みの店舗(=ヘッダーで現在選択中の店舗)を設定する
-            // カード。店舗名は既に登録済みの値がそのまま表示され、再入力は必須ではない
-            // (要件2)。全店舗ビュー中はどの店舗を指すか一意に決まらないため表示しない。
-            <div className="setup-card" ref={storeFormSectionRef}>
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">STORE SETTINGS</p>
-                  <h3>店舗基本設定</h3>
-                </div>
-              </div>
-              {isAllStoresView || !selectedStoreEntity ? (
-                <div className="empty-card">店舗を選択すると、その店舗の基本設定を表示・編集できます。</div>
-              ) : (
-                <>
-                  <p className="value-pill">現在の店舗：{selectedStoreEntity.name}</p>
-                  <div className="store-form-grid">
-                    <label className="field">
-                      <span>店舗名（既存店舗名の編集。変更しない場合はそのままで構いません）</span>
-                      <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
-                    </label>
-                    <label className="field">
-                      <span>在籍スタッフ数</span>
-                      <NumericInput value={storeForm.staffCount} onChange={storeFieldChangeHandlers.staffCount} placeholder="例: 6" />
-                    </label>
-                    <label className="field">
-                      <span>生産性計算人数（任意）</span>
-                      <NumericInput value={storeForm.productivityStaffCount} onChange={storeFieldChangeHandlers.productivityStaffCount} allowDecimal placeholder="例: 5.0" />
-                      <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
-                    </label>
-                  </div>
-                  {storeFormStatus.message ? <div className="notice-box">{storeFormStatus.message}</div> : null}
-                  <div className="button-row">
-                    <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>
-                      {storeFormStatus.status === "saving" ? "保存中…" : "店舗基本設定を保存"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-            )}
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">DAILY FORM</p>
-                  <h3>日次入力項目の設定</h3>
-                </div>
-              </div>
-              {!selectedStore ? (
-                <div className="empty-card">店舗を選択してください。</div>
-              ) : (!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()) ? (
-                <div className="field-switch-grid">
-                  {dailyFieldKeys.map((fieldKey) => (
-                    <label key={fieldKey} className="field-switch">
-                      <span>{dailyFieldLabels[fieldKey]}</span>
-                      <input type="checkbox" checked={Boolean(dailyFieldDraft.fields[fieldKey])} disabled />
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <>
-                  <p className="helper-text">日付・総売上・日締めは常に表示されます。それ以外の項目は店舗ごとに表示・非表示を選べます。</p>
-                  <div className="button-row">
-                    <button className="secondary-button" type="button" onClick={() => applyDailyFieldPreset("simple")}>かんたん入力にする</button>
-                    <button className="secondary-button" type="button" onClick={() => applyDailyFieldPreset("detailed")}>詳細入力にする</button>
-                  </div>
-                  <div className="field-switch-grid">
-                    {dailyFieldKeys.map((fieldKey) => (
-                      <label key={fieldKey} className="field-switch">
-                        <span>{dailyFieldLabels[fieldKey]}</span>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(dailyFieldDraft.fields[fieldKey])}
-                          onChange={(event) => updateDailyFieldToggle(fieldKey, event.target.checked)}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <div className="toggle-panel">
-                    <div>
-                      {dailyFieldSaveStatus.status === "error" ? (
-                        <strong className="danger-text">{dailyFieldSaveStatus.message}</strong>
-                      ) : (
-                        <strong>{dailyFieldSaveStatus.message || (dailyFieldDirty ? "未保存の変更があります" : "変更はありません")}</strong>
-                      )}
-                    </div>
-                    <button className="primary-button" type="button" onClick={handleSaveDailyFieldSettings} disabled={dailyFieldSaveStatus.status === "saving"}>
-                      {dailyFieldSaveStatus.status === "saving" ? "保存中…" : "保存"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">TARGET FORM</p>
-                  <h3>月間目標設定の項目設定</h3>
-                </div>
-              </div>
-              {!selectedStore ? (
-                <div className="empty-card">店舗を選択してください。</div>
-              ) : (!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()) ? (
-                <div className="field-switch-grid">
-                  {monthlyTargetFieldKeys.map((fieldKey) => (
-                    <label key={fieldKey} className="field-switch">
-                      <span>{monthlyTargetFieldLabels[fieldKey]}</span>
-                      <input type="checkbox" checked={Boolean(monthlyTargetFieldDraft.fields[fieldKey])} disabled />
-                    </label>
-                  ))}
-                </div>
-              ) : (
-                <>
-                  <p className="helper-text">対象店舗・対象年月は常に表示されます。それ以外の項目は店舗ごとに表示・非表示を選べます。</p>
-                  <div className="field-switch-grid">
-                    {monthlyTargetFieldKeys.map((fieldKey) => (
-                      <label key={fieldKey} className="field-switch">
-                        <span>{monthlyTargetFieldLabels[fieldKey]}</span>
-                        <input
-                          type="checkbox"
-                          checked={Boolean(monthlyTargetFieldDraft.fields[fieldKey])}
-                          onChange={(event) => updateMonthlyTargetFieldToggle(fieldKey, event.target.checked)}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <div className="toggle-panel">
-                    <div>
-                      {monthlyTargetFieldSaveStatus.status === "error" ? (
-                        <strong className="danger-text">{monthlyTargetFieldSaveStatus.message}</strong>
-                      ) : (
-                        <strong>{monthlyTargetFieldSaveStatus.message || (monthlyTargetFieldDirty ? "未保存の変更があります" : "変更はありません")}</strong>
-                      )}
-                    </div>
-                    <button className="primary-button" type="button" onClick={handleSaveMonthlyTargetFieldSettings} disabled={monthlyTargetFieldSaveStatus.status === "saving"}>
-                      {monthlyTargetFieldSaveStatus.status === "saving" ? "保存中…" : "保存"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">INVENTORY</p>
-                  <h3>在庫管理</h3>
-                </div>
-              </div>
-              {!selectedStore ? (
-                <div className="empty-card">店舗を選択してください。</div>
-              ) : (
-                <>
-                  <p className="helper-text">ONにすると月締め画面で期首在庫・当月末在庫を入力でき、材料・仕入原価が「前月末在庫+当月仕入・発注額-当月末在庫」で自動計算されます。OFFの店舗は仕入・発注額がそのまま原価になります(初期値OFF)。</p>
-                  <label className="field-switch">
-                    <span>在庫管理を使う</span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selectedStoreEntity?.settings?.useInventoryTracking)}
-                      disabled={!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()}
-                      onChange={(event) => handleToggleInventoryTracking(event.target.checked)}
-                    />
-                  </label>
-                </>
-              )}
-            </div>
-            <div className="setup-card">
-              <div className="panel-heading compact">
-                <div>
-                  <p className="eyebrow">CASH BREAKDOWN</p>
-                  <h3>日計管理</h3>
-                </div>
-              </div>
-              {!selectedStore ? (
-                <div className="empty-card">店舗を選択してください。</div>
-              ) : (
-                <>
-                  <p className="helper-text">ONにすると日次入力画面に「日計」カードが表示され、その日の総売上が現金・キャッシュレス・ポイント利用のどの支払方法だったかを記録・確認できます。総売上や損益・月次集計には加算されません(初期値OFF)。</p>
-                  <label className="field-switch">
-                    <span>日計管理を使う</span>
-                    <input
-                      type="checkbox"
-                      checked={Boolean(selectedStoreEntity?.settings?.useCashBreakdown)}
-                      disabled={!canEditStoreName(currentRole) || isFranchiseReadOnlyForCurrentUser()}
-                      onChange={(event) => handleToggleCashBreakdown(event.target.checked)}
-                    />
-                  </label>
-                </>
-              )}
-            </div>
-            {canManageStores(currentRole) && (
-              <div className="row-actions" style={{ marginBottom: 4 }}>
-                <button className="secondary-button" type="button" onClick={() => setShowArchivedStores((prev) => !prev)}>
-                  {showArchivedStores ? "運営中/停止中の店舗を表示" : "アーカイブ店舗を表示"}
-                </button>
-              </div>
-            )}
-            {filteredStores.length ? (
-              <div className="card-grid store-card-grid">
-                {filteredStores.map((store) => {
-                  const summary = computeStoreSummary(store, { staffCount: store.staffIds?.length || store.staffCount || 0 });
-                  const statusLabel = store.status === "archived" ? "アーカイブ" : store.status === "suspended" ? "停止中" : "運営中";
-                  const statusTone = store.status === "archived" ? "warning" : store.status === "suspended" ? "error" : "saved";
-                  const canOperate = canChangeStoreLifecycle(currentRole) && !isFranchiseReadOnlyForCurrentUser();
-                  return (
-                    <div key={store.id} className="info-card store-info-card">
-                      <div className="info-card-head">
-                        <div>
-                          <strong>{store.name}</strong>
-                        </div>
-                        <span className={`status-pill ${statusTone}`}>{statusLabel}</span>
-                      </div>
-                      <div className="store-metrics">
-                        <div>
-                          <span>達成率</span>
-                          <strong>{summary.achievementRate}%</strong>
-                        </div>
-                        <div>
-                          <span>前月比</span>
-                          <strong>{summary.changeRate}%</strong>
-                        </div>
-                        <div>
-                          <span>スタッフ</span>
-                          <strong>{summary.staffCount}人</strong>
-                        </div>
-                      </div>
-                      <div className="row-actions">
-                        <button className="text-button" type="button" onClick={() => handleStoreSwitch(store.name)}>選択</button>
-                        {canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && (canManageStores(currentRole) || allowedStoreIds.includes(store.id)) && (
-                          // 「店舗基本設定」は常に現在選択中の店舗を対象にするため(要件2)、
-                          // 一覧の「編集」はまずその店舗へ切り替えてから、基本設定カードへ
-                          // スクロールする——別のフォームを開くのではなく、「選択」の延長。
-                          <button
-                            className="text-button"
-                            type="button"
-                            onClick={() => {
-                              handleStoreSwitch(store.name);
-                              focusStoreForm();
-                            }}
-                          >
-                            編集
-                          </button>
-                        )}
-                        {canOperate && store.status === "archived" && (
-                          <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "restore")}>復元</button>
-                        )}
-                        {canOperate && store.status === "active" && (
-                          <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "suspend")}>停止</button>
-                        )}
-                        {canOperate && store.status === "suspended" && (
-                          <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "resume")}>再開</button>
-                        )}
-                      </div>
-                      {canOperate && (
-                        <div className="row-actions compact-actions">
-                          {store.status === "archived" ? (
-                            canHardDeleteStore(currentRole) && (
-                              <button className="text-button danger" type="button" onClick={() => requestHardDeleteStore(store)}>完全削除</button>
-                            )
-                          ) : (
-                            <>
-                              <button className="text-button" type="button" onClick={() => handleDuplicateStore(store)}>複製</button>
-                              <button className="text-button" type="button" onClick={() => handleStoreLifecycleAction(store, "archive")}>アーカイブ</button>
-                            </>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <div className="management-empty">{showArchivedStores ? "アーカイブ済みの店舗はありません。" : "まだ店舗が登録されていません。上のフォームから店舗を追加してください。"}</div>
-            )}
-          </section>
+          <StoreManagementPage
+            currentRole={currentRole}
+            franchiseReadOnly={isFranchiseReadOnlyForCurrentUser()}
+            newStoreName={newStoreName}
+            setNewStoreName={setNewStoreName}
+            newStoreFormStatus={newStoreFormStatus}
+            handleCreateNewStore={handleCreateNewStore}
+            isAllStoresView={isAllStoresView}
+            selectedStore={selectedStore}
+            selectedStoreEntity={selectedStoreEntity}
+            storeForm={storeForm}
+            setStoreForm={setStoreForm}
+            storeFieldChangeHandlers={storeFieldChangeHandlers}
+            storeFormStatus={storeFormStatus}
+            handleSaveStore={handleSaveStore}
+            storeFormNameInputRef={storeFormNameInputRef}
+            dailyFieldDraft={dailyFieldDraft}
+            updateDailyFieldToggle={updateDailyFieldToggle}
+            applyDailyFieldPreset={applyDailyFieldPreset}
+            dailyFieldSaveStatus={dailyFieldSaveStatus}
+            dailyFieldDirty={dailyFieldDirty}
+            handleSaveDailyFieldSettings={handleSaveDailyFieldSettings}
+            monthlyTargetFieldDraft={monthlyTargetFieldDraft}
+            updateMonthlyTargetFieldToggle={updateMonthlyTargetFieldToggle}
+            monthlyTargetFieldSaveStatus={monthlyTargetFieldSaveStatus}
+            monthlyTargetFieldDirty={monthlyTargetFieldDirty}
+            handleSaveMonthlyTargetFieldSettings={handleSaveMonthlyTargetFieldSettings}
+            handleToggleInventoryTracking={handleToggleInventoryTracking}
+            handleToggleCashBreakdown={handleToggleCashBreakdown}
+            showArchivedStores={showArchivedStores}
+            setShowArchivedStores={setShowArchivedStores}
+            stores={filteredStores}
+            handleStoreSwitch={handleStoreSwitch}
+            handleStoreLifecycleAction={handleStoreLifecycleAction}
+            handleDuplicateStore={handleDuplicateStore}
+            requestHardDeleteStore={requestHardDeleteStore}
+          />
         )}
 
         {activePage === "users" && (
@@ -10744,56 +10437,6 @@ function SalesCompositionCard({ items }) {
 // 数値」が入ると、画面には入力した文字が残ったままevent.target.valueだけが空文字になる
 // ブラウザの仕様があり、店舗のスタッフ数入力で実際にこれが原因の不具合が起きたため(過去の
 // 修正参照)。代わりにtype="text" + inputMode="numeric"/"decimal" とし、
-// sanitizeNumericInputValue で全角数字・￥・カンマ・スペース等を自動的に半角の数字へ正規化
-// する(要件2・7)。
-//
-// IME変換中(日本語入力の確定前、compositionstart〜compositionend)は正規化・強制上書きを
-// 行わない — 変換途中の文字を書き換えると、入力中の文字が消えたりカーソル位置がずれたり
-// するため(要件3)。生の入力値はそのままstateへ反映し、変換確定時(compositionend)に
-// 初めて正規化する。
-// 文字入力時の画面ガクつき対策(総合品質チェック): NumericInput/Fieldはアプリ内の
-// ほぼ全ての入力画面(日次入力・まとめて入力・月間目標・固定費/変動費・店舗情報等)で
-// 共有される最も呼び出し回数の多いコンポーネント。App()自体は1つの巨大な関数コンポーネント
-// のため、1文字入力するたびにApp()全体が再実行され、同じフォーム内の「今入力していない
-// 他の入力欄」まで含めて毎回JSXが再生成・再diffされていた。React.memoを付けることで、
-// 呼び出し元から渡されるprops(value/onChange等)が前回と同じ(参照が変わらない)場合は
-// 再レンダリング自体をスキップできるようにする——ただしこれが実際に効くには、呼び出し元が
-// onChangeを安定した参照で渡す必要がある(日次入力フォーム側の対応は下記updateDailyField/
-// updateCashBreakdownField参照)。propsが安定していない呼び出し元では従来通り毎回
-// 再レンダリングされるだけで、表示・保存の挙動そのものは一切変わらない(安全な追加)。
-function NumericInputImpl({ value, onChange, allowDecimal = false, onBlur, ...rest }) {
-  const composingRef = useRef(false);
-  return (
-    <input
-      type="text"
-      inputMode={allowDecimal ? "decimal" : "numeric"}
-      value={value === undefined || value === null ? "" : value}
-      onChange={(event) => {
-        if (composingRef.current) {
-          onChange(event.target.value);
-          return;
-        }
-        onChange(sanitizeNumericInputValue(event.target.value, { allowDecimal }));
-      }}
-      onCompositionStart={() => {
-        composingRef.current = true;
-      }}
-      onCompositionEnd={(event) => {
-        composingRef.current = false;
-        onChange(sanitizeNumericInputValue(event.target.value, { allowDecimal }));
-      }}
-      onBlur={(event) => {
-        onChange(sanitizeNumericInputValue(event.target.value, { allowDecimal }));
-        onBlur?.(event);
-      }}
-      {...rest}
-    />
-  );
-}
-// memo化: propsの参照が呼び出し元で安定していれば、この入力欄が今まさに操作対象で
-// なくても不要な再レンダリングをスキップできる(挙動は無変更、純粋な最適化)。
-const NumericInput = memo(NumericInputImpl);
-
 function FieldImpl({ label, value, onChange, suffix = "", type = "text", numeric = false, allowDecimal = false, disabled = false, placeholder = "", displayLabel = "" }) {
   const normalizedValue = value === undefined || value === null ? "" : value;
   return (
