@@ -100,13 +100,18 @@ export const buildStoreCsv = ({ storeName, monthValue, summary, previousSummary,
 
   push("営業利益", cellOrDash(summary.operatingProfit, !summary.isProvisionalProfit));
   push("営業利益率", cellOrDash(summary.operatingMargin, !summary.isProvisionalProfit, 1));
-  push("スタッフ換算人数/生産性", productivity?.hasStaffCount ? cellOrDash(productivity.current) : "－");
+  // 不具合修正: 従来はこの1行に「スタッフ換算人数/生産性」というラベルを付けながら
+  // productivity.current(生産性)しか出力しておらず、換算人数そのものが欠落していた。
+  // 全店舗CSV(buildCompanyCsv)は元々この2つを別列で正しく出力しているため、それと同じ
+  // 2項目に分ける(スタッフ生産性の定義=総売上÷スタッフ換算人数、CompanyDashboardView参照)。
+  push("スタッフ換算人数", cellOrDash(productivity?.effectiveStaffCount, productivity?.hasStaffCount, 1));
+  push("スタッフ生産性", cellOrDash(productivity?.current, productivity?.hasStaffCount));
 
   return rows.map(toCsvRow).join("\n");
 };
 
 export const downloadCsv = (filename, csv) => {
-  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+  const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
