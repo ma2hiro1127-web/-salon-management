@@ -91,14 +91,12 @@ export const dailyFieldLabels = {
   otherSales: "その他売上",
 };
 
-export const dailyFieldPresets = {
-  simple: { technicalSales: false, retailSales: false, customers: false, newCustomers: false, repeatCustomers: false, memo: false, reviewCount: false, otherSales: false },
-  detailed: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true, reviewCount: false, otherSales: false },
-};
-
+// かんたん/詳細入力プリセットは廃止(入力設定タブの統合により、店舗ごとに個別トグルのみで
+// 設定する)。この既定値(daily_fieldsが未保存の店舗が読む値)は従来のdetailedプリセットと
+// 同じ内容のまま変更しない — 既存店舗の表示設定を初期化しないため。
 export const defaultDailyFieldSettings = () => ({
-  mode: "detailed",
-  fields: { ...dailyFieldPresets.detailed },
+  mode: "custom",
+  fields: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: true, reviewCount: false, otherSales: false },
 });
 
 // Monthly target's toggleable fields. targetSales/targetTechnicalSales/... map 1:1 to

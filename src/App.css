@@ -1228,26 +1228,33 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 
 .store-archive-toggle { align-self: flex-start; margin-top: 4px; color: var(--muted); }
 
-/* 店舗設定ビュー: 上部ヘッダー(店舗名+ステータス+一覧へ戻る)とタブ(subnavを流用)。 */
-.store-settings-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
-.store-settings-header-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.store-settings-header-title h2 { margin: 0; }
-
-/* 入力設定/目標設定を「カードが並ぶ」形から縦リストへ(要件2-3・2-4)。項目名を主役にし、
-   スイッチは右側に小さく添えるだけにする。 */
+/* 入力設定/目標設定の項目・機能トグルを縦リストで表示する。項目名を主役にし、スイッチは
+   右側に添える。行全体がlabelなのでクリック領域は行全体、最低44px相当のタップ領域を
+   paddingで確保する。 */
 .store-field-list { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; margin: 10px 0; }
 .store-field-row {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  padding: 12px 14px; background: var(--surface-strong);
+  padding: 13px 14px; min-height: 44px; background: var(--surface-strong); cursor: pointer;
 }
 .store-field-row + .store-field-row { border-top: 1px solid var(--border); }
 .store-field-row span { font-size: 0.92rem; }
-/* チェックボックスをやや小さい、青(ON)/薄いグレー(OFF)のトグルとして統一表示する。 */
-.store-field-row input[type="checkbox"] { width: 34px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
-
-/* 日計管理・在庫管理: トグル1つを主役にする単一行。 */
-.store-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0; }
-.store-toggle-row input[type="checkbox"] { width: 34px; height: 20px; accent-color: var(--accent); flex: 0 0 auto; }
+/* 素のチェックボックスではなく、一般的なピル型トグルスイッチとして表示する
+   (ON=青、OFF=薄いグレー)。disabled時は見た目でも明確に分かるよう薄くする
+   (権限的に編集不可の項目が「反応しない」と誤解されないようにするため)。 */
+.store-field-row input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none; width: 44px; height: 26px; border-radius: 999px;
+  background: var(--border); position: relative; cursor: pointer; flex-shrink: 0;
+  transition: background 0.15s ease;
+}
+.store-field-row input[type="checkbox"]::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+  border-radius: 50%; background: var(--surface-strong); transition: transform 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.store-field-row input[type="checkbox"]:checked { background: var(--accent); }
+.store-field-row input[type="checkbox"]:checked::after { transform: translateX(18px); }
+.store-field-row input[type="checkbox"]:disabled { opacity: 0.5; cursor: not-allowed; }
+.store-field-row:has(input[type="checkbox"]:disabled) { cursor: not-allowed; }
 
 /* 保存状態の表示(要件3-4): 未変更時は非表示、変更中/保存後だけ小さく出す。 */
 .save-status-inline { font-size: 0.82rem; font-weight: 600; }
@@ -1258,5 +1265,4 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 @media (max-width: 640px) {
   .store-card-grid { grid-template-columns: 1fr; }
   .store-card-menu-popover { right: 0; left: auto; min-width: 160px; }
-  .store-settings-header { align-items: flex-start; }
 }

@@ -2,9 +2,14 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { createPortal } from "react-dom";
 import "./App.css";
 import NumericInput from "./components/common/NumericInput.jsx";
+import FieldToggleList from "./components/common/FieldToggleList.jsx";
+import SaveStatusInline from "./components/common/SaveStatusInline.jsx";
 import StoreManagementPage from "./components/stores/StoreManagementPage.jsx";
 import {
-  dailyFieldPresets,
+  dailyFieldKeys,
+  dailyFieldLabels,
+  monthlyTargetFieldKeys,
+  monthlyTargetFieldLabels,
   defaultDailyEntry,
   defaultDailyFieldSettings,
   defaultFixedCostItem,
@@ -216,6 +221,8 @@ const targetMonthOptions = Array.from({ length: 12 }, (_, index) => String(index
 // "fixed" の内部idはSupabase保存先(fixed_costsテーブル)に合わせて維持しつつ、旧「固定費」
 // 「販管費」の2画面をユーザーからは区別させない単一の「費用入力」タブへ統合。
 const monthlyTabs = [
+  { id: "basic", label: "基本設定" },
+  { id: "input", label: "入力設定" },
   { id: "target", label: "目標設定" },
   { id: "fixed", label: "費用入力" },
   { id: "closing", label: "月締め" },
@@ -1010,12 +1017,20 @@ function App() {
   // 日次入力項目の設定(店舗ごと、月の概念はない)。stores.daily_field_settings は他の店舗情報と
   // 同じタイミングでロードされるため、対象月選択のような専用フェッチは不要。
   const [dailyFieldDraft, setDailyFieldDraft] = useState(() => defaultDailyFieldSettings());
-  const [dailyFieldSaveStatus, setDailyFieldSaveStatus] = useState({ status: "idle", message: "" });
   const [dailyFieldDirty, setDailyFieldDirty] = useState(false);
   // Same idea as dailyFieldDraft above, for 月間目標設定's own toggleable fields.
   const [monthlyTargetFieldDraft, setMonthlyTargetFieldDraft] = useState(() => defaultMonthlyTargetFieldSettings());
   const [monthlyTargetFieldSaveStatus, setMonthlyTargetFieldSaveStatus] = useState({ status: "idle", message: "" });
   const [monthlyTargetFieldDirty, setMonthlyTargetFieldDirty] = useState(false);
+  // 日計管理・在庫管理は元々クリック即保存だったが、「入力設定」タブへの統合により
+  // dailyFieldDraftと同じドラフト+dirty+手動保存方式へ統一(要件: トグルを変更しただけでは
+  // 確定せず「変更を保存」でDBへ保存する)。
+  const [cashBreakdownDraft, setCashBreakdownDraft] = useState(false);
+  const [cashBreakdownDirty, setCashBreakdownDirty] = useState(false);
+  const [inventoryTrackingDraft, setInventoryTrackingDraft] = useState(false);
+  const [inventoryTrackingDirty, setInventoryTrackingDirty] = useState(false);
+  const [inputSettingsSaveStatus, setInputSettingsSaveStatus] = useState({ status: "idle", message: "" });
+  const inputSettingsDirty = dailyFieldDirty || cashBreakdownDirty || inventoryTrackingDirty;
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [aiChatInitialQuestion, setAiChatInitialQuestion] = useState("");
   // モバイル(≤900px)のハンバーガーメニュー開閉。PC(>900px)ではCSS側で常時表示のため
@@ -1823,12 +1838,24 @@ function App() {
     // (この設定は数個のスイッチのみなので、対象月切り替えのような確認ダイアログは設けていない)。
     setDailyFieldDraft(normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings));
     setDailyFieldDirty(false);
-    setDailyFieldSaveStatus({ status: "idle", message: "" });
     setMonthlyTargetFieldDraft(normalizeMonthlyTargetFieldSettings(selectedStoreEntity?.settings?.monthlyTargetFields));
     setMonthlyTargetFieldDirty(false);
     setMonthlyTargetFieldSaveStatus({ status: "idle", message: "" });
+    setCashBreakdownDraft(Boolean(selectedStoreEntity?.settings?.useCashBreakdown));
+    setCashBreakdownDirty(false);
+    setInventoryTrackingDraft(Boolean(selectedStoreEntity?.settings?.useInventoryTracking));
+    setInventoryTrackingDirty(false);
+    setInputSettingsSaveStatus({ status: "idle", message: "" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStore]);
+
+  // 管理画面の「基本設定」タブを開いたら店舗名欄へフォーカスする(旧・店舗設定画面の
+  // openStore内フォーカス処理を、統合後のタブ切替に合わせて移設)。
+  useEffect(() => {
+    if (activePage === "monthly" && activeMonthlyTab === "basic") {
+      storeFormNameInputRef?.current?.focus();
+    }
+  }, [activePage, activeMonthlyTab]);
   const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
   // Only ever reachable in local/demo mode (isSupabaseConfigured === false): every company
   // fetched from Supabase (see normalizedCompanies in supabase.js) has setup.complete hardcoded
@@ -3940,6 +3967,14 @@ function App() {
       const createdStore = await createStoreRecord({ companyId, name: trimmedName, code: crypto.randomUUID() });
       const storeId = createdStore?.id;
       if (!storeId) throw new Error("店舗IDを取得できませんでした");
+      // 新規店舗の入力設定の初期値(要件: 技術売上/店販売上/来店客数/新規客数/再来客数=ON、
+      // メモ/口コミ数/その他売上=OFF、在庫管理=OFF)。既存店舗のグローバルフォールバック
+      // (defaultDailyFieldSettings, memo=trueのまま)とは意図的に別の値——新規作成時のみ
+      // 明示的に指定する。
+      const newStoreDailyFieldSettings = {
+        mode: "custom",
+        fields: { technicalSales: true, retailSales: true, customers: true, newCustomers: true, repeatCustomers: true, memo: false, reviewCount: false, otherSales: false },
+      };
       const nextStore = {
         id: storeId,
         name: trimmedName,
@@ -3949,11 +3984,13 @@ function App() {
         openingDate: "", openingHour: "09:00", closingHour: "20:00", closedDays: "月", businessHours: "09:00-20:00",
         description: "", website: "", instagram: "", googleMapUrl: "", serviceTypes: [], urls: [],
         status: "active", isActive: true, staffCount: 0, productivityStaffCount: 0,
-        settings: createStoreSettingsDefaults(),
+        settings: { ...createStoreSettingsDefaults(), dailyFieldSettings: newStoreDailyFieldSettings, useInventoryTracking: false },
       };
       if (isSupabaseConfigured) {
         const profileResult = await upsertStoreProfile({ companyId, storeId, userId: appState.currentUserId, profile: nextStore });
         if (!profileResult.ok) throw profileResult.error || new Error("店舗プロフィールの保存に失敗しました");
+        const inputSettingsResult = await upsertStoreInputSettings({ companyId, storeId, dailyFields: newStoreDailyFieldSettings, useInventoryTracking: false });
+        if (!inputSettingsResult.ok) throw inputSettingsResult.error || new Error("入力設定の初期化に失敗しました");
       }
       // 状態上書き防止(ここまでにcreateStoreRecord/upsertStoreProfileをawaitしているため、
       // appStateRef.currentから最新状態を読み直す)。
@@ -4275,6 +4312,30 @@ function App() {
     };
     persistTenantState(nextState);
   };
+
+  // 店舗管理ページのカードから「この店舗を管理」を押した時の遷移。店舗設定は独立画面ではなく
+  // 「管理画面」に統合したため、対象店舗へ切り替えた上で管理画面(基本設定タブ)を開く。
+  const openStoreManagement = (store) => {
+    handleStoreSwitch(store.name);
+    setActivePage("monthly");
+    setActiveMonthlyTab(canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() ? "basic" : "input");
+  };
+
+  // 「入力設定」タブに未保存の変更がある状態でタブ/ページを離れようとした時の確認ガード。
+  // 既存の対象月切替ガード(targetDirtyチェック)と同じ考え方(window.confirm)。
+  const confirmLeaveInputSettings = () => {
+    if (!inputSettingsDirty) return true;
+    return window.confirm("変更が保存されていません。移動しますか？");
+  };
+
+  // 管理画面の「基本設定」タブは、店舗名編集ができる権限(system_admin/company_admin/
+  // store_manager)かつ加盟店閲覧専用でない場合のみ表示する(旧・店舗設定画面のshowBasicTab
+  // ロジックを踏襲)。
+  const showBasicMonthlyTab = canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser();
+  const visibleMonthlyTabs = monthlyTabs.filter((tab) => tab.id !== "basic" || showBasicMonthlyTab);
+  // 基本設定・入力設定タブの編集可否(旧・店舗設定画面のdailyEditable/toggleEditableと同じ
+  // 条件)。全店舗ビュー中は店舗固有設定を変更できない。
+  const inputSettingsEditable = Boolean(selectedStoreEntity) && canEditStoreName(currentRole) && !isFranchiseReadOnlyForCurrentUser() && !isAllStoresView;
 
   // Mirrors handleStoreSwitch: a bare setAppState here left the month selection living only in
   // React state until whichever debounced background effect (hydrate, autosave) happened to
@@ -4986,68 +5047,9 @@ function App() {
     }
   };
 
-  const applyDailyFieldPreset = (presetKey) => {
-    setDailyFieldDraft({ mode: presetKey, fields: { ...dailyFieldPresets[presetKey] } });
-    setDailyFieldDirty(true);
-  };
-
   const updateDailyFieldToggle = (fieldKey, value) => {
     setDailyFieldDraft((prev) => ({ mode: "custom", fields: { ...prev.fields, [fieldKey]: value } }));
     setDailyFieldDirty(true);
-  };
-
-  const mirrorDailyFieldSettingsIntoAppState = (storeId, settings) => {
-    setAppState((prev) => ({
-      ...prev,
-      companies: (prev.companies || []).map((company) => ({
-        ...company,
-        stores: (company.stores || []).map((store) => (
-          (storeId ? store.id === storeId : store.name === selectedStore)
-            ? { ...store, settings: { ...(store.settings || createStoreSettingsDefaults()), dailyFieldSettings: settings } }
-            : store
-        )),
-      })),
-    }));
-  };
-
-  const handleSaveDailyFieldSettings = async () => {
-    if (guardFranchiseReadOnly()) return;
-    if (!selectedStore) {
-      setNotice("店舗を先に追加してください");
-      return;
-    }
-    if (!isSupabaseConfigured) {
-      mirrorDailyFieldSettingsIntoAppState(null, dailyFieldDraft);
-      setDailyFieldDirty(false);
-      setDailyFieldSaveStatus({ status: "saved", message: "保存しました（ローカル）" });
-      return;
-    }
-    const { store } = resolveTargetCompanyAndStore();
-    if (!store?.id) {
-      setDailyFieldSaveStatus({ status: "error", message: "店舗情報を確認できませんでした" });
-      setNotice("店舗情報を確認できませんでした");
-      return;
-    }
-
-    setDailyFieldSaveStatus({ status: "saving", message: "保存中…" });
-    try {
-      // store_input_settings is the authoritative field-visibility table now (see
-      // 20260807000000_create_store_input_settings.sql); it's what hydrateFromSupabase reads
-      // back. updateStoreDailyFieldSettings (the old stores.daily_field_settings column) is
-      // left as-is rather than deleted, so nothing that ever read that column directly loses
-      // its last-known value, but this save path no longer needs to write it too.
-      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, dailyFields: dailyFieldDraft });
-      if (!result?.ok) {
-        throw new Error(result?.error?.message || "保存に失敗しました");
-      }
-      mirrorDailyFieldSettingsIntoAppState(store.id, dailyFieldDraft);
-      setDailyFieldDirty(false);
-      setDailyFieldSaveStatus({ status: "saved", message: "保存しました" });
-    } catch (error) {
-      const reason = resolveErrorReason(error, "保存に失敗しました");
-      setDailyFieldSaveStatus({ status: "error", message: reason });
-      setNotice(`日次入力項目設定の保存に失敗しました: ${reason}`);
-    }
   };
 
   const updateMonthlyTargetFieldToggle = (fieldKey, value) => {
@@ -5104,63 +5106,86 @@ function App() {
     }
   };
 
-  // 「在庫管理を使う」トグル(店舗単位、store_input_settings.use_inventory_tracking)。単一の
-  // ON/OFFなので他の項目設定のようなdraft/dirty管理は持たず、切り替え次第すぐ保存する。
-  const handleToggleInventoryTracking = async (checked) => {
-    if (guardFranchiseReadOnly()) return;
-    const { store } = resolveTargetCompanyAndStore();
-    if (!store?.id) {
-      setNotice("店舗情報を確認できませんでした");
-      return;
-    }
-    if (isSupabaseConfigured) {
-      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, useInventoryTracking: checked });
-      if (!result.ok) {
-        setNotice(getSupabaseErrorMessage(result.error));
-        return;
-      }
-    }
-    setAppState((prev) => ({
-      ...prev,
-      companies: (prev.companies || []).map((company) => ({
-        ...company,
-        stores: (company.stores || []).map((s) => (
-          s.id === store.id
-            ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), useInventoryTracking: checked } }
-            : s
-        )),
-      })),
-    }));
+  // 「入力設定」タブの日計管理・在庫管理トグル。元は切り替え次第すぐ保存していたが、
+  // 「入力項目」(dailyFieldDraft)と同じドラフト+dirty+手動保存方式へ統一したため、ここでは
+  // ローカルのドラフト値を更新するだけ(DB書き込みはhandleSaveInputSettingsでまとめて行う)。
+  const updateCashBreakdownDraft = (value) => {
+    setCashBreakdownDraft(value);
+    setCashBreakdownDirty(true);
   };
 
-  // 「日計管理を使う」トグル(店舗単位、store_input_settings.use_cash_breakdown)。在庫管理と
-  // 同じ単純なON/OFFなのでdraft/dirty管理は持たず、切り替え次第すぐ保存する。初期値は必ず
-  // OFF(createStoreSettingsDefaults参照)。
-  const handleToggleCashBreakdown = async (checked) => {
+  const updateInventoryTrackingDraft = (value) => {
+    setInventoryTrackingDraft(value);
+    setInventoryTrackingDirty(true);
+  };
+
+  // 「入力設定」タブの統合保存: 日次入力項目(dailyFieldDraft)・日計管理・在庫管理を1回の
+  // upsertStoreInputSettings呼び出しでまとめて保存する(この関数は渡された項目だけを部分更新
+  // するため、他の列(材料費率等)には影響しない)。保存に失敗した場合は成功したように見せず、
+  // dirtyフラグも維持して再試行できるようにする。
+  const handleSaveInputSettings = async () => {
     if (guardFranchiseReadOnly()) return;
+    if (!selectedStore) {
+      setNotice("店舗を先に追加してください");
+      return;
+    }
+    if (!isSupabaseConfigured) {
+      setAppState((prev) => ({
+        ...prev,
+        companies: (prev.companies || []).map((company) => ({
+          ...company,
+          stores: (company.stores || []).map((store) => (
+            store.name === selectedStore
+              ? { ...store, settings: { ...(store.settings || createStoreSettingsDefaults()), dailyFieldSettings: dailyFieldDraft, useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft } }
+              : store
+          )),
+        })),
+      }));
+      setDailyFieldDirty(false);
+      setCashBreakdownDirty(false);
+      setInventoryTrackingDirty(false);
+      setInputSettingsSaveStatus({ status: "saved", message: "入力設定を保存しました（ローカル）" });
+      return;
+    }
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
+      setInputSettingsSaveStatus({ status: "error", message: "保存に失敗しました。もう一度お試しください。" });
       setNotice("店舗情報を確認できませんでした");
       return;
     }
-    if (isSupabaseConfigured) {
-      const result = await upsertStoreInputSettings({ companyId: appState.currentCompanyId, storeId: store.id, useCashBreakdown: checked });
-      if (!result.ok) {
-        setNotice(getSupabaseErrorMessage(result.error));
-        return;
+
+    setInputSettingsSaveStatus({ status: "saving", message: "保存中…" });
+    try {
+      const result = await upsertStoreInputSettings({
+        companyId: appState.currentCompanyId,
+        storeId: store.id,
+        dailyFields: dailyFieldDraft,
+        useCashBreakdown: cashBreakdownDraft,
+        useInventoryTracking: inventoryTrackingDraft,
+      });
+      if (!result?.ok) {
+        throw new Error(result?.error?.message || "保存に失敗しました");
       }
+      setAppState((prev) => ({
+        ...prev,
+        companies: (prev.companies || []).map((company) => ({
+          ...company,
+          stores: (company.stores || []).map((s) => (
+            s.id === store.id
+              ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), dailyFieldSettings: dailyFieldDraft, useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft } }
+              : s
+          )),
+        })),
+      }));
+      setDailyFieldDirty(false);
+      setCashBreakdownDirty(false);
+      setInventoryTrackingDirty(false);
+      setInputSettingsSaveStatus({ status: "saved", message: "入力設定を保存しました" });
+    } catch (error) {
+      const reason = resolveErrorReason(error, "保存に失敗しました");
+      setInputSettingsSaveStatus({ status: "error", message: "保存に失敗しました。もう一度お試しください。" });
+      setNotice(`入力設定の保存に失敗しました: ${reason}`);
     }
-    setAppState((prev) => ({
-      ...prev,
-      companies: (prev.companies || []).map((company) => ({
-        ...company,
-        stores: (company.stores || []).map((s) => (
-          s.id === store.id
-            ? { ...s, settings: { ...(s.settings || createStoreSettingsDefaults()), useCashBreakdown: checked } }
-            : s
-        )),
-      })),
-    }));
   };
 
   // 月締めチェックリストの費用項目を「対象外(非表示)」にする/表示に戻す(店舗単位、
@@ -7682,7 +7707,11 @@ function App() {
                 <button
                   key={item.id}
                   className={`nav-button${activePage === item.id ? " active" : ""}${isNewGroup ? " nav-group-start" : ""}`}
-                  onClick={() => { setActivePage(item.id); setMobileNavOpen(false); }}
+                  onClick={() => {
+                    if (activePage === "monthly" && activeMonthlyTab === "input" && item.id !== "monthly" && !confirmLeaveInputSettings()) return;
+                    setActivePage(item.id);
+                    setMobileNavOpen(false);
+                  }}
                 >
                   {item.label}
                 </button>
@@ -8602,8 +8631,15 @@ function App() {
         {activePage === "monthly" && (
           <div className="stack">
             <div className="subnav">
-              {monthlyTabs.map((tab) => (
-                <button key={tab.id} className={activeMonthlyTab === tab.id ? "subnav-button active" : "subnav-button"} onClick={() => setActiveMonthlyTab(tab.id)}>
+              {visibleMonthlyTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={activeMonthlyTab === tab.id ? "subnav-button active" : "subnav-button"}
+                  onClick={() => {
+                    if (activeMonthlyTab === "input" && tab.id !== "input" && !confirmLeaveInputSettings()) return;
+                    setActiveMonthlyTab(tab.id);
+                  }}
+                >
                   {tab.label}
                 </button>
               ))}
@@ -8615,6 +8651,96 @@ function App() {
                 {!isAllStoresView && selectedStoreEntity?.status === "suspended" && (
                   <div className="notice-box warning">この店舗は現在停止中です。新規の目標・費用登録はできません(過去のデータは引き続き確認できます)。「店舗管理」から運営を再開できます。</div>
                 )}
+                {activeMonthlyTab === "basic" && showBasicMonthlyTab && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h2>基本設定</h2>
+                        <p className="helper-text">店舗名やスタッフ数など、店舗の基本情報を管理します。</p>
+                      </div>
+                    </div>
+                    {isAllStoresView ? (
+                      <p className="helper-text">基本設定は店舗を選択すると変更できます。</p>
+                    ) : (
+                      <div className="setup-card">
+                        <div className="store-form-grid">
+                          <label className="field">
+                            <span>店舗名</span>
+                            <input ref={storeFormNameInputRef} value={storeForm.name} onChange={(event) => setStoreForm((prev) => ({ ...prev, name: event.target.value }))} placeholder="店舗名" />
+                          </label>
+                          <label className="field">
+                            <span>在籍スタッフ数</span>
+                            <NumericInput value={storeForm.staffCount} onChange={storeFieldChangeHandlers.staffCount} placeholder="例: 6" />
+                          </label>
+                          <label className="field">
+                            <span>生産性計算人数（任意）</span>
+                            <NumericInput value={storeForm.productivityStaffCount} onChange={storeFieldChangeHandlers.productivityStaffCount} allowDecimal placeholder="例: 5.0" />
+                            <small className="field-hint">未入力の場合は在籍スタッフ数で計算します。パート・アルバイト・時短スタッフがいる場合のみ、小数で調整できます(例: 5.0 / 5.5 / 5.6)。</small>
+                          </label>
+                        </div>
+                        <div className="toggle-panel">
+                          <SaveStatusInline dirty={false} status={storeFormStatus} />
+                          <button className="primary-button" type="button" onClick={handleSaveStore} disabled={storeFormStatus.status === "saving"}>
+                            {storeFormStatus.status === "saving" ? "保存中…" : "保存"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                )}
+
+                {activeMonthlyTab === "input" && (
+                  <section className="panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h2>日次入力の設定</h2>
+                        <p className="helper-text">毎日の入力で使用する項目や機能を選択できます。必要なものだけONにすると、日次入力画面に表示されます。</p>
+                      </div>
+                    </div>
+                    {isAllStoresView ? (
+                      <p className="helper-text">入力設定は店舗を選択すると変更できます。</p>
+                    ) : (
+                      <>
+                        <p className="helper-text">店舗ごとに設定でき、いつでも変更できます。</p>
+                        <div className="setup-card">
+                          <div className="panel-heading compact"><div><h3>入力項目</h3></div></div>
+                          <FieldToggleList
+                            keys={dailyFieldKeys}
+                            labels={dailyFieldLabels}
+                            values={dailyFieldDraft.fields}
+                            editable={inputSettingsEditable}
+                            onToggle={updateDailyFieldToggle}
+                          />
+                        </div>
+                        <div className="setup-card">
+                          <div className="panel-heading compact"><div><h3>機能</h3></div></div>
+                          <FieldToggleList
+                            keys={["useCashBreakdown", "useInventoryTracking"]}
+                            labels={{ useCashBreakdown: "日計管理", useInventoryTracking: "在庫管理" }}
+                            values={{ useCashBreakdown: cashBreakdownDraft, useInventoryTracking: inventoryTrackingDraft }}
+                            editable={inputSettingsEditable}
+                            onToggle={(key, value) => (key === "useCashBreakdown" ? updateCashBreakdownDraft(value) : updateInventoryTrackingDraft(value))}
+                          />
+                          <p className="helper-text">
+                            日計管理: 日々の売上を、現金・キャッシュレス・ポイント利用など支払方法別に記録できます。※ 総売上や損益には重複して加算されません。
+                          </p>
+                          <p className="helper-text">
+                            在庫管理: 期首在庫・月末在庫を入力し、材料・仕入原価の計算に使用します。OFFの店舗は仕入・発注額がそのまま原価になります。
+                          </p>
+                        </div>
+                        {inputSettingsEditable ? (
+                          <div className="toggle-panel">
+                            <SaveStatusInline dirty={inputSettingsDirty} status={inputSettingsSaveStatus} />
+                            <button className="primary-button" type="button" onClick={handleSaveInputSettings} disabled={!inputSettingsDirty || inputSettingsSaveStatus.status === "saving"}>
+                              {inputSettingsSaveStatus.status === "saving" ? "保存中…" : "変更を保存"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </section>
+                )}
+
                 {activeMonthlyTab === "target" && (
                   <section className="panel">
                     <div className="panel-heading">
@@ -8625,7 +8751,27 @@ function App() {
                     </div>
                     {isAllStoresView ? (
                       <p className="helper-text">会社全体の目標として保存されます。各店舗の月間目標は変更されません。休業日はここで設定した値が全店舗共通の営業日数として使われます(店舗ごとの休業日数の合計ではありません)。</p>
-                    ) : null}
+                    ) : (
+                      <div className="setup-card">
+                        <div className="panel-heading compact"><div><h3>表示する目標項目</h3></div></div>
+                        <p className="helper-text">この店舗の目標設定で使う項目を選べます。OFFにした項目は下の入力欄に表示されません。</p>
+                        <FieldToggleList
+                          keys={monthlyTargetFieldKeys}
+                          labels={monthlyTargetFieldLabels}
+                          values={monthlyTargetFieldDraft.fields}
+                          editable={inputSettingsEditable}
+                          onToggle={updateMonthlyTargetFieldToggle}
+                        />
+                        {inputSettingsEditable ? (
+                          <div className="toggle-panel">
+                            <SaveStatusInline dirty={monthlyTargetFieldDirty} status={monthlyTargetFieldSaveStatus} />
+                            <button className="primary-button" type="button" onClick={handleSaveMonthlyTargetFieldSettings} disabled={monthlyTargetFieldSaveStatus.status === "saving"}>
+                              {monthlyTargetFieldSaveStatus.status === "saving" ? "保存中…" : "変更を保存"}
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    )}
                     <div className="filters">
                       <label className="field">
                         <span>対象年</span>
@@ -9380,32 +9526,11 @@ function App() {
             setNewStoreName={setNewStoreName}
             newStoreFormStatus={newStoreFormStatus}
             handleCreateNewStore={handleCreateNewStore}
-            isAllStoresView={isAllStoresView}
-            selectedStore={selectedStore}
             selectedStoreEntity={selectedStoreEntity}
-            storeForm={storeForm}
-            setStoreForm={setStoreForm}
-            storeFieldChangeHandlers={storeFieldChangeHandlers}
-            storeFormStatus={storeFormStatus}
-            handleSaveStore={handleSaveStore}
-            storeFormNameInputRef={storeFormNameInputRef}
-            dailyFieldDraft={dailyFieldDraft}
-            updateDailyFieldToggle={updateDailyFieldToggle}
-            applyDailyFieldPreset={applyDailyFieldPreset}
-            dailyFieldSaveStatus={dailyFieldSaveStatus}
-            dailyFieldDirty={dailyFieldDirty}
-            handleSaveDailyFieldSettings={handleSaveDailyFieldSettings}
-            monthlyTargetFieldDraft={monthlyTargetFieldDraft}
-            updateMonthlyTargetFieldToggle={updateMonthlyTargetFieldToggle}
-            monthlyTargetFieldSaveStatus={monthlyTargetFieldSaveStatus}
-            monthlyTargetFieldDirty={monthlyTargetFieldDirty}
-            handleSaveMonthlyTargetFieldSettings={handleSaveMonthlyTargetFieldSettings}
-            handleToggleInventoryTracking={handleToggleInventoryTracking}
-            handleToggleCashBreakdown={handleToggleCashBreakdown}
+            onManageStore={openStoreManagement}
             showArchivedStores={showArchivedStores}
             setShowArchivedStores={setShowArchivedStores}
             stores={filteredStores}
-            handleStoreSwitch={handleStoreSwitch}
             handleStoreLifecycleAction={handleStoreLifecycleAction}
             handleDuplicateStore={handleDuplicateStore}
             requestHardDeleteStore={requestHardDeleteStore}
