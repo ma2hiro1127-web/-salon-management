@@ -778,7 +778,10 @@
 //   月間目標/営業日設定/固定費設定へ再構成、完了判定はチェックリスト専用フラグを持たず
 //   既存の実データをそのまま参照、固定費設定のみ任意項目化(必須4/4で以後非表示)、初期設定
 //   経由時のみ「戻る」バナーを表示。DBスキーマ変更なし。
-const CACHE_NAME = 'salon-manager-cache-v93';
+// v94: 入力設定タブのトグルにON/OFF文字表示を追加(目標設定タブと共通コンポーネント
+//   FieldToggleListを使っているにも関わらずshowStateLabelが渡されておらず表示が
+//   欠けていたのを修正)。見た目のみの変更、保存処理・DBスキーマは無変更。
+const CACHE_NAME = 'salon-manager-cache-v94';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
