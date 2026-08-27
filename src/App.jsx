@@ -7083,7 +7083,7 @@ function App() {
 
   const saveOpeningInventoryBalance = async () => {
     if (openingInventoryDraft === "") {
-      setNotice("期首在庫の金額を入力してください");
+      setNotice("月初在庫の金額を入力してください");
       return;
     }
     await persistInventoryBalance(getMonthOffset(selectedMonth, -1), openingInventoryDraft);
@@ -8761,7 +8761,7 @@ function App() {
                             日計管理: 日々の売上を、現金・キャッシュレス・ポイント利用など支払方法別に記録できます。※ 総売上や損益には重複して加算されません。
                           </p>
                           <p className="helper-text">
-                            在庫管理: 期首在庫・月末在庫を入力し、材料・仕入原価の計算に使用します。OFFの店舗は仕入・発注額がそのまま原価になります。
+                            在庫管理: 月初在庫・月末在庫を入力し、材料・仕入原価の計算に使用します。OFFの店舗は仕入・発注額がそのまま原価になります。
                           </p>
                         </div>
                         {inputSettingsEditable ? (
@@ -9165,13 +9165,14 @@ function App() {
                         </div>
                         {previousInventoryBalance === undefined ? (
                           <>
-                            <p className="helper-text">前月末の在庫データがまだありません。初回のみ「期首在庫」（今月が始まった時点の在庫金額）を入力してください。</p>
+                            <p className="helper-text">前月末の在庫データがまだありません。初回のみ「月初在庫」（今月が始まった時点の在庫金額）を入力してください。</p>
                             <div className="inline-form">
                               <label className="field">
-                                <span>期首在庫</span>
+                                <span>月初在庫</span>
                                 <NumericInput value={openingInventoryDraft} onChange={setOpeningInventoryDraft} placeholder="金額" />
+                                <small className="field-hint">前月末から繰り越した在庫金額</small>
                               </label>
-                              <button className="secondary-button" type="button" onClick={saveOpeningInventoryBalance}>期首在庫を保存</button>
+                              <button className="secondary-button" type="button" onClick={saveOpeningInventoryBalance}>月初在庫を保存</button>
                             </div>
                           </>
                         ) : (
