@@ -761,7 +761,14 @@
 //   主CTA+「…」サブメニューに統一、未集計データと実数0の区別、保存状態のインライン
 //   表示化などを実施。保存処理・権限判定ロジック・DBスキーマは無変更(JSX構造とCSSの
 //   再構成のみ)。
-const CACHE_NAME = 'salon-manager-cache-v90';
+// v91: 店舗設定画面(v90で新設)を廃止し、「管理画面」を基本設定｜入力設定｜目標設定｜
+//   費用入力｜月締め｜損益表の6タブへ統合。日計管理・在庫管理は入力設定タブへ集約し、
+//   即時自動保存から日次入力項目と同じドラフト+手動保存方式へ統一(1回のupsertで
+//   まとめて保存)。トグルを明確なピル型スイッチ(disabled時は薄く表示)へ変更し、行全体を
+//   クリック可能に。入力設定タブに未保存の変更がある状態でのタブ/ページ離脱に確認を追加。
+//   新規店舗のみ日次入力項目・在庫管理の初期値を明示的に書き込み(既存店舗は無変更)。
+//   日締め機能は対象外(無改修)。DBスキーマ変更なし。
+const CACHE_NAME = 'salon-manager-cache-v91';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
