@@ -129,7 +129,10 @@ export default function CompanyDashboardView({ companySummary }) {
 
       <StoreSalesCompositionCard storeRows={companySummary.storeRows} />
 
-      <StoreRankingCard storeRows={companySummary.storeRows} />
+      {/* 不具合修正: 店舗が1件だけの会社では「ランキング」が常に1位固定になり、比較として
+          意味を持たない(むしろ「他店と比べて1位」という誤解を招く)ため、2店舗以上ある場合
+          だけ表示する。 */}
+      {companySummary.storeRows.length > 1 ? <StoreRankingCard storeRows={companySummary.storeRows} /> : null}
 
       <section className="panel">
         <div className="panel-heading">
