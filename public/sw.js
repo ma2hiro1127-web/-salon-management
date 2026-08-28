@@ -790,7 +790,10 @@
 //   ダウンロードのみで、外部アプリ・エディタを起動する処理は元々存在しないことを確認済み。
 // v97: 在庫管理画面の「期首在庫」表記を「月初在庫」へ変更(会計用語をサロンオーナー向けに
 //   分かりやすい表現へ)。表示文言のみの変更で、在庫計算ロジック・DB・保存処理は無変更。
-const CACHE_NAME = 'salon-manager-cache-v97';
+// v98: βテスト開始前の最終通し確認で発見した不具合を修正。1店舗のみの会社で月次ダッシュ
+//   ボードの店舗ランキングが表示されていた(常に自店舗が1位固定になり意味を持たない)のを、
+//   既存の売上ダッシュボード側と同じ条件(2店舗以上)に揃えて非表示化。
+const CACHE_NAME = 'salon-manager-cache-v98';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
