@@ -6062,7 +6062,16 @@ function App() {
       return { ok: true, data: entry, autoSave };
     } catch (error) {
       logSupabaseError({ operation: "saveDailyEntry", table: "daily_sales", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, businessDate: dailyForm.date, error });
-      const reason = getSupabaseErrorMessage(error);
+      // スケーラビリティ点検(2026-08)で発見: 同じ店舗・同じ日付へ複数スタッフがほぼ同時に
+      // 初回入力すると、PostgRESTのupsert(on_conflict)はぶつかった側をUPDATEポリシーで
+      // 評価するため、staffのUPDATEポリシー(created_by=自分の行のみ)に阻まれてRLS違反
+      // (Postgresエラーコード42501)になる——データ消失や二重登録は起きない(実際に登録
+      // できるのは常に1件のみ)が、原因不明の汎用エラー文言のままだと「なぜ失敗したか」が
+      // 利用者に伝わらないため、この保存経路に限定してこのケースだけ具体的な文言に差し替える。
+      const isConcurrentEntryConflict = error?.code === "42501" && !existingEntry;
+      const reason = isConcurrentEntryConflict
+        ? "保存できませんでした。この日の実績は既に他のスタッフが登録した可能性があります。画面を更新してからご確認ください。"
+        : getSupabaseErrorMessage(error);
       persistSaveStatus("error", reason, true);
       if (!silent) {
         setNotice(`保存に失敗しました: ${reason}`);
