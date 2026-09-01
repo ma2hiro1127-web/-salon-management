@@ -861,7 +861,13 @@
 //   へ変更。PC/スマホの実機Playwrightテストで、日締め→解除→編集→保存→リロード後も
 //   保存済み、のサイクルが正常に動作することを確認済み。既存の保存関数・保存経路の複製は
 //   無し、DB/RLSポリシーへの変更は無し。
-const CACHE_NAME = 'salon-manager-cache-v107';
+// v108: 「月別日計を見る」モーダルのiPhone表示を改善。PC版の横長テーブルは維持したまま、
+// iPhone(900px以下)では月間合計カードを2列コンパクト表示にし、「日別明細」見出しの下に
+// 日付ごとの縦積みカード一覧(総売上・日計を強調、現金/キャッシュレス/ポイントは補助情報、
+// 差額0=緑「一致」/差額あり=赤「差額あり」、店休日タグ付き)を追加。PC/iPhoneとも
+// getMonthlyCashBreakdownRows/summarizeMonthlyCashBreakdownの同じ計算結果を描画するだけで、
+// スマホ専用の別データ取得は無し。横スクロール不要、縦スクロールのみで月末まで確認可能。
+const CACHE_NAME = 'salon-manager-cache-v108';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

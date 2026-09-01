@@ -1083,6 +1083,60 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .cash-breakdown-monthly-table td:not(:first-child):not(:nth-child(2)), .cash-breakdown-monthly-table th:not(:first-child):not(:nth-child(2)) { text-align: right; }
 .cash-breakdown-row-holiday td { color: var(--muted); }
 .text-muted-cell { color: var(--muted); }
+
+/* 月別日計モーダルのiPhone対応。PC=横長テーブル(.cash-breakdown-desktop-table)、
+   iPhone=カード型の日別一覧(.cash-breakdown-daily-cards)——rows/summaryという同じ
+   計算結果をJSX側で両方に描画しておき、ここでは@media (max-width: 900px)による
+   表示切替だけを行う(スマホ専用の別データを作らない、という要件をCSS側でも守る)。
+   カード一覧は既定では非表示にしておき、900px以下でだけ.cash-breakdown-desktop-table
+   を隠してカード側を表示する(PC版の見た目・機能は不変)。 */
+.cash-breakdown-daily-heading { display: none; margin: 18px 0 10px; font-size: 0.95rem; }
+.cash-breakdown-daily-cards { display: none; flex-direction: column; gap: 10px; }
+
+.cash-breakdown-day-card {
+  border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px;
+  background: var(--surface-strong); display: flex; flex-direction: column; gap: 6px;
+}
+.cash-breakdown-day-card.is-holiday { background: rgba(100, 116, 139, 0.06); }
+.cash-breakdown-day-card-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+/* 日付・曜日は要件どおり一番上に大きく表示する。 */
+.cash-breakdown-day-card-date { font-size: 1.02rem; font-weight: 700; }
+.cash-breakdown-day-card-holiday-tag {
+  font-size: 0.7rem; font-weight: 700; color: var(--muted); background: rgba(100, 116, 139, 0.14);
+  border-radius: 999px; padding: 2px 8px; white-space: nowrap; flex-shrink: 0;
+}
+/* 総売上・日計は要件どおり目立たせる(2列・少し大きめのフォント)。 */
+.cash-breakdown-day-card-hero { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.cash-breakdown-day-card-hero-item {
+  display: flex; flex-direction: column; gap: 2px; background: var(--surface); border-radius: 10px; padding: 6px 10px;
+}
+.cash-breakdown-day-card-hero-item span { font-size: 0.72rem; color: var(--muted); }
+.cash-breakdown-day-card-hero-item strong { font-size: 1.05rem; }
+/* 現金/キャッシュレス/ポイント利用は補助情報として小さめに(要件)。 */
+.cash-breakdown-day-card-sub { display: flex; flex-direction: column; gap: 2px; font-size: 0.78rem; color: var(--muted); }
+.cash-breakdown-day-card-sub > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.cash-breakdown-day-card-footer { display: flex; justify-content: flex-end; padding-top: 4px; margin-top: 2px; border-top: 1px dashed var(--border); }
+.cash-breakdown-day-card-status { font-size: 0.82rem; font-weight: 700; white-space: nowrap; }
+/* 差額0=緑「一致」、差額あり=赤「差額あり」で明確に区別する(要件)。 */
+.cash-breakdown-day-card-status.is-match { color: var(--success); }
+.cash-breakdown-day-card-status.is-mismatch { color: var(--danger); }
+.cash-breakdown-day-card-status.is-muted { color: var(--muted); }
+
+@media (max-width: 900px) {
+  /* 説明文を少しコンパクトにする(要件)。 */
+  .cash-breakdown-modal-helper-text { font-size: 0.8rem; margin-bottom: 8px; }
+  /* 月間合計カードは縦積みではなく2列のコンパクトカードにする(要件)。3クラス指定で
+     既存の「.kpi-grid.compact-gridは900px以下で1列」という汎用ルール(このファイル内
+     .kpi-grid.compact-gridを参照)より詳細度を上げ、このモーダルだけ2列を維持する。 */
+  .kpi-grid.compact-grid.cash-breakdown-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .cash-breakdown-summary-grid .summary-card.compact { padding: 8px 10px; }
+  .cash-breakdown-summary-grid .summary-card span { font-size: 0.72rem; }
+  .cash-breakdown-summary-grid .summary-card strong { font-size: 0.96rem; }
+  /* PC版の横長テーブルは隠し、カード型の日別一覧に切り替える(横スクロール不要、要件)。 */
+  .cash-breakdown-desktop-table { display: none; }
+  .cash-breakdown-daily-heading { display: block; }
+  .cash-breakdown-daily-cards { display: flex; }
+}
 .danger-button { background: linear-gradient(135deg, #f16565, var(--danger)); color: #fff; box-shadow: 0 10px 24px rgba(227, 87, 87, 0.24); }
 .danger-button:hover { transform: translateY(-1px); }
 
