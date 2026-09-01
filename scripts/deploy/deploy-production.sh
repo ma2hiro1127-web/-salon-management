@@ -5,10 +5,10 @@
 #   1. mainブランチであること・コミット漏れが無いことの確認
 #   2. verify.sh (lint/test/build) が全て成功すること(失敗していたら反映不可)
 #   3. 「本番へ反映します」の明示的な確認(yesと入力しないと止まる)
-#   4. [production-deploy]マーカーを含む空コミットを追加する
+#   4. Deploy-Approved-Byトレーラーを含む空コミットを追加する
 #      (GitHub Branch Protectionがprivateリポジトリ+無料プランでは実際には強制されない
 #       ため、Vercel側のIgnored Build Step(scripts/deploy/ignore-build.sh)がこの
-#       マーカーの有無で「実際にビルドするかどうか」を判定する追加の安全網になっている)
+#       トレーラーの有無で「実際にビルドするかどうか」を判定する追加の安全網になっている)
 #   5. ここまで通って初めて git push origin main を実行する
 #      (実際のVercelへのデプロイは、既存のGitHub連携がpushをトリガーに行う。
 #       このスクリプトは「うっかり本番反映」を防ぐための確認ゲート)
@@ -47,8 +47,8 @@ if [ "$CONFIRM" != "yes" ]; then
 fi
 
 # Vercel側のIgnored Build Step(scripts/deploy/ignore-build.sh)が本番反映を許可する
-# 合言葉を、空コミット(ファイル変更なし)として追加する。
-git commit --allow-empty -m "chore: production deploy [production-deploy] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# トレーラーを、空コミット(ファイル変更なし)として追加する。
+git commit --allow-empty -m "$(printf 'chore: production deploy %s\n\nDeploy-Approved-By: npm-run-deploy-production' "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
 
 # ローカルのpre-pushフック(mainへの直接pushをブロックする安全網)を、
 # この正規の手順でだけ通過させる。
