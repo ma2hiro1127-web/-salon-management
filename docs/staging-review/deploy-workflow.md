@@ -1,6 +1,8 @@
 # ステージング → 本番 反映フロー
 
 このドキュメントは、開発・修正をステージングで確認してから本番へ反映するための運用手順です。
+2026-09-01のデプロイ安全化対応で内容を更新しました(最新の運用は
+[`docs/deploy-safety.md`](../deploy-safety.md)も参照してください)。
 
 ## ブランチとデプロイ先の対応
 
@@ -10,45 +12,51 @@
 | `staging` | ステージング (`https://salon-management-staging.vercel.app`) | `salon-management-staging` | `orexflqvvukmujjroyhl`(ステージング) |
 
 `main`ブランチへのpushで本番Vercelが自動デプロイされる設定は、今回**変更していません**
-(既存の設定のまま)。`staging`ブランチは今回新設し、ステージングVercelプロジェクトと
-GitHub連携済みです。
+(既存の設定のまま)。ただし2026-09-01の対応で、このリスクに対して以下の安全網を追加しました。
 
-> **重要(現状の制約)**: `staging`ブランチをpushした際にステージングVercelプロジェクトが
-> 自動デプロイされるようにするには、Vercelダッシュボードで1回だけ手動設定が必要です
-> (Vercel APIから変更できなかったため)。設定方法:
+- `npm run verify` / `npm run deploy:staging` / `npm run deploy:production` という
+  安全なコマンドを整備(詳細は[`docs/deploy-safety.md`](../deploy-safety.md))。
+- `main`への直接pushをこの開発環境限定でブロックするgit pre-pushフックを設置。
+- push/PR毎にlint・test・buildを自動実行するGitHub Actions CI
+  (`.github/workflows/ci.yml`)を新設。
+
+> **`staging`VercelプロジェクトのGit連携について(現状)**: `salon-management-staging`
+> プロジェクトはGitHubリポジトリとは連携していません。2026-09-01時点でVercel APIから
+> 連携の作成自体は成功しましたが、「Production Branch」を`main`以外(`staging`)に
+> 変更する操作だけがAPI経由でどうしても出来ませんでした(前回セッションと同じ制約)。
+> `main`のままだと`main`へのpush毎にこのステージングプロジェクトも(実害は無いが)
+> 無駄に再ビルドされてしまうため、今回は連携を作成せず`None`のままにしています。
+> ステージングへの反映は`npm run deploy:staging`(git worktree + `vercel --prod`を
+> 内部でラップ済み)で行ってください。GitHub連携でのpush自動反映を有効にしたい場合は、
 > Vercelダッシュボード → `salon-management-staging`プロジェクト → Settings → Git →
-> 「Production Branch」を `main` から `staging` に変更。この設定を行うまでは、
-> ステージングへの反映は下記の「手動デプロイ」コマンドで行ってください(今回はこの方法で
-> 動作確認済みです)。
+> 「Connect Git Repository」→ 対象リポジトリを選択 → 「Production Branch」を
+> `staging`に設定、の手順で今も設定可能です(ダッシュボードからは可能な操作です)。
 
-## 基本的な開発フロー
+## 基本的な開発フロー(2026-09-01時点の推奨)
 
 ```
-1. 開発・修正(mainまたは作業ブランチ)
+1. 開発・修正(Claude Codeで実施、mainブランチ上で作業)
         ↓
-2. staging ブランチへ反映 → ステージング環境で確認
+2. npm run deploy:staging でステージング環境へ反映
         ↓
-3. 問題なければ main ブランチへ反映 → 本番へ反映
+3. ステージングURL(https://salon-management-staging.vercel.app)で実機確認
+        ↓
+4. npm run deploy:production で本番へ反映(確認プロンプトあり)
 ```
 
 ### ステージングへの反映
 ```bash
-git checkout staging
-git merge main   # または該当のコミットを取り込む
-git push origin staging
+npm run deploy:staging
 ```
-上記のVercel設定が未完了の場合は、手動デプロイで代替できます:
-```bash
-# salon-management-staging プロジェクトにリンクされたディレクトリ/worktreeから
-vercel --prod --yes
-```
+内部で git worktree を使い、メインディレクトリの`.vercel`(本番リンク)には一切触れずに
+`salon-management-staging`プロジェクトへデプロイします。
 
 ### 本番への反映(ステージングで確認が取れた後)
 ```bash
-git checkout main
-git merge staging   # ステージングで確認済みの変更を取り込む
-git push origin main   # 既存の自動デプロイでそのまま本番反映される
+npm run deploy:production
 ```
+`verify`(lint/test/build)が失敗している状態では実行できません。「salon-manager.netの
+本番環境へ反映されます」という確認が出るので、`yes`と入力した場合のみ本番へpushされます。
 
 ## アプリコード・DBスキーマ・ダミーデータ・Secretsの扱い
 
@@ -56,6 +64,8 @@ git push origin main   # 既存の自動デプロイでそのまま本番反映�
 - **DBスキーマ**: `supabase/migrations/`配下のファイルとして管理する既存方針のまま。
   新しいマイグレーションはまずステージング(`orexflqvvukmujjroyhl`)へ適用して検証し、
   問題なければ本番(`mtjiauhliezbjjpqpvuj`)へ同じファイルを適用する。
+  **破壊的なmigration(DROP・大量UPDATE/DELETE等)は自動実行せず、必ず事前にユーザーへ
+  提案し明示承認を得てから実行する。**
   ```bash
   # ステージングへ適用(例)
   supabase db push --db-url "<ステージングの接続文字列>" --include-all
@@ -69,6 +79,8 @@ git push origin main   # 既存の自動デプロイでそのまま本番反映�
 - **Secrets・環境変数**: 本番とステージングで完全に別の値を使用する。本番のSecrets
   (`ANTHROPIC_API_KEY`等)をステージングへ流用しない方針を継続する(現状、ステージングでは
   `ANTHROPIC_API_KEY`を未設定のままにしており、AI機能は動作しない)。
+  2026-09-01の対応で、本番Vercelプロジェクトに残っていた未使用の`ANTHRONIC_API_KEY`
+  (スペルミスされた変数名、フロントエンドから一切参照されていない残骸)を削除済み。
 
 ## レビュー終了時のクリーンアップ(環境自体は削除しない)
 
