@@ -659,6 +659,18 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .ranking-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+/* 日次入力「編集」「日締め」ボタン重複バグの修正: .daily-fixed-action-bar(スマホ固定
+   アクションバー)は元々position:fixedや表示自体を@media(max-width:900px)の中でしか
+   宣言しておらず、そのブレークポイントの外(PC/タブレット)向けの既定値が一切無かった。
+   スタイル未指定のdivはブラウザ既定でdisplay:blockのため、PC幅では「フォーム内の通常位置
+   (.daily-action-row-inline)」と「本来スマホ専用のはずの固定バー」が両方とも通常のブロック
+   要素として同時に描画され、対象日付近と日計欄の下に同じ「編集」「日締め/日締め解除」が
+   重複表示されていた(要件1)。ここでdisplay:noneを既定にし、下のメディアクエリ内で
+   display:flexへ上書きすることで、意図どおりPCでは常に非表示・スマホ幅でだけ表示される
+   ようにする。中身(dailyActionButtons)・onClick/disabledロジックはApp.jsx側で完全に
+   1箇所のみ定義されたまま無変更(重複ロジックは元々存在しない)。 */
+.daily-fixed-action-bar { display: none; }
+
 @media (max-width: 900px) {
   .app-shell { flex-direction: column; }
   .sidebar { width: 100%; min-width: unset; border-right: 0; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; height: auto; padding: 12px 12px 10px; }

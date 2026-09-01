@@ -1903,7 +1903,7 @@ function App() {
   // 過去/未来日ロック)を共有するため、原理的に「ボタンは押せるのに入力欄はロックされたまま」
   // という状態を作れない構造にする——これが「編集ボタン表示条件とinputの編集条件を完全に
   // 共通化する」という要求そのものへの対応。
-  const { canShowEditButton: canEditSelectedDailyEntry, canEditDailyEntry, isLocked: isDailyEntryLocked } = resolveDailyEntryEditState({
+  const { canShowEditButton: canEditSelectedDailyEntry, canEditDailyEntry, isLocked: isDailyEntryLocked, canToggleClosing } = resolveDailyEntryEditState({
     dailyMode,
     hasEntryId: Boolean(dailyForm.id),
     isDailyFormDateHoliday,
@@ -7697,7 +7697,7 @@ function App() {
     dailyMode === "create" ? (
       <>
         <button className="primary-button" type="submit" form="daily-form">保存</button>
-        <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+        <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={!canToggleClosing}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
       </>
     ) : dailyMode === "edit" ? (
       <>
@@ -7706,8 +7706,15 @@ function App() {
       </>
     ) : canEditSelectedDailyEntry ? (
       <>
+        {/* 不具合修正(要件3・4): 「編集」は従来どおりisDailyEntryLocked(締め済みロック含む)で
+            disabled——締め済みの間はグレーアウトし、まず下の「日締め解除」を押す必要がある
+            (要件5)。「日締め/日締め解除」はcanToggleClosing(ハードロックのみ)でdisabled——
+            締め済みロック中でもこのボタン自体は常に押せる、押すことがロックを解除する唯一の
+            手段のため。解除後は再レンダーでisDailyEntryLockedが即falseになり、ページ再読み込み
+            無しで「編集」がその場で有効になる(dayClosingStatesの更新はtoggleDayClosing内で
+            setAppStateにより同期的に反映されるため、追加の再取得は不要)。 */}
         <button className="secondary-button" type="button" onClick={editDailyEntry} disabled={!dailyForm.id || isDailyEntryLocked}>編集</button>
-        <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={isDailyEntryLocked}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
+        <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={!canToggleClosing}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
       </>
     ) : null
   ) : null;
@@ -8459,9 +8466,13 @@ function App() {
                         スタッフが入力できるのは今日の分のみです。過去日・未来日は閲覧のみで、編集・保存・日締めはできません。
                       </div>
                     ) : null}
+                    {/* 不具合修正(要件3・4): 以前は「店長以上にご連絡ください」という文言のみで、
+                        締め済みロック中は編集ボタン自体が非表示になり、実際には下の「日締め解除」
+                        ボタン自体は(ハードロックでない限り)押せるにもかかわらず、その案内が
+                        無かった。文言を実際の操作手順に合わせて修正。 */}
                     {isDailyEntryLockedForStaff ? (
                       <div className="notice-box">
-                        この日は日締め済みのため編集・削除できません。修正が必要な場合は店長以上にご連絡ください。
+                        この日は日締め済みのため編集できません。編集するには、先に「日締めを解除」してください。
                       </div>
                     ) : null}
                     {dailyMode === "view" && dailyOriginalEntry ? (

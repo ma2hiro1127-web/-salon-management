@@ -394,11 +394,25 @@ export const buildDailyEntryPayload = ({ form, existingEntry = null, fieldSettin
 // もう片方が古いまま取り残され「編集ボタンは押せるのに入力欄はロックされたまま」という不具合
 // (根本原因の再発)を招くため、意図的に1つの関数へ統合する。
 //   - canShowEditButton: 閲覧中(dailyMode==="view")で、対象日に保存済みのデータがあり、
-//     ロック理由が無い場合だけ「編集」ボタンを表示する。
+//     「解除できないロック」が無い場合だけ「編集」「日締め/日締め解除」のボタン行を表示する。
 //   - canEditDailyEntry: 実際に作成中/編集中のモードで、店休日でもロック中でもない場合だけ
 //     入力欄(技術売上・店販売上・新規客数・再来客数・日計・口コミ数・メモ)を編集可能にする。
-// ロック理由(isLocked = まとめて入力ロック or staffの日締め済みロック or staffの過去/未来日
-// ロック)はcanShowEditButton/canEditDailyEntry両方が同じ値を参照するため、原理的に食い違えない。
+//   - canToggleClosing: 「日締め/日締め解除」ボタン自体の活性可否。締め済みロック中でも
+//     このボタンだけは常に押せる(押すこと自体が締め済みロックを解除する唯一の手段のため)。
+//
+// 不具合修正(要件3・4: 日締め解除後、編集不可のまま戻ってこない): 従来はisDailyEntryLocked
+// ForStaff(staffが自分で締めた当日のデータを閲覧中)もisLockedへ含めていたため、締めた瞬間に
+// canShowEditButtonがfalseになり「編集」「日締め解除」のボタン行ごと非表示になっていた——
+// 押せるボタンが画面から消えるため、staffは自分で締めた当日のデータを二度と解除できなかった
+// (店長以上への連絡が必須という文言のnotice-boxだけが残る)。ここでロック理由を2種類に分け、
+// 「絶対に解除できないハードロック」(まとめて入力ロック・staffの過去/未来日ロック)と、
+// 「日締め解除ボタンで自分から外せる一時的ロック」(staffの締め済みロック)を区別する:
+//   - ハードロックだけがボタン行の表示可否(canShowEditButton)とトグルボタンの活性可否
+//     (canToggleClosing)を決める——ハードロック中は日締め解除ボタンを押しても何も変わらない
+//     ため、そもそも表示しない。
+//   - 締め済みロックはcanEditDailyEntry(入力欄の編集可否)だけを制限する——「編集」ボタン
+//     自体は表示されるが、締め済みの間は無効(disabled)のまま、日締め解除ボタンで先に解除
+//     すれば即座に(ページ再読み込み不要で)有効になる、という要件5の仕様に合わせている。
 export const resolveDailyEntryEditState = ({
   dailyMode,
   hasEntryId,
@@ -407,10 +421,16 @@ export const resolveDailyEntryEditState = ({
   isDailyEntryLockedForStaff,
   isStaffPastOrFutureDateLocked,
 }) => {
-  const isLocked = Boolean(isDailyDateBatchLocked) || Boolean(isDailyEntryLockedForStaff) || Boolean(isStaffPastOrFutureDateLocked);
-  const canShowEditButton = dailyMode === "view" && Boolean(hasEntryId) && !isLocked;
+  // 日締め解除ボタンでは絶対に外れないロック(まとめて入力ロック・staffの過去/未来日ロック)。
+  const isHardLocked = Boolean(isDailyDateBatchLocked) || Boolean(isStaffPastOrFutureDateLocked);
+  // staffが自分で締めた当日データのロック。日締め解除ボタンで自分から外せる一時的なロック。
+  const isClosedLocked = Boolean(isDailyEntryLockedForStaff);
+  // 互換用(入力欄の編集可否には従来どおり両方のロック理由を反映する)。
+  const isLocked = isHardLocked || isClosedLocked;
+  const canShowEditButton = dailyMode === "view" && Boolean(hasEntryId) && !isHardLocked;
+  const canToggleClosing = !isHardLocked;
   const canEditDailyEntry = (dailyMode === "create" || dailyMode === "edit") && !isDailyFormDateHoliday && !isLocked;
-  return { canShowEditButton, canEditDailyEntry, isLocked };
+  return { canShowEditButton, canEditDailyEntry, isLocked, canToggleClosing };
 };
 
 // 二重送信防止の共通パターン(販売前総合チェックで発見: まとめて入力・会社作成・ユーザー招待

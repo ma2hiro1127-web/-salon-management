@@ -3859,6 +3859,78 @@ test("resolveDailyEntryEditState: staffは日締め済みの過去日を解除�
   assert.equal(forcedEditModeForStaff.canEditDailyEntry, false);
 });
 
+// 売上入力画面「編集」「日締め」「日締め解除」まわりの不具合修正(2026-09)の回帰テスト。
+// 従来はisDailyEntryLockedForStaff(staffが自分で締めた当日データ)もisLockedへ含めて
+// canShowEditButtonを計算していたため、staffが自分で当日のデータを日締めした瞬間、
+// 「編集」「日締め解除」のボタン行ごと画面から消えてしまい、二度と自分では解除できない
+// (店長以上への連絡が必須、という誤った案内だけが残る)不具合があった。
+test("resolveDailyEntryEditState: staffが自分で締めた当日データは、日締め解除ボタンで即座に編集可能へ戻せる(過去日ロックとは異なり、締め済みロック単体ではボタン行を隠さない)", () => {
+  // 1. staffが当日のデータを閲覧中・自分で日締め済み(過去/未来日ロックは無い=今日)。
+  const closedTodayForStaff = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: true, // staff + 締め済み
+    isStaffPastOrFutureDateLocked: false, // 今日なのでfalse
+  });
+  // 締め済みロック単体では「編集」「日締め解除」のボタン行自体は隠さない(要件5: 締め済み
+  // 状態でも「編集」「日締め解除」の2ボタンを表示する)。
+  assert.equal(closedTodayForStaff.canShowEditButton, true);
+  // 「日締め解除」ボタン自体はハードロックが無い限り常に押せる(押すことがロックを外す
+  // 唯一の手段のため)。
+  assert.equal(closedTodayForStaff.canToggleClosing, true);
+  // ただし入力欄はまだ締め済みのため編集不可のまま(「編集」ボタンはdisabledで表示)。
+  assert.equal(closedTodayForStaff.canEditDailyEntry, false);
+
+  // 2. 「日締め解除」を押す(isDailyEntryLockedForStaffがfalseへ) → 3. ページ再読み込み無しで
+  //    即座に編集可能になる、が要件3の核心。
+  const afterSelfUnlock = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false, // 解除された
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(afterSelfUnlock.canShowEditButton, true);
+
+  // 4. 「編集」を押す(dailyModeがeditに) → 入力欄が編集可能になる。
+  const editingAfterSelfUnlock = resolveDailyEntryEditState({
+    dailyMode: "edit",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(editingAfterSelfUnlock.canEditDailyEntry, true);
+});
+
+test("resolveDailyEntryEditState: ハードロック(まとめて入力・staffの過去/未来日)中は「日締め解除」ボタンも押せない(締め済みロックとは異なり、解除する手段を与えない)", () => {
+  const batchLocked = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: true,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: false,
+  });
+  assert.equal(batchLocked.canShowEditButton, false);
+  assert.equal(batchLocked.canToggleClosing, false);
+
+  const staffPastDateLocked = resolveDailyEntryEditState({
+    dailyMode: "view",
+    hasEntryId: true,
+    isDailyFormDateHoliday: false,
+    isDailyDateBatchLocked: false,
+    isDailyEntryLockedForStaff: false,
+    isStaffPastOrFutureDateLocked: true,
+  });
+  assert.equal(staffPastDateLocked.canShowEditButton, false);
+  assert.equal(staffPastDateLocked.canToggleClosing, false);
+});
+
 test("resolveDailyEntryEditState: まとめて入力ロック中は「編集」ボタンを表示せず、入力欄も編集不可にする(要件13、ボタン表示と実際の編集可否を一致させる)", () => {
   const batchLocked = resolveDailyEntryEditState({
     dailyMode: "view",
