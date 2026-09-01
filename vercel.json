@@ -1,4 +1,5 @@
 {
+  "ignoreCommand": "bash scripts/deploy/ignore-build.sh",
   "rewrites": [
     {
       "source": "/lp",
