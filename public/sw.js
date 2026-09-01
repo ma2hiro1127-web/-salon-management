@@ -816,7 +816,13 @@
 //   権限管理→複数店舗管理→料金→FAQ→最終CTAの順に再編成。スクリーンショットをすべて
 //   サイドバー無し・数値が「－」にならない状態のものへ差し替え。既存アプリのロジック・
 //   ログイン・認証・DBは無変更(lp.htmlは独立した静的ページのまま)。
-const CACHE_NAME = 'salon-manager-cache-v102';
+// v103: 販売用LP(/lp)のファーストビューを改善。月次ダッシュボード画像中心の見せ方から、
+//   「月次損益サマリー」(売上→原価→費用→利益→税の独自HTML/CSSカード、実画面のスクショ
+//   ではない)を中心とした見せ方へ変更。メインコピーを「売上だけでなく、利益までひと目で。」
+//   に変更し、営業利益・営業利益率を強調表示。元のダッシュボード画像は削除せず、主要機能
+//   セクション(①月次ダッシュボード)へ再配置。既存アプリのロジック・ログイン・認証・DBは
+//   無変更(lp.htmlは独立した静的ページのまま)。
+const CACHE_NAME = 'salon-manager-cache-v103';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

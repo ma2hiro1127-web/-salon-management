@@ -118,10 +118,42 @@
   .hero-points { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 20px; font-size: 13px; color: var(--muted); }
   .hero-points span { display: inline-flex; align-items: center; gap: 6px; }
   .hero-points span::before { content: "✓"; color: var(--success); font-weight: 700; }
+  .accent-text { color: var(--accent); }
 
   .shot-frame { margin-top: 40px; border-radius: 20px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border); max-width: 880px; margin-left: auto; margin-right: auto; }
   .shot-frame img { width: 100%; height: auto; }
   .shot-caption { text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+  /* ---------- 月次損益サマリー(ファーストビュー用の独自UI、実画面のスクショではない) ---------- */
+  .pnl-summary-card {
+    margin: 40px auto 0; max-width: 720px; text-align: left;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 22px;
+    box-shadow: var(--shadow); padding: 26px 24px;
+  }
+  .pnl-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .pnl-summary-head h3 { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; }
+  .pnl-summary-badge { flex: none; font-size: 12px; font-weight: 700; color: var(--accent-dark); background: var(--accent-soft); padding: 5px 12px; border-radius: 999px; }
+  .pnl-row { padding: 14px 0; border-top: 1px solid var(--border); }
+  .pnl-row:first-of-type { border-top: none; padding-top: 16px; }
+  .pnl-row-label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--muted); letter-spacing: 0.02em; margin-bottom: 10px; }
+  .pnl-row-label .ico { flex: none; width: 24px; height: 24px; border-radius: 7px; background: var(--accent-soft); color: var(--accent-dark); display: flex; align-items: center; justify-content: center; font-size: 12px; }
+  .pnl-row-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px 16px; }
+  .pnl-value span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .pnl-value strong { display: block; font-size: 18px; font-weight: 800; color: var(--text); letter-spacing: -0.01em; }
+  .pnl-row-profit { background: var(--accent-soft); border-radius: 14px; padding: 16px 16px; margin: 6px 0; border-top: none; }
+  .pnl-row-profit .pnl-row-label { color: var(--accent-dark); }
+  .pnl-value-emphasis span { color: var(--accent-dark); font-weight: 700; }
+  .pnl-value-emphasis strong { color: var(--accent-dark); font-size: 27px; font-weight: 800; }
+  @media (max-width: 480px) {
+    .pnl-summary-card { padding: 20px 16px; border-radius: 18px; }
+    .pnl-value strong { font-size: 16px; }
+    .pnl-value-emphasis strong { font-size: 23px; }
+  }
+
+  .pnl-stat-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 18px auto 0; max-width: 720px; }
+  .pnl-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; text-align: center; }
+  .pnl-chip span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .pnl-chip strong { display: block; font-size: 14px; font-weight: 700; color: var(--text); }
 
   /* ---------- カード共通 ---------- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); }
@@ -283,14 +315,9 @@
   <section class="hero">
     <div class="wrap hero-inner">
       <p class="eyebrow">SALON MANAGEMENT</p>
-      <h1>感覚経営から、数字経営へ。</h1>
-      <p class="hero-sub">売上だけでは見えない、
-人件費・材料費・固定費までまとめて管理。
-
-目標に対する現在の達成率、
-月末の着地予想、
-今月あといくら売れば利益が残るのかを
-すぐに確認できる美容サロン向け経営管理ツール。</p>
+      <h1>売上だけでなく、<br class="hero-h1-break" /><span class="accent-text">利益までひと目で。</span></h1>
+      <p class="hero-sub">人件費・材料費・固定費をまとめて可視化。
+月次損益をシンプルに把握できます。</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="#" id="hero-cta-main" data-track="cta_click" data-cta-location="hero">無料で試す</a>
         <a class="btn btn-secondary" href="#features" data-track="secondary_cta_click">機能を見る</a>
@@ -304,13 +331,68 @@
     </div>
 
     <!-- ============================================================
-         2. 月次ダッシュボードの実画面
+         2. 月次損益サマリー(LP用に独自実装したUI・実画面のスクリーンショットではない)
+         既存の損益表機能(売上/原価/費用/利益/税)と実際の数字構成に基づき、視認性優先で
+         再構成したもの。存在しない項目・機能は追加していない(税セクションの「消費税考慮」
+         も実際に管理画面の損益表タブに存在するトグル機能)。
          ============================================================ -->
     <div class="wrap">
-      <div class="shot-frame reveal">
-        <img src="/lp-assets/dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率・営業利益・営業利益率・発注費率・スタッフ生産性が一覧できる" loading="eager" width="2000" height="1289" />
+      <div class="pnl-summary-card reveal">
+        <div class="pnl-summary-head">
+          <h3>月次損益サマリー</h3>
+          <span class="pnl-summary-badge">今月の実績</span>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">📊</span>売上</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>総売上（税込）</span><strong>¥3,095,643</strong></div>
+            <div class="pnl-value"><span>技術売上（税込）</span><strong>¥2,891,881</strong></div>
+            <div class="pnl-value"><span>店販売上（税込）</span><strong>¥203,762</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">🧾</span>原価</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>材料・仕入原価</span><strong>¥139,500</strong></div>
+            <div class="pnl-value"><span>材料・仕入原価率</span><strong>4.5%</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">👥</span>費用</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>人件費</span><strong>¥1,249,410</strong></div>
+            <div class="pnl-value"><span>人件費率</span><strong>40.4%</strong></div>
+            <div class="pnl-value"><span>経費合計</span><strong>¥1,048,878</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row pnl-row-profit">
+          <div class="pnl-row-label"><span class="ico">¥</span>利益</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>粗利益</span><strong>¥2,956,143</strong></div>
+            <div class="pnl-value pnl-value-emphasis"><span>営業利益</span><strong>¥657,855</strong></div>
+            <div class="pnl-value pnl-value-emphasis"><span>営業利益率</span><strong>21.3%</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">🏛️</span>税</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>消費税引当（概算）</span><strong>¥281,422</strong></div>
+            <div class="pnl-value"><span>消費税考慮後利益</span><strong>¥376,433</strong></div>
+          </div>
+        </div>
       </div>
-      <p class="shot-caption">実際の管理画面(店舗名・数値はデモデータです)</p>
+
+      <div class="pnl-stat-chips">
+        <div class="pnl-chip"><span>営業利益率</span><strong>21.3%</strong></div>
+        <div class="pnl-chip"><span>人件費率</span><strong>40.4%</strong></div>
+        <div class="pnl-chip"><span>消費税考慮後利益</span><strong>¥376,433</strong></div>
+      </div>
+      <p class="shot-caption">※画面はイメージです。数値はデモデータです。</p>
     </div>
   </section>
 
@@ -426,6 +508,13 @@
           <p>店舗ごとの数字と全店舗の状況をまとめて確認。</p>
         </div>
       </div>
+
+      <!-- 元はファーストビューで使用していた月次ダッシュボード実画面。「①月次ダッシュ
+           ボード」(目標達成率・月末着地予想)の説明用としてこちらへ移動。 -->
+      <div class="shot-frame reveal" style="margin-top:36px;max-width:820px;">
+        <img src="/lp-assets/dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率・営業利益・営業利益率・発注費率・スタッフ生産性が一覧できる" loading="lazy" width="2000" height="1289" />
+      </div>
+      <p class="shot-caption">① 月次ダッシュボードの実際の画面 — 目標達成率・月末着地予想もこの1画面で確認できます(店舗名・数値はデモデータです)</p>
     </div>
   </section>
 
