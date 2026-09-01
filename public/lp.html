@@ -112,6 +112,7 @@
   /* ---------- ファーストビュー ---------- */
   .hero { padding: 52px 0 40px; }
   .hero-inner { text-align: center; max-width: 760px; margin: 0 auto; }
+  .hero-kicker { font-size: clamp(17px, 3vw, 21px); font-weight: 700; color: var(--text); margin: 0 0 12px; }
   .hero h1 { font-size: clamp(28px, 5.6vw, 46px); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 20px; }
   .hero-sub { font-size: clamp(14px, 2.4vw, 17px); color: var(--muted); white-space: pre-line; margin-bottom: 26px; }
   .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; }
@@ -315,6 +316,7 @@
   <section class="hero">
     <div class="wrap hero-inner">
       <p class="eyebrow">SALON MANAGEMENT</p>
+      <p class="hero-kicker">感覚経営から、数字経営へ。</p>
       <h1>売上だけでなく、<br class="hero-h1-break" /><span class="accent-text">利益までひと目で。</span></h1>
       <p class="hero-sub">人件費・材料費・固定費をまとめて可視化。
 月次損益をシンプルに把握できます。</p>
@@ -387,12 +389,7 @@
         </div>
       </div>
 
-      <div class="pnl-stat-chips">
-        <div class="pnl-chip"><span>営業利益率</span><strong>21.3%</strong></div>
-        <div class="pnl-chip"><span>人件費率</span><strong>40.4%</strong></div>
-        <div class="pnl-chip"><span>消費税考慮後利益</span><strong>¥376,433</strong></div>
-      </div>
-      <p class="shot-caption">※画面はイメージです。数値はデモデータです。</p>
+      <p class="shot-caption" style="margin-top:16px;">※画面はイメージです。数値はデモデータです。</p>
     </div>
   </section>
 
@@ -448,17 +445,33 @@
   </section>
 
   <!-- ============================================================
-       5. 月次損益表(大きく主役表示)
+       5. 目標管理・利益逆算(強調セクション)
+       1枚目(ファーストビューの月次損益サマリー)とは別の価値 —「目標から逆算して
+       今月あと何が必要か」を見せる。実際の「売上」ページの営業進捗・KPIカードを
+       撮影(実画面のスクリーンショット)。
        ============================================================ -->
-  <section>
-    <div class="wrap pnl-hero">
-      <p class="eyebrow">PROFIT &amp; LOSS</p>
-      <h2 class="section-title">売上だけでなく、利益まで。</h2>
-      <p class="section-lead" style="margin:0 auto 30px;">人件費・材料費・固定費を差し引いた、実際に残る利益まで確認できます。</p>
-      <div class="shot-frame reveal">
-        <img src="/lp-assets/pnl.jpg" alt="サロンマネージャーの月次損益表画面。総売上・技術売上・店販売上・材料仕入原価・人件費・固定費・営業利益・営業利益率まで、利益セクションまで欠けずに確認できる" loading="lazy" width="2000" height="1771" />
+  <section class="emphasis-section" id="goal">
+    <div class="wrap emphasis-grid">
+      <div>
+        <p class="eyebrow">GOAL MANAGEMENT</p>
+        <h2 class="section-title">目標を立てて終わりにしない。</h2>
+        <p class="section-lead" style="margin-bottom:16px;">今日の時点で、目標の何％まで来ているか。</p>
+        <p style="color:var(--muted);font-size:15px;">月間目標を設定すると、現在の売上から達成率を自動で確認できます。さらに、残り必要売上・残り営業日・1日あたり必要な売上・月末着地予想まで確認できるため、「月末になってから未達に気づく」状態を減らします。</p>
+        <p class="pull-quote" style="font-size:19px;margin-top:18px;">売上を見るだけの経営から、<br />利益を逆算する経営へ。</p>
+        <div class="kpi-strip">
+          <span class="kpi-pill">目標達成率</span>
+          <span class="kpi-pill">残り必要売上</span>
+          <span class="kpi-pill">残り営業日</span>
+          <span class="kpi-pill">1日あたり必要売上</span>
+          <span class="kpi-pill">月末着地予想</span>
+        </div>
       </div>
-      <p class="shot-caption">実際の管理画面(店舗名・数値はデモデータです)</p>
+      <div>
+        <div class="shot-frame">
+          <img src="/lp-assets/progress.jpg" alt="サロンマネージャーの売上ページ実画面。営業進捗・月間達成率・目標売上までの残額・月末着地予測・1日平均必要売上・客数達成率が確認できる" loading="lazy" width="1214" height="1364" />
+        </div>
+        <p class="shot-caption">実際の管理画面(店舗名・数値はデモデータです)</p>
+      </div>
     </div>
   </section>
 
@@ -510,41 +523,26 @@
       </div>
 
       <!-- 元はファーストビューで使用していた月次ダッシュボード実画面。「①月次ダッシュ
-           ボード」(目標達成率・月末着地予想)の説明用としてこちらへ移動。 -->
-      <div class="shot-frame reveal" style="margin-top:36px;max-width:820px;">
-        <img src="/lp-assets/dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率・営業利益・営業利益率・発注費率・スタッフ生産性が一覧できる" loading="lazy" width="2000" height="1289" />
-      </div>
-      <p class="shot-caption">① 月次ダッシュボードの実際の画面 — 目標達成率・月末着地予想もこの1画面で確認できます(店舗名・数値はデモデータです)</p>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       7. 目標管理・利益逆算(強調セクション)
-       ============================================================ -->
-  <section class="emphasis-section" id="goal">
-    <div class="wrap emphasis-grid">
-      <div>
-        <p class="eyebrow">GOAL MANAGEMENT</p>
-        <h2 class="section-title">目標を立てて終わりにしない。</h2>
-        <p class="section-lead" style="margin-bottom:16px;">今日の時点で、目標の何％まで来ているか。</p>
-        <p style="color:var(--muted);font-size:15px;">月間目標を設定すると、現在の売上から達成率を自動で確認できます。さらに、残り必要売上・残り営業日・1日あたり必要な売上・月末着地予想まで確認できるため、「月末になってから未達に気づく」状態を減らします。</p>
-        <p class="pull-quote" style="font-size:19px;margin-top:18px;">売上を見るだけの経営から、<br />利益を逆算する経営へ。</p>
-        <div class="kpi-strip">
-          <span class="kpi-pill">目標達成率</span>
-          <span class="kpi-pill">残り必要売上</span>
-          <span class="kpi-pill">残り営業日</span>
-          <span class="kpi-pill">1日あたり必要売上</span>
-          <span class="kpi-pill">月末着地予想</span>
+           ボード」の説明用としてこちらへ移動。目標設定画面は「③目標管理」の説明用。 -->
+      <div class="grid grid-2" style="margin-top:36px;">
+        <div>
+          <div class="shot-frame reveal">
+            <img src="/lp-assets/dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率・営業利益・営業利益率・発注費率・スタッフ生産性が一覧できる" loading="lazy" width="2000" height="1289" />
+          </div>
+          <p class="shot-caption">① 月次ダッシュボードの実際の画面(店舗名・数値はデモデータです)</p>
+        </div>
+        <div>
+          <div class="shot-frame reveal">
+            <img src="/lp-assets/target.jpg" alt="サロンマネージャーの目標設定画面。月間目標売上・技術売上目標・店販売上目標・客数目標・客単価目標・新規客数目標・再来客数目標を設定できる" loading="lazy" width="2000" height="942" />
+          </div>
+          <p class="shot-caption">③ 目標設定の実際の画面(店舗名・数値はデモデータです)</p>
         </div>
       </div>
-      <div class="shot-frame">
-        <img src="/lp-assets/target.jpg" alt="サロンマネージャーの目標設定画面。月間目標売上・技術売上目標・店販売上目標・客数目標・客単価目標・新規客数目標・再来客数目標を設定できる" loading="lazy" width="2000" height="942" />
-      </div>
     </div>
   </section>
 
   <!-- ============================================================
-       8. 権限管理・スタッフ共有
+       7. 権限管理・スタッフ共有
        ============================================================ -->
   <section>
     <div class="wrap">
@@ -562,7 +560,7 @@
   </section>
 
   <!-- ============================================================
-       9. 複数店舗管理
+       8. 複数店舗管理
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap multistore-grid">
@@ -579,7 +577,7 @@
   </section>
 
   <!-- ============================================================
-       10. 料金(月額1,480円)
+       9. 料金(月額1,480円)
        ============================================================ -->
   <section id="pricing">
     <div class="wrap">
@@ -605,7 +603,7 @@
   </section>
 
   <!-- ============================================================
-       11. FAQ
+       10. FAQ
        ============================================================ -->
   <section id="faq" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap" style="max-width:760px;">
@@ -663,7 +661,7 @@
   </section>
 
   <!-- ============================================================
-       12. 最終CTA
+       11. 最終CTA
        ============================================================ -->
   <section>
     <div class="wrap">
