@@ -21,17 +21,34 @@ export default function MonthlyDashboardPage({
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   const hiddenCategories = useMemo(() => selectedStoreEntity?.settings?.hiddenClosingCategories || [], [selectedStoreEntity]);
   const previousMonth = getMonthOffset(selectedMonth, -1);
+  // 不具合修正(LP用スクリーンショット作成中に発見): このページ専用のcalculateMonthSummary
+  // 呼び出しに、店舗の人件費/発注費の計算方法(固定額 or 売上連動)とその率(laborCostMode/
+  // laborCostRate/purchaseCostMode/purchaseCostRate)が渡っていなかった。App.jsx側の同名の
+  // 呼び出し(損益表・費用入力タブ等が使う`summary`)は正しくこれらを渡しており、その結果
+  // 「売上連動(自動計算)で人件費・発注費を設定している店舗」では損益表には正しく営業利益が
+  // 表示されるのに、この月次ダッシュボードのSUMMARYカードだけは(固定額モード・未入力として
+  // 扱われてしまい)営業利益/営業利益率/発注費率が「－」のまま出てしまっていた。App.jsx側と
+  // 同じ4項目をselectedStoreEntity.settingsから渡すよう修正——計算ロジック自体(calculate
+  // MonthSummary/calculatePurchaseCost/calculateLaborCost)は無変更、渡す引数を合わせただけ。
+  const laborCostMode = selectedStoreEntity?.settings?.laborCostMode;
+  const laborCostRate = selectedStoreEntity?.settings?.laborCostRate;
+  const purchaseCostMode = selectedStoreEntity?.settings?.purchaseCostMode;
+  const purchaseCostRate = selectedStoreEntity?.settings?.purchaseCostRate;
   const storeSummary = useMemo(
     () => (!isAllStoresView && selectedStoreEntity
-      ? calculateMonthSummary(appState, selectedStoreId, selectedMonth, { useInventoryTracking, hiddenCategories })
+      ? calculateMonthSummary(appState, selectedStoreId, selectedMonth, {
+          useInventoryTracking, hiddenCategories, laborCostMode, laborCostRate, purchaseCostMode, purchaseCostRate,
+        })
       : null),
-    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, selectedMonth, useInventoryTracking, hiddenCategories]
+    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, selectedMonth, useInventoryTracking, hiddenCategories, laborCostMode, laborCostRate, purchaseCostMode, purchaseCostRate]
   );
   const previousStoreSummary = useMemo(
     () => (!isAllStoresView && selectedStoreEntity
-      ? calculateMonthSummary(appState, selectedStoreId, previousMonth, { useInventoryTracking, hiddenCategories })
+      ? calculateMonthSummary(appState, selectedStoreId, previousMonth, {
+          useInventoryTracking, hiddenCategories, laborCostMode, laborCostRate, purchaseCostMode, purchaseCostRate,
+        })
       : null),
-    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, previousMonth, useInventoryTracking, hiddenCategories]
+    [appState, isAllStoresView, selectedStoreEntity, selectedStoreId, previousMonth, useInventoryTracking, hiddenCategories, laborCostMode, laborCostRate, purchaseCostMode, purchaseCostRate]
   );
   const productivity = useMemo(
     () => (storeSummary ? getStaffProductivitySummary({

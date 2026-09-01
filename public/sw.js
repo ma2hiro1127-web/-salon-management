@@ -804,7 +804,13 @@
 //   追加しただけで、既存の"/(.*)"→"/index.html"のcatch-allは無変更。ログイン・認証・DB・
 //   RLS・既存画面のロジックは一切変更なし。APP_SHELLにも含めないため、この変更はService
 //   Workerの通常のfetchハンドラ(network-first)がそのまま/lpにも適用されるだけ。
-const CACHE_NAME = 'salon-manager-cache-v100';
+// v101: 月次ダッシュボードの不具合を修正。人件費・発注費を「売上連動(自動計算)」モードに
+//   している店舗で、損益表には正しく営業利益が表示されるのに、月次ダッシュボードのSUMMARY
+//   カードだけ営業利益・営業利益率・発注費率が「未入力」扱いで「－」表示になっていた
+//   (MonthlyDashboardPage.jsx側のcalculateMonthSummary呼び出しに、店舗のlaborCostMode/
+//   laborCostRate/purchaseCostMode/purchaseCostRateが渡っていなかったのが原因)。損益表側
+//   と同じ4項目を渡すよう修正。計算ロジック自体・全店舗ビュー(元々正しく渡していた)は無変更。
+const CACHE_NAME = 'salon-manager-cache-v101';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
