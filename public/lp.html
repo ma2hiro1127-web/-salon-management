@@ -212,6 +212,46 @@
   .kpi-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
   .kpi-pill { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; color: var(--text); font-weight: 600; }
 
+  /* ---------- 目標管理カード(LP用に独自実装したUI・実画面のスクショではない) ----------
+     以前はSupabase実データを使った実画面のスクリーンショット(progress.jpg)だったが、
+     「営業1日目なのに達成率40%」等、月初のデモデータとして不自然な数値になっていた
+     ため、multistore-cardと同じ方針(LP用に手打ちのHTML/CSSで再現し、数値をいつでも
+     整合性を保ったまま調整できるようにする)へ切り替えた。デザイン(見出し・進捗バー・
+     カード構成)は元のスクリーンショットに合わせている。 */
+  .gm-card { background: var(--surface); padding: 22px 20px; text-align: left; }
+  .gm-progress-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; background: linear-gradient(135deg, var(--accent-soft), rgba(255,255,255,0.4)); border-radius: 16px; padding: 16px 18px; }
+  .gm-eyebrow { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 4px; }
+  .gm-progress-head h3 { font-size: 20px; font-weight: 800; color: var(--text); }
+  .gm-badge { flex: none; background: #fde3e8; color: #c23a58; font-size: 13px; font-weight: 800; border-radius: 999px; padding: 5px 14px; }
+  .gm-progress-track { height: 8px; background: var(--border); border-radius: 999px; overflow: hidden; margin: 14px 2px 0; }
+  .gm-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: 999px; }
+  .gm-progress-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 16px 2px 0; }
+  .gm-progress-stats > div span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
+  .gm-progress-stats > div strong { display: block; font-size: 16px; font-weight: 800; color: var(--text); white-space: nowrap; }
+  .gm-kpi-head { margin: 26px 0 12px; }
+  .gm-kpi-head .gm-eyebrow { margin-bottom: 2px; }
+  .gm-kpi-head h3 { font-size: 22px; font-weight: 800; color: var(--text); }
+  .gm-kpi-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .gm-kpi-card { background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .gm-kpi-card-tint { background: var(--accent-soft); border-color: rgba(47, 125, 246, 0.16); }
+  .gm-kpi-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .gm-kpi-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+  .gm-kpi-tag { flex: none; background: rgba(46, 163, 97, 0.14); color: var(--success); font-size: 11px; font-weight: 800; border-radius: 999px; padding: 3px 10px; }
+  .gm-kpi-main { font-size: 26px; font-weight: 800; color: var(--text); line-height: 1.2; white-space: nowrap; }
+  .gm-kpi-sub-strong { font-size: 15px; font-weight: 700; color: var(--text); white-space: nowrap; }
+  .gm-kpi-note { font-size: 11.5px; color: var(--muted); }
+  @media (max-width: 640px) {
+    .gm-progress-stats { grid-template-columns: repeat(3, 1fr); }
+    .gm-kpi-main { font-size: 22px; }
+  }
+  @media (max-width: 480px) {
+    .gm-card { padding: 18px 14px; }
+    .gm-progress-head h3 { font-size: 18px; }
+    .gm-progress-stats { grid-template-columns: repeat(2, 1fr); gap: 12px 10px; }
+    .gm-kpi-grid { grid-template-columns: 1fr; }
+    .gm-kpi-main { font-size: 24px; }
+  }
+
   /* ---------- 権限図解 ---------- */
   .role-flow { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; }
   .role-row { display: flex; align-items: center; gap: 14px; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; }
@@ -518,8 +558,14 @@
   <!-- ============================================================
        5. 目標管理・利益逆算(強調セクション)
        1枚目(ファーストビューの月次損益サマリー)とは別の価値 —「目標から逆算して
-       今月あと何が必要か」を見せる。実際の「売上」ページの営業進捗・KPIカードを
-       撮影(実画面のスクリーンショット)。
+       今月あと何が必要か」を見せる。
+       2026-09-01改訂: 元は実際の「売上」ページの営業進捗・KPIカードのスクリーンショット
+       (progress.jpg)だったが、「営業日1/30日なのに達成率40%」等、月初のデモデータとして
+       不自然な数値になっていた。multistore-card(店舗比較)と同じ方針で、LP用に手打ちの
+       HTML/CSSで再現し(.gm-*)、数値をいつでも整合性を保ったまま調整できるようにした。
+       前提: 月間営業日30日・現在10営業日終了・月間売上目標¥3,000,000・現在売上
+       ¥1,000,000・平均客単価約¥10,000・月間客数目標300名・現在客数100名という、
+       「10日経過して月間目標の約1/3まで来ている」一貫したデモ数値(達成率33.3%で統一)。
        ============================================================ -->
   <section class="emphasis-section" id="goal">
     <div class="wrap emphasis-grid">
@@ -539,9 +585,63 @@
       </div>
       <div>
         <div class="shot-frame">
-          <img src="/lp-assets/progress.jpg" alt="サロンマネージャーの売上ページ実画面。営業進捗・月間達成率・目標売上までの残額・月末着地予測・1日平均必要売上・客数達成率が確認できる" loading="lazy" width="1214" height="1364" />
+          <div class="gm-card">
+            <div class="gm-progress-head">
+              <div>
+                <p class="gm-eyebrow">PROGRESS</p>
+                <h3>営業進捗</h3>
+              </div>
+              <span class="gm-badge">33%</span>
+            </div>
+            <div class="gm-progress-track"><div class="gm-progress-fill" style="width:33%"></div></div>
+            <div class="gm-progress-stats">
+              <div><span>営業日</span><strong>10 / 30日</strong></div>
+              <div><span>残り営業日</span><strong>20日</strong></div>
+              <div><span>総売上</span><strong>¥1,000,000</strong></div>
+              <div><span>平均売上</span><strong>¥100,000 / 日</strong></div>
+              <div><span>顧客数</span><strong>100名</strong></div>
+            </div>
+
+            <div class="gm-kpi-head">
+              <p class="gm-eyebrow">KPI</p>
+              <h3>売上</h3>
+            </div>
+            <div class="gm-kpi-grid">
+              <div class="gm-kpi-card gm-kpi-card-tint">
+                <span class="gm-kpi-label">月間達成率</span>
+                <strong class="gm-kpi-main">33.3%</strong>
+                <strong class="gm-kpi-sub-strong">目標売上まで ¥2,000,000</strong>
+                <span class="gm-kpi-note">営業進捗比 ±0.0pt</span>
+              </div>
+              <div class="gm-kpi-card">
+                <div class="gm-kpi-card-head"><span class="gm-kpi-label">月末着地予測</span><span class="gm-kpi-tag">順調</span></div>
+                <strong class="gm-kpi-main">¥3,000,000</strong>
+                <span class="gm-kpi-note">目標より ±¥0</span>
+              </div>
+              <div class="gm-kpi-card">
+                <span class="gm-kpi-label">1日平均必要売上</span>
+                <strong class="gm-kpi-main">¥100,000</strong>
+                <span class="gm-kpi-note">残り20営業日で必要</span>
+              </div>
+              <div class="gm-kpi-card">
+                <span class="gm-kpi-label">客数達成率</span>
+                <strong class="gm-kpi-main">33.3%</strong>
+                <strong class="gm-kpi-sub-strong">目標まで 200名</strong>
+                <span class="gm-kpi-note">必要客数 10名 / 日</span>
+              </div>
+              <div class="gm-kpi-card">
+                <span class="gm-kpi-label">平均客単価</span>
+                <strong class="gm-kpi-main">¥10,000</strong>
+              </div>
+              <div class="gm-kpi-card">
+                <span class="gm-kpi-label">1人あたり月間売上</span>
+                <strong class="gm-kpi-main">¥333,333 / 人</strong>
+                <span class="gm-kpi-note">月末予測 ¥1,000,000 / 人</span>
+              </div>
+            </div>
+          </div>
         </div>
-        <p class="shot-caption">実際の管理画面(店舗名・数値はデモデータです)</p>
+        <p class="shot-caption">※画面はイメージです。数値はデモデータです。</p>
       </div>
     </div>
   </section>
