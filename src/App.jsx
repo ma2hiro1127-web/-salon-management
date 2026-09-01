@@ -7706,19 +7706,34 @@ function App() {
   // 日次入力UI改善(要件8・15): 保存・日締め・編集・キャンセルのボタン群をこの1箇所だけで
   // 定義し、通常の位置(フォーム内)とスマホ固定アクションバー(下記.daily-fixed-action-bar)
   // の両方でそのまま再利用する——2箇所に同じ分岐ロジックを重複して書かない。保存ボタンは
-  // どちらの場所に描画してもform="daily-form"で同じ<form id="daily-form" onSubmit=
-  // {submitDailyEntry}>のsubmitイベントを発火させるだけで、別の保存関数・保存経路は一切
-  // 作らない(二重POST/二重upsertのリスクを増やさない)。各ボタンのonClick/disabled式・
-  // 表示条件自体は既存のまま変更していない。
+  // どちらの場所に描画してもsubmitDailyEntryを直接呼ぶだけで、別の保存関数・保存経路は一切
+  // 作らない(二重POST/二重upsertのリスクを増やさない)。
+  //
+  // 不具合修正(「日締め解除後、編集を押しても入力欄が編集可能にならない」の真の根本原因):
+  // 保存ボタンは以前 type="submit" form="daily-form" だった。「編集」(view時、type="button")
+  // と「保存」(edit時、type="submit")はdailyActionButtonsの同じ配列位置(1番目の子)に
+  // 交互に現れるため、Reactは要素の種類(<button>)が同じ場合はDOMノードを使い回して
+  // type/onClick等の属性だけを更新する(unmount+remountしない)。「編集」を押した瞬間、
+  // editDailyEntryがdailyMode="edit"にした直後の再レンダーで、まさに今クリックされている
+  // その<button>要素自身がtype="button"→type="submit"へ書き換わってしまい、ブラウザが
+  // その同じクリックの既定動作(フォーム送信)を、書き換わった後のtype="submit"に基づいて
+  // 実行してしまっていた——つまり「編集」を1回押しただけで、直後に「保存」(switchToView:
+  // true)まで連鎖的に呼ばれ、setDailyMode("edit")の直後にsetDailyMode("view")で巻き戻されて
+  // いた(PC・スマホ問わず理論上起こりうるが、レイアウトや再レンダー速度の違いから実際には
+  // スマホ側で顕在化しやすかった)。保存ボタンをtype="button" + onClick={submitDailyEntry}
+  // (ネイティブのform submit機構を使わない、直接関数呼び出し)へ変更し、type属性の書き換えが
+  // 既存のクリックの既定動作に影響しない構造にした。<form id="daily-form" onSubmit=
+  // {submitDailyEntry}>自体は残しているため、入力欄でのEnterキー送信は従来どおり機能する。
+  // 各ボタンのonClick/disabled式・表示条件自体はこの1箇所以外は変更していない。
   const dailyActionButtons = !isDailyFormDateHoliday ? (
     dailyMode === "create" ? (
       <>
-        <button className="primary-button" type="submit" form="daily-form">保存</button>
+        <button className="primary-button" type="button" onClick={submitDailyEntry}>保存</button>
         <button className="secondary-button" type="button" onClick={toggleDayClosing} disabled={!canToggleClosing}>{isSelectedDailyEntryClosed ? "日締めを解除" : "日締め"}</button>
       </>
     ) : dailyMode === "edit" ? (
       <>
-        <button className="primary-button" type="submit" form="daily-form">保存</button>
+        <button className="primary-button" type="button" onClick={submitDailyEntry}>保存</button>
         <button className="secondary-button" type="button" onClick={cancelDailyEntryEdit}>キャンセル</button>
       </>
     ) : canEditSelectedDailyEntry ? (
@@ -8611,12 +8626,15 @@ function App() {
 
                   {/* スマホUI改善(要件8): 保存・日締めをスマホの画面下部の固定バーからも操作
                       できるようにする。中身はdailyActionButtons(上のフォーム内と全く同じ
-                      JSX・同じonClick/disabled/type="submit" form="daily-form")をそのまま
-                      再利用するだけで、保存関数・イベント経路を複製しない(要件15)。
-                      「保存」ボタンはform="daily-form"でこのボタン自身が<form>の外にあっても
-                      同じフォームのsubmitイベントを発火させる(HTML標準機能、二重の保存関数を
-                      書かずに済む)。position:fixedのためDOM上の位置は見た目に影響しない。
-                      表示はshowDailyFixedActionBarがtrueの時(毎日入力モードでボタンが
+                      JSX・同じonClick/disabled)をそのまま再利用するだけで、保存関数・
+                      イベント経路を複製しない(要件15)。「保存」ボタンはtype="button" +
+                      onClick={submitDailyEntry}の直接呼び出し(<form>の外にあってもform=
+                      "daily-form"のネイティブsubmit機構には頼らない——編集↔保存の切り替えで
+                      同じDOMノードのtypeがbutton⇔submitへ書き換わり、切り替えの瞬間のクリックが
+                      書き換わった後のtypeに基づいて意図せずフォーム送信されてしまう不具合の
+                      修正、詳細はdailyActionButtons定義部のコメント参照)。position:fixedの
+                      ためDOM上の位置は見た目に影響しない。表示はshowDailyFixedActionBarが
+                      trueの時(毎日入力モードでボタンが
                       1つ以上ある時)だけ・CSS側で≤900pxのみdisplayさせる(PCでは常時非表示)。 */}
                   {showDailyFixedActionBar ? (
                     <div className="daily-fixed-action-bar">
