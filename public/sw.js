@@ -799,7 +799,12 @@
 //   「他のスタッフが既に登録した可能性があります」という具体的な案内に差し替え。データの
 //   消失・二重登録は元々発生しない(常に1件のみ保存される)ことを確認済み——表示文言のみの
 //   変更で、保存ロジック・DB・RLSポリシーは無変更。
-const CACHE_NAME = 'salon-manager-cache-v99';
+// v100: 販売用LP(/lp)を新規追加。public/lp.html(既存Reactアプリとは完全に独立した静的
+//   HTML、ビルド・ESLint対象外)を追加し、vercel.jsonに"/lp"→"/lp.html"のrewriteを1行
+//   追加しただけで、既存の"/(.*)"→"/index.html"のcatch-allは無変更。ログイン・認証・DB・
+//   RLS・既存画面のロジックは一切変更なし。APP_SHELLにも含めないため、この変更はService
+//   Workerの通常のfetchハンドラ(network-first)がそのまま/lpにも適用されるだけ。
+const CACHE_NAME = 'salon-manager-cache-v100';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
