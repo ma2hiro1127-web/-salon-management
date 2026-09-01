@@ -810,7 +810,13 @@
 //   (MonthlyDashboardPage.jsx側のcalculateMonthSummary呼び出しに、店舗のlaborCostMode/
 //   laborCostRate/purchaseCostMode/purchaseCostRateが渡っていなかったのが原因)。損益表側
 //   と同じ4項目を渡すよう修正。計算ロジック自体・全店舗ビュー(元々正しく渡していた)は無変更。
-const CACHE_NAME = 'salon-manager-cache-v101';
+// v102: 販売用LP(/lp)を最終ブラッシュアップ。料金表示を月額1,480円(税込)に統一、構成を
+//   ファーストビュー→ダッシュボード実画面→こんな状態になっていませんか(8→6項目)→ひとつに
+//   →月次損益表(サイドバー無しで利益まで欠けず表示)→主要機能5項目→目標管理・利益逆算→
+//   権限管理→複数店舗管理→料金→FAQ→最終CTAの順に再編成。スクリーンショットをすべて
+//   サイドバー無し・数値が「－」にならない状態のものへ差し替え。既存アプリのロジック・
+//   ログイン・認証・DBは無変更(lp.htmlは独立した静的ページのまま)。
+const CACHE_NAME = 'salon-manager-cache-v102';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',

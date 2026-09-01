@@ -10,20 +10,23 @@
      このファイルは既存アプリ(src/App.jsx以下のReact SPA)とは完全に独立した
      静的HTMLです。Viteは public/ 配下をビルド時にそのまま dist/ へコピーするだけ
      なので、このファイルはビルド・ESLint・型チェックのいずれの対象にもならず、
-     既存のログイン・認証・DB処理には一切触れません(要件24)。
+     既存のログイン・認証・DB処理には一切触れません。
      vercel.json の "/lp" → "/lp.html" のrewriteでこのファイルが配信されます。
+
+     2026-09 最終ブラッシュアップ: 料金を月額1,480円に統一、構成を要求どおりの
+     12ブロック順に再編成、スクリーンショットをより見やすいもの(サイドバー無し・
+     利益まで欠けず見える損益表など)に差し替え。
      ============================================================================ -->
 
 <title>サロンマネージャー｜美容サロンの売上・損益・目標達成率をまとめて管理</title>
-<meta name="description" content="美容サロン経営に必要な売上・目標・人件費・材料費・固定費・利益をまとめて管理。目標達成率、月末着地予想、残り必要売上まで確認できる経営管理ツール。" />
+<meta name="description" content="美容サロン経営に必要な売上・目標・人件費・材料費・固定費・利益をまとめて管理。目標達成率、月末着地予想、残り必要売上まで確認できる経営管理ツール。月額1,480円。" />
 
-<!-- OGP(要件21): 画像は後から差し替え可能にするため、まずは既存アプリのアイコンを暫定で
-     指定しています。専用のOGP画像(1200x630px推奨)ができ次第、og:image / twitter:image の
-     content値だけを差し替えてください。 -->
+<!-- OGP: 画像は後から差し替え可能にするため、まずは既存アプリのアイコンを暫定で指定
+     しています。専用のOGP画像(1200x630px推奨)ができ次第、content値だけを差し替えてください。 -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="サロンマネージャー" />
 <meta property="og:title" content="サロンマネージャー｜美容サロンの売上・損益・目標達成率をまとめて管理" />
-<meta property="og:description" content="美容サロン経営に必要な売上・目標・人件費・材料費・固定費・利益をまとめて管理。目標達成率、月末着地予想、残り必要売上まで確認できる経営管理ツール。" />
+<meta property="og:description" content="美容サロン経営に必要な売上・目標・人件費・材料費・固定費・利益をまとめて管理。目標達成率、月末着地予想、残り必要売上まで確認できる経営管理ツール。月額1,480円。" />
 <meta property="og:image" content="https://salon-manager.net/icon-512.png" /><!-- TODO: 専用OGP画像に差し替え -->
 <meta property="og:url" content="https://salon-manager.net/lp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -36,10 +39,6 @@
 <link rel="canonical" href="https://salon-manager.net/lp" />
 
 <style>
-  /* ============================================================
-     デザイントークン: 既存アプリ(src/App.css)の配色をそのまま踏襲し、
-     世界観を変えない(要件18)。
-     ============================================================ */
   :root {
     --bg: #f7fbff;
     --surface: #ffffff;
@@ -64,76 +63,32 @@
     font-family: "Inter", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
     line-height: 1.7;
     -webkit-font-smoothing: antialiased;
-    overflow-x: hidden; /* 横スクロール対策(要件19) */
+    overflow-x: hidden;
   }
   img { max-width: 100%; display: block; }
   a { color: inherit; }
   .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
-  section { padding: 64px 0; }
+  section { padding: 60px 0; }
   h1, h2, h3 { margin: 0; line-height: 1.4; }
   p { margin: 0; }
 
-  .eyebrow {
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    color: var(--accent);
-    margin: 0 0 10px;
-  }
-  .section-title {
-    font-size: clamp(22px, 4vw, 30px);
-    font-weight: 700;
-    margin: 0 0 14px;
-    letter-spacing: -0.01em;
-  }
-  .section-lead {
-    color: var(--muted);
-    font-size: 15px;
-    max-width: 620px;
-  }
-  .section-head { margin-bottom: 36px; }
+  .eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--accent); margin: 0 0 10px; }
+  .section-title { font-size: clamp(22px, 4vw, 30px); font-weight: 700; margin: 0 0 14px; letter-spacing: -0.01em; }
+  .section-lead { color: var(--muted); font-size: 15px; max-width: 620px; }
+  .section-head { margin-bottom: 34px; }
   .section-head.center { text-align: center; margin-left: auto; margin-right: auto; }
   .section-head.center .section-lead { margin-left: auto; margin-right: auto; }
 
-  /* ---------- ヘッダー(要件16) ---------- */
-  header.site-header {
-    position: sticky;
-    top: 0;
-    z-index: 50;
-    background: rgba(247, 251, 255, 0.9);
-    backdrop-filter: saturate(180%) blur(10px);
-    border-bottom: 1px solid var(--border);
-  }
-  .header-inner {
-    max-width: var(--maxw);
-    margin: 0 auto;
-    padding: 12px 20px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
+  /* ---------- ヘッダー ---------- */
+  header.site-header { position: sticky; top: 0; z-index: 50; background: rgba(247, 251, 255, 0.9); backdrop-filter: saturate(180%) blur(10px); border-bottom: 1px solid var(--border); }
+  .header-inner { max-width: var(--maxw); margin: 0 auto; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; text-decoration: none; white-space: nowrap; }
   .brand img { width: 28px; height: 28px; border-radius: 7px; flex: none; }
   nav.primary-nav { display: flex; align-items: center; gap: 24px; }
   nav.primary-nav a.nav-link { font-size: 14px; font-weight: 500; text-decoration: none; color: var(--text); }
   .header-cta { display: flex; align-items: center; gap: 10px; }
 
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    font-weight: 700;
-    font-size: 15px;
-    border-radius: 999px;
-    padding: 13px 26px;
-    text-decoration: none;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-    white-space: nowrap;
-  }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-weight: 700; font-size: 15px; border-radius: 999px; padding: 13px 26px; text-decoration: none; border: 1px solid transparent; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease; white-space: nowrap; }
   .btn:active { transform: scale(0.98); }
   .btn-primary { background: var(--accent); color: #fff; box-shadow: 0 10px 24px rgba(47, 125, 246, 0.28); }
   .btn-primary:hover { background: var(--accent-dark); }
@@ -142,301 +97,87 @@
   .btn-ghost { background: transparent; color: var(--text); padding: 10px 16px; font-size: 14px; }
   .btn-block { width: 100%; }
   .btn-sm { padding: 10px 18px; font-size: 14px; }
-
   .header-cta .btn-ghost { display: none; }
 
-  .hamburger {
-    display: none;
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: #fff;
-    align-items: center;
-    justify-content: center;
-  }
-  .hamburger span, .hamburger span::before, .hamburger span::after {
-    content: "";
-    display: block;
-    width: 18px;
-    height: 2px;
-    background: var(--text);
-    position: relative;
-  }
+  .hamburger { display: none; width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--border); background: #fff; align-items: center; justify-content: center; }
+  .hamburger span, .hamburger span::before, .hamburger span::after { content: ""; display: block; width: 18px; height: 2px; background: var(--text); position: relative; }
   .hamburger span::before { position: absolute; top: -6px; }
   .hamburger span::after { position: absolute; top: 6px; }
 
-  #mobile-menu {
-    display: none;
-    flex-direction: column;
-    gap: 2px;
-    border-top: 1px solid var(--border);
-    background: #fff;
-    padding: 10px 20px 16px;
-  }
+  #mobile-menu { display: none; flex-direction: column; gap: 2px; border-top: 1px solid var(--border); background: #fff; padding: 10px 20px 16px; }
   #mobile-menu.open { display: flex; }
-  #mobile-menu a {
-    padding: 12px 4px;
-    text-decoration: none;
-    color: var(--text);
-    font-size: 15px;
-    border-bottom: 1px solid var(--border);
-  }
+  #mobile-menu a { padding: 12px 4px; text-decoration: none; color: var(--text); font-size: 15px; border-bottom: 1px solid var(--border); }
   #mobile-menu .btn { margin-top: 10px; }
 
   /* ---------- ファーストビュー ---------- */
-  .hero { padding: 56px 0 48px; }
+  .hero { padding: 52px 0 40px; }
   .hero-inner { text-align: center; max-width: 760px; margin: 0 auto; }
-  .hero h1 {
-    font-size: clamp(28px, 5.6vw, 46px);
-    font-weight: 800;
-    letter-spacing: -0.02em;
-    margin-bottom: 20px;
-  }
-  .hero-sub {
-    font-size: clamp(14px, 2.4vw, 17px);
-    color: var(--muted);
-    white-space: pre-line;
-    margin-bottom: 28px;
-  }
-  .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 22px; }
-  .hero-points {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 10px 20px;
-    font-size: 13px;
-    color: var(--muted);
-  }
+  .hero h1 { font-size: clamp(28px, 5.6vw, 46px); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 20px; }
+  .hero-sub { font-size: clamp(14px, 2.4vw, 17px); color: var(--muted); white-space: pre-line; margin-bottom: 26px; }
+  .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; }
+  .hero-points { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 20px; font-size: 13px; color: var(--muted); }
   .hero-points span { display: inline-flex; align-items: center; gap: 6px; }
   .hero-points span::before { content: "✓"; color: var(--success); font-weight: 700; }
 
-  .hero-shot {
-    margin-top: 44px;
-    border-radius: 20px;
-    overflow: hidden;
-    box-shadow: var(--shadow);
-    border: 1px solid var(--border);
-    max-width: 920px;
-    margin-left: auto;
-    margin-right: auto;
-  }
+  .shot-frame { margin-top: 40px; border-radius: 20px; overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border); max-width: 880px; margin-left: auto; margin-right: auto; }
+  .shot-frame img { width: 100%; height: auto; }
+  .shot-caption { text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; }
 
   /* ---------- カード共通 ---------- */
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-    box-shadow: var(--shadow);
-  }
-  .grid {
-    display: grid;
-    gap: 18px;
-  }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); }
+  .grid { display: grid; gap: 16px; }
   .grid-2 { grid-template-columns: repeat(2, 1fr); }
   .grid-3 { grid-template-columns: repeat(3, 1fr); }
-  @media (max-width: 860px) {
-    .grid-3 { grid-template-columns: repeat(2, 1fr); }
-  }
-  @media (max-width: 620px) {
-    .grid-2, .grid-3 { grid-template-columns: 1fr; }
-  }
+  @media (max-width: 860px) { .grid-3 { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 620px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
 
   /* ---------- 悩みセクション ---------- */
-  .pain-card {
-    display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    padding: 20px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-  }
-  .pain-card .mark {
-    flex: none;
-    width: 26px; height: 26px;
-    border-radius: 50%;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 800;
-    font-size: 13px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .pain-card p { font-size: 14.5px; color: var(--text); }
+  .pain-card { display: flex; gap: 12px; align-items: flex-start; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
+  .pain-card .mark { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+  .pain-card p { font-size: 14.5px; color: var(--text); white-space: pre-line; }
 
-  /* ---------- 画面枠(スクリーンショット) ---------- */
-  .screenshot-frame {
-    border-radius: 14px;
-    overflow: hidden;
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow);
-    background: #fff;
-  }
-  .screenshot-frame img { width: 100%; height: auto; }
-  .screenshot-caption {
-    text-align: center;
-    font-size: 13px;
-    color: var(--muted);
-    margin-top: 10px;
-  }
-
-  /* ---------- 変化セクション ---------- */
+  /* ---------- 変化・逆算セクション ---------- */
   .transform { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
   @media (max-width: 860px) { .transform { grid-template-columns: 1fr; } }
-  .transform-copy p { color: var(--muted); font-size: 15px; margin-top: 14px; }
-  .transform-copy .callout {
-    margin-top: 18px;
-    padding: 16px 18px;
-    background: var(--accent-soft);
-    border-radius: 12px;
-    color: var(--accent-dark);
-    font-weight: 600;
-    font-size: 14.5px;
-  }
+  .transform-copy p { color: var(--muted); font-size: 15px; margin-top: 14px; white-space: pre-line; }
+  .transform-copy .callout { margin-top: 18px; padding: 16px 18px; background: var(--accent-soft); border-radius: 12px; color: var(--accent-dark); font-weight: 600; font-size: 14.5px; }
+  .pull-quote { font-size: clamp(18px, 3vw, 24px); font-weight: 800; color: var(--text); margin: 10px 0 0; letter-spacing: -0.01em; }
 
-  /* ---------- 機能カード ---------- */
-  .feature-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .feature-card.highlight {
-    border: 1.5px solid var(--accent);
-    box-shadow: 0 16px 36px rgba(47, 125, 246, 0.16);
-  }
-  .feature-card .icon {
-    width: 40px; height: 40px;
-    border-radius: 10px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    display: flex; align-items: center; justify-content: center;
-    font-size: 18px;
-  }
-  .feature-card h3 { font-size: 16.5px; font-weight: 700; }
-  .feature-card p { font-size: 14px; color: var(--muted); }
-  .feature-card ul { margin: 4px 0 0; padding-left: 18px; font-size: 13.5px; color: var(--muted); }
-  .feature-card li { margin-bottom: 3px; }
-  .badge-note {
-    display: inline-block;
-    margin-top: 4px;
-    font-size: 12px;
-    color: var(--accent-dark);
-    background: var(--accent-soft);
-    padding: 4px 10px;
-    border-radius: 999px;
-    width: fit-content;
-  }
+  /* ---------- 損益表セクション(主役表示) ---------- */
+  .pnl-hero { text-align: center; }
+  .pnl-hero .shot-frame { max-width: 760px; }
 
-  /* ---------- POS比較 ---------- */
-  .compare-wrap { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  @media (max-width: 700px) { .compare-wrap { grid-template-columns: 1fr; } }
-  .compare-card { border-radius: var(--radius); padding: 24px; border: 1px solid var(--border); background: var(--surface); }
-  .compare-card.emphasis { border: 1.5px solid var(--accent); background: linear-gradient(180deg, #fff, var(--accent-soft) 220%); }
-  .compare-card h3 { font-size: 15px; margin-bottom: 14px; color: var(--muted); font-weight: 700; }
-  .compare-card.emphasis h3 { color: var(--accent-dark); }
-  .compare-card ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
-  .compare-card li { font-size: 14.5px; display: flex; gap: 8px; align-items: flex-start; }
-  .compare-card.emphasis li::before { content: "✓"; color: var(--success); font-weight: 800; }
-  .compare-card:not(.emphasis) li::before { content: "・"; color: var(--muted); }
-  .compare-note {
-    text-align: center;
-    max-width: 620px;
-    margin: 28px auto 0;
-    color: var(--muted);
-    font-size: 14px;
-    padding: 16px 20px;
-    border-top: 1px solid var(--border);
-  }
+  /* ---------- 機能カード(コンパクト5枚) ---------- */
+  .feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; display: flex; flex-direction: column; gap: 8px; }
+  .feature-card .icon { width: 40px; height: 40px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 18px; }
+  .feature-card h3 { font-size: 16px; font-weight: 700; }
+  .feature-card p { font-size: 13.5px; color: var(--muted); }
+  .feature-card ul { margin: 2px 0 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
+  .feature-card li { margin-bottom: 2px; }
 
-  /* ---------- 目標管理・権限セクション(強調枠) ---------- */
-  .emphasis-section {
-    background: linear-gradient(180deg, #fff, var(--accent-soft));
-    border-top: 1px solid var(--border);
-    border-bottom: 1px solid var(--border);
-  }
+  /* ---------- 目標管理・逆算(強調枠) ---------- */
+  .emphasis-section { background: linear-gradient(180deg, #fff, var(--accent-soft)); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
   .emphasis-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 44px; align-items: center; }
   @media (max-width: 860px) { .emphasis-grid { grid-template-columns: 1fr; } }
   .kpi-strip { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
-  .kpi-pill {
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 14px;
-    font-size: 13px;
-    color: var(--text);
-    font-weight: 600;
-  }
+  .kpi-pill { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; font-size: 13px; color: var(--text); font-weight: 600; }
 
   /* ---------- 権限図解 ---------- */
   .role-flow { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; }
-  .role-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    background: #fff;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 14px 18px;
-  }
+  .role-row { display: flex; align-items: center; gap: 14px; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: 14px 18px; }
   .role-row .role-name { font-weight: 700; font-size: 14.5px; min-width: 168px; }
   .role-row .role-desc { font-size: 13.5px; color: var(--muted); }
   .role-row .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); flex: none; }
+  @media (max-width: 560px) { .role-row { flex-wrap: wrap; } .role-row .role-name { min-width: 0; } }
 
-  /* ---------- ステップ ---------- */
-  .steps { display: flex; flex-direction: column; gap: 0; max-width: 640px; margin: 0 auto; }
-  .step-row { display: flex; gap: 18px; }
-  .step-badge-col { display: flex; flex-direction: column; align-items: center; }
-  .step-num {
-    width: 34px; height: 34px; border-radius: 50%;
-    background: var(--accent); color: #fff; font-weight: 800; font-size: 14px;
-    display: flex; align-items: center; justify-content: center; flex: none;
-  }
-  .step-line { flex: 1; width: 2px; background: var(--border); margin: 4px 0; min-height: 24px; }
-  .step-row:last-child .step-line { display: none; }
-  .step-body { padding-bottom: 26px; }
-  .step-body h3 { font-size: 15.5px; font-weight: 700; margin-bottom: 4px; }
-  .step-body p { font-size: 13.5px; color: var(--muted); }
-
-  /* ---------- 実際の画面ギャラリー ---------- */
-  .gallery { display: grid; grid-template-columns: repeat(3, 1fr); gap: 22px; }
-  @media (max-width: 860px) { .gallery { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 620px) { .gallery { grid-template-columns: 1fr; } }
-
-  /* ---------- できることリスト ---------- */
-  .capability-list {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-  }
-  @media (max-width: 860px) { .capability-list { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 540px) { .capability-list { grid-template-columns: 1fr; } }
-  .capability-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 12px 14px;
-    font-size: 13.5px;
-    font-weight: 600;
-  }
-  .capability-item::before { content: "✓"; color: var(--success); font-weight: 800; }
+  /* ---------- 複数店舗セクション ---------- */
+  .multistore-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  @media (max-width: 860px) { .multistore-grid { grid-template-columns: 1fr; } }
 
   /* ---------- 料金 ---------- */
-  .pricing-card {
-    max-width: 460px;
-    margin: 0 auto;
-    text-align: center;
-    padding: 40px 32px;
-  }
-  .price-amount { font-size: 42px; font-weight: 800; margin: 6px 0 2px; }
-  .price-amount small { font-size: 16px; font-weight: 600; color: var(--muted); }
+  .pricing-card { max-width: 460px; margin: 0 auto; text-align: center; padding: 40px 32px; }
+  .price-amount { font-size: 44px; font-weight: 800; margin: 6px 0 2px; }
+  .price-amount small { font-size: 15px; font-weight: 600; color: var(--muted); }
   .price-note { font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
   .pricing-card ul { list-style: none; padding: 0; margin: 22px 0; display: flex; flex-direction: column; gap: 10px; text-align: left; }
   .pricing-card li { font-size: 14.5px; display: flex; gap: 8px; }
@@ -445,73 +186,42 @@
   /* ---------- FAQ ---------- */
   .faq-item { border-bottom: 1px solid var(--border); }
   .faq-item:first-child { border-top: 1px solid var(--border); }
-  .faq-q {
-    width: 100%;
-    text-align: left;
-    background: none;
-    border: none;
-    padding: 18px 4px;
-    font-size: 15px;
-    font-weight: 700;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 12px;
-    cursor: pointer;
-    color: var(--text);
-    font-family: inherit;
-  }
+  .faq-q { width: 100%; text-align: left; background: none; border: none; padding: 18px 4px; font-size: 15px; font-weight: 700; display: flex; justify-content: space-between; align-items: center; gap: 12px; cursor: pointer; color: var(--text); font-family: inherit; }
   .faq-q .plus { flex: none; font-size: 18px; color: var(--accent); transition: transform 0.2s ease; }
   .faq-item.open .plus { transform: rotate(45deg); }
-  .faq-a {
-    max-height: 0;
-    overflow: hidden;
-    transition: max-height 0.25s ease;
-    font-size: 14px;
-    color: var(--muted);
-    padding: 0 4px;
-  }
+  .faq-a { max-height: 0; overflow: hidden; transition: max-height 0.25s ease; font-size: 14px; color: var(--muted); padding: 0 4px; }
   .faq-item.open .faq-a { padding-bottom: 18px; }
 
   /* ---------- 最終CTA ---------- */
-  .final-cta {
-    text-align: center;
-    background: linear-gradient(160deg, var(--accent-dark), var(--accent));
-    color: #fff;
-    border-radius: 24px;
-    padding: 56px 24px;
-    max-width: var(--maxw);
-    margin: 0 auto;
-  }
-  .final-cta h2 { font-size: clamp(22px, 4vw, 30px); font-weight: 800; margin-bottom: 8px; }
-  .final-cta p { color: rgba(255,255,255,0.88); font-size: 15px; margin-bottom: 4px; }
-  .final-cta .btn-primary { background: #fff; color: var(--accent-dark); box-shadow: none; margin-top: 22px; }
+  .final-cta { text-align: center; background: linear-gradient(160deg, var(--accent-dark), var(--accent)); color: #fff; border-radius: 24px; padding: 54px 24px; max-width: var(--maxw); margin: 0 auto; }
+  .final-cta h2 { font-size: clamp(22px, 4vw, 30px); font-weight: 800; margin-bottom: 10px; }
+  .final-cta p { color: rgba(255,255,255,0.9); font-size: 15px; margin-bottom: 4px; }
+  .final-cta .final-price { font-size: 28px; font-weight: 800; margin: 18px 0 4px; }
+  .final-cta .final-price small { font-size: 14px; font-weight: 600; opacity: 0.85; }
+  .final-cta .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+  .final-cta .btn-primary { background: #fff; color: var(--accent-dark); box-shadow: none; }
   .final-cta .btn-primary:hover { background: #eaf4ff; }
+  .final-cta .btn-secondary { background: transparent; color: #fff; border-color: rgba(255,255,255,0.5); }
+  .final-cta .btn-secondary:hover { border-color: #fff; }
+  .final-cta .hero-points { margin-top: 22px; color: rgba(255,255,255,0.85); }
+  .final-cta .hero-points span::before { color: #bff0d6; }
 
   /* ---------- フッター ---------- */
   footer.site-footer { border-top: 1px solid var(--border); padding: 36px 0 28px; }
-  .footer-inner {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 16px;
-    font-size: 13px;
-    color: var(--muted);
-  }
+  .footer-inner { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--muted); }
   .footer-links { display: flex; gap: 18px; flex-wrap: wrap; }
   .footer-links a { text-decoration: none; color: var(--muted); }
   .footer-links a:hover { color: var(--accent); }
 
-  /* ---------- レスポンシブ調整(要件19) ---------- */
+  /* ---------- レスポンシブ調整 ---------- */
   @media (max-width: 760px) {
     nav.primary-nav { display: none; }
     .header-cta .btn-secondary { display: none; }
     .hamburger { display: flex; }
-    section { padding: 44px 0; }
-    .hero { padding: 28px 0 32px; }
+    section { padding: 42px 0; }
+    .hero { padding: 26px 0 30px; }
     .card, .feature-card { padding: 20px; }
-    .final-cta { padding: 40px 18px; border-radius: 18px; }
+    .final-cta { padding: 38px 18px; border-radius: 18px; }
   }
   @media (max-width: 400px) {
     .brand { font-size: 14px; }
@@ -519,10 +229,8 @@
     .header-cta .btn-primary.btn-sm { padding: 10px 16px; font-size: 13.5px; }
   }
 
-  /* CTAのタップ領域確保(要件19: 押しやすいボタン) */
   .btn, .faq-q, .hamburger { min-height: 44px; }
 
-  /* 過剰なアニメーションを避け、控えめなフェードインのみ(要件18・省略可) */
   .reveal { opacity: 0; transform: translateY(10px); transition: opacity 0.5s ease, transform 0.5s ease; }
   .reveal.in { opacity: 1; transform: translateY(0); }
   @media (prefers-reduced-motion: reduce) {
@@ -570,7 +278,7 @@
 <main id="top">
 
   <!-- ============================================================
-       2. ファーストビュー
+       1. ファーストビュー
        ============================================================ -->
   <section class="hero">
     <div class="wrap hero-inner">
@@ -594,205 +302,135 @@
         <span>美容サロン経営の現場から生まれた</span>
       </div>
     </div>
+
+    <!-- ============================================================
+         2. 月次ダッシュボードの実画面
+         ============================================================ -->
     <div class="wrap">
-      <div class="hero-shot reveal">
-        <img src="/lp-assets/01_monthly_dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率などが一覧できる" loading="eager" width="1280" height="900" />
+      <div class="shot-frame reveal">
+        <img src="/lp-assets/dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率・営業利益・営業利益率・発注費率・スタッフ生産性が一覧できる" loading="eager" width="2000" height="1289" />
       </div>
+      <p class="shot-caption">実際の管理画面(店舗名・数値はデモデータです)</p>
     </div>
   </section>
 
   <!-- ============================================================
-       3. 経営者の悩み提示
+       3. こんな状態になっていませんか？(6項目)
        ============================================================ -->
   <section>
     <div class="wrap">
       <div class="section-head center">
         <h2 class="section-title">こんな状態になっていませんか？</h2>
       </div>
-      <div class="grid grid-2" style="gap:14px;">
-        <div class="pain-card"><span class="mark">1</span><p>売上は毎日見ているけど、最終的な利益は月末まで分からない</p></div>
-        <div class="pain-card"><span class="mark">2</span><p>今月あといくら売れば利益が残るのか分からない</p></div>
-        <div class="pain-card"><span class="mark">3</span><p>目標を立てても、今どのくらい達成しているのかすぐ分からない</p></div>
-        <div class="pain-card"><span class="mark">4</span><p>人件費や材料費を含めた損益分岐点を把握できていない</p></div>
-        <div class="pain-card"><span class="mark">5</span><p>Excelやスプレッドシートが複雑になっている</p></div>
-        <div class="pain-card"><span class="mark">6</span><p>複数店舗になると、それぞれの状況確認に時間がかかる</p></div>
-        <div class="pain-card"><span class="mark">7</span><p>スタッフに数字を共有したいが、見せていい情報と見せたくない情報がある</p></div>
-        <div class="pain-card"><span class="mark">8</span><p>数字を見ても、次に何を改善すればいいのか判断しづらい</p></div>
+      <div class="grid grid-3">
+        <div class="pain-card"><span class="mark">1</span><p>今月あといくら売れば
+利益が残るのか分からない</p></div>
+        <div class="pain-card"><span class="mark">2</span><p>人件費や材料費を含めた
+損益分岐点を把握できていない</p></div>
+        <div class="pain-card"><span class="mark">3</span><p>目標を立てても、
+今どのくらい達成しているのか
+すぐ分からない</p></div>
+        <div class="pain-card"><span class="mark">4</span><p>複数店舗になると、
+それぞれの状況確認に時間がかかる</p></div>
+        <div class="pain-card"><span class="mark">5</span><p>スタッフに数字を共有したいが、
+見せたい情報と見せたくない情報がある</p></div>
+        <div class="pain-card"><span class="mark">6</span><p>数字を見ても、
+次に何を改善すればいいのか判断しづらい</p></div>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       4. サロンマネージャーならどう変わるか
+       4. サロン経営に必要な数字を、ひとつに。
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap transform">
       <div class="transform-copy">
         <p class="eyebrow">HOW IT CHANGES</p>
         <h2 class="section-title">サロン経営に必要な数字を、ひとつに。</h2>
-        <p>売上だけではなく、
-人件費・材料費・固定費・目標までまとめて管理。
+        <p>売上・人件費・材料費・固定費をまとめて管理。
 
-目標に対する現在の達成率や、
-月末の着地予想、
-残り営業日に必要な売上まで確認できます。</p>
+目標利益から逆算して、
+「今月あといくら売ればいいか」まで
+すぐに確認できます。
+
+目標達成率・月末の着地予想・
+残り営業日に必要な売上も、
+ひとつの画面で確認できます。</p>
         <div class="callout">オーナーだけでなく、権限に応じてスタッフにも必要な数字だけを共有できます。</div>
       </div>
-      <div class="screenshot-frame">
-        <img src="/lp-assets/04_pnl.jpg" alt="サロンマネージャーの月次損益表画面。売上・原価・費用・利益がひとつの画面で確認できる" loading="lazy" width="1280" height="900" />
+      <div>
+        <p class="pull-quote">「今月あといくら売れば、<br />ちゃんと利益が残るか。」</p>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       5. 主要機能
+       5. 月次損益表(大きく主役表示)
        ============================================================ -->
-  <section id="features">
+  <section>
+    <div class="wrap pnl-hero">
+      <p class="eyebrow">PROFIT &amp; LOSS</p>
+      <h2 class="section-title">売上だけでなく、利益まで。</h2>
+      <p class="section-lead" style="margin:0 auto 30px;">人件費・材料費・固定費を差し引いた、実際に残る利益まで確認できます。</p>
+      <div class="shot-frame reveal">
+        <img src="/lp-assets/pnl.jpg" alt="サロンマネージャーの月次損益表画面。総売上・技術売上・店販売上・材料仕入原価・人件費・固定費・営業利益・営業利益率まで、利益セクションまで欠けずに確認できる" loading="lazy" width="2000" height="1771" />
+      </div>
+      <p class="shot-caption">実際の管理画面(店舗名・数値はデモデータです)</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       6. 主要機能(5項目)
+       ============================================================ -->
+  <section id="features" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap">
       <div class="section-head center">
         <p class="eyebrow">FEATURES</p>
         <h2 class="section-title">主要機能</h2>
         <p class="section-lead">サロン経営に必要な数字を、ひとつの画面で。</p>
       </div>
-
       <div class="grid grid-3">
-
-        <!-- 5-1 売上・営業進捗 -->
         <div class="feature-card">
-          <div class="icon">📈</div>
-          <h3>売上・営業進捗</h3>
-          <p>今のペースで目標に届くのかを、毎日すぐ確認。</p>
+          <div class="icon">📊</div>
+          <h3>① 月次ダッシュボード</h3>
+          <p>売上・目標達成率・月末着地予想など、今月の経営状況をひと目で確認。</p>
           <ul>
-            <li>月累計売上</li>
-            <li>営業日数 / 残り営業日</li>
-            <li>1日平均必要売上</li>
-            <li>月末着地予想</li>
+            <li>売上</li><li>目標達成率</li><li>残り営業日</li><li>月末着地予想</li><li>必要売上</li>
           </ul>
         </div>
-
-        <!-- 5-2 目標と現在の達成率(やや強調) -->
-        <div class="feature-card highlight">
-          <div class="icon">🎯</div>
-          <h3>目標と現在の達成率</h3>
-          <p>目標を設定して終わりではなく、現在どこまで達成しているのかをリアルタイムで確認。残りいくら必要なのかまで分かるため、月末から逆算して行動できます。</p>
-          <ul>
-            <li>目標売上 / 現在の売上</li>
-            <li>現時点の達成率</li>
-            <li>残り必要売上 / 残り営業日</li>
-            <li>1日あたり必要売上</li>
-          </ul>
-        </div>
-
-        <!-- 5-3 損益管理 -->
         <div class="feature-card">
           <div class="icon">💰</div>
-          <h3>損益管理</h3>
-          <p>売上だけではなく、実際にいくら利益が残るのかまで確認。</p>
+          <h3>② 月次損益表</h3>
+          <p>売上だけでなく、人件費・材料費・固定費まで含めて利益を確認。</p>
           <ul>
-            <li>人件費</li>
-            <li>材料費 / 発注費</li>
-            <li>固定費 / その他費用</li>
-            <li>利益</li>
+            <li>売上</li><li>原価</li><li>人件費</li><li>固定費</li><li>営業利益</li><li>営業利益率</li>
           </ul>
         </div>
-
-        <!-- 5-4 利益から逆算 -->
         <div class="feature-card">
-          <div class="icon">🧮</div>
-          <h3>利益から逆算</h3>
-          <p>人件費率や仕入れ率などを設定し、売上に応じた想定費用を自動計算。今月あといくら売れば利益が残るのかを、経営判断の途中指標として確認できます。金額は必要に応じていつでも編集できます。</p>
-        </div>
-
-        <!-- 5-5 月間目標管理 -->
-        <div class="feature-card">
-          <div class="icon">🗓️</div>
-          <h3>月間目標管理</h3>
-          <p>売上だけでなく、サロン運営に必要な目標をまとめて設定。実績と目標を同じ画面で確認できます。</p>
+          <div class="icon">🎯</div>
+          <h3>③ 目標管理</h3>
+          <p>月間目標を設定し、現在の達成率を自動で確認。</p>
           <ul>
-            <li>目標売上 / 技術売上 / 店販売上</li>
-            <li>客数 / 客単価</li>
-            <li>新規 / 再来</li>
+            <li>目標売上</li><li>技術売上</li><li>店販売上</li><li>客数</li><li>客単価</li><li>新規</li><li>再来</li>
           </ul>
         </div>
-
-        <!-- 5-6 スタッフごとの閲覧権限 -->
         <div class="feature-card">
           <div class="icon">🔐</div>
-          <h3>必要な数字だけ、必要な人に。</h3>
-          <p>オーナーだけでなく、スタッフごとに閲覧できる範囲を分けて管理。経営に関わる数字をすべて公開するのではなく、役割に応じて必要な情報だけを共有できます。</p>
-          <ul>
-            <li>会社全体を確認する管理者</li>
-            <li>複数店舗を確認する管理者</li>
-            <li>自店舗を管理する店長</li>
-            <li>日々の数字を確認するスタッフ</li>
-          </ul>
+          <h3>④ 権限管理</h3>
+          <p>オーナー・店長・スタッフなど、役割に応じて見せる数字を分けて管理。</p>
         </div>
-
-        <!-- 5-7 チームで目標を追える -->
-        <div class="feature-card">
-          <div class="icon">🤝</div>
-          <h3>チームで目標を追える</h3>
-          <p>店舗の目標や進捗を、オーナーだけでなく現場でも共有。今どこまで達成しているのかを確認しながら、チームで同じ数字を追える環境をつくります。</p>
-        </div>
-
-        <!-- 5-8 複数店舗管理 -->
         <div class="feature-card">
           <div class="icon">🏬</div>
-          <h3>複数店舗管理</h3>
-          <p>複数店舗の数字をまとめて確認。店舗ごとの進捗や売上を比較し、全店舗の状況を1つの画面から把握できます。</p>
-          <span class="badge-note">1店舗から利用できます</span>
+          <h3>⑤ 複数店舗管理</h3>
+          <p>店舗ごとの数字と全店舗の状況をまとめて確認。</p>
         </div>
-
-        <!-- 5-9 シンプル入力 -->
-        <div class="feature-card">
-          <div class="icon">✍️</div>
-          <h3>シンプル入力</h3>
-          <p>毎日入力する方法だけでなく、10日ごと・月1回など、まとめて入力する運用にも対応。サロンの運営スタイルに合わせて使えます。</p>
-        </div>
-
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       6. POSとの違い
-       ============================================================ -->
-  <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-    <div class="wrap">
-      <div class="section-head center">
-        <p class="eyebrow">VS POS</p>
-        <h2 class="section-title">POSだけでは見えない、その先へ。</h2>
-      </div>
-      <div class="compare-wrap">
-        <div class="compare-card">
-          <h3>POS</h3>
-          <ul>
-            <li>売上を見る</li>
-            <li>客数を見る</li>
-            <li>メニューを見る</li>
-            <li>予約を見る</li>
-          </ul>
-        </div>
-        <div class="compare-card emphasis">
-          <h3>サロンマネージャー</h3>
-          <ul>
-            <li>売上を見る</li>
-            <li>目標達成率を見る</li>
-            <li>費用を見る</li>
-            <li>利益を見る</li>
-            <li>月末着地を予測する</li>
-            <li>残り必要売上を見る</li>
-            <li>複数店舗を比較する</li>
-            <li>権限に応じて数字を共有する</li>
-          </ul>
-        </div>
-      </div>
-      <p class="compare-note">POSを置き換えるものではありません。<br />POSなどで確認した売上データの先にある、"経営判断"をサポートするツールです。</p>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       7. 目標管理の訴求セクション
+       7. 目標管理・利益逆算(強調セクション)
        ============================================================ -->
   <section class="emphasis-section" id="goal">
     <div class="wrap emphasis-grid">
@@ -801,6 +439,7 @@
         <h2 class="section-title">目標を立てて終わりにしない。</h2>
         <p class="section-lead" style="margin-bottom:16px;">今日の時点で、目標の何％まで来ているか。</p>
         <p style="color:var(--muted);font-size:15px;">月間目標を設定すると、現在の売上から達成率を自動で確認できます。さらに、残り必要売上・残り営業日・1日あたり必要な売上・月末着地予想まで確認できるため、「月末になってから未達に気づく」状態を減らします。</p>
+        <p class="pull-quote" style="font-size:19px;margin-top:18px;">売上を見るだけの経営から、<br />利益を逆算する経営へ。</p>
         <div class="kpi-strip">
           <span class="kpi-pill">目標達成率</span>
           <span class="kpi-pill">残り必要売上</span>
@@ -809,14 +448,14 @@
           <span class="kpi-pill">月末着地予想</span>
         </div>
       </div>
-      <div class="screenshot-frame">
-        <img src="/lp-assets/01_monthly_dashboard.jpg" alt="目標売上・目標達成率が確認できる月次ダッシュボード画面" loading="lazy" width="1280" height="900" />
+      <div class="shot-frame">
+        <img src="/lp-assets/target.jpg" alt="サロンマネージャーの目標設定画面。月間目標売上・技術売上目標・店販売上目標・客数目標・客単価目標・新規客数目標・再来客数目標を設定できる" loading="lazy" width="2000" height="942" />
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       8. 権限管理の訴求セクション
+       8. 権限管理・スタッフ共有
        ============================================================ -->
   <section>
     <div class="wrap">
@@ -826,144 +465,50 @@
         <p class="section-lead">経営数字は重要ですが、全スタッフにすべてを見せる必要はありません。サロンマネージャーでは、役割に応じて閲覧できる範囲を管理。オーナー・管理者・店長・スタッフなど、必要な人に必要な数字だけを共有できます。</p>
       </div>
       <div class="role-flow">
-        <div class="role-row"><span class="dot"></span><span class="role-name">会社管理者</span><span class="role-desc">自社の全店舗の数字を横断して確認できます</span></div>
-        <div class="role-row"><span class="dot"></span><span class="role-name">店舗管理者(店長)</span><span class="role-desc">担当する自店舗の数字を確認・管理できます</span></div>
-        <div class="role-row"><span class="dot"></span><span class="role-name">一般スタッフ</span><span class="role-desc">許可された範囲の日々の数字を確認・入力できます</span></div>
+        <div class="role-row"><span class="dot"></span><span class="role-name">経営者・会社管理者</span><span class="role-desc">自社の全店舗の数字を横断して確認できます</span></div>
+        <div class="role-row"><span class="dot"></span><span class="role-name">店長(店舗管理者)</span><span class="role-desc">担当する自店舗の数字を確認・管理できます</span></div>
+        <div class="role-row"><span class="dot"></span><span class="role-name">スタッフ</span><span class="role-desc">許可された範囲の日々の数字を確認・入力できます</span></div>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       9. 利用イメージ(5ステップ)
+       9. 複数店舗管理
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-    <div class="wrap">
-      <div class="section-head center">
-        <p class="eyebrow">HOW IT WORKS</p>
-        <h2 class="section-title">毎日の経営確認を、もっとシンプルに。</h2>
+    <div class="wrap multistore-grid">
+      <div class="shot-frame" style="order:2;">
+        <img src="/lp-assets/multistore.jpg" alt="サロンマネージャーの全店舗ビュー画面。店舗別の売上・営業利益・売上構成比・店舗ランキング・主要指標比較表をまとめて確認できる" loading="lazy" width="2000" height="1818" />
       </div>
-      <div class="steps">
-        <div class="step-row">
-          <div class="step-badge-col"><div class="step-num">1</div><div class="step-line"></div></div>
-          <div class="step-body"><h3>目標を設定</h3><p>月間の目標売上・客数などを設定します。</p></div>
-        </div>
-        <div class="step-row">
-          <div class="step-badge-col"><div class="step-num">2</div><div class="step-line"></div></div>
-          <div class="step-body"><h3>売上・客数などを入力</h3><p>毎日、またはまとめて数字を入力します。</p></div>
-        </div>
-        <div class="step-row">
-          <div class="step-badge-col"><div class="step-num">3</div><div class="step-line"></div></div>
-          <div class="step-body"><h3>達成率・着地予想・利益を確認</h3><p>今の状況が自動で見える化されます。</p></div>
-        </div>
-        <div class="step-row">
-          <div class="step-badge-col"><div class="step-num">4</div><div class="step-line"></div></div>
-          <div class="step-body"><h3>必要な数字をスタッフと共有</h3><p>権限に応じて、見せたい数字だけを共有します。</p></div>
-        </div>
-        <div class="step-row">
-          <div class="step-badge-col"><div class="step-num">5</div></div>
-          <div class="step-body"><h3>数字を見ながら次の行動を決める</h3><p>感覚ではなく、数字を根拠に経営判断できます。</p></div>
-        </div>
+      <div style="order:1;">
+        <p class="eyebrow">MULTI-STORE</p>
+        <h2 class="section-title">複数店舗の数字を、まとめて確認。</h2>
+        <p style="color:var(--muted);font-size:15px;">店舗ごとの進捗や売上を比較し、全店舗の状況を1つの画面から把握できます。個人サロンや小規模サロンから、複数店舗を経営するサロングループまで対応。店舗が増えても、同じ管理方法で数字を確認できます。</p>
+        <p style="margin-top:16px;"><span class="kpi-pill" style="display:inline-block;">1店舗から利用できます</span></p>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       10. 1店舗から複数店舗まで
+       10. 料金(月額1,480円)
        ============================================================ -->
-  <section>
-    <div class="wrap" style="text-align:center;">
-      <p class="eyebrow">FOR EVERY SIZE</p>
-      <h2 class="section-title">1店舗から、複数店舗まで。</h2>
-      <p class="section-lead" style="margin:14px auto 0;">個人サロンや小規模サロンから、複数店舗を経営するサロングループまで対応。店舗が増えても、同じ管理方法で数字を確認できます。</p>
-      <p style="margin-top:16px;"><span class="badge-note">1店舗でも使いやすい設計です</span></p>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       11. 実際の画面
-       ============================================================ -->
-  <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-    <div class="wrap">
-      <div class="section-head center">
-        <p class="eyebrow">PRODUCT SCREENS</p>
-        <h2 class="section-title">実際の管理画面</h2>
-        <p class="section-lead">店舗名・数値はテスト用データです。実際の画面イメージとしてご覧ください。</p>
-      </div>
-      <div class="gallery">
-        <div>
-          <div class="screenshot-frame"><img src="/lp-assets/01_monthly_dashboard.jpg" alt="月次ダッシュボード画面" loading="lazy" width="1280" height="900" /></div>
-          <p class="screenshot-caption">月次ダッシュボード</p>
-        </div>
-        <div>
-          <div class="screenshot-frame"><img src="/lp-assets/02_all_stores_ranking.jpg" alt="全店舗ビュー・店舗比較画面" loading="lazy" width="1280" height="900" /></div>
-          <p class="screenshot-caption">複数店舗ビュー・店舗比較</p>
-        </div>
-        <div>
-          <div class="screenshot-frame"><img src="/lp-assets/03_daily_entry.jpg" alt="日次入力画面" loading="lazy" width="1280" height="900" /></div>
-          <p class="screenshot-caption">日次入力</p>
-        </div>
-        <div>
-          <div class="screenshot-frame"><img src="/lp-assets/04_pnl.jpg" alt="月次損益表画面" loading="lazy" width="1280" height="900" /></div>
-          <p class="screenshot-caption">損益表</p>
-        </div>
-        <div>
-          <div class="screenshot-frame"><img src="/lp-assets/05_target_setting.jpg" alt="目標設定画面" loading="lazy" width="1280" height="900" /></div>
-          <p class="screenshot-caption">目標設定</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       12. サロンマネージャーでできること
-       ============================================================ -->
-  <section>
-    <div class="wrap">
-      <div class="section-head center">
-        <h2 class="section-title">サロンマネージャーでできること</h2>
-      </div>
-      <div class="capability-list">
-        <div class="capability-item">売上管理</div>
-        <div class="capability-item">目標設定</div>
-        <div class="capability-item">現在の目標達成率確認</div>
-        <div class="capability-item">残り必要売上</div>
-        <div class="capability-item">着地予想</div>
-        <div class="capability-item">人件費管理</div>
-        <div class="capability-item">材料費管理</div>
-        <div class="capability-item">固定費管理</div>
-        <div class="capability-item">損益管理</div>
-        <div class="capability-item">利益確認</div>
-        <div class="capability-item">複数店舗比較</div>
-        <div class="capability-item">スタッフ権限管理</div>
-        <div class="capability-item">毎日入力</div>
-        <div class="capability-item">まとめて入力</div>
-        <div class="capability-item">スマホ / PC対応</div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       13. 料金
-       ============================================================ -->
-  <section id="pricing" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+  <section id="pricing">
     <div class="wrap">
       <div class="section-head center">
         <p class="eyebrow">PRICING</p>
-        <h2 class="section-title">シンプルな月額制</h2>
+        <h2 class="section-title">シンプルな料金で、<br />サロン経営の数字を見える化。</h2>
       </div>
       <div class="card pricing-card">
-        <!--
-          TODO(価格未確定・公開前に必ず確認): 下の金額はまだ確定していない仮の表示です。
-          price.priceAmount / price.priceNote (下部のCONFIGブロック)を編集すれば
-          この金額表示は自動で更新されます。公開前に必ず正式な金額へ差し替えてください。
-        -->
-        <div class="price-amount" id="price-amount">9,800円<small> / 月(税抜・仮)</small></div>
-        <p class="price-note" id="price-note">※価格は現在調整中です。正式な料金は今後変更となる場合があります。</p>
+        <!-- 料金を変更する場合はページ末尾のCONFIG.price(amountHtml/note)を編集してください。 -->
+        <div class="price-amount" id="price-amount">月額 ¥1,480<small>（税込）</small></div>
+        <p class="price-note" id="price-note">シンプルな料金体系。複雑なプラン比較は不要です。</p>
         <ul>
           <li>1店舗から利用可能</li>
-          <li>主要な経営管理機能</li>
-          <li>スマホ / PC対応</li>
-          <li>追加の専用機器不要</li>
+          <li>スマホ・PC対応</li>
+          <li>経営数字をひとつの画面で管理</li>
+          <li>目標達成率・着地予想を確認</li>
+          <li>損益管理</li>
+          <li>スタッフ権限管理</li>
         </ul>
         <a class="btn btn-primary btn-block" href="#" id="pricing-cta" data-track="cta_click" data-cta-location="pricing">無料で試す</a>
       </div>
@@ -971,9 +516,9 @@
   </section>
 
   <!-- ============================================================
-       14. FAQ
+       11. FAQ
        ============================================================ -->
-  <section id="faq">
+  <section id="faq" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap" style="max-width:760px;">
       <div class="section-head center">
         <p class="eyebrow">FAQ</p>
@@ -981,51 +526,74 @@
       </div>
       <div id="faq-list">
         <div class="faq-item">
-          <button class="faq-q" type="button">POSは必要なくなりますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>いいえ。サロンマネージャーはPOSを置き換えるサービスではありません。POSなどで確認した売上をもとに、損益・利益・目標進捗・着地予想などを管理するためのツールです。</p></div>
-        </div>
-        <div class="faq-item">
           <button class="faq-q" type="button">1店舗でも使えますか？<span class="plus">＋</span></button>
           <div class="faq-a"><p>はい。1店舗の美容サロンから利用できます。</p></div>
-        </div>
-        <div class="faq-item">
-          <button class="faq-q" type="button">目標に対する現在の達成率は確認できますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>はい。設定した目標に対して、現在どの程度まで達成しているかを確認できます。</p></div>
-        </div>
-        <div class="faq-item">
-          <button class="faq-q" type="button">スタッフにも数字を見せられますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>はい。権限に応じて、スタッフごとに閲覧できる範囲を分けることができます。</p></div>
-        </div>
-        <div class="faq-item">
-          <button class="faq-q" type="button">スタッフにすべての経営数字が見えてしまいますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>いいえ。役割や権限に応じて、閲覧できる範囲を分けて管理できます。</p></div>
-        </div>
-        <div class="faq-item">
-          <button class="faq-q" type="button">毎日入力しないといけませんか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>毎日入力する方法だけでなく、まとめて入力する運用にも対応しています。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">スマートフォンでも使えますか？<span class="plus">＋</span></button>
           <div class="faq-a"><p>はい。スマートフォン・タブレット・PCから利用できます。</p></div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" type="button">複数店舗でも使えますか？<span class="plus">＋</span></button>
+          <button class="faq-q" type="button">毎日入力しないといけませんか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>毎日入力する方法だけでなく、まとめて入力する運用にも対応しています。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">複数店舗でも利用できますか？<span class="plus">＋</span></button>
           <div class="faq-a"><p>はい。権限に応じて、複数店舗の数字をまとめて確認できます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">スタッフにも数字を共有できますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。権限に応じて、スタッフごとに閲覧できる範囲を分けることができます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">スタッフごとに見える数字を分けられますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。役割や権限に応じて、閲覧できる範囲を分けて管理できます。全スタッフにすべての経営数字が見えてしまうことはありません。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">POSとの違いは何ですか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>サロンマネージャーはPOSを置き換えるサービスではありません。POSなどで確認した売上をもとに、損益・利益・目標進捗・着地予想などを管理するためのツールです。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">損益は確認できますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。人件費・材料費・固定費を含めた月次損益表で、営業利益まで確認できます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">目標に対する達成率は確認できますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。設定した目標に対して、現在どの程度まで達成しているかを確認できます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">月末の着地予想は確認できますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。現在のペースをもとに、月末時点の売上着地予想を確認できます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">料金はいくらですか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p id="faq-price-answer">月額1,480円(税込)です。1店舗から利用でき、追加の専用機器は不要です。</p></div>
         </div>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       15. 最後のCTA
+       12. 最終CTA
        ============================================================ -->
   <section>
     <div class="wrap">
       <div class="final-cta">
-        <h2>感覚ではなく、数字を見ながら経営する。</h2>
-        <p>目標・売上・費用・利益を、ひとつの画面で。</p>
-        <p>まずはサロンマネージャーを試してみませんか？</p>
-        <a class="btn btn-primary" href="#" id="final-cta" data-track="cta_click" data-cta-location="final">無料で試す</a>
+        <h2>まずは1店舗から、<br />数字で経営を見える化。</h2>
+        <p>毎日の入力はシンプル。</p>
+        <p>スマホ・PCから、売上だけでなく<br />人件費・材料費・固定費・利益まで確認できます。</p>
+        <p>感覚だけに頼らず、数字を見ながら経営判断できる環境を<br />すぐに始められます。</p>
+        <div class="final-price" id="final-price">月額 ¥1,480<small>（税込）</small></div>
+        <div class="cta-row">
+          <a class="btn btn-primary" href="#" id="final-cta" data-track="cta_click" data-cta-location="final">無料で試す</a>
+          <a class="btn btn-secondary" href="#features" data-track="secondary_cta_click">機能を見る</a>
+        </div>
+        <div class="hero-points">
+          <span>1店舗から使える</span>
+          <span>毎日の入力もシンプル</span>
+          <span>スマホ・PC対応</span>
+          <span>美容サロン向け</span>
+        </div>
       </div>
     </div>
   </section>
@@ -1058,20 +626,21 @@
      ============================================================ */
   var CONFIG = {
     // 「無料で試す」の遷移先。
-    // 現時点(2026-09-01確認)ではSupabase側のセルフサインアップ機能フラグ
-    // (is_self_signup_enabled)が本番でOFFのため、"/" へ遷移するとログイン画面が
-    // 表示されます(フラグがONになれば、そこに「サロンマネージャーを無料で始める」
-    // ボタンが自動的に表示されます)。フラグをONにする、または新規登録の入り口が
-    // 変わった場合は、この値だけを書き換えてください。
+    // 現時点ではSupabase側のセルフサインアップ機能フラグ(is_self_signup_enabled)が
+    // 本番でOFFのため、"/" へ遷移するとログイン画面が表示されます(フラグがONになれば、
+    // そこに「サロンマネージャーを無料で始める」ボタンが自動的に表示されます)。フラグを
+    // ONにする、または新規登録の入り口が変わった場合は、この値だけを書き換えてください。
     signupUrl: "/",
 
     // 「ログイン」の遷移先。既存アプリのログイン画面(ルート)にそのまま接続。
     loginUrl: "/",
 
-    // 料金(未確定の仮表示)。価格が正式に決まったら、この2つの値を書き換えてください。
+    // 料金(月額1,480円・税込に統一)。金額を変更する場合はこの3箇所をまとめて書き換えてください。
     price: {
-      amountHtml: "9,800円<small> / 月(税抜・仮)</small>",
-      note: "※価格は現在調整中です。正式な料金は今後変更となる場合があります。"
+      amountHtml: "月額 ¥1,480<small>（税込）</small>",
+      note: "シンプルな料金体系。複雑なプラン比較は不要です。",
+      finalAmountHtml: "月額 ¥1,480<small>（税込）</small>",
+      faqAnswer: "月額1,480円(税込)です。1店舗から利用でき、追加の専用機器は不要です。"
     },
 
     // フッターのリンク先(未設定URLはひとまず "#" のまま。用意でき次第書き換えてください)。
@@ -1082,7 +651,6 @@
     }
   };
 
-  // ---- CTA / ログインリンクの適用 ----
   var ctaIds = ["header-cta", "mobile-cta", "hero-cta-main", "pricing-cta", "final-cta"];
   ctaIds.forEach(function (id) {
     var el = document.getElementById(id);
@@ -1094,13 +662,15 @@
     if (el) el.setAttribute("href", CONFIG.loginUrl);
   });
 
-  // ---- 料金表示の適用 ----
   var priceAmountEl = document.getElementById("price-amount");
   if (priceAmountEl) priceAmountEl.innerHTML = CONFIG.price.amountHtml;
   var priceNoteEl = document.getElementById("price-note");
   if (priceNoteEl) priceNoteEl.textContent = CONFIG.price.note;
+  var finalPriceEl = document.getElementById("final-price");
+  if (finalPriceEl) finalPriceEl.innerHTML = CONFIG.price.finalAmountHtml;
+  var faqPriceEl = document.getElementById("faq-price-answer");
+  if (faqPriceEl) faqPriceEl.textContent = CONFIG.price.faqAnswer;
 
-  // ---- フッターリンクの適用 ----
   var footerMap = { "footer-terms": "terms", "footer-privacy": "privacy", "footer-contact": "contact" };
   Object.keys(footerMap).forEach(function (id) {
     var el = document.getElementById(id);
@@ -1109,7 +679,6 @@
 
   document.getElementById("footer-year").textContent = new Date().getFullYear();
 
-  // ---- ハンバーガーメニュー ----
   var hamburgerBtn = document.getElementById("hamburger-btn");
   var mobileMenu = document.getElementById("mobile-menu");
   if (hamburgerBtn && mobileMenu) {
@@ -1125,7 +694,6 @@
     });
   }
 
-  // ---- FAQアコーディオン ----
   document.querySelectorAll(".faq-item").forEach(function (item) {
     var q = item.querySelector(".faq-q");
     var a = item.querySelector(".faq-a");
@@ -1147,11 +715,8 @@
     });
   });
 
-  // ---- 控えめなフェードイン(要件18: 過剰なアニメーションは使わない) ----
   if ("IntersectionObserver" in window) {
-    document.querySelectorAll(".screenshot-frame, .hero-shot").forEach(function (el) {
-      el.classList.add("reveal");
-    });
+    document.querySelectorAll(".shot-frame").forEach(function (el) { el.classList.add("reveal"); });
     var observer = new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
         if (entry.isIntersecting) {
@@ -1164,20 +729,12 @@
   }
 
   /* ============================================================
-     22. 広告計測の準備
+     広告計測の準備
      ------------------------------------------------------------
-     GA4 / Meta Pixel / TikTok Pixel 等のスクリプトは現時点では未導入です
-     (要件22: 現時点では勝手に外部タグを導入しない)。
-     下のtrackEvent()は、各種タグが導入された時にそのままつなぎ込める
-     共通の入り口として用意しています。今は console.debug に出すだけで、
-     外部送信は一切行いません。
-
-     導入時の例:
-       function trackEvent(name, params) {
-         if (window.gtag) window.gtag('event', name, params);
-         if (window.fbq) window.fbq('trackCustom', name, params);
-         if (window.ttq) window.ttq.track(name, params);
-       }
+     GA4 / Meta Pixel / TikTok Pixel 等のスクリプトは現時点では未導入です。
+     下のtrackEvent()は、各種タグが導入された時にそのままつなぎ込める共通の
+     入り口として用意しています。今はconsole.debugに出すだけで、外部送信は
+     一切行いません。
      ============================================================ */
   function trackEvent(name, params) {
     // TODO: GA4 / Meta Pixel / TikTok Pixel 導入時にここへ実送信処理を追加する
@@ -1195,15 +752,12 @@
     });
   });
   document.querySelectorAll("[data-track='login_click']").forEach(function (el) {
-    el.addEventListener("click", function () {
-      trackEvent("login_click", {});
-    });
+    el.addEventListener("click", function () { trackEvent("login_click", {}); });
   });
   document.querySelectorAll("[data-track='secondary_cta_click']").forEach(function (el) {
     el.addEventListener("click", function () { trackEvent("secondary_cta_click", {}); });
   });
 
-  // セクション到達イベント(目標管理・料金・FAQ)
   var sectionTrackTargets = [
     { id: "goal", event: "goal_section_view" },
     { id: "pricing", event: "pricing_section_view" },
