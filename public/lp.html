@@ -225,9 +225,13 @@
   .gm-badge { flex: none; background: #fde3e8; color: #c23a58; font-size: 13px; font-weight: 800; border-radius: 999px; padding: 5px 14px; }
   .gm-progress-track { height: 8px; background: var(--border); border-radius: 999px; overflow: hidden; margin: 14px 2px 0; }
   .gm-progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: 999px; }
-  .gm-progress-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 16px 2px 0; }
-  .gm-progress-stats > div span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; }
-  .gm-progress-stats > div strong { display: block; font-size: 16px; font-weight: 800; color: var(--text); white-space: nowrap; }
+  /* 「残り営業日」だけラベルが折り返し、他の4項目とラベル・数値の縦位置がずれていた不具合。
+     原因: strongには元々white-space:nowrapを付けていたがspan(ラベル)には付けておらず、
+     「残り営業日」(5文字)が列幅より僅かに広い時だけラベル側が2行に折り返っていた。
+     ラベル側にもnowrapを付け、5項目すべてラベル1行+数値1行の同じ高さに揃える。 */
+  .gm-progress-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin: 16px 2px 0; }
+  .gm-progress-stats > div span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; white-space: nowrap; }
+  .gm-progress-stats > div strong { display: block; font-size: 15.5px; font-weight: 800; color: var(--text); white-space: nowrap; }
   .gm-kpi-head { margin: 26px 0 12px; }
   .gm-kpi-head .gm-eyebrow { margin-bottom: 2px; }
   .gm-kpi-head h3 { font-size: 22px; font-weight: 800; color: var(--text); }
