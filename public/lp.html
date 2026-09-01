@@ -13,9 +13,11 @@
      既存のログイン・認証・DB処理には一切触れません。
      vercel.json の "/lp" → "/lp.html" のrewriteでこのファイルが配信されます。
 
-     2026-09 最終ブラッシュアップ: 料金を月額1,480円に統一、構成を要求どおりの
-     12ブロック順に再編成、スクリーンショットをより見やすいもの(サイドバー無し・
-     利益まで欠けず見える損益表など)に差し替え。
+     2026-09 最終ブラッシュアップ(訴求力・視認性・コンバージョン改善): メインコピーを
+     「今月あといくら売れば、利益が残るか。」へ、悩み提示を3項目に絞り込み・拡大表示、
+     「サロン経営に必要な数字をひとつに」に売上→費用→利益→目標差→残り必要売上→着地予測
+     の価値フロー・POS比較セクション・権限セクションのペインファースト構成を追加。
+     料金は月額1,480円(税込)にLP全体で統一。
      ============================================================================ -->
 
 <title>サロンマネージャー｜美容サロンの売上・損益・目標達成率をまとめて管理</title>
@@ -113,7 +115,8 @@
   .hero { padding: 52px 0 40px; }
   .hero-inner { text-align: center; max-width: 760px; margin: 0 auto; }
   .hero-kicker { font-size: clamp(17px, 3vw, 21px); font-weight: 700; color: var(--text); margin: 0 0 12px; }
-  .hero h1 { font-size: clamp(28px, 5.6vw, 46px); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 20px; }
+  .hero h1 { font-size: clamp(28px, 5.6vw, 46px); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 14px; }
+  .hero-subhead { font-size: clamp(16px, 2.8vw, 20px); font-weight: 700; color: var(--text); margin-bottom: 16px; }
   .hero-sub { font-size: clamp(14px, 2.4vw, 17px); color: var(--muted); white-space: pre-line; margin-bottom: 26px; }
   .hero-cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 20px; }
   .hero-points { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 20px; font-size: 13px; color: var(--muted); }
@@ -168,13 +171,27 @@
   .pain-card { display: flex; gap: 12px; align-items: flex-start; padding: 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
   .pain-card .mark { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; }
   .pain-card p { font-size: 14.5px; color: var(--text); white-space: pre-line; }
+  .pain-card-lg { padding: 28px 24px; border-radius: 18px; flex-direction: column; gap: 14px; box-shadow: var(--shadow); }
+  .pain-card-lg .mark { width: 34px; height: 34px; border-radius: 10px; font-size: 14px; }
+  .pain-card-lg p { font-size: 17px; font-weight: 700; line-height: 1.6; }
 
   /* ---------- 変化・逆算セクション ---------- */
   .transform { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
   @media (max-width: 860px) { .transform { grid-template-columns: 1fr; } }
   .transform-copy p { color: var(--muted); font-size: 15px; margin-top: 14px; white-space: pre-line; }
-  .transform-copy .callout { margin-top: 18px; padding: 16px 18px; background: var(--accent-soft); border-radius: 12px; color: var(--accent-dark); font-weight: 600; font-size: 14.5px; }
+  .callout { margin-top: 18px; padding: 16px 18px; background: var(--accent-soft); border-radius: 12px; color: var(--accent-dark); font-weight: 600; font-size: 14.5px; }
+  .callout.center { max-width: 640px; margin-left: auto; margin-right: auto; text-align: center; }
   .pull-quote { font-size: clamp(18px, 3vw, 24px); font-weight: 800; color: var(--text); margin: 10px 0 0; letter-spacing: -0.01em; }
+  .pull-quote.center { text-align: center; margin: 30px auto 0; max-width: 640px; }
+
+  /* ---------- 価値の流れ(売上→費用→利益→目標→残り必要売上→着地予測) ---------- */
+  .value-flow { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 6px; margin: 30px auto 0; max-width: 900px; }
+  .value-step { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 10px 16px; font-size: 13.5px; font-weight: 700; color: var(--text); white-space: nowrap; }
+  .value-step-final { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .value-arrow { color: var(--muted); font-weight: 700; }
+  @media (max-width: 620px) {
+    .value-step { font-size: 12.5px; padding: 8px 12px; }
+  }
 
   /* ---------- 損益表セクション(主役表示) ---------- */
   .pnl-hero { text-align: center; }
@@ -317,9 +334,10 @@
     <div class="wrap hero-inner">
       <p class="eyebrow">SALON MANAGEMENT</p>
       <p class="hero-kicker">感覚経営から、数字経営へ。</p>
-      <h1>売上だけでなく、<br class="hero-h1-break" /><span class="accent-text">利益までひと目で。</span></h1>
-      <p class="hero-sub">人件費・材料費・固定費をまとめて可視化。
-月次損益をシンプルに把握できます。</p>
+      <h1>今月あといくら売れば、<br class="hero-h1-break" />利益が残るか。</h1>
+      <p class="hero-subhead">売上だけでなく、<span class="accent-text">利益までひと目で。</span></p>
+      <p class="hero-sub">売上・人件費・材料費・固定費をまとめて管理。
+目標利益から逆算して、必要売上・達成率・月末の着地予想までひと目で確認できます。</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="#" id="hero-cta-main" data-track="cta_click" data-cta-location="hero">無料で試す</a>
         <a class="btn btn-secondary" href="#features" data-track="secondary_cta_click">機能を見る</a>
@@ -394,7 +412,7 @@
   </section>
 
   <!-- ============================================================
-       3. こんな状態になっていませんか？(6項目)
+       3. こんな状態になっていませんか？(3項目)
        ============================================================ -->
   <section>
     <div class="wrap">
@@ -402,19 +420,12 @@
         <h2 class="section-title">こんな状態になっていませんか？</h2>
       </div>
       <div class="grid grid-3">
-        <div class="pain-card"><span class="mark">1</span><p>今月あといくら売れば
+        <div class="pain-card pain-card-lg"><span class="mark">01</span><p>今月あといくら売れば
 利益が残るのか分からない</p></div>
-        <div class="pain-card"><span class="mark">2</span><p>人件費や材料費を含めた
+        <div class="pain-card pain-card-lg"><span class="mark">02</span><p>人件費や材料費を含めた
 損益分岐点を把握できていない</p></div>
-        <div class="pain-card"><span class="mark">3</span><p>目標を立てても、
-今どのくらい達成しているのか
-すぐ分からない</p></div>
-        <div class="pain-card"><span class="mark">4</span><p>複数店舗になると、
-それぞれの状況確認に時間がかかる</p></div>
-        <div class="pain-card"><span class="mark">5</span><p>スタッフに数字を共有したいが、
-見せたい情報と見せたくない情報がある</p></div>
-        <div class="pain-card"><span class="mark">6</span><p>数字を見ても、
-次に何を改善すればいいのか判断しづらい</p></div>
+        <div class="pain-card pain-card-lg"><span class="mark">03</span><p>目標に対して、今どこまで
+達成しているのかすぐ分からない</p></div>
       </div>
     </div>
   </section>
@@ -423,24 +434,24 @@
        4. サロン経営に必要な数字を、ひとつに。
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-    <div class="wrap transform">
-      <div class="transform-copy">
+    <div class="wrap">
+      <div class="section-head center">
         <p class="eyebrow">HOW IT CHANGES</p>
         <h2 class="section-title">サロン経営に必要な数字を、ひとつに。</h2>
-        <p>売上・人件費・材料費・固定費をまとめて管理。
-
-目標利益から逆算して、
-「今月あといくら売ればいいか」まで
-すぐに確認できます。
-
-目標達成率・月末の着地予想・
-残り営業日に必要な売上も、
-ひとつの画面で確認できます。</p>
-        <div class="callout">オーナーだけでなく、権限に応じてスタッフにも必要な数字だけを共有できます。</div>
+        <p class="section-lead">売上・人件費・材料費・固定費をまとめて管理。目標利益から逆算して、「今月あといくら売ればいいか」まですぐに確認できます。</p>
       </div>
-      <div>
-        <p class="pull-quote">「今月あといくら売れば、<br />ちゃんと利益が残るか。」</p>
+
+      <div class="value-flow">
+        <span class="value-step">売上を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">費用を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">利益を確認する</span><span class="value-arrow">→</span>
+        <span class="value-step">目標との差を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">残り必要売上を確認する</span><span class="value-arrow">→</span>
+        <span class="value-step value-step-final">月末着地を予測する</span>
       </div>
+
+      <p class="pull-quote center">「今月あといくら売れば、<br />ちゃんと利益が残るか。」</p>
+      <div class="callout center">オーナーだけでなく、権限に応じてスタッフにも必要な数字だけを共有できます。</div>
     </div>
   </section>
 
@@ -483,7 +494,7 @@
       <div class="section-head center">
         <p class="eyebrow">FEATURES</p>
         <h2 class="section-title">主要機能</h2>
-        <p class="section-lead">サロン経営に必要な数字を、ひとつの画面で。</p>
+        <p class="section-lead">サロン経営に必要な数字を、ひとつの画面で。数字を見るだけで終わらせず、次の一手につなげます。</p>
       </div>
       <div class="grid grid-3">
         <div class="feature-card">
@@ -542,14 +553,31 @@
   </section>
 
   <!-- ============================================================
-       7. 権限管理・スタッフ共有
+       7. POSとの違い(短い比較セクション)
+       POS自動連携は実装していないため、連携を示唆する表現は使わない。あくまで
+       「役割が違う・併用できる」という位置づけのみを伝える。
+       ============================================================ -->
+  <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+    <div class="wrap">
+      <div class="section-head center">
+        <p class="eyebrow">VS POS</p>
+        <h2 class="section-title">POSとは、役割が違います。</h2>
+        <p class="section-lead">POSは、日々の売上や会計を管理するもの。サロンマネージャーは、その数字に人件費・材料費・固定費・目標を加えて、経営判断につなげるためのツールです。</p>
+        <p class="pull-quote center" style="font-size:17px;margin-top:20px;">売上を記録するだけでなく、<br />「このままで利益が残るか」を確認する。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       8. 権限管理・スタッフ共有
        ============================================================ -->
   <section>
     <div class="wrap">
       <div class="section-head center">
         <p class="eyebrow">ROLE-BASED ACCESS</p>
         <h2 class="section-title">オーナーだけの数字管理で終わらせない。</h2>
-        <p class="section-lead">経営数字は重要ですが、全スタッフにすべてを見せる必要はありません。サロンマネージャーでは、役割に応じて閲覧できる範囲を管理。オーナー・管理者・店長・スタッフなど、必要な人に必要な数字だけを共有できます。</p>
+        <p class="pull-quote center" style="font-size:18px;margin-top:0;">「スタッフにも数字を共有したい。<br />でも経費や利益まですべて見せる必要はない。」</p>
+        <p class="section-lead" style="margin-top:16px;">役割に応じて、必要な数字だけ共有できます。オーナー・管理者・店長・スタッフなど、必要な人に必要な数字だけを見せる設計です。</p>
       </div>
       <div class="role-flow">
         <div class="role-row"><span class="dot"></span><span class="role-name">経営者・会社管理者</span><span class="role-desc">自社の全店舗の数字を横断して確認できます</span></div>
@@ -560,7 +588,7 @@
   </section>
 
   <!-- ============================================================
-       8. 複数店舗管理
+       9. 複数店舗管理
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap multistore-grid">
@@ -570,20 +598,21 @@
       <div style="order:1;">
         <p class="eyebrow">MULTI-STORE</p>
         <h2 class="section-title">複数店舗の数字を、まとめて確認。</h2>
-        <p style="color:var(--muted);font-size:15px;">店舗ごとの進捗や売上を比較し、全店舗の状況を1つの画面から把握できます。個人サロンや小規模サロンから、複数店舗を経営するサロングループまで対応。店舗が増えても、同じ管理方法で数字を確認できます。</p>
+        <p style="color:var(--muted);font-size:15px;">複数店舗になると、それぞれの状況確認に時間がかかりませんか。サロンマネージャーなら、店舗ごとの進捗や売上を比較し、全店舗の状況を1つの画面から把握できます。個人サロンや小規模サロンから、複数店舗を経営するサロングループまで対応。店舗が増えても、同じ管理方法で数字を確認できます。</p>
         <p style="margin-top:16px;"><span class="kpi-pill" style="display:inline-block;">1店舗から利用できます</span></p>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       9. 料金(月額1,480円)
+       10. 料金(月額1,480円)
        ============================================================ -->
   <section id="pricing">
     <div class="wrap">
       <div class="section-head center">
         <p class="eyebrow">PRICING</p>
         <h2 class="section-title">シンプルな料金で、<br />サロン経営の数字を見える化。</h2>
+        <p class="section-lead">数字管理をもっとシンプルにしたい、美容室・美容サロンオーナーへ。1店舗の個人サロンから、複数店舗のサロングループまで利用できます。</p>
       </div>
       <div class="card pricing-card">
         <!-- 料金を変更する場合はページ末尾のCONFIG.price(amountHtml/note)を編集してください。 -->
@@ -603,7 +632,7 @@
   </section>
 
   <!-- ============================================================
-       10. FAQ
+       11. FAQ
        ============================================================ -->
   <section id="faq" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap" style="max-width:760px;">
@@ -641,6 +670,14 @@
           <div class="faq-a"><p>サロンマネージャーはPOSを置き換えるサービスではありません。POSなどで確認した売上をもとに、損益・利益・目標進捗・着地予想などを管理するためのツールです。</p></div>
         </div>
         <div class="faq-item">
+          <button class="faq-q" type="button">POSとの連携は必要ですか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>いいえ、POSとの自動連携は行っておりません。POSなどで確認した売上・客数を、サロンマネージャーへ入力していただくことで、損益・目標達成率・着地予想などの経営管理にご利用いただけます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">入力した経営データは他のサロンから見えませんか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>見えません。会社・店舗ごとにアクセスできる範囲が分かれており、他のサロン(他社)のデータを閲覧することはできません。同じ会社内でも、権限に応じて見える範囲を分けて管理できます。</p></div>
+        </div>
+        <div class="faq-item">
           <button class="faq-q" type="button">損益は確認できますか？<span class="plus">＋</span></button>
           <div class="faq-a"><p>はい。人件費・材料費・固定費を含めた月次損益表で、営業利益まで確認できます。</p></div>
         </div>
@@ -661,7 +698,7 @@
   </section>
 
   <!-- ============================================================
-       11. 最終CTA
+       12. 最終CTA
        ============================================================ -->
   <section>
     <div class="wrap">
