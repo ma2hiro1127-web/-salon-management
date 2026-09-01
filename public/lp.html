@@ -222,7 +222,47 @@
 
   /* ---------- 複数店舗セクション ---------- */
   .multistore-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  .multistore-grid > div { min-width: 0; }
   @media (max-width: 860px) { .multistore-grid { grid-template-columns: 1fr; } }
+
+  /* ---------- 複数店舗比較カード(LP用に独自実装したUI・実画面のスクショではない) ---------- */
+  .multistore-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); padding: 20px 18px; text-align: left; }
+  .ms-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .ms-head h3 { font-size: 15px; font-weight: 800; }
+  .ms-section-title { font-size: 11.5px; font-weight: 700; color: var(--muted); letter-spacing: 0.03em; margin: 14px 0 8px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .ms-summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .ms-stat { background: var(--bg); border-radius: 10px; padding: 8px 10px; }
+  .ms-stat span { display: block; font-size: 10.5px; color: var(--muted); margin-bottom: 2px; }
+  .ms-stat strong { display: block; font-size: 14px; font-weight: 800; color: var(--text); }
+  .ms-stat-emphasis { background: var(--accent-soft); }
+  .ms-stat-emphasis strong { color: var(--accent-dark); }
+  .ms-compare-row { margin-bottom: 10px; }
+  .ms-compare-row:last-child { margin-bottom: 0; }
+  .ms-compare-label { display: block; font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 5px; }
+  .ms-compare-emphasis { background: var(--accent-soft); border-radius: 12px; padding: 8px 10px; }
+  .ms-bar-item { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .ms-bar-item:last-child { margin-bottom: 0; }
+  .ms-bar-name { flex: none; width: 30px; font-size: 11px; color: var(--muted); font-weight: 600; }
+  .ms-bar-track { flex: 1; height: 8px; background: var(--border); border-radius: 999px; overflow: hidden; }
+  .ms-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--success)); border-radius: 999px; }
+  .ms-bar-item strong { flex: none; font-size: 12.5px; font-weight: 700; color: var(--text); min-width: 78px; text-align: right; }
+  .ms-composition-bar { display: flex; height: 10px; border-radius: 999px; overflow: hidden; }
+  .ms-composition-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 8px; font-size: 12px; color: var(--text); }
+  .ms-composition-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .ms-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .ms-ranking { display: flex; flex-direction: column; gap: 5px; }
+  .ms-rank-row { display: flex; justify-content: space-between; align-items: center; background: var(--bg); border-radius: 10px; padding: 7px 12px; font-size: 13px; font-weight: 700; }
+  .ms-table-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
+  .ms-table { border-collapse: collapse; width: 100%; min-width: 620px; font-size: 11px; }
+  .ms-table th, .ms-table td { padding: 6px 8px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border); }
+  .ms-table th:first-child, .ms-table td:first-child { text-align: left; }
+  .ms-table th { color: var(--muted); font-weight: 700; background: var(--bg); }
+  .ms-td-emphasis { color: var(--accent-dark); font-weight: 800; }
+  .ms-tr-total td { font-weight: 700; background: var(--bg); }
+  @media (max-width: 480px) {
+    .multistore-card { padding: 16px 14px; }
+    .ms-summary-grid { grid-template-columns: repeat(2, 1fr); }
+  }
 
   /* ---------- 料金 ---------- */
   .pricing-card { max-width: 460px; margin: 0 auto; text-align: center; padding: 40px 32px; }
@@ -592,8 +632,86 @@
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap multistore-grid">
-      <div class="shot-frame" style="order:2;">
-        <img src="/lp-assets/multistore.jpg" alt="サロンマネージャーの全店舗ビュー画面。店舗別の売上・営業利益・売上構成比・店舗ランキング・主要指標比較表をまとめて確認できる" loading="lazy" width="2000" height="1818" />
+      <!-- 「複数店舗の数字をまとめて確認」の説明用カード(LP用に独自実装したUI・実画面の
+           スクリーンショットではない)。既存の全店舗ビュー機能(会社全体サマリー/店舗比較/
+           売上構成比/店舗ランキング/主要指標比較表)と同じ項目構成を、コンパクトな表示で
+           再現したもの。存在しない項目・機能は追加していない。 -->
+      <div style="order:2;">
+        <div class="multistore-card reveal">
+          <div class="ms-head">
+            <h3>会社全体サマリー</h3>
+            <span class="pnl-summary-badge">全店舗</span>
+          </div>
+          <div class="ms-summary-grid">
+            <div class="ms-stat"><span>総売上</span><strong>¥2,375,000</strong></div>
+            <div class="ms-stat ms-stat-emphasis"><span>営業利益</span><strong>¥330,000</strong></div>
+            <div class="ms-stat ms-stat-emphasis"><span>営業利益率</span><strong>13.9%</strong></div>
+            <div class="ms-stat"><span>総人件費</span><strong>¥700,000</strong></div>
+            <div class="ms-stat"><span>人件費率</span><strong>29.5%</strong></div>
+            <div class="ms-stat"><span>店舗数</span><strong>2店舗</strong></div>
+          </div>
+
+          <div class="ms-section-title">店舗比較</div>
+          <div class="ms-compare">
+            <div class="ms-compare-row">
+              <span class="ms-compare-label">売上</span>
+              <div class="ms-bar-item"><span class="ms-bar-name">A店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:100%"></div></div><strong>¥1,395,000</strong></div>
+              <div class="ms-bar-item"><span class="ms-bar-name">B店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:70%"></div></div><strong>¥980,000</strong></div>
+            </div>
+            <div class="ms-compare-row ms-compare-emphasis">
+              <span class="ms-compare-label">営業利益</span>
+              <div class="ms-bar-item"><span class="ms-bar-name">A店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:100%"></div></div><strong>¥218,000</strong></div>
+              <div class="ms-bar-item"><span class="ms-bar-name">B店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:51%"></div></div><strong>¥112,000</strong></div>
+            </div>
+            <div class="ms-compare-row ms-compare-emphasis">
+              <span class="ms-compare-label">営業利益率</span>
+              <div class="ms-bar-item"><span class="ms-bar-name">A店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:100%"></div></div><strong>15.6%</strong></div>
+              <div class="ms-bar-item"><span class="ms-bar-name">B店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:73%"></div></div><strong>11.4%</strong></div>
+            </div>
+            <div class="ms-compare-row">
+              <span class="ms-compare-label">スタッフ生産性</span>
+              <div class="ms-bar-item"><span class="ms-bar-name">A店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:100%"></div></div><strong>¥490,000</strong></div>
+              <div class="ms-bar-item"><span class="ms-bar-name">B店</span><div class="ms-bar-track"><div class="ms-bar-fill" style="width:95%"></div></div><strong>¥465,000</strong></div>
+            </div>
+          </div>
+
+          <div class="ms-section-title">店舗別売上構成比</div>
+          <div class="ms-composition-bar"><div style="width:58.7%;background:var(--accent);"></div><div style="width:41.3%;background:var(--success);"></div></div>
+          <div class="ms-composition-legend">
+            <span><i class="ms-dot" style="background:var(--accent);"></i>A店 ¥1,395,000 <b>58.7%</b></span>
+            <span><i class="ms-dot" style="background:var(--success);"></i>B店 ¥980,000 <b>41.3%</b></span>
+          </div>
+
+          <div class="ms-section-title">店舗ランキング(売上)</div>
+          <div class="ms-ranking">
+            <div class="ms-rank-row"><span>🥇 A店</span><strong>¥1,395,000</strong></div>
+            <div class="ms-rank-row"><span>🥈 B店</span><strong>¥980,000</strong></div>
+          </div>
+
+          <div class="ms-section-title">店舗別 主要指標比較表</div>
+          <div class="ms-table-wrap">
+            <table class="ms-table">
+              <thead>
+                <tr><th>店舗</th><th>売上</th><th>粗利</th><th>粗利率</th><th>人件費</th><th>人件費率</th><th>発注費</th><th>発注費率</th><th>固定費</th><th>固定費率</th><th>広告費</th><th>営業利益</th><th>営業利益率</th></tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>A店</td><td>¥1,395,000</td><td>¥1,280,610</td><td>91.8%</td><td>¥700,000</td><td>50.2%</td><td>¥114,390</td><td>8.2%</td><td>¥362,610</td><td>26.0%</td><td>―</td>
+                  <td class="ms-td-emphasis">¥218,000</td><td class="ms-td-emphasis">15.6%</td>
+                </tr>
+                <tr>
+                  <td>B店</td><td>¥980,000</td><td>¥880,000</td><td>89.8%</td><td>¥0</td><td>0.0%</td><td>¥100,000</td><td>10.2%</td><td>¥768,000</td><td>78.4%</td><td>―</td>
+                  <td class="ms-td-emphasis">¥112,000</td><td class="ms-td-emphasis">11.4%</td>
+                </tr>
+                <tr class="ms-tr-total">
+                  <td>全店舗合計</td><td>¥2,375,000</td><td>¥2,160,610</td><td>91.0%</td><td>¥700,000</td><td>29.5%</td><td>¥214,390</td><td>9.0%</td><td>¥1,130,610</td><td>47.6%</td><td>―</td>
+                  <td class="ms-td-emphasis">¥330,000</td><td class="ms-td-emphasis">13.9%</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <p class="shot-caption" style="margin-top:12px;">※画面はイメージです。数値はデモデータです。</p>
       </div>
       <div style="order:1;">
         <p class="eyebrow">MULTI-STORE</p>
