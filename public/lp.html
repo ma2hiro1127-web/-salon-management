@@ -252,23 +252,36 @@
   .ms-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
   .ms-ranking { display: flex; flex-direction: column; gap: 5px; }
   .ms-rank-row { display: flex; justify-content: space-between; align-items: center; background: var(--bg); border-radius: 10px; padding: 7px 12px; font-size: 13px; font-weight: 700; }
-  /* 列を6列(店舗/売上/人件費/人件費率/営業利益/営業利益率)に絞ったため、横スクロール前提
-     だった従来のmin-width(620px)は不要——LP上で初見でも横スクロールなしで全列見える
-     幅に収める。overflow-xは念のための保険としてのみ残す。 */
-  .ms-table-wrap { overflow-x: auto; margin: 0 -4px; padding: 0 4px; }
-  .ms-table { border-collapse: collapse; width: 100%; min-width: 0; font-size: 12.5px; }
-  .ms-table th, .ms-table td { padding: 7px 6px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--border); }
-  .ms-table th:first-child, .ms-table td:first-child { text-align: left; }
-  .ms-table th { color: var(--muted); font-weight: 700; background: var(--bg); }
-  .ms-td-emphasis { color: var(--accent-dark); font-weight: 800; }
-  .ms-tr-total td { font-weight: 700; background: var(--bg); }
+  /* 店舗別 簡易損益(P/L)カード。横長の表ではなく、店舗ごとに縦積みの「売上→各経費を
+     引く→営業利益」という損益計算書の流れをそのまま見せる構成(要件: 材料費・広告費・
+     固定費まで見て営業利益を出している強みを伝える)。売上・人件費率・営業利益・
+     営業利益率の4つだけ強調表示にし、材料費・広告費・固定費・その他経費は
+     ms-pl-row-subで控えめな文字サイズにする。 */
+  .ms-pl-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .ms-pl-card { background: var(--bg); border-radius: 12px; padding: 10px 12px 9px; display: flex; flex-direction: column; min-width: 0; }
+  .ms-pl-store { font-size: 12.5px; font-weight: 800; margin-bottom: 5px; }
+  /* 金額・ラベルは折り返すと「−」だけ孤立する等おかしな見た目になるため、行内では
+     常にnowrapにする(狭い画面向けの調整はフォントサイズ側で行う、下のmedia参照)。 */
+  .ms-pl-revenue { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1.5px solid var(--border); }
+  .ms-pl-revenue span, .ms-pl-revenue strong { white-space: nowrap; }
+  .ms-pl-revenue span { font-size: 10.5px; color: var(--muted); font-weight: 600; }
+  .ms-pl-revenue strong { font-size: 15px; font-weight: 800; color: var(--text); }
+  .ms-pl-row { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; padding: 2.5px 0; }
+  .ms-pl-row span, .ms-pl-row strong { white-space: nowrap; }
+  .ms-pl-row-strong span, .ms-pl-row-strong strong { font-size: 11.5px; font-weight: 700; color: var(--text); }
+  .ms-pl-row-sub span, .ms-pl-row-sub strong { font-size: 9.5px; color: var(--muted); font-weight: 500; }
+  .ms-pl-rate { display: inline-block; font-size: 8.5px; font-weight: 700; color: var(--accent-dark); background: var(--accent-soft); border-radius: 999px; padding: 1px 5px; margin-left: 5px; white-space: nowrap; }
+  .ms-pl-profit { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-top: 5px; padding-top: 6px; border-top: 1.5px solid var(--accent); }
+  .ms-pl-profit span, .ms-pl-profit strong { white-space: nowrap; }
+  .ms-pl-profit span { font-size: 11px; font-weight: 700; color: var(--text); }
+  .ms-pl-profit strong { font-size: 15.5px; font-weight: 800; color: var(--accent-dark); }
   @media (max-width: 480px) {
     .multistore-card { padding: 16px 14px; }
     .ms-summary-grid { grid-template-columns: repeat(2, 1fr); }
-    /* 6列の比較表がカード幅より広がり横スクロールが発生していたため、狭い画面だけ
-       フォント・paddingを縮めて収める(表示する数値・列は一切変えない)。 */
-    .ms-table { font-size: 9px; }
-    .ms-table th, .ms-table td { padding: 6px 1px; }
+    /* スマホ幅では簡易PLカードを2列→1列(縦積み)にする。2列のまま金額を折り返させない
+       (white-space:nowrap)と、A店/B店それぞれの半分幅では「人件費 40.2% −¥1,320,000」
+       のような行が収まりきらず、実機テストで横スクロールが発生することを確認したため。 */
+    .ms-pl-grid { grid-template-columns: 1fr; }
   }
 
   /* ---------- 料金 ---------- */
@@ -703,27 +716,38 @@
             <div class="ms-rank-row"><span>🥈 B店</span><strong>¥2,860,000</strong></div>
           </div>
 
-          <div class="ms-section-title">店舗別 主要指標比較表</div>
-          <div class="ms-table-wrap">
-            <table class="ms-table">
-              <thead>
-                <tr><th>店舗</th><th>売上</th><th>人件費</th><th>人件費率</th><th>営業利益</th><th>営業利益率</th></tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>A店</td><td>¥3,280,000</td><td>¥1,320,000</td><td>40.2%</td>
-                  <td class="ms-td-emphasis">¥640,000</td><td class="ms-td-emphasis">19.5%</td>
-                </tr>
-                <tr>
-                  <td>B店</td><td>¥2,860,000</td><td>¥1,150,000</td><td>40.2%</td>
-                  <td class="ms-td-emphasis">¥530,000</td><td class="ms-td-emphasis">18.5%</td>
-                </tr>
-                <tr class="ms-tr-total">
-                  <td>全店舗合計</td><td>¥6,140,000</td><td>¥2,470,000</td><td>40.2%</td>
-                  <td class="ms-td-emphasis">¥1,170,000</td><td class="ms-td-emphasis">19.1%</td>
-                </tr>
-              </tbody>
-            </table>
+          <!-- 2026-09-01再改訂: 「売上−人件費=営業利益」に見えてしまう(材料費・広告費・
+               固定費まで管理して営業利益を出しているという強みが伝わらない)という指摘を
+               受け、横長の比較表(店舗×指標の表形式)をやめ、店舗ごとの簡易PL(損益計算書)
+               カードへ変更。売上から人件費・材料費・広告費・固定費・その他経費を順に
+               引いて営業利益に至る、という「引き算」の流れをカード内の縦積みで見せる
+               (表を横に広げずに済むため、情報量を増やしても窮屈にならない)。売上・
+               人件費率・営業利益・営業利益率の4つだけ大きく強調し、材料費・広告費・
+               固定費・その他経費は営業利益の計算根拠が分かる程度の控えめな文字サイズに
+               している。全店舗合計はカード上部の会社全体サマリーに既に表示しているため
+               ここでは重複させない。 -->
+          <div class="ms-section-title">店舗別 簡易損益(P/L)</div>
+          <div class="ms-pl-grid">
+            <div class="ms-pl-card">
+              <div class="ms-pl-store">A店</div>
+              <div class="ms-pl-revenue"><span>売上</span><strong>¥3,280,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-strong"><span>人件費<b class="ms-pl-rate">40.2%</b></span><strong>−¥1,320,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>材料費</span><strong>−¥260,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>広告費</span><strong>−¥160,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>固定費</span><strong>−¥620,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>その他経費</span><strong>−¥280,000</strong></div>
+              <div class="ms-pl-profit"><span>営業利益<b class="ms-pl-rate">19.5%</b></span><strong>¥640,000</strong></div>
+            </div>
+            <div class="ms-pl-card">
+              <div class="ms-pl-store">B店</div>
+              <div class="ms-pl-revenue"><span>売上</span><strong>¥2,860,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-strong"><span>人件費<b class="ms-pl-rate">40.2%</b></span><strong>−¥1,150,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>材料費</span><strong>−¥230,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>広告費</span><strong>−¥140,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>固定費</span><strong>−¥600,000</strong></div>
+              <div class="ms-pl-row ms-pl-row-sub"><span>その他経費</span><strong>−¥210,000</strong></div>
+              <div class="ms-pl-profit"><span>営業利益<b class="ms-pl-rate">18.5%</b></span><strong>¥530,000</strong></div>
+            </div>
           </div>
         </div>
         <p class="shot-caption" style="margin-top:12px;">※画面はイメージです。数値はデモデータです。</p>
