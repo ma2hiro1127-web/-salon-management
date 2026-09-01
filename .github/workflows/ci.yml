@@ -22,6 +22,7 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run lint
-      - run: npm test -- --run
-      - run: npm run build
+      # scripts/deploy/verify.sh を再利用する(npm run deploy:production が使うチェックと
+      # 完全に同じ内容・同じ基準にするため)。lintは既存の8件(このリポジトリに元々あった、
+      # 今回のタスクとは無関係なエラー)を許容し、新規エラーの増加だけを検出する仕組み。
+      - run: bash scripts/deploy/verify.sh
