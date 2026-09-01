@@ -8,7 +8,10 @@
     "build": "vite build",
     "test": "node --test src/utils/*.test.js",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "bash scripts/deploy/verify.sh",
+    "deploy:staging": "bash scripts/deploy/deploy-staging.sh",
+    "deploy:production": "bash scripts/deploy/deploy-production.sh"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",

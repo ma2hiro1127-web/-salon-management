@@ -1,0 +1,27 @@
+name: CI
+
+# push・pull_request毎にlint/test/buildを自動実行する。デプロイ(Vercel)やDB(Supabase)には
+# 一切触れない、コード品質チェックのみの独立したジョブ(既存の.github/workflows/db-backup.yml
+# とは無関係)。GitHub側でBranch Protectionを設定する際、このジョブ(verify)を
+# 「必須ステータスチェック」として指定できる。
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --run
+      - run: npm run build
