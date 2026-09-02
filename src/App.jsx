@@ -124,6 +124,9 @@ import {
   updateCompanyAiAnalysisSetting,
   getCompanyAiAnalysisSettings,
   updateCompanyContractStatus,
+  createCheckoutSession,
+  createPortalSession,
+  syncStoreBillingQuantity,
   softDeleteCompany,
   deleteCompanyCompletely,
   createStoreRecord,
@@ -776,6 +779,12 @@ function App() {
   // 停止中ゲート画面の「契約を再開する」ボタン用。
   const [reactivateSaving, setReactivateSaving] = useState(false);
   const [reactivateError, setReactivateError] = useState("");
+  // Stripe決済(2026-09-02)。「契約する」(Checkout)・「お支払い管理」(Customer Portal)
+  // ボタンの多重クリック防止・エラー表示用。
+  const [checkoutBusyInterval, setCheckoutBusyInterval] = useState(""); // "" | "month" | "year"
+  const [checkoutError, setCheckoutError] = useState("");
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [portalError, setPortalError] = useState("");
   // Inline feedback rendered right next to the 店舗基本設定 save button (StoreManagementPage) —
   // the shared top-of-page `notice` could be scrolled out of view, making a real success/failure
   // result look like nothing happened. This always renders in the same spot the user is looking at.
@@ -4062,6 +4071,12 @@ function App() {
       setNewStoreName("");
       setNewStoreFormStatus({ status: "saved", message: `${nextStore.name} を新しい店舗として追加しました` });
       setNotice(`${nextStore.name} を新しい店舗として追加しました`);
+      // 契約中の会社であれば、追加店舗料金(Stripe)をベストエフォートで同期する
+      // (2026-09-02)。失敗しても店舗作成自体は既に完了しているため、ここではエラーを
+      // ユーザーへ表示しない——料金は次回の同期呼び出しやWebhookで最終的に揃う。
+      if (isSupabaseConfigured) {
+        void syncStoreBillingQuantity({ companyId }).catch(() => {});
+      }
     } catch (error) {
       console.error("handleCreateNewStore failed", error);
       // DB側の最終防御(stores_company_id_normalized_name_unique)に引っかかった場合——
@@ -4654,6 +4669,48 @@ function App() {
     }
   };
 
+  // Stripe Checkoutで契約を開始する(2026-09-02)。company_idはここでは一切送らない
+  // ——create-checkout-session Edge Function側が呼び出し元のJWTから自社を解決する。
+  // 成功したらStripeの決済ページへそのままリダイレクトする(Stripe.js不使用、
+  // カード情報はサロンマネージャー側を一切経由しない)。
+  const handleStartCheckout = async (billingInterval) => {
+    if (checkoutBusyInterval) return;
+    setCheckoutBusyInterval(billingInterval);
+    setCheckoutError("");
+    try {
+      const result = await createCheckoutSession({ billingInterval });
+      if (!result.ok) {
+        setCheckoutError(getSupabaseErrorMessage(result.error));
+        return;
+      }
+      if (result.url) {
+        window.location.href = result.url;
+      }
+    } finally {
+      setCheckoutBusyInterval("");
+    }
+  };
+
+  // Stripe Customer Portalを開く(カード変更・支払い方法変更・契約状況確認・解約予約)。
+  // 決済管理画面はサロンマネージャー側で自作しない——Stripeホスト側の画面へ遷移するだけ。
+  const handleOpenPortal = async () => {
+    if (portalBusy) return;
+    setPortalBusy(true);
+    setPortalError("");
+    try {
+      const result = await createPortalSession();
+      if (!result.ok) {
+        setPortalError(getSupabaseErrorMessage(result.error));
+        return;
+      }
+      if (result.url) {
+        window.location.href = result.url;
+      }
+    } finally {
+      setPortalBusy(false);
+    }
+  };
+
   // 会社の削除は3段階(要件6): ①停止(既存の契約状態遷移、データは一切触れない) →
   // ②削除(論理削除、company_idに紐づくデータには一切触れずcompanies.deleted_at等を
   // 立てるだけ、30日間は復元可能) → ③完全削除(物理削除、②を経ていない会社には
@@ -4910,6 +4967,12 @@ function App() {
       confirmedStatus = result.status || meta.nextStatus;
     }
     applyStoreStatusLocally(store.id, confirmedStatus);
+    // 運営中の店舗数が変わり得るため、追加店舗料金(Stripe)をベストエフォートで同期する
+    // (2026-09-02)。失敗しても状態変更自体は既に完了しているため、ここではエラーを
+    // ユーザーへ表示しない。
+    if (isSupabaseConfigured && currentCompany?.id) {
+      void syncStoreBillingQuantity({ companyId: currentCompany.id }).catch(() => {});
+    }
   };
 
   // handleSaveStore keeps companySnapshots[companyId].stores (the legacy display-name array —
@@ -9614,12 +9677,16 @@ function App() {
                         )}
                         {company.contractStatus === "active" && (
                           <>
-                            {company.currentPriceAmount !== null && <span>月額 {formatYenOrEmpty(company.currentPriceAmount)}</span>}
+                            {/* 月払い/年払い区分(2026-09-02、Stripe決済導入)。billing_intervalが
+                                未設定(手動でactiveにした等、実際のStripe契約が無い)場合は表示しない。 */}
+                            {company.billingInterval && <span>{company.billingInterval === "year" ? "年払い" : "月払い"}</span>}
+                            {company.currentPriceAmount !== null && <span>請求金額 {formatYenOrEmpty(company.currentPriceAmount)}</span>}
                             {company.nextBillingAt ? (
                               <span>次回請求 {formatDateLabel(company.nextBillingAt)}</span>
                             ) : company.billingStartsAt ? (
                               <span>課金開始予定 {formatDateLabel(company.billingStartsAt)}</span>
                             ) : null}
+                            {company.cancelAtPeriodEnd && <span className="status-pill error">解約予約中</span>}
                           </>
                         )}
                         {company.contractStatus === "suspended" && (
@@ -9750,6 +9817,59 @@ function App() {
             handleDuplicateStore={handleDuplicateStore}
             requestHardDeleteStore={requestHardDeleteStore}
           />
+        )}
+
+        {/* ご契約・お支払い(2026-09-02、Stripe決済導入)。company_adminには「会社管理」
+            画面(system_admin専用)が無いため、店舗管理ページのすぐ下に契約状況・
+            契約する/お支払い管理ボタンを追加する(既存の店舗管理UI自体は変更しない、
+            新しいセクションを1つ足すだけ)。加盟店を閲覧中(自社ではない)は表示しない。 */}
+        {activePage === "stores" && normalizeRole(currentRole) === "company_admin" && currentCompany && !appState.isViewingFranchise && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">BILLING</p>
+                <h2>ご契約・お支払い</h2>
+              </div>
+              <span className={`status-pill ${{ free: "saving", trial: "warning", active: "saved", suspended: "error" }[currentCompany.contractStatus || "trial"]}`}>
+                契約：{CONTRACT_STATUS_LABELS[currentCompany.contractStatus || "trial"]}
+              </span>
+            </div>
+
+            {currentCompany.contractStatus === "active" ? (
+              <>
+                <div className="info-card-meta">
+                  <span>{currentCompany.billingInterval === "year" ? "年払い" : "月払い"}</span>
+                  {currentCompany.currentPriceAmount !== null && <span>請求金額 {formatYenOrEmpty(currentCompany.currentPriceAmount)}</span>}
+                  {currentCompany.nextBillingAt && <span>次回請求 {formatDateLabel(currentCompany.nextBillingAt)}</span>}
+                  {currentCompany.cancelAtPeriodEnd && <span className="status-pill error">解約予約中(次回更新日で終了)</span>}
+                  {currentCompany.paymentStatus === "processing" && <span className="status-pill warning">支払い確認中</span>}
+                  {currentCompany.paymentStatus === "error" && <span className="status-pill error">支払いエラー</span>}
+                </div>
+                <p className="helper-text" style={{ marginTop: 10 }}>
+                  カードの変更・支払い方法の変更・契約状況の確認・解約予約は、Stripeの安全な管理画面から行えます。
+                </p>
+                {portalError ? <div className="notice-box error">{portalError}</div> : null}
+                <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
+                  {portalBusy ? "処理中…" : "お支払い方法の変更・解約はこちら"}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="helper-text">
+                  月払い・年払いを選んで契約を開始できます。基本プラン(1店舗目まで含む)は月額¥1,480/年額¥12,800、2店舗目以降は1店舗ごとに+¥480/月が加算されます。カード情報はStripeの決済ページで安全に入力され、サロンマネージャー側には保存されません。
+                </p>
+                {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
+                <div className="button-row">
+                  <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
+                    {checkoutBusyInterval === "month" ? "処理中…" : "月払いで契約する(¥1,480〜/月)"}
+                  </button>
+                  <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
+                    {checkoutBusyInterval === "year" ? "処理中…" : "年払いで契約する(¥12,800〜/年)"}
+                  </button>
+                </div>
+              </>
+            )}
+          </section>
         )}
 
         {activePage === "users" && (

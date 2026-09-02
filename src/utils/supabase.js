@@ -737,7 +737,11 @@ const COMPANY_CONTRACT_SELECT_COLUMNS =
   "id, name, code, is_active, contract_status, free_reason, deleted_at, deleted_by, deletion_scheduled_at, " +
   "created_at, updated_at, plan, trial_started_at, trial_ends_at, subscription_status, " +
   "stripe_customer_id, stripe_subscription_id, free_started_at, free_ends_at, contract_started_at, " +
-  "stopped_at, billing_starts_at, next_billing_at, current_price_id, current_price_amount, payment_status";
+  "stopped_at, billing_starts_at, next_billing_at, current_price_id, current_price_amount, payment_status, " +
+  // 2026-09-02、Stripe決済導入で追加した3列(billing_interval/current_period_start/
+  // cancel_at_period_end)。current_period_endに相当する値は既存のnext_billing_atを
+  // そのまま流用する(新しい列は追加しない)。
+  "billing_interval, current_period_start, cancel_at_period_end";
 
 export const loadTenantStateFromSupabase = async ({ authUserId, email, currentProfile = null }) => {
   const profile = currentProfile || (await ensureProfileForAuthUser({ authUserId, email }));
@@ -843,6 +847,9 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
         ? null
         : Number(company.current_price_amount),
     paymentStatus: company.payment_status || "",
+    billingInterval: company.billing_interval || "",
+    currentPeriodStart: company.current_period_start || null,
+    cancelAtPeriodEnd: Boolean(company.cancel_at_period_end),
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -977,6 +984,9 @@ export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
           ? null
           : Number(companyRow.current_price_amount),
       paymentStatus: companyRow.payment_status || "",
+      billingInterval: companyRow.billing_interval || "",
+      currentPeriodStart: companyRow.current_period_start || null,
+      cancelAtPeriodEnd: Boolean(companyRow.cancel_at_period_end),
       startedAt: companyRow.created_at || new Date().toISOString(),
       lastUpdatedAt: companyRow.updated_at || new Date().toISOString(),
       setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -1068,6 +1078,78 @@ export const updateCompanyContractStatus = async ({ companyId, targetStatus, fre
     stoppedAt: data?.stopped_at,
     billingStartsAt: data?.billing_starts_at,
   };
+};
+
+// Stripe Checkout Sessionの作成(2026-09-02、Stripe決済導入) —
+// create-checkout-session Edge Function(service-role)経由。company_admin限定。
+// company_idはこちらからは一切送らない(Edge Function側が呼び出し元のJWTから解決する)。
+// 成功時はcheckoutページへのURLを返すだけ——呼び出し元(App.jsx)がリダイレクトする。
+export const createCheckoutSession = async ({ billingInterval }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("create-checkout-session", {
+    body: { billingInterval },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, url: data?.url };
+};
+
+// Stripe Customer Portal Sessionの作成 — create-portal-session Edge Function経由。
+// company_admin限定。カード変更・支払い方法変更・契約状況確認・解約予約は、この
+// URLへリダイレクトしたStripeホスト側の画面で行う(自作の決済管理画面は作らない)。
+export const createPortalSession = async () => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("create-portal-session", { body: {} });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, url: data?.url };
+};
+
+// 店舗数変更後の追加店舗Price同期 — sync-store-billing-quantity Edge Function経由。
+// ベストエフォート(失敗しても店舗の追加・アーカイブ自体は既に完了しているため、
+// 呼び出し元は結果を強くは待たない想定)。無料利用/トライアル/停止中の会社では
+// サーバー側が自動的に何もしない(実際のStripeサブスクリプションが無いため)。
+export const syncStoreBillingQuantity = async ({ companyId } = {}) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("sync-store-billing-quantity", {
+    body: { companyId },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, addonQuantity: data?.addonQuantity };
 };
 
 // 加盟店連携リクエストの送信 — create-franchise-request Edge Function(service-role)経由。

@@ -1,13 +1,17 @@
-// Stripe Webhook受信エンドポイント(2026-09-02、契約管理の拡張の一部)。
+// Stripe Webhook受信エンドポイント(2026-09-02新設、2026-09-02のStripe決済導入で拡張)。
 //
 // このリポジトリには実際のStripeキーが無く、Stripe SDKのDeno/ESM上での動作をこの環境では
 // 検証できないため、他のEdge Function群と同じく外部SDKに依存せず、Stripeが公開している
 // 署名検証アルゴリズム(HMAC-SHA256、Stripe-Signatureヘッダーのt=/v1=)をWeb Crypto APIで
 // 自前実装している。https://docs.stripe.com/webhooks#verify-manually 参照。
 //
-// 対応イベント: customer.subscription.created/updated/deleted, invoice.paid,
-// invoice.payment_failed。companies.stripe_customer_id で対象会社を特定し、サービスロールで
-// companies の契約関連カラムを更新する。
+// 対応イベント: checkout.session.completed, customer.subscription.created/updated/deleted,
+// invoice.paid, invoice.payment_failed。companies.stripe_customer_id で対象会社を特定し、
+// サービスロールで companies の契約関連カラムを更新する。
+//
+// 冪等性: 処理の最初にstripe_webhook_events(stripe_event_id primary key)へINSERTし、
+// 競合(=既に処理済み)なら即200を返して終了する。同じイベントが複数回届いても
+// 二重処理されないことをDBのUNIQUE制約そのもので保証する(アプリ側ロジックに頼らない)。
 //
 // 重要な設計方針(要件どおり):
 //   - 1回の支払い失敗(invoice.payment_failed)だけではcontract_statusをsuspendedにしない。
@@ -18,6 +22,10 @@
 //   - 「無料利用」はStripeのSubscriptionを前提にしない当社独自の状態のため、このWebhookは
 //     free状態の会社には一切影響しない(stripe_customer_idが無ければ対象会社を特定できず
 //     何もしない)。
+//   - metadata.company_idだけを唯一の認証根拠にはしない。対象会社はあくまで
+//     stripe_customer_id(companiesテーブルに保存済みの値)で検索する。metadataの
+//     company_idが付いているイベントについては、検索結果との一致を追加でチェックし、
+//     食い違っていればエラーとして処理を中断する(Stripe側とDB側の食い違いを検知する保険)。
 //
 // 未知のstripe_customer_id(該当会社が見つからない)の場合はログのみ出して200を返す
 // (Stripe側の再送ループを防ぐ——エラーで返すとStripeが同じイベントを延々再送してしまう)。
@@ -73,6 +81,31 @@ async function verifyStripeSignature(rawBody: string, signatureHeader: string, s
   return v1Parts.some((p) => p.slice(3) === expectedSignature);
 }
 
+type SubscriptionItem = {
+  quantity?: number;
+  price?: { id?: string; unit_amount?: number; recurring?: { interval?: string } };
+};
+
+// サブスクリプションのitems配列(基本プラン+追加店舗の2アイテム構成を想定)から、
+// 表示用の合計金額・請求周期・基本プランのPrice IDをまとめて取り出す。
+function summarizeSubscriptionItems(items: SubscriptionItem[] | undefined) {
+  if (!items || items.length === 0) return { totalAmount: null, interval: null, basePriceId: null };
+  let totalAmount = 0;
+  let interval: string | null = null;
+  let basePriceId: string | null = null;
+  for (const item of items) {
+    const unitAmount = item.price?.unit_amount ?? 0;
+    const quantity = item.quantity ?? 1;
+    totalAmount += unitAmount * quantity;
+    if (!interval && item.price?.recurring?.interval) interval = item.price.recurring.interval;
+    // quantity=1のアイテムを「基本プラン」とみなす(追加店舗アイテムは通常quantityが
+    // 店舗数-1で1以外になりうるため、この単純な判定で十分実用的)。
+    if (!basePriceId && quantity === 1 && item.price?.id) basePriceId = item.price.id;
+  }
+  if (!basePriceId && items[0]?.price?.id) basePriceId = items[0].price.id;
+  return { totalAmount, interval, basePriceId };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -99,50 +132,86 @@ Deno.serve(async (req) => {
     return json({ error: "署名の検証に失敗しました" }, 400);
   }
 
-  let event: { type?: string; data?: { object?: Record<string, unknown> } };
+  let event: { id?: string; type?: string; data?: { object?: Record<string, unknown> } };
   try {
     event = JSON.parse(rawBody);
   } catch {
     return json({ error: "リクエストの形式が不正です" }, 400);
   }
 
+  const eventId = event.id || "";
   const eventType = event.type || "";
   const object = event.data?.object || {};
-  logStage("event_received", { eventType });
+  logStage("event_received", { eventId, eventType });
+
+  if (!eventId) {
+    return json({ error: "event.id がありません" }, 400);
+  }
 
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
-  // customer.subscription.* はobject.customer、invoice.* もobject.customerにStripe顧客IDが入る。
+  // customer.subscription.* / invoice.* / checkout.session.* いずれもobject.customerに
+  // Stripe顧客IDが入る。
   const stripeCustomerId = typeof object.customer === "string" ? object.customer : "";
-  if (!stripeCustomerId) {
-    logStage("no_customer_id", { eventType });
-    return json({ ok: true, skipped: "no_customer_id" });
-  }
 
   try {
     const { data: company, error: companyError } = await admin
       .from("companies")
       .select("id, contract_status")
-      .eq("stripe_customer_id", stripeCustomerId)
+      .eq("stripe_customer_id", stripeCustomerId || "__none__")
       .maybeSingle();
     if (companyError) throw companyError;
+
+    // 冪等性チェック: 既に処理済みのevent.idならここで即終了する
+    // (companyが見つからない場合の分岐より前に置くと、未知の顧客IDのイベントを
+    // 毎回同じ理由で無駄にログし続けてしまうため、company特定の後に行う)。
+    const { error: insertEventError } = await admin
+      .from("stripe_webhook_events")
+      .insert({ stripe_event_id: eventId, event_type: eventType, company_id: company?.id ?? null });
+    if (insertEventError) {
+      // unique制約違反(23505) = 既に処理済み。それ以外のエラーは本物の異常として投げる。
+      if ((insertEventError as { code?: string }).code === "23505") {
+        logStage("duplicate_event_skipped", { eventId, eventType });
+        return json({ ok: true, skipped: "duplicate_event" });
+      }
+      throw insertEventError;
+    }
+
+    if (!stripeCustomerId) {
+      logStage("no_customer_id", { eventType });
+      return json({ ok: true, skipped: "no_customer_id" });
+    }
     if (!company) {
-      // 未知の顧客ID。この会社はまだstripe_customer_idが会社編集画面から紐付けられて
-      // いない可能性が高い。エラーにするとStripeが再送し続けるため200で正常終了する。
+      // 未知の顧客ID。この会社はまだstripe_customer_idが紐付けられていない可能性が高い。
+      // エラーにするとStripeが再送し続けるため200で正常終了する。
       logStage("company_not_found", { stripeCustomerId, eventType });
       return json({ ok: true, skipped: "company_not_found" });
+    }
+
+    // metadata.company_idが付いているイベントは、DB側の検索結果と突合する
+    // (metadataだけを唯一の認証根拠にしない、要件どおりの保険的チェック)。
+    const metadata = (object.metadata as Record<string, unknown> | undefined) || {};
+    const metadataCompanyId = typeof metadata.company_id === "string" ? metadata.company_id : "";
+    if (metadataCompanyId && metadataCompanyId !== company.id) {
+      logStage("metadata_company_mismatch", { eventId, eventType, metadataCompanyId, resolvedCompanyId: company.id });
+      return json({ error: "会社IDの整合性チェックに失敗しました" }, 409);
     }
 
     const nowIso = new Date().toISOString();
     const patch: Record<string, unknown> = { updated_at: nowIso };
 
-    if (eventType === "invoice.paid") {
+    if (eventType === "checkout.session.completed") {
+      // 決済完了の瞬間。実際の状態(status/期間/金額)はsubscription.created/updatedの方が
+      // 正確なので、ここではsubscription_idの紐付けだけを確実にしておく
+      // (subscription.createdが先に届いていた場合でも上書きで問題ない)。
+      if (typeof object.subscription === "string") {
+        patch.stripe_subscription_id = object.subscription;
+      }
+    } else if (eventType === "invoice.paid") {
       patch.payment_status = null;
-      if (typeof object.next_payment_attempt === "number") {
-        patch.next_billing_at = new Date(object.next_payment_attempt * 1000).toISOString();
-      } else if (typeof object.period_end === "number") {
+      if (typeof object.period_end === "number") {
         patch.next_billing_at = new Date(object.period_end * 1000).toISOString();
       }
       const amountPaid = object.amount_paid;
@@ -158,26 +227,32 @@ Deno.serve(async (req) => {
       if (typeof object.id === "string") {
         patch.stripe_subscription_id = object.id;
       }
-      const items = object.items as { data?: Array<{ price?: { id?: string; unit_amount?: number } }> } | undefined;
-      const firstItem = items?.data?.[0];
-      if (firstItem?.price?.id) {
-        patch.current_price_id = firstItem.price.id;
+      if (typeof object.cancel_at_period_end === "boolean") {
+        patch.cancel_at_period_end = object.cancel_at_period_end;
       }
-      if (typeof firstItem?.price?.unit_amount === "number") {
-        patch.current_price_amount = firstItem.price.unit_amount;
+      if (typeof object.current_period_start === "number") {
+        patch.current_period_start = new Date(object.current_period_start * 1000).toISOString();
       }
       if (typeof object.current_period_end === "number") {
+        // next_billing_atをcurrent_period_endとしてそのまま流用する(要件どおり、
+        // current_period_end専用の新しい列は追加しない)。
         patch.next_billing_at = new Date(object.current_period_end * 1000).toISOString();
       }
+
+      const items = (object.items as { data?: SubscriptionItem[] } | undefined)?.data;
+      const { totalAmount, interval, basePriceId } = summarizeSubscriptionItems(items);
+      if (totalAmount !== null) patch.current_price_amount = totalAmount;
+      if (interval === "month" || interval === "year") patch.billing_interval = interval;
+      if (basePriceId) patch.current_price_id = basePriceId;
 
       if (subscriptionStatus === "past_due") {
         // Stripeの再試行期間中(要件: 支払い確認中の補助表示)。まだ失効ではない。
         patch.payment_status = "processing";
-      } else if (subscriptionStatus === "active") {
+      } else if (subscriptionStatus === "active" || subscriptionStatus === "trialing") {
         patch.payment_status = null;
-        // トライアル中の会社がStripe側で実際に課金開始(active)になったら、
-        // 当社側のcontract_statusもtrial→activeへ同期する(要件: トライアル→契約中の移行)。
-        if (company.contract_status === "trial") {
+        // free/trial中の会社がStripe側で実際に課金開始(active)になったら、
+        // 当社側のcontract_statusもactiveへ同期する(要件: Checkout完了→契約中への移行)。
+        if (subscriptionStatus === "active" && (company.contract_status === "trial" || company.contract_status === "free")) {
           patch.contract_status = "active";
           patch.contract_started_at = nowIso;
         }
@@ -191,6 +266,7 @@ Deno.serve(async (req) => {
       patch.subscription_status = "canceled";
       patch.contract_status = "suspended";
       patch.stopped_at = nowIso;
+      patch.cancel_at_period_end = false;
     } else {
       logStage("unhandled_event_type", { eventType });
       return json({ ok: true, skipped: "unhandled_event_type" });
