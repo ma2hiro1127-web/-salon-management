@@ -192,6 +192,10 @@ Deno.serve(async (req) => {
       metadata: { company_id: company.id },
       subscription_data: { metadata: { company_id: company.id } },
       allow_promotion_codes: true,
+      // Stripeアカウント側でManaged Payments(税務コード必須)がデフォルト有効な場合があり、
+      // その状態だとProductにtax_codeが無いと決済ページ作成自体が失敗する。サロンマネージャー
+      // 側では税務処理をStripeに委任しない(通常のSubscription課金のみ)ため明示的に無効化する。
+      managed_payments: { enabled: false },
     });
 
     logStage("checkout_session_created", { companyId: company.id, billingInterval, addonQuantity });

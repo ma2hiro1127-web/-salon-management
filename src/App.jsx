@@ -776,9 +776,6 @@ function App() {
   const [contractFreeEndChoice, setContractFreeEndChoice] = useState("none"); // "none" | "date"
   const [contractFreeEndDate, setContractFreeEndDate] = useState("");
   const [contractStatusModalError, setContractStatusModalError] = useState("");
-  // 停止中ゲート画面の「契約を再開する」ボタン用。
-  const [reactivateSaving, setReactivateSaving] = useState(false);
-  const [reactivateError, setReactivateError] = useState("");
   // Stripe決済(2026-09-02)。「契約する」(Checkout)・「お支払い管理」(Customer Portal)
   // ボタンの多重クリック防止・エラー表示用。
   const [checkoutBusyInterval, setCheckoutBusyInterval] = useState(""); // "" | "month" | "year"
@@ -4636,39 +4633,6 @@ function App() {
     }
   };
 
-  // 停止中ゲート画面の「契約を再開する」用(2026-09-02)。company_adminが自分の会社だけを
-  // 「停止中→契約中」へセルフサービスで再開できる(update-company-status Edge Function側の
-  // 権限拡張、system_admin以外の遷移はこれ以外すべて引き続き拒否される)。
-  const handleSelfServiceReactivate = async () => {
-    if (!currentCompany?.id || reactivateSaving) return;
-    setReactivateSaving(true);
-    setReactivateError("");
-    try {
-      const result = await updateCompanyContractStatus({ companyId: currentCompany.id, targetStatus: "active" });
-      if (!result.ok) {
-        setReactivateError(getSupabaseErrorMessage(result.error));
-        return;
-      }
-      const nextState = {
-        ...appStateRef.current,
-        companies: (appStateRef.current.companies || []).map((item) =>
-          item.id === currentCompany.id
-            ? {
-                ...item,
-                contractStatus: result.status || "active",
-                contractStartedAt: result.contractStartedAt,
-                billingStartsAt: result.billingStartsAt,
-                lastUpdatedAt: new Date().toISOString(),
-              }
-            : item
-        ),
-      };
-      persistTenantState(nextState);
-    } finally {
-      setReactivateSaving(false);
-    }
-  };
-
   // Stripe Checkoutで契約を開始する(2026-09-02)。company_idはここでは一切送らない
   // ——create-checkout-session Edge Function側が呼び出し元のJWTから自社を解決する。
   // 成功したらStripeの決済ページへそのままリダイレクトする(Stripe.js不使用、
@@ -7692,10 +7656,12 @@ function App() {
   // 会社管理画面から会社情報・データを引き続き確認できる必要があるため、この画面は
   // system_admin以外にのみ表示する。
   if ((currentCompany?.contractStatus === "suspended" || currentCompany?.deletedAt) && normalizeRole(currentRole) !== "system_admin") {
-    // 「契約を再開する」ボタンはcompany_adminのみ(update-company-status Edge Function側の
-    // 権限拡張と一致させる)、かつ論理削除済みの会社は対象外(Edge Function側で409になる —
-    // 削除された会社は先にsystem_adminが復元する必要がある)。
-    const canSelfServiceReactivate = normalizeRole(currentRole) === "company_admin" && currentCompany?.contractStatus === "suspended" && !currentCompany?.deletedAt;
+    // 再契約(停止中→契約中)は、company_adminであっても必ずStripe Checkoutを経由させる
+    // (2026-09-02、Stripe決済導入時に修正)。以前はupdate-company-status Edge Function
+    // 経由でcompany_adminが自社を直接「契約中」へセルフ変更できる抜け道があったが、これは
+    // 実際の支払いを一切伴わずに済んでしまい、「Stripe/Webhookを正とする」という要件に
+    // 反するため廃止した。論理削除済みの会社は対象外(先にsystem_adminが復元する必要がある)。
+    const canReContract = normalizeRole(currentRole) === "company_admin" && currentCompany?.contractStatus === "suspended" && !currentCompany?.deletedAt;
     return (
       <div className="auth-shell">
         <div className="auth-card">
@@ -7704,15 +7670,18 @@ function App() {
             <h2>現在この会社は利用停止中です</h2>
             <p>会社・店舗・ユーザー・売上等のデータは保持されています。契約を再開すると、これまでのデータはそのまま引き続きご利用いただけます。</p>
           </div>
-          {canSelfServiceReactivate ? (
+          {canReContract ? (
             <>
-              {reactivateError ? <div className="notice-box error">{reactivateError}</div> : null}
-              <button className="primary-button" type="button" disabled={reactivateSaving} onClick={handleSelfServiceReactivate}>
-                {reactivateSaving ? "再開中…" : "契約を再開する"}
-              </button>
-              <p className="helper-text" style={{ marginTop: 8 }}>
-                翌月1日から課金が開始される予定です。それまでの期間は料金が発生しません。
-              </p>
+              {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
+              <p className="helper-text">月払い・年払いを選んで契約を再開できます。カード情報はStripeの決済ページで安全に入力され、サロンマネージャー側には保存されません。</p>
+              <div className="button-row">
+                <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
+                  {checkoutBusyInterval === "month" ? "処理中…" : "月払いで契約を再開する"}
+                </button>
+                <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
+                  {checkoutBusyInterval === "year" ? "処理中…" : "年払いで契約を再開する"}
+                </button>
+              </div>
             </>
           ) : (
             <p>管理者へお問い合わせください。</p>

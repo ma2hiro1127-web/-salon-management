@@ -84,15 +84,25 @@ async function verifyStripeSignature(rawBody: string, signatureHeader: string, s
 type SubscriptionItem = {
   quantity?: number;
   price?: { id?: string; unit_amount?: number; recurring?: { interval?: string } };
+  // Stripe APIバージョン2026-08-26以降、current_period_start/endはSubscription
+  // オブジェクト直下ではなく各Subscription Item側に付与される形に変わっている
+  // (複数アイテムがそれぞれ異なる請求周期を持てるようにするための変更と見られる)。
+  // 本アプリの構成では全アイテムが同じ周期のため、items[0]の値をそのまま採用する。
+  current_period_start?: number;
+  current_period_end?: number;
 };
 
 // サブスクリプションのitems配列(基本プラン+追加店舗の2アイテム構成を想定)から、
-// 表示用の合計金額・請求周期・基本プランのPrice IDをまとめて取り出す。
+// 表示用の合計金額・請求周期・基本プランのPrice ID・現在の請求期間をまとめて取り出す。
 function summarizeSubscriptionItems(items: SubscriptionItem[] | undefined) {
-  if (!items || items.length === 0) return { totalAmount: null, interval: null, basePriceId: null };
+  if (!items || items.length === 0) {
+    return { totalAmount: null, interval: null, basePriceId: null, currentPeriodStart: null, currentPeriodEnd: null };
+  }
   let totalAmount = 0;
   let interval: string | null = null;
   let basePriceId: string | null = null;
+  let currentPeriodStart: number | null = null;
+  let currentPeriodEnd: number | null = null;
   for (const item of items) {
     const unitAmount = item.price?.unit_amount ?? 0;
     const quantity = item.quantity ?? 1;
@@ -101,9 +111,15 @@ function summarizeSubscriptionItems(items: SubscriptionItem[] | undefined) {
     // quantity=1のアイテムを「基本プラン」とみなす(追加店舗アイテムは通常quantityが
     // 店舗数-1で1以外になりうるため、この単純な判定で十分実用的)。
     if (!basePriceId && quantity === 1 && item.price?.id) basePriceId = item.price.id;
+    if (currentPeriodStart === null && typeof item.current_period_start === "number") {
+      currentPeriodStart = item.current_period_start;
+    }
+    if (currentPeriodEnd === null && typeof item.current_period_end === "number") {
+      currentPeriodEnd = item.current_period_end;
+    }
   }
   if (!basePriceId && items[0]?.price?.id) basePriceId = items[0].price.id;
-  return { totalAmount, interval, basePriceId };
+  return { totalAmount, interval, basePriceId, currentPeriodStart, currentPeriodEnd };
 }
 
 Deno.serve(async (req) => {
@@ -233,23 +249,46 @@ Deno.serve(async (req) => {
       if (typeof object.id === "string") {
         patch.stripe_subscription_id = object.id;
       }
-      if (typeof object.cancel_at_period_end === "boolean") {
-        patch.cancel_at_period_end = object.cancel_at_period_end;
-      }
-      if (typeof object.current_period_start === "number") {
-        patch.current_period_start = new Date(object.current_period_start * 1000).toISOString();
-      }
-      if (typeof object.current_period_end === "number") {
-        // next_billing_atをcurrent_period_endとしてそのまま流用する(要件どおり、
-        // current_period_end専用の新しい列は追加しない)。
-        patch.next_billing_at = new Date(object.current_period_end * 1000).toISOString();
-      }
-
       const items = (object.items as { data?: SubscriptionItem[] } | undefined)?.data;
-      const { totalAmount, interval, basePriceId } = summarizeSubscriptionItems(items);
+      const { totalAmount, interval, basePriceId, currentPeriodStart, currentPeriodEnd } =
+        summarizeSubscriptionItems(items);
       if (totalAmount !== null) patch.current_price_amount = totalAmount;
       if (interval === "month" || interval === "year") patch.billing_interval = interval;
       if (basePriceId) patch.current_price_id = basePriceId;
+
+      // current_period_start/endは、Stripe APIバージョン2026-08-26以降ではSubscription
+      // 直下ではなく各Itemに付与される形に変わっている。Item側に無ければ(古いAPI
+      // バージョンのアカウント向け)Subscription直下の値にフォールバックする。
+      const resolvedPeriodStart =
+        currentPeriodStart ?? (typeof object.current_period_start === "number" ? object.current_period_start : null);
+      const resolvedPeriodEnd =
+        currentPeriodEnd ?? (typeof object.current_period_end === "number" ? object.current_period_end : null);
+      if (resolvedPeriodStart !== null) {
+        patch.current_period_start = new Date(resolvedPeriodStart * 1000).toISOString();
+      }
+      if (resolvedPeriodEnd !== null) {
+        // next_billing_atをcurrent_period_endとしてそのまま流用する(要件どおり、
+        // current_period_end専用の新しい列は追加しない)。
+        patch.next_billing_at = new Date(resolvedPeriodEnd * 1000).toISOString();
+      }
+
+      // Stripeの新しめのAPIバージョン(2026-08-26以降で確認)では、Customer Portalから
+      // 「期間終了時に解約」を予約した場合、`cancel_at_period_end`は常にfalseのままで、
+      // 代わりに`cancel_at`(タイムスタンプ)が現在の請求期間終了日時と同じ値に設定される
+      // 形で表現される。旧仕様の`cancel_at_period_end: true`も引き続き来うるため、
+      // どちらの表現でも解約予約中として検知できるようにする。
+      if (typeof object.cancel_at_period_end === "boolean") {
+        let cancelAtPeriodEnd = object.cancel_at_period_end;
+        if (
+          !cancelAtPeriodEnd &&
+          typeof object.cancel_at === "number" &&
+          resolvedPeriodEnd !== null &&
+          object.cancel_at === resolvedPeriodEnd
+        ) {
+          cancelAtPeriodEnd = true;
+        }
+        patch.cancel_at_period_end = cancelAtPeriodEnd;
+      }
 
       if (subscriptionStatus === "past_due") {
         // Stripeの再試行期間中(要件: 支払い確認中の補助表示)。まだ失効ではない。

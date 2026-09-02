@@ -145,16 +145,14 @@ Deno.serve(async (req) => {
 
     const currentStatus = company.contract_status || "trial";
 
-    // 権限判定: system_adminは何でも可。company_adminは「自社」かつ「停止中→契約中」の
-    // 再契約(セルフサービス)のときだけ許可(停止中ゲート画面の「契約を再開する」用)。
+    // 権限判定: system_adminのみ。
+    // 以前は「company_adminが自社を停止中→契約中へセルフサービスで再開できる」例外
+    // (停止中ゲート画面の旧「契約を再開する」ボタン用)を設けていたが、これは実際の
+    // 支払いを一切伴わずに"active"へ変更できてしまう抜け道だったため、Stripe決済導入時
+    // (2026-09-02)に廃止した。再契約はStripe Checkout(create-checkout-session Edge
+    // Function、実際の決済とWebhookでの状態同期を伴う)経由に一本化している。
     const isSystemAdmin = callerProfile.role === "system_admin";
-    const isSelfServiceReactivation =
-      callerProfile.role === "company_admin" &&
-      callerProfile.company_id === companyId &&
-      currentStatus === "suspended" &&
-      targetStatus === "active" &&
-      freeReason === undefined; // company_adminからは理由変更等の余地を与えない
-    if (!isSystemAdmin && !isSelfServiceReactivation) {
+    if (!isSystemAdmin) {
       return json({ error: "会社の契約状態を変更する権限がありません" }, 403);
     }
 
