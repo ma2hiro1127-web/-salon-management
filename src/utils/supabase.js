@@ -729,6 +729,16 @@ export const ensureProfileForAuthUser = async ({ authUserId, email, role = null,
   return profile;
 };
 
+// companiesの契約管理まわりの列一覧。loadTenantStateFromSupabaseとloadFranchiseCompanyMetadata
+// (フランチャイズ相手企業の閲覧用ローダー)の両方で同じ列を取得するため1箇所にまとめている
+// (2026-09-02、契約管理の拡張。supabase/migrations/20260906000000_contract_billing_fields.sql
+// で追加した列を含む)。
+const COMPANY_CONTRACT_SELECT_COLUMNS =
+  "id, name, code, is_active, contract_status, free_reason, deleted_at, deleted_by, deletion_scheduled_at, " +
+  "created_at, updated_at, plan, trial_started_at, trial_ends_at, subscription_status, " +
+  "stripe_customer_id, stripe_subscription_id, free_started_at, free_ends_at, contract_started_at, " +
+  "stopped_at, billing_starts_at, next_billing_at, current_price_id, current_price_amount, payment_status";
+
 export const loadTenantStateFromSupabase = async ({ authUserId, email, currentProfile = null }) => {
   const profile = currentProfile || (await ensureProfileForAuthUser({ authUserId, email }));
   if (!profile) {
@@ -743,8 +753,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // updateCompanyAiAnalysisSettingだけを経由する独立した状態として扱う(tenant_snapshot/
     // このログイン時ブートストラップ経由では取得・保持しない)。
     companyFilter
-      ? supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, deleted_by, deletion_scheduled_at, created_at, updated_at").eq("id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, deleted_by, deletion_scheduled_at, created_at, updated_at").order("created_at", { ascending: true }),
+      ? supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).eq("id", companyFilter).order("created_at", { ascending: true })
+      : supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).order("created_at", { ascending: true }),
     // Ordered by creation time, not name: a fresh session/device with no cached selection
     // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
     // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
@@ -812,6 +822,27 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     deletedAt: company.deleted_at || "",
     deletedBy: company.deleted_by || "",
     deletionScheduledAt: company.deletion_scheduled_at || "",
+    // 契約管理の拡張(2026-09-02)。すべて未設定ならnull(空文字ではなく)を返す——
+    // 「値が無い」と「0時刻」を区別できるようにするため(formatDateLabel/formatUsageDuration
+    // 等はnullを渡すと空文字を返す設計になっている)。
+    plan: company.plan || "",
+    trialStartedAt: company.trial_started_at || null,
+    trialEndsAt: company.trial_ends_at || null,
+    subscriptionStatus: company.subscription_status || "",
+    stripeCustomerId: company.stripe_customer_id || "",
+    stripeSubscriptionId: company.stripe_subscription_id || "",
+    freeStartedAt: company.free_started_at || null,
+    freeEndsAt: company.free_ends_at || null,
+    contractStartedAt: company.contract_started_at || null,
+    stoppedAt: company.stopped_at || null,
+    billingStartsAt: company.billing_starts_at || null,
+    nextBillingAt: company.next_billing_at || null,
+    currentPriceId: company.current_price_id || "",
+    currentPriceAmount:
+      company.current_price_amount === null || company.current_price_amount === undefined
+        ? null
+        : Number(company.current_price_amount),
+    paymentStatus: company.payment_status || "",
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -903,7 +934,7 @@ export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
   if (!isSupabaseConfigured || !companyId) return { ok: false, error: new Error("companyId is required") };
   try {
     const [{ data: companyRow, error: companyError }, { data: storesData, error: storesError }, { data: storeProfilesData, error: storeProfilesError }] = await Promise.all([
-      supabase.from("companies").select("id, name, code, is_active, contract_status, free_reason, deleted_at, created_at, updated_at").eq("id", companyId).maybeSingle(),
+      supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).eq("id", companyId).maybeSingle(),
       supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").eq("company_id", companyId).order("created_at", { ascending: true }),
       // loadTenantStateFromSupabaseと同じ理由(在籍スタッフ数0リセット不具合の根本修正) —
       // 加盟店閲覧に切り替えた直後もstore_profilesを最初から一緒に取得し、undefinedの
@@ -928,6 +959,24 @@ export const loadFranchiseCompanyMetadata = async ({ companyId }) => {
       contractStatus: companyRow.contract_status || "trial",
       freeReason: companyRow.free_reason || "",
       deletedAt: companyRow.deleted_at || "",
+      plan: companyRow.plan || "",
+      trialStartedAt: companyRow.trial_started_at || null,
+      trialEndsAt: companyRow.trial_ends_at || null,
+      subscriptionStatus: companyRow.subscription_status || "",
+      stripeCustomerId: companyRow.stripe_customer_id || "",
+      stripeSubscriptionId: companyRow.stripe_subscription_id || "",
+      freeStartedAt: companyRow.free_started_at || null,
+      freeEndsAt: companyRow.free_ends_at || null,
+      contractStartedAt: companyRow.contract_started_at || null,
+      stoppedAt: companyRow.stopped_at || null,
+      billingStartsAt: companyRow.billing_starts_at || null,
+      nextBillingAt: companyRow.next_billing_at || null,
+      currentPriceId: companyRow.current_price_id || "",
+      currentPriceAmount:
+        companyRow.current_price_amount === null || companyRow.current_price_amount === undefined
+          ? null
+          : Number(companyRow.current_price_amount),
+      paymentStatus: companyRow.payment_status || "",
       startedAt: companyRow.created_at || new Date().toISOString(),
       lastUpdatedAt: companyRow.updated_at || new Date().toISOString(),
       setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -983,10 +1032,16 @@ export const createCompanyRecord = async ({ name, code, contractStatus }) => {
 // 理由だけを状態遷移なしで更新できる。クライアントからcompanies.contract_status/free_reason
 // を直接書ける経路は残さない(companies_update_system_only RLSにも守られているが、遷移
 // そのものの妥当性検証はRLSだけではできないため)。
-export const updateCompanyContractStatus = async ({ companyId, targetStatus, freeReason }) => {
+// freeEndsAt: targetStatusが"free"のときだけ意味を持つ。undefinedなら変更しない、
+// nullまたは空文字なら「終了日を設定しない」、日付文字列ならその日を無料利用終了日として
+// 保存する(2026-09-02、契約管理の拡張)。レスポンスにはEdge Function側で実際に計算・保存
+// した日付フィールド一式(free_started_at/free_ends_at/trial_started_at/trial_ends_at/
+// contract_started_at/stopped_at/billing_starts_at)がそのまま含まれる——
+// 「送った値をそのまま信じる」のではなく実際に保存された値を画面へ反映するため。
+export const updateCompanyContractStatus = async ({ companyId, targetStatus, freeReason, freeEndsAt }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const { data, error } = await supabase.functions.invoke("update-company-status", {
-    body: { companyId, targetStatus, freeReason },
+    body: { companyId, targetStatus, freeReason, freeEndsAt },
   });
   if (error) {
     let message = error.message;
@@ -1001,7 +1056,18 @@ export const updateCompanyContractStatus = async ({ companyId, targetStatus, fre
   if (data?.error) {
     return { ok: false, error: new Error(data.error) };
   }
-  return { ok: true, status: data?.status || "", freeReason: data?.freeReason };
+  return {
+    ok: true,
+    status: data?.contract_status || "",
+    freeReason: data?.free_reason,
+    freeStartedAt: data?.free_started_at,
+    freeEndsAt: data?.free_ends_at,
+    trialStartedAt: data?.trial_started_at,
+    trialEndsAt: data?.trial_ends_at,
+    contractStartedAt: data?.contract_started_at,
+    stoppedAt: data?.stopped_at,
+    billingStartsAt: data?.billing_starts_at,
+  };
 };
 
 // 加盟店連携リクエストの送信 — create-franchise-request Edge Function(service-role)経由。

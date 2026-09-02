@@ -208,6 +208,14 @@ import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/b
 import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta, classifyEmailDuplicateForInvite } from "./utils/invitations.js";
 import { sortStoresForManagement } from "./utils/storeManagement.js";
+import {
+  CONTRACT_STATUS_LABELS,
+  previewBillingStart,
+  formatUsageDuration,
+  formatRemainingLabel,
+  formatDateLabel,
+  formatYenOrEmpty,
+} from "./utils/contractBilling.js";
 import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
@@ -758,6 +766,16 @@ function App() {
   const [freeReasonSavingId, setFreeReasonSavingId] = useState("");
   // 契約状態(トライアル/契約中/停止中)ボタンの多重クリック防止。
   const [companyStatusSavingId, setCompanyStatusSavingId] = useState("");
+  // 契約状態変更の確認モーダル(2026-09-02)。{ company, targetStatus } | null。
+  // window.confirmではなく、遷移先に応じた必要情報(無料利用の終了日選択、課金開始予定日の
+  // プレビュー等)を見せてから変更してもらうためのモーダル。
+  const [contractStatusModal, setContractStatusModal] = useState(null);
+  const [contractFreeEndChoice, setContractFreeEndChoice] = useState("none"); // "none" | "date"
+  const [contractFreeEndDate, setContractFreeEndDate] = useState("");
+  const [contractStatusModalError, setContractStatusModalError] = useState("");
+  // 停止中ゲート画面の「契約を再開する」ボタン用。
+  const [reactivateSaving, setReactivateSaving] = useState(false);
+  const [reactivateError, setReactivateError] = useState("");
   // Inline feedback rendered right next to the 店舗基本設定 save button (StoreManagementPage) —
   // the shared top-of-page `notice` could be scrolled out of view, making a real success/failure
   // result look like nothing happened. This always renders in the same spot the user is looking at.
@@ -4538,7 +4556,8 @@ function App() {
   // 更新するだけ。許可される遷移(どの状態からどの状態へ変更できるか)はサーバー側の
   // ALLOWED_TRANSITIONSと同じ内容をここにも持たせ、UIの選択肢自体を許可された遷移だけに
   // 絞る(実際の強制力はサーバー側、これはUI上の道しるべ)。
-  const CONTRACT_STATUS_LABELS = { free: "無料利用", trial: "トライアル", active: "契約中", suspended: "停止中" };
+  // CONTRACT_STATUS_LABELSはsrc/utils/contractBilling.js(import済み)へ一本化した
+  // (モーダル側の表示ラベルとこのファイル内のラベルがズレないようにするため)。
   const CONTRACT_STATUS_ALLOWED_NEXT = {
     free: ["active", "suspended"],
     trial: ["active", "free", "suspended"],
@@ -4546,33 +4565,92 @@ function App() {
     suspended: ["active", "free", "trial"],
   };
 
-  const handleCompanyContractAction = async (company, targetStatus) => {
-    const targetLabel = CONTRACT_STATUS_LABELS[targetStatus] || targetStatus;
-    const confirmMessage = targetStatus === "suspended"
-      ? `${company.name} を停止しますか？\n会社・店舗・ユーザー・売上等のデータは削除されず、そのまま保持されます。停止中は system_admin 以外は利用できなくなります。`
-      : `${company.name} の契約状態を「${targetLabel}」に変更しますか？`;
-    if (!window.confirm(confirmMessage)) return;
+  // 2026-09-02: window.confirmでの即時変更をやめ、確認モーダル(contractStatusModal)を
+  // 開くだけにした。無料利用の終了日選択・課金開始予定日のプレビュー等、遷移先に応じて
+  // 必要な情報を確認してから変更してもらうため(要件)。実際の保存は
+  // handleConfirmContractStatusChangeが行う。
+  const handleCompanyContractAction = (company, targetStatus) => {
+    setContractFreeEndChoice("none");
+    setContractFreeEndDate("");
+    setContractStatusModalError("");
+    setContractStatusModal({ company, targetStatus });
+  };
+
+  const handleConfirmContractStatusChange = async () => {
+    if (!contractStatusModal) return;
+    const { company, targetStatus } = contractStatusModal;
     if (companyStatusSavingId) return;
     setCompanyStatusSavingId(company.id);
+    setContractStatusModalError("");
     try {
       let nextStatus = targetStatus;
+      let updatedFields = {};
       if (isSupabaseConfigured) {
-        const result = await updateCompanyContractStatus({ companyId: company.id, targetStatus });
+        const freeEndsAt =
+          targetStatus === "free" ? (contractFreeEndChoice === "date" && contractFreeEndDate ? contractFreeEndDate : null) : undefined;
+        const result = await updateCompanyContractStatus({ companyId: company.id, targetStatus, freeEndsAt });
         if (!result.ok) {
-          setNotice(`契約状態の変更に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+          setContractStatusModalError(getSupabaseErrorMessage(result.error));
           return;
         }
         nextStatus = result.status || nextStatus;
+        updatedFields = {
+          freeStartedAt: result.freeStartedAt,
+          freeEndsAt: result.freeEndsAt,
+          trialStartedAt: result.trialStartedAt,
+          trialEndsAt: result.trialEndsAt,
+          contractStartedAt: result.contractStartedAt,
+          stoppedAt: result.stoppedAt,
+          billingStartsAt: result.billingStartsAt,
+        };
       }
       // 状態上書き防止(ここまでにupdateCompanyContractStatusをawaitしているため、
       // appStateRef.currentから最新状態を読み直す)。
       const nextState = {
         ...appStateRef.current,
-        companies: (appStateRef.current.companies || []).map((item) => (item.id === company.id ? { ...item, contractStatus: nextStatus, lastUpdatedAt: new Date().toISOString() } : item)),
+        companies: (appStateRef.current.companies || []).map((item) =>
+          item.id === company.id
+            ? { ...item, contractStatus: nextStatus, ...updatedFields, lastUpdatedAt: new Date().toISOString() }
+            : item
+        ),
+      };
+      persistTenantState(nextState);
+      setContractStatusModal(null);
+    } finally {
+      setCompanyStatusSavingId("");
+    }
+  };
+
+  // 停止中ゲート画面の「契約を再開する」用(2026-09-02)。company_adminが自分の会社だけを
+  // 「停止中→契約中」へセルフサービスで再開できる(update-company-status Edge Function側の
+  // 権限拡張、system_admin以外の遷移はこれ以外すべて引き続き拒否される)。
+  const handleSelfServiceReactivate = async () => {
+    if (!currentCompany?.id || reactivateSaving) return;
+    setReactivateSaving(true);
+    setReactivateError("");
+    try {
+      const result = await updateCompanyContractStatus({ companyId: currentCompany.id, targetStatus: "active" });
+      if (!result.ok) {
+        setReactivateError(getSupabaseErrorMessage(result.error));
+        return;
+      }
+      const nextState = {
+        ...appStateRef.current,
+        companies: (appStateRef.current.companies || []).map((item) =>
+          item.id === currentCompany.id
+            ? {
+                ...item,
+                contractStatus: result.status || "active",
+                contractStartedAt: result.contractStartedAt,
+                billingStartsAt: result.billingStartsAt,
+                lastUpdatedAt: new Date().toISOString(),
+              }
+            : item
+        ),
       };
       persistTenantState(nextState);
     } finally {
-      setCompanyStatusSavingId("");
+      setReactivateSaving(false);
     }
   };
 
@@ -7551,14 +7629,31 @@ function App() {
   // 会社管理画面から会社情報・データを引き続き確認できる必要があるため、この画面は
   // system_admin以外にのみ表示する。
   if ((currentCompany?.contractStatus === "suspended" || currentCompany?.deletedAt) && normalizeRole(currentRole) !== "system_admin") {
+    // 「契約を再開する」ボタンはcompany_adminのみ(update-company-status Edge Function側の
+    // 権限拡張と一致させる)、かつ論理削除済みの会社は対象外(Edge Function側で409になる —
+    // 削除された会社は先にsystem_adminが復元する必要がある)。
+    const canSelfServiceReactivate = normalizeRole(currentRole) === "company_admin" && currentCompany?.contractStatus === "suspended" && !currentCompany?.deletedAt;
     return (
       <div className="auth-shell">
         <div className="auth-card">
           <div className="auth-title-block">
             <p className="eyebrow">SUSPENDED</p>
-            <h2>ご利用を停止しています</h2>
-            <p>現在この会社の利用は停止されています。管理者へお問い合わせください。</p>
+            <h2>現在この会社は利用停止中です</h2>
+            <p>会社・店舗・ユーザー・売上等のデータは保持されています。契約を再開すると、これまでのデータはそのまま引き続きご利用いただけます。</p>
           </div>
+          {canSelfServiceReactivate ? (
+            <>
+              {reactivateError ? <div className="notice-box error">{reactivateError}</div> : null}
+              <button className="primary-button" type="button" disabled={reactivateSaving} onClick={handleSelfServiceReactivate}>
+                {reactivateSaving ? "再開中…" : "契約を再開する"}
+              </button>
+              <p className="helper-text" style={{ marginTop: 8 }}>
+                翌月1日から課金が開始される予定です。それまでの期間は料金が発生しません。
+              </p>
+            </>
+          ) : (
+            <p>管理者へお問い合わせください。</p>
+          )}
         </div>
       </div>
     );
@@ -9494,6 +9589,48 @@ function App() {
                           <span className={`status-pill ${aiAnalysisSettings[company.id] ? "saved" : "warning"}`}>AI分析 {aiAnalysisSettings[company.id] ? "ON" : "OFF"}</span>
                         )}
                       </div>
+                      {/* 契約状態ごとの利用期間・関連日付(2026-09-02、契約管理の拡張)。
+                          利用期間は常にcompany.startedAt(=created_at)からの通算 — 契約状態が
+                          変わってもリセットしない(要件: 無料利用6か月+契約中10か月→1年4か月)。
+                          それ以外は「現在の契約状態に関係する項目だけ」表示し、ゴチャつかせない
+                          (要件どおり、無料利用/トライアル/契約中/停止中で表示を出し分ける)。 */}
+                      <div className="info-card-meta">
+                        <span>利用開始 {formatDateLabel(company.startedAt)}</span>
+                        <span>利用期間 {formatUsageDuration(company.startedAt)}</span>
+                        {company.contractStatus === "free" && (
+                          company.freeEndsAt ? (
+                            <>
+                              <span>無料期限 {formatDateLabel(company.freeEndsAt)}</span>
+                              <span>残り {formatRemainingLabel(company.freeEndsAt)}</span>
+                            </>
+                          ) : <span>無料期限 期限なし</span>
+                        )}
+                        {company.contractStatus === "trial" && company.trialEndsAt && (
+                          <>
+                            <span>トライアル終了 {formatDateLabel(company.trialEndsAt)}</span>
+                            <span>残り {formatRemainingLabel(company.trialEndsAt)}</span>
+                            <span>課金開始予定 {formatDateLabel(previewBillingStart("trial", company.trialEndsAt).date)}</span>
+                          </>
+                        )}
+                        {company.contractStatus === "active" && (
+                          <>
+                            {company.currentPriceAmount !== null && <span>月額 {formatYenOrEmpty(company.currentPriceAmount)}</span>}
+                            {company.nextBillingAt ? (
+                              <span>次回請求 {formatDateLabel(company.nextBillingAt)}</span>
+                            ) : company.billingStartsAt ? (
+                              <span>課金開始予定 {formatDateLabel(company.billingStartsAt)}</span>
+                            ) : null}
+                          </>
+                        )}
+                        {company.contractStatus === "suspended" && (
+                          <>
+                            {company.stoppedAt && <span>停止日 {formatDateLabel(company.stoppedAt)}</span>}
+                            <span className="text-muted-cell">データ保持中</span>
+                          </>
+                        )}
+                        {company.paymentStatus === "processing" && <span className="status-pill warning">支払い確認中</span>}
+                        {company.paymentStatus === "error" && <span className="status-pill error">支払いエラー</span>}
+                      </div>
                       {canManageCompanies(currentRole) && company.contractStatus === "free" && (
                         <div className="row-actions">
                           <select
@@ -10097,6 +10234,98 @@ function App() {
             </section>
           </div>
         )}
+
+        {/* 契約状態変更の確認モーダル(2026-09-02)。window.confirmではなく、遷移先に応じた
+            必要情報を見せてから変更してもらう(要件)。company_id・店舗・ユーザー・売上等の
+            既存データには一切触れない、契約状態と関連日付の列を更新するだけ。 */}
+        {contractStatusModal ? (() => {
+          const { company, targetStatus } = contractStatusModal;
+          const targetLabel = CONTRACT_STATUS_LABELS[targetStatus] || targetStatus;
+          const saving = companyStatusSavingId === company.id;
+          const billingPreview = targetStatus === "active" ? previewBillingStart(company.contractStatus, company.trialEndsAt) : null;
+          return (
+            <div className="modal-overlay" onClick={() => { if (!saving) setContractStatusModal(null); }}>
+              <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+                <div className="panel-heading compact">
+                  <div>
+                    <p className="eyebrow">CONTRACT STATUS</p>
+                    <h3>{company.name} を「{targetLabel}」へ変更</h3>
+                  </div>
+                </div>
+
+                {targetStatus === "free" && (
+                  <div className="field">
+                    <span>無料利用終了日</span>
+                    <div className="button-row">
+                      <button
+                        type="button"
+                        className={contractFreeEndChoice === "none" ? "primary-button" : "secondary-button"}
+                        onClick={() => { setContractFreeEndChoice("none"); setContractFreeEndDate(""); }}
+                      >
+                        設定しない
+                      </button>
+                      <button
+                        type="button"
+                        className={contractFreeEndChoice === "date" ? "primary-button" : "secondary-button"}
+                        onClick={() => setContractFreeEndChoice("date")}
+                      >
+                        日付を設定
+                      </button>
+                    </div>
+                    {contractFreeEndChoice === "date" && (
+                      <input
+                        type="date"
+                        value={contractFreeEndDate}
+                        onChange={(event) => setContractFreeEndDate(event.target.value)}
+                      />
+                    )}
+                    <p className="helper-text" style={{ marginTop: 8 }}>
+                      終了日を設定しなくても、管理者はいつでも「契約中」へ変更できます。終了日はあくまで目安として保存されるだけで、自動的に契約状態が変わることはありません。
+                    </p>
+                  </div>
+                )}
+
+                {targetStatus === "active" && billingPreview && (
+                  <div className="notice-box">
+                    {billingPreview.source === "trial" ? (
+                      <p>トライアル終了日の翌日から課金開始予定です。</p>
+                    ) : (
+                      <p>翌月1日から課金開始予定です。</p>
+                    )}
+                    <p style={{ marginTop: 4 }}><strong>課金開始予定日: {formatDateLabel(billingPreview.date)}</strong></p>
+                    <p className="helper-text" style={{ marginTop: 4 }}>
+                      変更した瞬間には課金されません。それまでの期間は料金が発生しません。
+                    </p>
+                  </div>
+                )}
+
+                {targetStatus === "suspended" && (
+                  <div className="notice-box">
+                    <p>課金を停止します。データは保持されます。</p>
+                    <p className="helper-text" style={{ marginTop: 4 }}>
+                      会社・店舗・ユーザー・売上等のデータは削除されず、そのまま保持されます。停止中は system_admin 以外は利用できなくなります(再契約でいつでも元に戻せます)。
+                    </p>
+                  </div>
+                )}
+
+                {targetStatus === "trial" && (
+                  <div className="notice-box">
+                    <p>{company.name} の契約状態を「トライアル」に変更しますか？</p>
+                  </div>
+                )}
+
+                {contractStatusModalError ? <div className="notice-box error">{contractStatusModalError}</div> : null}
+
+                <div className="button-row">
+                  <button className="secondary-button" type="button" disabled={saving} onClick={() => setContractStatusModal(null)}>キャンセル</button>
+                  <button className="primary-button" type="button" disabled={saving} onClick={handleConfirmContractStatusChange}>
+                    {saving ? "変更中…" : "この内容で変更する"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })() : null}
 
         {showFranchiseRequestModal ? (
           <div className="modal-overlay" onClick={() => setShowFranchiseRequestModal(false)}>

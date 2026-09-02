@@ -7,6 +7,21 @@
 // targetStatusが"free"の時だけ一緒に保存され、"free"以外へ遷移する際は自動的にクリアする
 // (無料利用でなくなった会社に古い理由が残り続けるのを防ぐ)。targetStatusを省略しfreeReason
 // だけ渡した場合は、現在既に"free"の会社の理由だけを更新する(状態遷移は起こさない)。
+//
+// 2026-09-02追記(契約管理の拡張): 状態遷移のたびに、その状態に入った日時を該当カラムへ
+// 記録する(free_started_at/trial_started_at/contract_started_at/stopped_at)。
+// "active"(契約中)へ遷移する際は、課金開始予定日(billing_starts_at)を合わせて計算する:
+//   - トライアルから契約中への遷移かつtrial_ends_atが未来の場合
+//     → トライアル終了日の翌日(Stripe自体のtrial_end満了に合わせた自然な日付、
+//        DB関数は使わずここでシンプルに計算する)
+//   - それ以外(無料利用・停止中からの遷移) → compute_billing_start_date()
+//     (「変更した月の翌月1日」、DB関数として1箇所にルールを持たせている。将来ルールを
+//     変えるときはこのDB関数(migration側)を直すだけでよい設計)
+// "free"へ遷移する際は、任意のfreeEndsAt(無料利用終了日、未設定でも良い)を受け付ける。
+//
+// 権限: 通常はsystem_adminのみ全会社・全遷移を許可。例外として、company_adminは
+// 「自社を停止中→契約中(再契約)」のときだけ自分で実行できる(停止中ゲート画面の
+// 「契約を再開する」ボタン用)。それ以外のcompany_adminからの呼び出しは従来通り403。
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -49,6 +64,7 @@ Deno.serve(async (req) => {
   let companyId = "";
   let targetStatus = "";
   let freeReason: string | null | undefined;
+  let freeEndsAt: string | null | undefined;
   try {
     const body = await req.json();
     companyId = String(body?.companyId || "").trim();
@@ -58,6 +74,11 @@ Deno.serve(async (req) => {
     if (body?.freeReason !== undefined) {
       const raw = body.freeReason === null ? "" : String(body.freeReason).trim();
       freeReason = raw || null;
+    }
+    // freeEndsAtも同様: 未指定なら変更しない、null/空文字なら「終了日なし」に設定する。
+    if (body?.freeEndsAt !== undefined) {
+      const raw = body.freeEndsAt === null ? "" : String(body.freeEndsAt).trim();
+      freeEndsAt = raw || null;
     }
   } catch {
     return json({ error: "リクエストの形式が不正です" }, 400);
@@ -73,6 +94,9 @@ Deno.serve(async (req) => {
   }
   if (freeReason && !VALID_FREE_REASONS.includes(freeReason)) {
     return json({ error: "不正な無料利用理由です" }, 400);
+  }
+  if (freeEndsAt && Number.isNaN(new Date(freeEndsAt).getTime())) {
+    return json({ error: "無料利用終了日の形式が不正です" }, 400);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -99,16 +123,16 @@ Deno.serve(async (req) => {
   try {
     const { data: callerProfile } = await admin
       .from("profiles")
-      .select("id, role, is_active")
+      .select("id, role, is_active, company_id")
       .eq("auth_user_id", callerAuth.user.id)
       .maybeSingle();
-    if (!callerProfile || !callerProfile.is_active || callerProfile.role !== "system_admin") {
+    if (!callerProfile || !callerProfile.is_active) {
       return json({ error: "会社の契約状態を変更する権限がありません" }, 403);
     }
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, name, contract_status, deleted_at")
+      .select("id, name, contract_status, trial_ends_at, deleted_at")
       .eq("id", companyId)
       .maybeSingle();
     if (companyError) throw companyError;
@@ -121,23 +145,42 @@ Deno.serve(async (req) => {
 
     const currentStatus = company.contract_status || "trial";
 
+    // 権限判定: system_adminは何でも可。company_adminは「自社」かつ「停止中→契約中」の
+    // 再契約(セルフサービス)のときだけ許可(停止中ゲート画面の「契約を再開する」用)。
+    const isSystemAdmin = callerProfile.role === "system_admin";
+    const isSelfServiceReactivation =
+      callerProfile.role === "company_admin" &&
+      callerProfile.company_id === companyId &&
+      currentStatus === "suspended" &&
+      targetStatus === "active" &&
+      freeReason === undefined; // company_adminからは理由変更等の余地を与えない
+    if (!isSystemAdmin && !isSelfServiceReactivation) {
+      return json({ error: "会社の契約状態を変更する権限がありません" }, 403);
+    }
+
     // targetStatus省略時: 現在すでに"free"の会社の理由だけを更新する(状態遷移なし)。
+    // (この経路はsystem_admin限定のまま — isSelfServiceReactivationはtargetStatus必須のため
+    // ここへは到達しない。)
     if (!targetStatus) {
+      if (!isSystemAdmin) {
+        return json({ error: "会社の契約状態を変更する権限がありません" }, 403);
+      }
       if (currentStatus !== "free") {
         return json({ error: "無料利用理由は「無料利用」状態の会社にのみ設定できます" }, 409);
       }
-      // .select()でUPDATE後の実際の行を読み戻す(要件: 「送った値をそのまま返す」のではなく
-      // 「実際にDBへ書き込まれた値」をクライアントへ返す)。これが無いと、UPDATE自体は成功
-      // したがトリガー等で意図しない値になっていた場合でも、クライアントは自分が送った値
-      // (=期待値)をそのまま信じて画面のstateを更新してしまう。
       const { data: reasonOnlyRow, error: reasonOnlyError } = await admin
         .from("companies")
         .update({ free_reason: freeReason ?? null, updated_at: new Date().toISOString() })
         .eq("id", companyId)
-        .select("contract_status, free_reason")
+        .select(
+          "contract_status, free_reason, free_started_at, free_ends_at, trial_started_at, trial_ends_at, contract_started_at, stopped_at, billing_starts_at"
+        )
         .single();
       if (reasonOnlyError) throw reasonOnlyError;
-      return json({ ok: true, status: reasonOnlyRow.contract_status, freeReason: reasonOnlyRow.free_reason });
+      // targetStatus指定時のレスポンス(下)と同じ形(snake_caseのままDB行をそのまま返す)に
+      // 揃えている——呼び出し元(src/utils/supabase.jsのupdateCompanyContractStatus)が
+      // どちらの経路でも同じキーで読めるようにするため。
+      return json({ ok: true, ...reasonOnlyRow });
     }
 
     if (currentStatus === targetStatus) {
@@ -147,22 +190,60 @@ Deno.serve(async (req) => {
       return json({ error: `この会社は現在「${currentStatus}」のため、その契約状態へは変更できません` }, 409);
     }
 
-    // company_id・関連データには一切触れない。契約状態(と無料利用理由)の列を更新するだけ。
-    // free以外へ遷移する場合は理由を自動的にクリアする(古い理由が残り続けないように)。
-    // 同じ理由でここも.select()して実際にDBへ入った値を返す(上のコメント参照)。
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const patch: Record<string, unknown> = {
+      contract_status: targetStatus,
+      free_reason: targetStatus === "free" ? (freeReason ?? null) : null,
+      updated_at: nowIso,
+    };
+
+    if (targetStatus === "free") {
+      patch.free_started_at = nowIso;
+      // freeEndsAtが未指定(undefined)なら既存値を保持、指定されていれば(nullも含め)反映する。
+      if (freeEndsAt !== undefined) {
+        patch.free_ends_at = freeEndsAt;
+      }
+    } else if (targetStatus === "trial") {
+      patch.trial_started_at = nowIso;
+      const { data: trialEnd, error: trialEndError } = await admin.rpc("compute_trial_end_date", {
+        start_at: nowIso,
+      });
+      if (trialEndError) throw trialEndError;
+      patch.trial_ends_at = trialEnd;
+    } else if (targetStatus === "active") {
+      patch.contract_started_at = nowIso;
+      const trialEndsAt = company.trial_ends_at ? new Date(company.trial_ends_at) : null;
+      if (currentStatus === "trial" && trialEndsAt && trialEndsAt.getTime() > now.getTime()) {
+        // トライアル終了日の翌日を課金開始予定日にする(Stripe自体のtrial_end満了に
+        // 合わせた自然な日付。翌月1日ルールのDB関数はここでは使わない)。
+        const nextDay = new Date(trialEndsAt.getTime() + 24 * 60 * 60 * 1000);
+        patch.billing_starts_at = nextDay.toISOString().slice(0, 10);
+      } else {
+        const { data: billingStart, error: billingStartError } = await admin.rpc("compute_billing_start_date", {
+          change_at: nowIso,
+        });
+        if (billingStartError) throw billingStartError;
+        patch.billing_starts_at = billingStart;
+      }
+    } else if (targetStatus === "suspended") {
+      patch.stopped_at = nowIso;
+    }
+
+    // company_id・関連データには一切触れない。契約状態と、上で組み立てた日付フィールドの
+    // 列を更新するだけ。free以外へ遷移する場合は理由を自動的にクリアする(古い理由が
+    // 残り続けないように)。.select()して実際にDBへ入った値を返す(上のコメント参照)。
     const { data: updatedRow, error: updateError } = await admin
       .from("companies")
-      .update({
-        contract_status: targetStatus,
-        free_reason: targetStatus === "free" ? (freeReason ?? null) : null,
-        updated_at: new Date().toISOString(),
-      })
+      .update(patch)
       .eq("id", companyId)
-      .select("contract_status, free_reason")
+      .select(
+        "contract_status, free_reason, free_started_at, free_ends_at, trial_started_at, trial_ends_at, contract_started_at, stopped_at, billing_starts_at"
+      )
       .single();
     if (updateError) throw updateError;
 
-    return json({ ok: true, status: updatedRow.contract_status, freeReason: updatedRow.free_reason });
+    return json({ ok: true, ...updatedRow });
   } catch (error) {
     const message = error instanceof Error ? error.message : "会社の契約状態変更に失敗しました";
     logStage("unhandled_error", { companyId, targetStatus, message });

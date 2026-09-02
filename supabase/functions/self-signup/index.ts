@@ -244,6 +244,15 @@ Deno.serve(async (req) => {
     // 3. company/store/user_storesを確保する(claim行にcompany_idが無い場合のみ)
     // ------------------------------------------------------------
     if (!claimProfile.company_id) {
+      const trialStartedAt = new Date().toISOString();
+      // トライアル終了日はcompute_trial_end_date DB関数(2026-09-02追加の契約管理拡張、
+      // supabase/migrations/20260906000000_contract_billing_fields.sql)で計算する
+      // 単一のルールを使う(トライアル期間を変える場合はそのDB関数だけ直せばよい設計)。
+      const { data: trialEndsAt, error: trialEndError } = await admin.rpc("compute_trial_end_date", {
+        start_at: trialStartedAt,
+      });
+      if (trialEndError) throw trialEndError;
+
       const { data: company, error: companyError } = await admin
         .from("companies")
         .insert({
@@ -252,7 +261,8 @@ Deno.serve(async (req) => {
           is_active: true,
           contract_status: "trial",
           plan: "trial",
-          trial_started_at: new Date().toISOString(),
+          trial_started_at: trialStartedAt,
+          trial_ends_at: trialEndsAt,
         })
         .select()
         .single();

@@ -408,6 +408,14 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 # Set enabled = false to fall back to the legacy migra engine.
 [experimental.pgdelta]
 enabled = true
+
+# stripe-webhookはStripeのサーバーから直接呼ばれるため、SupabaseのJWT(Authorization
+# ヘッダー)を一切送ってこない——認証はStripe-Signatureヘッダーの署名検証(関数内で自前実装
+# 済み)だけで行う。verify_jwtの既定(true)のままだと、Stripeからの本物のWebhook配信が
+# 関数のコードに到達する前に401で弾かれてしまうため、この関数だけ明示的に無効化する
+# (他の関数はすべて既定のverify_jwt=trueのまま、この1関数だけの例外)。
+[functions.stripe-webhook]
+verify_jwt = false
 # Directory under `supabase/` where declarative files are written.
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
