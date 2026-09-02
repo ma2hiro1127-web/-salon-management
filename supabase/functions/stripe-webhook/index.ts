@@ -196,6 +196,12 @@ Deno.serve(async (req) => {
     const metadataCompanyId = typeof metadata.company_id === "string" ? metadata.company_id : "";
     if (metadataCompanyId && metadataCompanyId !== company.id) {
       logStage("metadata_company_mismatch", { eventId, eventType, metadataCompanyId, resolvedCompanyId: company.id });
+      // 冪等性テーブルへは既に「処理済み」として記録してしまっているが、これは実際には
+      // 処理できず拒否したイベントのため、その記録を取り消す。ここで記録を残したままだと、
+      // Stripeがこのイベントを再送してきた際(4xx/5xxはStripeの再試行対象)、2回目以降は
+      // 「重複だからスキップ」という扱いになり、本来検知したい整合性エラーが再送のたびに
+      // 揉み消されてしまう(調査・アラートの機会を失う)ため。
+      await admin.from("stripe_webhook_events").delete().eq("stripe_event_id", eventId);
       return json({ error: "会社IDの整合性チェックに失敗しました" }, 409);
     }
 
@@ -280,6 +286,16 @@ Deno.serve(async (req) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Webhook処理に失敗しました";
     logStage("unhandled_error", { eventType, message });
+    // 冪等性テーブルへの記録(あれば)を取り消す——一時的な不具合で処理に失敗したイベントを
+    // 「処理済み」のままにしてしまうと、Stripeの再試行が来ても常に「重複だからスキップ」
+    // されてしまい、実際には一度も正常に反映されないまま埋もれてしまうため。
+    // (削除自体が失敗しても、本来のエラーの方を優先して返す——ここは握りつぶす。)
+    if (eventId) {
+      await admin.from("stripe_webhook_events").delete().eq("stripe_event_id", eventId).then(
+        () => {},
+        () => {}
+      );
+    }
     // Stripeに再送してもらいたいので5xxを返す(署名検証済みの正規のイベントで、
     // こちら側の一時的な不具合の可能性があるため)。
     return json({ error: message }, 500);
