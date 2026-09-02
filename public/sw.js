@@ -867,7 +867,13 @@
 // 差額0=緑「一致」/差額あり=赤「差額あり」、店休日タグ付き)を追加。PC/iPhoneとも
 // getMonthlyCashBreakdownRows/summarizeMonthlyCashBreakdownの同じ計算結果を描画するだけで、
 // スマホ専用の別データ取得は無し。横スクロール不要、縦スクロールのみで月末まで確認可能。
-const CACHE_NAME = 'salon-manager-cache-v108';
+// v109: 契約管理(無料利用/トライアル/契約中/停止中)の拡張。会社カードに利用期間・
+// 無料期限・トライアル終了・課金開始予定日・次回請求日等を状態別に表示、契約状態変更を
+// window.confirmから確認モーダルへ変更、停止中ゲート画面に「契約を再開する」ボタン
+// (company_adminが自社のみセルフサービスで再開可能)を追加。companiesテーブルへの列追加
+// (すべてnullable)のみで既存データは無変更。Stripe Webhook受信の土台も追加(実際の
+// Stripe連携・支払い方法入力は未実装、次フェーズ)。
+const CACHE_NAME = 'salon-manager-cache-v109';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
