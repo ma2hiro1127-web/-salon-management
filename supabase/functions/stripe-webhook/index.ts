@@ -295,11 +295,17 @@ Deno.serve(async (req) => {
         patch.payment_status = "processing";
       } else if (subscriptionStatus === "active" || subscriptionStatus === "trialing") {
         patch.payment_status = null;
-        // free/trial中の会社がStripe側で実際に課金開始(active)になったら、
-        // 当社側のcontract_statusもactiveへ同期する(要件: Checkout完了→契約中への移行)。
-        if (subscriptionStatus === "active" && (company.contract_status === "trial" || company.contract_status === "free")) {
+        // free/trial/suspended中の会社がStripe側で実際に課金開始(active)になったら、
+        // 当社側のcontract_statusもactiveへ同期する(要件: Checkout完了→契約中への移行、
+        // および停止中会社の再契約——suspendedを含めないとTest 8「再契約」で実際に
+        // 支払いが完了してもcontract_statusがsuspendedのまま取り残されてしまう)。
+        if (
+          subscriptionStatus === "active" &&
+          (company.contract_status === "trial" || company.contract_status === "free" || company.contract_status === "suspended")
+        ) {
           patch.contract_status = "active";
           patch.contract_started_at = nowIso;
+          patch.stopped_at = null;
         }
       } else if (subscriptionStatus === "canceled" || subscriptionStatus === "unpaid") {
         // Stripeの再試行がすべて尽きて最終的に失効した状態。ここで初めて停止中にする。
