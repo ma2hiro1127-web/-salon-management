@@ -61,6 +61,7 @@ import {
   getCostMonthlyAmount,
   getMostRecentReflectedCostAmount,
   isCostItemReflectedForMonth,
+  collapseLimitedCostItemsForDisplay,
   buildCostMonthlyAmountsStateFromRows,
   getInventoryBalance,
   getPreviousMonthInventoryBalance,
@@ -1980,6 +1981,12 @@ function App() {
     isStaffPastOrFutureDateLocked,
   });
   const fixedCosts = useMemo(() => getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth), [appState, selectedStoreId, selectedMonth]);
+  // 費用入力タブの一覧表示専用(重複表示防止)。fixedCostsそのもの(損益計算・件数カウント・
+  // sortOrder算出などに使う、店舗の全履歴)には一切手を入れず、リスト描画にだけこちらを使う。
+  const displayedFixedCosts = useMemo(
+    () => collapseLimitedCostItemsForDisplay(appState, selectedStoreId, selectedMonth, fixedCosts),
+    [appState, selectedStoreId, selectedMonth, fixedCosts],
+  );
   const useInventoryTracking = Boolean(selectedStoreEntity?.settings?.useInventoryTracking);
   // 日計管理(要件2: 任意機能、初期値OFF)。OFFの店舗では日次入力画面に日計カード自体を
   // 一切描画しない(余白も残さない)。
@@ -7333,8 +7340,8 @@ function App() {
   // 既に当月分が反映済みの項目には触れない(上書きしない)。
   const [bulkReflectBusy, setBulkReflectBusy] = useState(false);
   const unreflectedLimitedCostItems = useMemo(
-    () => fixedCosts.filter((item) => item.periodType === "limited" && !isCostItemReflectedForMonth(appState, item.id, selectedMonth)),
-    [fixedCosts, appState, selectedMonth],
+    () => displayedFixedCosts.filter((item) => item.periodType === "limited" && !isCostItemReflectedForMonth(appState, item.id, selectedMonth)),
+    [displayedFixedCosts, appState, selectedMonth],
   );
   const reflectAllUnreflectedCostsForMonth = async () => {
     if (guardFranchiseReadOnly()) return;
@@ -9462,22 +9469,29 @@ function App() {
                         タッチを統一的に処理)。入力欄・編集・削除ボタンはハンドルと別要素なので、
                         誤操作にはならない。 */}
                     <div className="list-card">
-                      {fixedCosts.map((item) => {
+                      {displayedFixedCosts.map((item) => {
                         // 単月・期間限定費用は、登録月(startMonth)以降ずっと一覧に残る(要件:
                         // 「翌月以降も費用項目自体は一覧に残す」)。実際にその月の損益へ計上
                         // されるかどうかは、対象月ちょうどのcost_monthly_amounts行があるかどうか
                         // だけで判定する(isCostItemReflectedForMonth)——これは人件費・材料・
                         // 広告費・その他費用など、カテゴリを問わず全く同じ1本のロジック。
+                        //
+                        // 色付き表示は「先月以前に登録され、今月まだ未反映」の項目だけに限定する
+                        // (2026-09追加仕様)。今月新規登録した項目・「今月も反映」を押して反映
+                        // 済みになった項目は、どちらも通常の項目と同じ見た目(白背景・バッジ無し)
+                        // に統一する——反映済みかどうかで特別な色分けはしない。同名+同カテゴリの
+                        // 重複表示はdisplayedFixedCosts(collapseLimitedCostItemsForDisplay)側で
+                        // 既に間引き済みのため、ここでは単純に「未反映かどうか」だけを見ればよい。
                         const isReflected = isCostItemReflectedForMonth(appState, item.id, selectedMonth);
                         const isLimited = item.periodType === "limited";
-                        const savedAmount = getCostMonthlyAmount(appState, item.id, selectedMonth);
+                        const isUnreflectedCarryOver = isLimited && !isReflected;
                         const draftAmount = getCostAmountDraft(item);
                         const periodLabel = isLimited ? `${item.startMonth}に登録` : "継続";
                         return (
                           <div
                             key={item.id}
                             data-cost-item-id={item.id}
-                            className={`list-row cost-row ${isLimited && isReflected ? "cost-row-reflected" : ""} ${isLimited && !isReflected ? "cost-row-carry-forward" : ""} ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
+                            className={`list-row cost-row ${isUnreflectedCarryOver ? "cost-row-carry-forward" : ""} ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
                           >
                             <span
                               className="cost-row-drag-handle"
@@ -9502,24 +9516,21 @@ function App() {
                                 onChange={getCostAmountDraftHandler(item.id)}
                               />
                               {/* 継続費用は基本値が毎月自動反映されるためバッジ・反映操作は不要。
-                                  単月・期間限定費用だけ、反映済み(緑バッジ+反映解除)/未反映
-                                  (黄色背景+「今月も反映」)を出し分ける——全カテゴリ共通。 */}
-                              {isLimited && isReflected ? (
-                                <>
-                                  <span className="cost-row-reflected-badge">今月反映済み {money(savedAmount ?? 0)}</span>
-                                  {canEditMonthlyData(currentRole) ? (
-                                    <button className="text-button cost-row-unreflect-button" type="button" onClick={() => unreflectCostItemForMonth(item)}>今月の反映を解除</button>
-                                  ) : null}
-                                </>
-                              ) : isLimited ? (
+                                  単月・期間限定費用のうち、未反映(先月以前から持ち越し)の項目
+                                  だけ「今月未反映」を出す。反映済みの項目(今月新規登録・「今月も
+                                  反映」済みのどちらも)は通常表示にし、小さな「今月の反映を解除」
+                                  リンクだけを添える(常時目立つバッジは出さない、要件3)。 */}
+                              {isUnreflectedCarryOver ? (
                                 <span className="cost-row-carry-forward-badge">今月未反映</span>
+                              ) : isLimited && canEditMonthlyData(currentRole) ? (
+                                <button className="text-button cost-row-unreflect-button" type="button" onClick={() => unreflectCostItemForMonth(item)}>今月の反映を解除</button>
                               ) : null}
                               <button
-                                className={isLimited && !isReflected ? "primary-button" : "secondary-button"}
+                                className={isUnreflectedCarryOver ? "primary-button" : "secondary-button"}
                                 type="button"
                                 onClick={() => saveCostAmountFor(item)}
                               >
-                                {isLimited && !isReflected ? "今月も反映" : "保存"}
+                                {isUnreflectedCarryOver ? "今月も反映" : "保存"}
                               </button>
                             </div>
                             <div className="row-actions">

@@ -2380,6 +2380,45 @@ export const isCostItemReflectedForMonth = (state, costItemId, monthValue) => {
   return Boolean(row && row.amount !== undefined && row.amount !== null);
 };
 
+// 費用入力タブの一覧表示専用(2026-09追加仕様): 単月・期間限定費用は「翌月以降も一覧に残る」
+// 仕様(getFixedCostsForStoreMonth)のため、同名+同カテゴリの項目を月ごとに登録し直す運用の
+// 店舗(例: 人件費をスタッフごとに毎月新規登録する)では、過去月の項目が今月の一覧にも
+// そのまま出続け、「今月新しく登録した同名の項目」と並んで二重に見えてしまう
+// (例: 8月に登録した「タカベ給料」が未反映のまま9月の一覧にも残り、9月に改めて登録した
+// 「タカベ給料」と2行に見える不具合)。
+//
+// これはあくまで表示上の重複であり、getFixedCostsForStoreMonth自体(calculateMonthSummaryが
+// 直接使う、過去月の損益計算の実体)には一切手を入れない——過去月のP&Lデータはそのまま
+// 正しく残る。この関数は表示直前にitems(=getFixedCostsForStoreMonthの返り値)を
+// 名前+カテゴリでグループ化し、各グループから「今月表示すべき1件」だけを選び出す:
+//   - グループ内に対象月で反映済みの項目があれば、その項目(複数あれば全件)だけを表示する
+//     (通常表示・バッジ無し——それが今月新規登録でも、「今月も反映」で反映済みにした
+//     過去項目でも見た目は同じ)。
+//   - 無ければ、そのグループの中で最も新しい(startMonthが最大の)項目だけを「未反映」として
+//     表示する。それより古い同名項目は今月の一覧には出さない(過去のP&L計算には影響しない、
+//     あくまで今月の表示から間引くだけ)。
+// 継続費用(ongoing)はグループ化の対象外——そのまま全件表示する。
+export const collapseLimitedCostItemsForDisplay = (state, storeId, monthValue, items) => {
+  const groups = new Map();
+  items.forEach((item) => {
+    if (item.periodType !== "limited") return;
+    const key = `${item.name} ${item.categoryKey}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  const visibleLimitedIds = new Set();
+  groups.forEach((groupItems) => {
+    const reflected = groupItems.filter((item) => isCostItemReflectedForMonth(state, item.id, monthValue));
+    if (reflected.length > 0) {
+      reflected.forEach((item) => visibleLimitedIds.add(item.id));
+      return;
+    }
+    const latest = groupItems.reduce((a, b) => ((b.startMonth || "") > (a.startMonth || "") ? b : a));
+    visibleLimitedIds.add(latest.id);
+  });
+  return items.filter((item) => item.periodType !== "limited" || visibleLimitedIds.has(item.id));
+};
+
 // 「全店舗」(company_admin専用の仮想集計ビュー)専用の売上サマリー。calculateMonthSummaryを
 // 単純に店舗ごとに呼んで合算するのではなく、各店舗の元データ(daily_sales由来のdailyResults)
 // から日締め済みの日付だけを拾って直接合算し、達成率・客単価・1日平均売上・月末着地予測などの

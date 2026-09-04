@@ -446,12 +446,11 @@ button.list-row:hover { border-color: var(--accent); }
 .cost-row-drag-handle:active { cursor: grabbing; }
 .cost-row-dragging { opacity: 0.5; }
 .cost-row-drag-over { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft) inset; }
-/* 前月の単月・期間限定費用の「今月未反映／今月反映済み」表示(要件: 一目で分かる視覚的区別)。
-   未反映は薄い黄色(--warning)、反映済みは薄い緑(--success)の背景・バッジにする。 */
+/* 先月以前から持ち越されていて今月まだ未反映の単月・期間限定費用だけ、薄い黄色(--warning)の
+   背景・バッジで目立たせる(要件: 色付き表示は「未反映」だけに限定し、反映済み・今月新規登録の
+   項目は通常の白背景に戻す)。 */
 .cost-row-carry-forward { background: rgba(180, 83, 9, 0.08); border-color: rgba(180, 83, 9, 0.28); }
 .cost-row-carry-forward-badge { font-size: 0.85rem; font-weight: 600; color: var(--warning); }
-.cost-row-reflected { background: rgba(46, 163, 97, 0.08); border-color: rgba(46, 163, 97, 0.28); }
-.cost-row-reflected-badge { font-size: 0.85rem; font-weight: 600; color: var(--success); padding: 6px 10px; border-radius: 10px; background: rgba(46, 163, 97, 0.14); }
 /* 「今月の反映を解除」— 誤操作しやすい派手なボタンにはせず、控えめな小さいリンク風にする。 */
 .cost-row-unreflect-button { font-size: 0.78rem; color: var(--muted); }
 .cost-row-unreflect-button:hover { color: var(--danger); }
