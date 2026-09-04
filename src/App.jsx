@@ -53,6 +53,7 @@ import {
   formatMoneyOrDash,
   formatPercentOrDash,
   getPreviousMonthAmountByNameAndCategory,
+  getUnreflectedPreviousMonthLimitedItems,
   getCustomerTargetSummary,
   getStaffProductivitySummary,
   getDailyResultsForStoreMonth,
@@ -7270,10 +7271,127 @@ function App() {
     return costAmountDraftHandlersRef.current.get(itemId);
   };
 
-  const copyPreviousMonthAmountFor = (item) => {
+  // 「今月に反映」(単一項目、既にこの項目自体が当月一覧に存在するケース——同一idのまま
+  // 複数月にまたがる期間限定費用の途中月など)。以前はdraftへ値をセットするだけで、
+  // 別途「保存」を押すまで確定しない仕様だったが、「押しても反応しない(ように見える)」
+  // という不具合報告を受け、クリック1回で即座に保存まで完了する仕様へ変更した。
+  const reflectPreviousMonthAmountFor = async (item) => {
     const previous = getPreviousMonthCostAmount(appState, item.id, selectedMonth);
     if (previous === undefined) return;
-    setCostAmountDraft(item.id, String(previous));
+    const ok = await persistCostMonthlyAmount({ costItemId: item.id, targetMonth: selectedMonth, amount: previous });
+    if (ok) {
+      setCostAmountDrafts((prev) => {
+        const next = { ...prev };
+        delete next[item.id];
+        return next;
+      });
+    }
+  };
+
+  // 前月の単月・期間限定費用のうち、当月にまだ反映されていないもの(getUnreflectedPreviousMonthLimitedItems
+  // 参照)。当月の一覧には実在しない「未反映」候補として別枠で表示し、「今月に反映」を押した
+  // 時点で初めて当月分のfixed_costs行を新規作成する——一覧に見えているだけでは当月の損益に
+  // 一切加算しない(過去月集計不具合の再発防止と同じ設計方針)。
+  const previousMonthCarryForwardCandidates = useMemo(
+    () => getUnreflectedPreviousMonthLimitedItems(appState, selectedStoreId, selectedMonth),
+    [appState, selectedStoreId, selectedMonth],
+  );
+  const [reflectingCandidateIds, setReflectingCandidateIds] = useState(() => new Set());
+  const [bulkReflectBusy, setBulkReflectBusy] = useState(false);
+
+  // 単一の未反映候補を当月へ反映する(新規のfixed_costs行を作成し、その場でcost_monthly_amounts
+  // も保存する)。sortOrderHintは一括反映(reflectAllPreviousMonthCarryForwardItems)から連番で
+  // 渡される——1件ずつだとappStateの再描画待ちでsort_orderが衝突しうるため、呼び出し元で
+  // 採番済みの値を使う。
+  const reflectCarryForwardCandidate = async (candidate, sortOrderHint) => {
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("費用の金額を変更できるのは会社管理者・店舗管理者以上です。");
+      return false;
+    }
+    if (guardFranchiseReadOnly()) return false;
+    const { company, store } = resolveTargetCompanyAndStore();
+    if (!store?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return false;
+    }
+    if (store?.status === "suspended") {
+      setNotice("この店舗は現在停止中のため、新しい費用を登録できません");
+      return false;
+    }
+    if (isSupabaseConfigured && !company?.id) {
+      setNotice("店舗情報を確認できませんでした");
+      return false;
+    }
+    const itemId = crypto.randomUUID();
+    const sortOrder = sortOrderHint ?? (
+      getFixedCostsForStoreMonth(appStateRef.current, selectedStoreId, selectedMonth)
+        .reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 0) + 1
+    );
+    const nextItem = {
+      id: itemId,
+      name: candidate.name,
+      category: candidate.category || "",
+      categoryKey: candidate.categoryKey,
+      memo: candidate.memo || "",
+      periodType: "limited",
+      startMonth: selectedMonth,
+      endMonth: selectedMonth,
+      baseAmount: 0,
+      sortOrder,
+    };
+    if (isSupabaseConfigured) {
+      const result = await upsertFixedCostToSupabase({ id: itemId, companyId: company.id, storeId: store.id, entryMonth: selectedMonth, userId: appState.currentUserId, item: nextItem });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return false;
+      }
+    }
+    setAppState((prev) => {
+      const mapKey = buildMonthKey(selectedStoreId, selectedMonth);
+      return { ...prev, fixedCosts: { ...prev.fixedCosts, [mapKey]: [...(prev.fixedCosts[mapKey] || []), nextItem] } };
+    });
+    return persistCostMonthlyAmount({ costItemId: itemId, targetMonth: selectedMonth, amount: candidate.previousAmount });
+  };
+
+  const handleReflectCarryForwardCandidate = async (candidate) => {
+    if (reflectingCandidateIds.has(candidate.previousItemId)) return;
+    setReflectingCandidateIds((prev) => new Set(prev).add(candidate.previousItemId));
+    try {
+      await reflectCarryForwardCandidate(candidate);
+    } finally {
+      setReflectingCandidateIds((prev) => {
+        const next = new Set(prev);
+        next.delete(candidate.previousItemId);
+        return next;
+      });
+    }
+  };
+
+  // 画面上部の「前月の単月項目をまとめてコピー」。確認ダイアログの上で、その時点で未反映の
+  // 候補だけを連番のsortOrderで順番に反映する(Promise.allではなく直列awaitにすることで、
+  // 同時書き込みによるsort_order衝突・状態上書きを避ける——このファイルの他の一括処理と同じ方針)。
+  const reflectAllPreviousMonthCarryForwardItems = async () => {
+    if (guardFranchiseReadOnly()) return;
+    if (previousMonthCarryForwardCandidates.length === 0) return;
+    if (!window.confirm("前月の単月・期間限定項目を今月へコピーしますか？")) return;
+    setBulkReflectBusy(true);
+    try {
+      const candidates = getUnreflectedPreviousMonthLimitedItems(appStateRef.current, selectedStoreId, selectedMonth);
+      let sortOrderCursor = getFixedCostsForStoreMonth(appStateRef.current, selectedStoreId, selectedMonth)
+        .reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 0);
+      let succeeded = 0;
+      for (const candidate of candidates) {
+        sortOrderCursor += 1;
+        // eslint-disable-next-line no-await-in-loop
+        const ok = await reflectCarryForwardCandidate(candidate, sortOrderCursor);
+        if (ok) succeeded += 1;
+      }
+      if (succeeded > 0) {
+        setSuccessNotice(`前月の単月・期間限定項目を${succeeded}件、今月へ反映しました。`);
+      }
+    } finally {
+      setBulkReflectBusy(false);
+    }
   };
 
   const saveCostAmountFor = async (item) => {
@@ -9255,6 +9373,16 @@ function App() {
                         <p className="eyebrow">EXPENSE</p>
                         <h2>費用入力</h2>
                       </div>
+                      {canEditMonthlyData(currentRole) && previousMonthCarryForwardCandidates.length > 0 ? (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={bulkReflectBusy}
+                          onClick={reflectAllPreviousMonthCarryForwardItems}
+                        >
+                          {bulkReflectBusy ? "反映中…" : "前月の単月項目をまとめてコピー"}
+                        </button>
+                      ) : null}
                     </div>
                     <div className="panel-heading compact cost-section-heading">
                       <div>
@@ -9395,6 +9523,30 @@ function App() {
                         タッチを統一的に処理)。入力欄・編集・削除ボタンはハンドルと別要素なので、
                         誤操作にはならない。 */}
                     <div className="list-card">
+                      {/* 前月の単月・期間限定費用のうち当月にまだ反映されていないもの(未反映)。
+                          実在のfixedCosts項目ではなく表示専用の候補のため、当月の損益には一切
+                          加算されない——「今月に反映」を押して初めて実項目として作成・保存される。 */}
+                      {previousMonthCarryForwardCandidates.map((candidate) => (
+                        <div key={`carry-${candidate.previousItemId}`} className="list-row cost-row cost-row-carry-forward">
+                          <div>
+                            <strong>{candidate.name}</strong>
+                            <small>{getCostCategoryLabel(candidate.categoryKey)} ／ 単月・期間限定 ／ 前月項目・今月未反映{candidate.memo ? ` ／ ${candidate.memo}` : ""}</small>
+                          </div>
+                          <div className="cost-row-amount">
+                            <span className="cost-row-carry-forward-badge">前月 {money(candidate.previousAmount)}</span>
+                            {canEditMonthlyData(currentRole) ? (
+                              <button
+                                className="primary-button"
+                                type="button"
+                                disabled={reflectingCandidateIds.has(candidate.previousItemId)}
+                                onClick={() => handleReflectCarryForwardCandidate(candidate)}
+                              >
+                                {reflectingCandidateIds.has(candidate.previousItemId) ? "反映中…" : "今月に反映"}
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      ))}
                       {fixedCosts.map((item) => {
                         const periodLabel = item.periodType === "limited"
                           ? (item.startMonth && item.startMonth === item.endMonth ? `${item.startMonth}のみ` : `${item.startMonth}〜${item.endMonth}`)
@@ -9403,15 +9555,17 @@ function App() {
                         const savedAmount = getCostMonthlyAmount(appState, item.id, selectedMonth);
                         const draftAmount = getCostAmountDraft(item);
                         // 単月項目(人件費/材料・発注費等)は月ごとに新しいitem idになるため上のidベースの
-                        // 前月比較が効かない。名前+カテゴリが一致する前月項目があればサジェスト表示する。
+                        // 前月比較が効かない。名前+カテゴリが一致する前月項目があれば「今月反映済み」
+                        // (前月から引き継がれた項目)として扱う。
                         const suggestedPreviousAmount = previousAmount === undefined
                           ? getPreviousMonthAmountByNameAndCategory(appState, selectedStoreId, item.name, item.categoryKey, selectedMonth)
                           : undefined;
+                        const isReflectedFromPreviousMonth = item.periodType === "limited" && suggestedPreviousAmount !== undefined;
                         return (
                           <div
                             key={item.id}
                             data-cost-item-id={item.id}
-                            className={`list-row cost-row ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
+                            className={`list-row cost-row ${isReflectedFromPreviousMonth ? "cost-row-reflected" : ""} ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
                           >
                             <span
                               className="cost-row-drag-handle"
@@ -9435,13 +9589,19 @@ function App() {
                                 placeholder={savedAmount === undefined ? "未入力" : ""}
                                 onChange={getCostAmountDraftHandler(item.id)}
                               />
-                              {/* 要件6: 継続費用は基本値が毎月自動反映されるため「前月をコピー」は
+                              {/* 要件6: 継続費用は基本値が毎月自動反映されるため「今月に反映」は
                                   不要(常に基本値=前月扱いになってしまい紛らわしいため非表示にする)。
-                                  単月・期間限定費用は既存仕様のまま維持する。 */}
+                                  単月・期間限定費用のうち、この項目自体が前月と同一idのまま複数月に
+                                  またがるケース(previousAmount)だけボタンを出す。名前+カテゴリ一致
+                                  による引き継ぎ(isReflectedFromPreviousMonth)は既に反映済みなので
+                                  バッジ表示のみでコピー操作は出さない。 */}
                               {item.periodType === "limited" && previousAmount !== undefined ? (
-                                <button className="text-button" type="button" onClick={() => copyPreviousMonthAmountFor(item)}>前月をコピー（{money(previousAmount)}）</button>
-                              ) : item.periodType === "limited" && suggestedPreviousAmount !== undefined ? (
-                                <small className="helper-text">前月の{item.name}: {money(suggestedPreviousAmount)}</small>
+                                <>
+                                  <small className="helper-text">前月 {money(previousAmount)}</small>
+                                  <button className="text-button" type="button" onClick={() => reflectPreviousMonthAmountFor(item)}>今月に反映</button>
+                                </>
+                              ) : isReflectedFromPreviousMonth ? (
+                                <span className="cost-row-reflected-badge">今月反映済み {money(savedAmount ?? 0)}</span>
                               ) : null}
                               <button className="secondary-button" type="button" onClick={() => saveCostAmountFor(item)}>保存</button>
                             </div>

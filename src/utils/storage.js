@@ -2380,6 +2380,36 @@ export const getPreviousMonthAmountByNameAndCategory = (state, storeId, name, ca
   return getCostMonthlyAmount(state, match.id, previousMonth);
 };
 
+// 費用入力タブの「今月に反映」(単一項目)・「前月の単月・期間限定項目をまとめてコピー」
+// (一括)用。前月に存在していた単月・期間限定費用のうち、当月にまだ同名+同カテゴリの項目が
+// 登録されていないものを「未反映」候補として返す(名前+カテゴリでの照合は
+// getPreviousMonthAmountByNameAndCategoryと同じ考え方——単月項目は月ごとに新しいitem idに
+// なるため、idベースでは前月分を辿れない)。
+//
+// 重要: この関数はUI表示専用の別経路として完全に独立させており、calculateMonthSummaryが
+// 内部で呼ぶgetFixedCostsForStoreMonth自体の絞り込みには一切手を入れていない。そのため、
+// この関数が返す「未反映」候補は当月のfixedCosts/損益集計には一切含まれない——一覧に見えて
+// いるだけでは当月の人件費・経費合計・営業利益に加算されず、実際に「今月に反映」して
+// 新しい費用項目(fixed_costs行)が当月分として作成・保存された時点で初めて反映される
+// (過去月集計不具合の再発防止と同じ設計方針: 表示と集計の対象月判定を混同しない)。
+export const getUnreflectedPreviousMonthLimitedItems = (state, storeId, monthValue) => {
+  const previousMonth = getMonthOffset(monthValue, -1);
+  const previousItems = getFixedCostsForStoreMonth(state, storeId, previousMonth)
+    .filter((item) => item.periodType === "limited");
+  const currentItems = getFixedCostsForStoreMonth(state, storeId, monthValue);
+  return previousItems
+    .filter((item) => !currentItems.some((current) => current.name === item.name && current.categoryKey === item.categoryKey))
+    .map((item) => ({
+      previousItemId: item.id,
+      name: item.name,
+      category: item.category || "",
+      categoryKey: item.categoryKey,
+      memo: item.memo || "",
+      previousAmount: getCostMonthlyAmount(state, item.id, previousMonth) ?? 0,
+    }))
+    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
+};
+
 // 「全店舗」(company_admin専用の仮想集計ビュー)専用の売上サマリー。calculateMonthSummaryを
 // 単純に店舗ごとに呼んで合算するのではなく、各店舗の元データ(daily_sales由来のdailyResults)
 // から日締め済みの日付だけを拾って直接合算し、達成率・客単価・1日平均売上・月末着地予測などの
