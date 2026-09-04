@@ -1939,18 +1939,31 @@ export const getStoreMonthlyCostOverride = (state, storeId, monthValue) =>
 
 // 人件費・仕入の「月途中は売上連動で自動推定、実額確定後はそれを優先する」共通ロジック
 // (要件22: UIコンポーネントへ計算式を直接ベタ書きしない)。優先順位(要件5):
-//   1. 手動確定額(override)がある → それを使う
-//   2. 手動確定額が無い かつ 売上連動モード → 実売上×率(1円単位に丸め、要件23)
-//   3. それ以外(固定額モード) → 既存の費用入力(fixed_costs/cost_monthly_amounts)の合計
+//   1. 手動確定額(override)がある → それを使う(過去月・当月を問わず常に最優先)
+//   2. 手動確定額が無い かつ 売上連動モード かつ 今まさに進行中の当月を見ている → 実売上×率
+//      (1円単位に丸め、要件23)
+//   3. それ以外(固定額モード、または過去月・未来月を見ている) → 既存の費用入力
+//      (fixed_costs/cost_monthly_amounts)の合計
 // 人件費・仕入で計算式は完全に同一のため、labor/purchase用に個別exportしつつ内部実装は共有する。
-const resolveCostAmountAndSource = ({ mode, rate, override, fixedAmount, sales }) => {
+//
+// 2026-09-04 修正(過去月集計不具合): labor_cost_mode/purchase_cost_modeはstore_input_
+// settingsの店舗単位の設定で、対象月ごとに保存されない。そのため、この設定を「後から
+// sales_linkedへ変更」しただけで、確定済みのはずの過去月(store_monthly_cost_overridesに
+// 手動確定額が無い月)まで遡って売上連動の自動推定へ差し替わってしまい、実際に登録済みの
+// fixed_costs/cost_monthly_amountsの金額(例: INTRO店舗2026年8月の人件費¥1,249,410)が
+// 損益画面から消えて見える不具合があった(DB上のデータ自体は無傷)。売上連動の自動推定は
+// 本来「今まさに進行中の当月、実額がまだ確定していない間の一時的な見積もり」という設計
+// 意図(このコメント冒頭)のはずが、対象月を問わず一律に適用されていたのが原因。
+// isCurrentMonth(呼び出し側でmonthValueが実際の「今日」の年月と一致するかを渡す)で
+// この分岐を当月だけに限定し、過去月・未来月は必ず実額(fixedAmount)を使うようにした。
+const resolveCostAmountAndSource = ({ mode, rate, override, fixedAmount, sales, isCurrentMonth }) => {
   // autoEstimate(現在売上×率)は、実際にどの金額が採用されているか(source)に関わらず常に
   // 算出しておく——手動確定後も「自動計算額」と「反映中の実額」を並べて比較できるようにする
   // (要件3: 自動計算額自体は消さない)。UI側で同じ式を再計算しない(要件14: 計算ロジックの
   // 重複を作らない)ための、唯一の計算箇所。
   const autoEstimate = roundCurrency((Number(sales) || 0) * (Number(rate) || 0) / 100);
   if (override !== null && override !== undefined) return { amount: Number(override) || 0, source: "manual", autoEstimate };
-  if (mode === "sales_linked") return { amount: autoEstimate, source: "auto", autoEstimate };
+  if (mode === "sales_linked" && isCurrentMonth) return { amount: autoEstimate, source: "auto", autoEstimate };
   return { amount: Number(fixedAmount) || 0, source: "fixed", autoEstimate };
 };
 
@@ -2046,14 +2059,14 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // そのまま使う——目標売上ではなく必ず実際の当月売上を使うことが要件3の核心。
   const laborCostOverride = getStoreMonthlyCostOverride(state, storeId, monthValue).laborCostOverride;
   const { amount: laborCost, source: laborCostSource, autoEstimate: laborCostAutoEstimate } = calculateLaborCost({
-    mode: options.laborCostMode, rate: options.laborCostRate, override: laborCostOverride, fixedAmount: costsByCategory.labor, sales,
+    mode: options.laborCostMode, rate: options.laborCostRate, override: laborCostOverride, fixedAmount: costsByCategory.labor, sales, isCurrentMonth: selectedCurrentMonth,
   });
   // 材料・発注費(ディーラー請求書等の月間合計、業務材料+店販商品仕入+送料等をまとめて1件で
   // 入力してもよいし、月中に複数回に分けて入力してその月の合計として扱ってもよい)。人件費と
   // 同じ自動推定/実額確定の仕様(要件6-8)。
   const purchaseCostOverride = getStoreMonthlyCostOverride(state, storeId, monthValue).purchaseCostOverride;
   const { amount: purchaseAmount, source: purchaseCostSource, autoEstimate: purchaseCostAutoEstimate } = calculatePurchaseCost({
-    mode: options.purchaseCostMode, rate: options.purchaseCostRate, override: purchaseCostOverride, fixedAmount: costsByCategory.materials, sales,
+    mode: options.purchaseCostMode, rate: options.purchaseCostRate, override: purchaseCostOverride, fixedAmount: costsByCategory.materials, sales, isCurrentMonth: selectedCurrentMonth,
   });
   // 人件費・仕入とも、実際に使用中の金額の出所が確定していれば(固定額モードで実入力がある／
   // 売上連動で自動推定できている／手動確定額がある、のいずれか)「未入力」扱いにしない

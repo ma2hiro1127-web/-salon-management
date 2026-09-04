@@ -4042,72 +4042,171 @@ test("runWithSaveGuard: taskが失敗(reject)してもguardRef.currentは必ずf
 // 回帰テストケースA-J(要件24・25)をそのままcalculateLaborCost/calculatePurchaseCostの
 // 単体テストとして実装する。労働費・仕入で計算式は完全に同一のため、同じケース番号で
 // 両方を検証する。
+//
+// 2026-09-04追記: 売上連動の自動推定は「今まさに進行中の当月」だけに限定される
+// (isCurrentMonth: true)よう修正した(過去月集計不具合の修正)。ケースA-Jは
+// いずれも「月途中」を検証する意図のテストのため、isCurrentMonth: trueを明示する。
 // ============================================================
 
 test("calculateLaborCost ケースA: 売上500万円・人件費率40%(自動計算) → 200万円", () => {
-  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: undefined, fixedAmount: 0, sales: 5000000 });
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: undefined, fixedAmount: 0, sales: 5000000, isCurrentMonth: true });
   assert.equal(result.amount, 2000000);
   assert.equal(result.source, "auto");
 });
 
 test("calculateLaborCost ケースB: 売上600万円へ変更(率は40%のまま) → 240万円", () => {
-  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: undefined, fixedAmount: 0, sales: 6000000 });
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: undefined, fixedAmount: 0, sales: 6000000, isCurrentMonth: true });
   assert.equal(result.amount, 2400000);
   assert.equal(result.source, "auto");
 });
 
 test("calculateLaborCost ケースC: 250万円へ手動確定 → 損益では250万円を使用する(売上・率に関わらずoverrideが最優先)", () => {
-  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 6000000 });
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 6000000, isCurrentMonth: true });
   assert.equal(result.amount, 2500000);
   assert.equal(result.source, "manual");
 });
 
 test("calculateLaborCost: 手動確定額を使用中でも自動計算額(autoEstimate)は常に併記できるよう返す(600万円×40%=240万円、実額250万円とは別に確認できる)", () => {
-  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 6000000 });
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 6000000, isCurrentMonth: true });
   assert.equal(result.amount, 2500000);
   assert.equal(result.autoEstimate, 2400000);
 });
 
 test("calculateLaborCost ケースD: 手動確定後に売上が700万円へ変わっても、確定額250万円を保持する(自動計算で上書きしない)", () => {
-  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 7000000 });
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 2500000, fixedAmount: 0, sales: 7000000, isCurrentMonth: true });
   assert.equal(result.amount, 2500000);
   assert.equal(result.source, "manual");
 });
 
 test("calculateLaborCost ケースE: 「自動計算に戻す」(override=null) → 最新の実売上700万円×40%=280万円", () => {
-  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: null, fixedAmount: 0, sales: 7000000 });
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: null, fixedAmount: 0, sales: 7000000, isCurrentMonth: true });
   assert.equal(result.amount, 2800000);
   assert.equal(result.source, "auto");
 });
 
 test("calculatePurchaseCost ケースF: 売上500万円・仕入率8%(自動計算) → 40万円", () => {
-  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: undefined, fixedAmount: 0, sales: 5000000 });
+  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: undefined, fixedAmount: 0, sales: 5000000, isCurrentMonth: true });
   assert.equal(result.amount, 400000);
   assert.equal(result.source, "auto");
 });
 
 test("calculatePurchaseCost ケースG: 売上600万円へ変更 → 48万円", () => {
-  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: undefined, fixedAmount: 0, sales: 6000000 });
+  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: undefined, fixedAmount: 0, sales: 6000000, isCurrentMonth: true });
   assert.equal(result.amount, 480000);
   assert.equal(result.source, "auto");
 });
 
 test("calculatePurchaseCost ケースH: 50万円へ手動変更 → 損益では50万円を使用する", () => {
-  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: 500000, fixedAmount: 0, sales: 6000000 });
+  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: 500000, fixedAmount: 0, sales: 6000000, isCurrentMonth: true });
   assert.equal(result.amount, 500000);
   assert.equal(result.source, "manual");
 });
 
 test("calculatePurchaseCost ケースI: 売上700万円になっても手動確定額50万円を保持する", () => {
-  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: 500000, fixedAmount: 0, sales: 7000000 });
+  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: 500000, fixedAmount: 0, sales: 7000000, isCurrentMonth: true });
   assert.equal(result.amount, 500000);
   assert.equal(result.source, "manual");
 });
 
 test("calculatePurchaseCost ケースJ: 自動計算へ戻す → 700万円×8%=56万円", () => {
-  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: null, fixedAmount: 0, sales: 7000000 });
+  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 8, override: null, fixedAmount: 0, sales: 7000000, isCurrentMonth: true });
   assert.equal(result.amount, 560000);
   assert.equal(result.source, "auto");
+});
+
+// 2026-09-04: 過去月集計不具合の直接の回帰テスト。store_input_settingsのlabor_cost_mode/
+// purchase_cost_modeは店舗単位の設定で対象月ごとに保存されないため、「後からsales_linkedへ
+// 変更」しただけで過去月(月次確定額=overrideが無い月)まで売上連動の自動推定に差し替わり、
+// 実際に登録済みのfixed_costs/cost_monthly_amountsの金額(INTRO店舗2026年8月の人件費
+// ¥1,249,410等)が損益画面から消えていた。isCurrentMonthがfalse(=過去月・未来月を見ている)
+// なら、sales_linkedモードであっても必ず実額(fixedAmount)を使うことを保証する。
+test("calculateLaborCost: 過去月集計不具合の回帰テスト — sales_linkedモードでもisCurrentMonthがfalse(過去月)なら実額(fixedAmount)を使う、自動推定(売上×率)を使わない", () => {
+  // INTRO店舗2026年8月の実例を模したケース: モードはsales_linked・率0%だが、
+  // 実際に登録済みの人件費合計は¥1,249,410。isCurrentMonth省略(=過去月扱い)なら
+  // ¥1,249,410がそのまま使われ、¥0にはならない。
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 0, override: undefined, fixedAmount: 1249410, sales: 5000000 });
+  assert.equal(result.amount, 1249410);
+  assert.equal(result.source, "fixed");
+});
+
+test("calculateLaborCost: 過去月集計不具合の回帰テスト — isCurrentMonth: falseを明示した場合も同様", () => {
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: undefined, fixedAmount: 2150000, sales: 5000000, isCurrentMonth: false });
+  assert.equal(result.amount, 2150000);
+  assert.equal(result.source, "fixed");
+});
+
+test("calculatePurchaseCost: 過去月集計不具合の回帰テスト — sales_linkedモードでも過去月なら実額(fixedAmount)を使う", () => {
+  const result = calculatePurchaseCost({ mode: "sales_linked", rate: 42, override: undefined, fixedAmount: 430000, sales: 5000000, isCurrentMonth: false });
+  assert.equal(result.amount, 430000);
+  assert.equal(result.source, "fixed");
+});
+
+test("calculateLaborCost: 過去月であっても手動確定額(override)は最優先のまま(sales_linked・isCurrentMonth: falseでもoverrideが勝つ)", () => {
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 40, override: 999999, fixedAmount: 1249410, sales: 5000000, isCurrentMonth: false });
+  assert.equal(result.amount, 999999);
+  assert.equal(result.source, "manual");
+});
+
+// 2026-09-04: ユーザー報告の再発防止テスト(calculateMonthSummary経由のend-to-end)。
+// 「単月・期間限定費用を入力(INTRO店舗2026年8月の実例を再現)→翌月以降に移動→前月を
+// 再表示」しても、人件費・材料費・その他費用のいずれも同じ数値のままであることを保証する。
+// テスト実行時点の実際の「今日」がいつであっても再現できるよう、対象月には確実に過去月
+// (実行時点から2年以上前なので、いつテストを走らせても「当月」と一致しない)を使う——
+// 「過去月を見ている間はlabor_cost_mode/purchase_cost_modeの設定に関わらず必ず実額
+// (fixedAmount)を使う」という今回の修正そのものが、月をまたいで何か月後に見返しても
+// 数値が変わらないことの直接の保証になっている。
+test("calculateMonthSummary: 再発防止テスト — 単月・期間限定費用(人件費・材料費・その他費用)は、売上連動モードが設定されていても、過去月を表示する限り翌月以降いつ見返しても同じ数値のまま(INTRO店舗の実例の再現)", () => {
+  const state = createInitialAppState();
+  const store = "INTRO";
+  const pastMonth = "2020-06"; // どの時点でテストを実行しても確実に「過去月」
+  const key = `${store}__${pastMonth}`;
+  state.stores = [store];
+  state.dailyResults[key] = [{ date: `${pastMonth}-01`, totalSales: 5000000 }];
+
+  // INTRO店舗2026年8月の実例を再現: 人件費(単月・期間限定)を1人ずつ登録。
+  state.fixedCosts[key] = [
+    { id: "labor-1", name: "大也給料", categoryKey: "labor", periodType: "limited", startMonth: pastMonth, endMonth: pastMonth },
+    { id: "labor-2", name: "タカベ給料", categoryKey: "labor", periodType: "limited", startMonth: pastMonth, endMonth: pastMonth },
+    { id: "labor-3", name: "田前給料", categoryKey: "labor", periodType: "limited", startMonth: pastMonth, endMonth: pastMonth },
+    { id: "labor-4", name: "田前社会保険", categoryKey: "labor", periodType: "limited", startMonth: pastMonth, endMonth: pastMonth },
+    { id: "materials-1", name: "資材発注", categoryKey: "materials", periodType: "limited", startMonth: pastMonth, endMonth: pastMonth },
+    { id: "other-1", name: "臨時経費", categoryKey: "other", periodType: "limited", startMonth: pastMonth, endMonth: pastMonth },
+  ];
+  state.costMonthlyAmounts = {
+    [`labor-1__${pastMonth}`]: { amount: 400000 },
+    [`labor-2__${pastMonth}`]: { amount: 500000 },
+    [`labor-3__${pastMonth}`]: { amount: 220000 },
+    [`labor-4__${pastMonth}`]: { amount: 29410 },
+    [`materials-1__${pastMonth}`]: { amount: 300000 },
+    [`other-1__${pastMonth}`]: { amount: 50000 },
+  };
+
+  // INTRO店舗の実例通り、店舗設定は売上連動モード(率0%)——過去月にはstore_monthly_
+  // cost_overrides(手動確定額)は無い状態。
+  const options = { laborCostMode: "sales_linked", laborCostRate: 0, purchaseCostMode: "sales_linked", purchaseCostRate: 0 };
+
+  const summary = calculateMonthSummary(state, store, pastMonth, options);
+
+  // 人件費: 400,000+500,000+220,000+29,410 = 1,149,410円(¥0にならない)。
+  assert.equal(summary.laborCost, 1149410);
+  assert.equal(summary.laborCostSource, "fixed");
+  // 材料・発注費も同様に売上連動の自動推定(0円)に化けず、実額のまま。
+  assert.equal(summary.purchaseAmount, 300000);
+  assert.equal(summary.purchaseCostSource, "fixed");
+  // その他費用(この関数の対象外だったカテゴリ、常にfixedAmount経由で無事だったことの確認)。
+  assert.equal(summary.otherCost, 50000);
+  // 人件費率・経費合計・営業利益にも正しく反映される。
+  assert.equal(summary.laborRate, (1149410 / 5000000) * 100);
+  assert.equal(summary.expenseTotal, summary.costOfGoodsSold + summary.laborCost + summary.expenseCost);
+  assert.equal(summary.operatingProfit, summary.grossProfit - summary.laborCost - summary.expenseCost);
+
+  // 「翌月に移動→前月を再表示」の再現: 同じstate・同じ対象月に対して、間を置いてもう一度
+  // 呼び出しても(=何か月後に見返しても)全く同じ結果を返すことを確認する。
+  const summaryAgainLater = calculateMonthSummary(state, store, pastMonth, options);
+  assert.equal(summaryAgainLater.laborCost, summary.laborCost);
+  assert.equal(summaryAgainLater.purchaseAmount, summary.purchaseAmount);
+  assert.equal(summaryAgainLater.otherCost, summary.otherCost);
+  assert.equal(summaryAgainLater.operatingProfit, summary.operatingProfit);
 });
 
 test("calculateLaborCost/calculatePurchaseCost: 固定額モード(既定)では既存の費用入力合計(fixedAmount)をそのまま使う(要件2・5-3、既存データを壊さない)", () => {
@@ -4152,44 +4251,58 @@ test("buildStoreMonthlyCostOverridesStateFromRows: DB行のnullをundefined(未�
   assert.equal(storeMonthlyCostOverrides["store-1__2026-09"].laborCostOverride, 0);
 });
 
-test("calculateMonthSummary(要件26の月またぎ): 8月に人件費率40%・仕入率8%・確定額を設定→9月は率のみ継続し確定額は引き継がれず自動計算から再開する", () => {
+test("calculateMonthSummary(要件26の月またぎ): 前月に人件費率40%・仕入率8%・確定額を設定→当月は率のみ継続し確定額は引き継がれず自動計算から再開する", () => {
   const state = createInitialAppState();
   const store = "横浜店";
+  // 売上連動の自動推定は「今まさに進行中の当月」だけに適用される(2026-09-04修正、過去月
+  // 集計不具合)ため、このテストが検証したい「月をまたいで当月に入ると自動計算が再開する」
+  // 挙動を再現するには、「前月」役は必ず当月より前の月、「当月」役は実行時点の実際の
+  // 当月にする必要がある(固定の"2026-08"/"2026-09"文字列だと、テスト実行時点によっては
+  // どちらも過去月扱いになり、このテストが検証したい経路を通らなくなる)。
+  const now = new Date();
+  const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const previousDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const previousMonth = `${previousDate.getFullYear()}-${String(previousDate.getMonth() + 1).padStart(2, "0")}`;
   state.stores = [store];
-  state.dailyResults[`${store}__2026-08`] = [{ date: "2026-08-01", totalSales: 5000000 }];
-  state.dailyResults[`${store}__2026-09`] = [{ date: "2026-09-01", totalSales: 6000000 }];
-  // 8月だけ確定額を保存(9月には保存しない=月キーで分離されている実装そのものの確認)。
+  state.dailyResults[`${store}__${previousMonth}`] = [{ date: `${previousMonth}-01`, totalSales: 5000000 }];
+  state.dailyResults[`${store}__${currentMonth}`] = [{ date: `${currentMonth}-01`, totalSales: 6000000 }];
+  // 前月だけ確定額を保存(当月には保存しない=月キーで分離されている実装そのものの確認)。
   state.storeMonthlyCostOverrides = {
-    "横浜店__2026-08": { laborCostOverride: 2500000, purchaseCostOverride: 500000 },
+    [`${store}__${previousMonth}`]: { laborCostOverride: 2500000, purchaseCostOverride: 500000 },
   };
   const options = { laborCostMode: "sales_linked", laborCostRate: 40, purchaseCostMode: "sales_linked", purchaseCostRate: 8 };
 
-  const augustSummary = calculateMonthSummary(state, store, "2026-08", options);
-  assert.equal(augustSummary.laborCost, 2500000);
-  assert.equal(augustSummary.laborCostSource, "manual");
-  assert.equal(augustSummary.purchaseAmount, 500000);
-  assert.equal(augustSummary.purchaseCostSource, "manual");
+  const previousSummary = calculateMonthSummary(state, store, previousMonth, options);
+  assert.equal(previousSummary.laborCost, 2500000);
+  assert.equal(previousSummary.laborCostSource, "manual");
+  assert.equal(previousSummary.purchaseAmount, 500000);
+  assert.equal(previousSummary.purchaseCostSource, "manual");
   // 手動確定後も自動計算額自体は消えず、実額と比較できる状態を維持する(要件3)。
-  // 8月の実売上500万円×40%=200万円/×8%=40万円が、実額(215万/50万)とは別に確認できる。
-  assert.equal(augustSummary.laborCostAutoEstimate, 2000000);
-  assert.equal(augustSummary.purchaseCostAutoEstimate, 400000);
+  // 前月の実売上500万円×40%=200万円/×8%=40万円が、実額(250万/50万)とは別に確認できる。
+  assert.equal(previousSummary.laborCostAutoEstimate, 2000000);
+  assert.equal(previousSummary.purchaseCostAutoEstimate, 400000);
 
-  // 9月は率(40%・8%)だけが引き継がれ、確定額は引き継がれず自動計算(売上×率)から再開する。
-  const septemberSummary = calculateMonthSummary(state, store, "2026-09", options);
-  assert.equal(septemberSummary.laborCost, 2400000); // 600万円×40%
-  assert.equal(septemberSummary.laborCostSource, "auto");
-  assert.equal(septemberSummary.laborCostAutoEstimate, 2400000);
-  assert.equal(septemberSummary.purchaseAmount, 480000); // 600万円×8%
-  assert.equal(septemberSummary.purchaseCostSource, "auto");
-  assert.equal(septemberSummary.purchaseCostAutoEstimate, 480000);
+  // 当月は率(40%・8%)だけが引き継がれ、確定額は引き継がれず自動計算(売上×率)から再開する。
+  const currentSummary = calculateMonthSummary(state, store, currentMonth, options);
+  assert.equal(currentSummary.laborCost, 2400000); // 600万円×40%
+  assert.equal(currentSummary.laborCostSource, "auto");
+  assert.equal(currentSummary.laborCostAutoEstimate, 2400000);
+  assert.equal(currentSummary.purchaseAmount, 480000); // 600万円×8%
+  assert.equal(currentSummary.purchaseCostSource, "auto");
+  assert.equal(currentSummary.purchaseCostAutoEstimate, 480000);
 });
 
 test("calculateMonthSummary: 売上連動モードでは、費用項目を1件も登録していなくてもisProvisionalProfitがfalseになる(要件1の目的: 月途中でも自動推定額で概算損益を確認できる)", () => {
   const state = createInitialAppState();
   const store = "横浜店";
-  const month = "2026-08";
+  // 売上連動の自動推定は「今まさに進行中の当月」だけに適用される(2026-09-04修正、過去月
+  // 集計不具合)ため、このテストが検証したい「月中の自動推定」を再現するには、実行時点の
+  // 実際の年月を使う必要がある(固定の過去月文字列だと、テスト実行時点で既に過去月扱いになり、
+  // このテストが検証したい挙動と別の—だが正しい—経路(実額fixedAmountを使う経路)を通ってしまう)。
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   state.stores = [store];
-  state.dailyResults[`${store}__${month}`] = [{ date: "2026-08-01", totalSales: 5000000 }];
+  state.dailyResults[`${store}__${month}`] = [{ date: `${month}-01`, totalSales: 5000000 }];
   // fixedCosts/costMonthlyAmountsは一切登録しない(labor/materialsどちらも実入力ゼロ)。
 
   const fixedModeSummary = calculateMonthSummary(state, store, month, { laborCostMode: "fixed", purchaseCostMode: "fixed" });
@@ -4203,9 +4316,13 @@ test("calculateMonthSummary: 売上連動モードでは、費用項目を1件�
 
 test("getStoreDashboardRows(要件17): 全店舗ビューは各店舗ごとにmode/rateで計算してから合算する(全店舗売上×平均率のような近似計算はしない)", () => {
   const state = createInitialAppState();
+  // 売上連動の自動推定は当月だけに適用される(2026-09-04修正、過去月集計不具合)ため、
+  // このテストが検証したい「月中の自動推定」を再現するには実行時点の実際の年月を使う。
+  const now = new Date();
+  const month = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   state.stores = ["横浜店", "吉祥寺店"];
-  state.dailyResults["横浜店__2026-08"] = [{ date: "2026-08-01", totalSales: 5000000 }];
-  state.dailyResults["吉祥寺店__2026-08"] = [{ date: "2026-08-01", totalSales: 3000000 }];
+  state.dailyResults[`横浜店__${month}`] = [{ date: `${month}-01`, totalSales: 5000000 }];
+  state.dailyResults[`吉祥寺店__${month}`] = [{ date: `${month}-01`, totalSales: 3000000 }];
   const company = {
     id: "c1",
     stores: [
@@ -4213,7 +4330,7 @@ test("getStoreDashboardRows(要件17): 全店舗ビューは各店舗ごとにmo
       { id: "吉祥寺店", name: "吉祥寺店", status: "active", settings: { laborCostMode: "sales_linked", laborCostRate: 35 } },
     ],
   };
-  const rows = getStoreDashboardRows(state, company, "2026-08");
+  const rows = getStoreDashboardRows(state, company, month);
   const yokohama = rows.find((row) => row.storeId === "横浜店");
   const kichijoji = rows.find((row) => row.storeId === "吉祥寺店");
   // 横浜: 500万円×40%=200万円、吉祥寺: 300万円×35%=105万円(要件17の例と同じ数字)。
