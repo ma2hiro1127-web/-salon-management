@@ -1874,13 +1874,26 @@ function App() {
     }
   }, [activePage, activeMonthlyTab]);
   const setupProgress = useMemo(() => getCompanySetupProgress(currentCompany), [currentCompany]);
-  // Only ever reachable in local/demo mode (isSupabaseConfigured === false): every company
+  // isAdminUserはこの直後のshowInitialSetupで使うため、実際に使われる箇所より前で宣言する
+  // 必要がある(以前は約1000行下(旧2864行目付近)で宣言されており、会社新規作成直後の
+  // 一瞬(setup.completeがローカルにfalseで構築される間)だけこのTDZ違反が実際に踏まれ、
+  // 「予期しない問題が発生しました」のエラー画面になっていた——本番で発見・修正)。
+  const isAdminUser = isAdminRole(currentRole);
+  // Only meant to be reachable in local/demo mode (isSupabaseConfigured === false): every company
   // fetched from Supabase (see normalizedCompanies in supabase.js) has setup.complete hardcoded
   // to true, since there's no per-step "is this company fully onboarded" concept once companies/
   // stores/store_input_settings/company_settings are all real tables — a company either exists
-  // or it doesn't. Not dead code — it's the non-Supabase demo mode's own onboarding flow — just
-  // never triggered once Supabase is configured.
-  const showInitialSetup = Boolean(currentCompany && !currentCompany.setup?.complete && isAdminUser);
+  // or it doesn't. Not dead code — it's the non-Supabase demo mode's own onboarding flow.
+  //
+  // 本番で発見(2026-09): 上記の前提はSupabase接続時の"通常の再読み込み・ハイドレート"では
+  // 正しいが、会社を新規作成した直後の一瞬だけは例外だった——handleSaveCompanyInnerが
+  // ローカルに組み立てるnextCompanyオブジェクトはsetup.complete:falseを持つため
+  // (Supabaseへの実際の再取得が走るまでの間)、isSupabaseConfigured===trueであっても
+  // この分岐が実際に評価されてしまっていた。この一瞬の間だけこの画面(ローカル/デモ専用の
+  // 旧オンボーディングUI)が本番のsystem_adminにも一瞬表示されてしまう抜け道になっていた
+  // ため、isSupabaseConfiguredで明示的にガードし、コメント通りの「ローカル/デモ専用」を
+  // 条件式でも保証する(本番の実際のフローはneedsFirstStoreSetupが正として使われる)。
+  const showInitialSetup = Boolean(!isSupabaseConfigured && currentCompany && !currentCompany.setup?.complete && isAdminUser);
   // 会社作成→招待→company_adminの初回ログイン、という正式フローの「最初の店舗登録」
   // ゲート。上のshowInitialSetupは(コメントの通り)setup.completeがSupabase接続時は常に
   // trueに固定されるため本番では実質デッドコードで、店舗0件のまま通常画面へ入れてしまう
@@ -2861,7 +2874,6 @@ function App() {
     if (authLoading || !currentUser || canAccessCurrentPage) return;
     setActivePage(resolveDefaultPage(currentRole));
   }, [canAccessCurrentPage, authLoading, currentUser, currentRole]);
-  const isAdminUser = isAdminRole(currentRole);
 
   // companyIdOverride: 加盟店連携(閲覧専用)で、自社のprofile.company_idではなく明示的に
   // 指定した別会社のデータを取得するための差し替え。company_adminのprofile.company_idは
