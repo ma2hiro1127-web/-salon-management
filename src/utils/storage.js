@@ -1944,20 +1944,37 @@ export const getStoreMonthlyCostOverride = (state, storeId, monthValue) =>
 //   1. 手動確定額(override)がある → それを使う(過去月・当月を問わず常に最優先)
 //   2. 手動確定額が無い かつ 売上連動モード かつ 今まさに進行中の当月を見ている → 実売上×率
 //      (1円単位に丸め、要件23)
-//   3. それ以外(固定額モード、または過去月・未来月を見ている) → 既存の費用入力
-//      (fixed_costs/cost_monthly_amounts)の合計
+//   3. 手動確定額が無い かつ 売上連動モード かつ 過去月・未来月 かつ 費用入力(fixed_costs/
+//      cost_monthly_amounts)に実額の登録が無い(fixedAmountが0) → その月の実売上×
+//      "現在の"設定率(2026-09-04追記、下記参照)
+//   4. それ以外(固定額モード、または費用入力に実額の登録がある) → 既存の費用入力の合計
 // 人件費・仕入で計算式は完全に同一のため、labor/purchase用に個別exportしつつ内部実装は共有する。
 //
-// 2026-09-04 修正(過去月集計不具合): labor_cost_mode/purchase_cost_modeはstore_input_
+// 2026-09-04 修正1(過去月集計不具合): labor_cost_mode/purchase_cost_modeはstore_input_
 // settingsの店舗単位の設定で、対象月ごとに保存されない。そのため、この設定を「後から
 // sales_linkedへ変更」しただけで、確定済みのはずの過去月(store_monthly_cost_overridesに
 // 手動確定額が無い月)まで遡って売上連動の自動推定へ差し替わってしまい、実際に登録済みの
 // fixed_costs/cost_monthly_amountsの金額(例: INTRO店舗2026年8月の人件費¥1,249,410)が
-// 損益画面から消えて見える不具合があった(DB上のデータ自体は無傷)。売上連動の自動推定は
-// 本来「今まさに進行中の当月、実額がまだ確定していない間の一時的な見積もり」という設計
-// 意図(このコメント冒頭)のはずが、対象月を問わず一律に適用されていたのが原因。
-// isCurrentMonth(呼び出し側でmonthValueが実際の「今日」の年月と一致するかを渡す)で
-// この分岐を当月だけに限定し、過去月・未来月は必ず実額(fixedAmount)を使うようにした。
+// 損益画面から消えて見える不具合があった(DB上のデータ自体は無傷)。isCurrentMonthで
+// この分岐を当月だけに限定し、過去月・未来月は必ず実額(fixedAmount)を優先するようにした。
+//
+// 2026-09-04 修正2(本関数、優先順位3の追加): 修正1の副作用として、費用項目(fixed_costs)を
+// 一度も登録したことが無い売上連動モードの店舗(例: フィーネ吉祥寺・フィーネ横浜——スタッフ
+// 別の給与明細を個別登録せず、売上の一定率をそのまま人件費として運用している)は、過去月を
+// 開くたびに実額(fixedAmount=0)が採用され、それまで表示されていた売上連動の自動計算額が
+// 消えて0円になってしまっていた。修正1は「実際に登録された実額を売上連動の推定で上書き
+// しない」ことが目的であり、実額が存在しない(=そもそも登録する運用をしていない)月にまで
+// 0円へフォールバックさせることは意図していなかった。fixedAmountが無い場合に限り、過去月
+// でも売上連動の計算式(その月の実売上×現在の設定率)を使うようにし、月をまたいでも人件費・
+// 材料費が消えないようにする。
+//
+// 【現在の設定率を使うことについて】次善策であることに留意——真に「その月時点の率で確定した
+// 金額」を将来の率変更から完全に不変にするには、確定した時点の金額を保存する必要がある。
+// そのための仕組みが「月締め」で、月締め確定時(toggleMonthClosing、App.jsx)に売上連動の
+// 自動計算額をstore_monthly_cost_overrides(手動確定額)へ自動的にスナップショット保存する
+// ようにしている——一度月締めされた月は優先順位1(手動確定額)が効くため、その後に設定率が
+// 変わっても金額は変化しない。月締めされていない月だけ、この関数のフォールバック(優先順位3、
+// 現在の設定率で都度再計算)が適用される。
 const resolveCostAmountAndSource = ({ mode, rate, override, fixedAmount, sales, isCurrentMonth }) => {
   // autoEstimate(現在売上×率)は、実際にどの金額が採用されているか(source)に関わらず常に
   // 算出しておく——手動確定後も「自動計算額」と「反映中の実額」を並べて比較できるようにする
@@ -1966,6 +1983,7 @@ const resolveCostAmountAndSource = ({ mode, rate, override, fixedAmount, sales, 
   const autoEstimate = roundCurrency((Number(sales) || 0) * (Number(rate) || 0) / 100);
   if (override !== null && override !== undefined) return { amount: Number(override) || 0, source: "manual", autoEstimate };
   if (mode === "sales_linked" && isCurrentMonth) return { amount: autoEstimate, source: "auto", autoEstimate };
+  if (mode === "sales_linked" && !fixedAmount) return { amount: autoEstimate, source: "auto", autoEstimate };
   return { amount: Number(fixedAmount) || 0, source: "fixed", autoEstimate };
 };
 

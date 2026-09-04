@@ -62,6 +62,7 @@ import {
   getMostRecentReflectedCostAmount,
   isCostItemReflectedForMonth,
   collapseLimitedCostItemsForDisplay,
+  getStoreMonthlyCostOverride,
   buildCostMonthlyAmountsStateFromRows,
   getInventoryBalance,
   getPreviousMonthInventoryBalance,
@@ -7755,6 +7756,23 @@ function App() {
         },
       },
     }));
+
+    // 月締め確定時、人件費・仕入が「売上連動」モードで手動確定額(store_monthly_cost_overrides)
+    // が無ければ、その時点の自動計算額(売上×設定率)を確定額として保存する(要件: 「月締め済み
+    // =その月の損益スナップショットを保持する」)。これにより、月締め後に人件費率・仕入率を
+    // 変更しても、resolveCostAmountAndSourceの優先順位1(手動確定額)がそのまま効くため、
+    // 締めた時点の金額が変わらず保持され続ける——過去月の売上連動計算結果が翌月移行や設定
+    // 変更で消えたり変わったりする不具合の根本対策。既に確定額がある場合は上書きしない
+    // (ユーザーが既に手動で確定させた値を勝手に置き換えない)。
+    if (nextClosed) {
+      const existingOverride = getStoreMonthlyCostOverride(appStateRef.current, selectedStoreId, selectedMonth);
+      if (selectedStoreEntity?.settings?.laborCostMode === "sales_linked" && existingOverride.laborCostOverride === undefined) {
+        await handleSaveCostOverride("labor", summary.laborCostAutoEstimate);
+      }
+      if (selectedStoreEntity?.settings?.purchaseCostMode === "sales_linked" && existingOverride.purchaseCostOverride === undefined) {
+        await handleSaveCostOverride("purchase", summary.purchaseCostAutoEstimate);
+      }
+    }
     persistSaveStatus("saved", nextClosed ? "月締めを確定しました" : "月締めを解除しました");
   };
 

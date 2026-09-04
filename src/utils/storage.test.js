@@ -4274,6 +4274,29 @@ test("calculateLaborCost: 過去月であっても手動確定額(override)は�
   assert.equal(result.source, "manual");
 });
 
+test("calculateLaborCost: 再発防止テスト — 売上連動モードで費用項目を1件も登録していない(fixedAmount=0)場合、過去月でも売上×率の自動計算額を使う(フィーネ吉祥寺の実例、月をまたいで0円にならない)", () => {
+  // 8月売上¥11,869,547・人件費率37%・仕入率35%、費用項目(fixed_costs)は一切登録なし。
+  const labor = calculateLaborCost({ mode: "sales_linked", rate: 37, override: undefined, fixedAmount: 0, sales: 11869547, isCurrentMonth: false });
+  assert.equal(labor.amount, Math.round(11869547 * 0.37));
+  assert.equal(labor.source, "auto");
+
+  const purchase = calculatePurchaseCost({ mode: "sales_linked", rate: 35, override: undefined, fixedAmount: 0, sales: 11869547, isCurrentMonth: false });
+  assert.equal(purchase.amount, Math.round(11869547 * 0.35));
+  assert.equal(purchase.source, "auto");
+});
+
+test("calculateLaborCost: fixedAmountがundefined(費用項目が一件も存在しない=0と等価)でも同様に自動計算額を使う", () => {
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 30, override: undefined, fixedAmount: undefined, sales: 1000000, isCurrentMonth: false });
+  assert.equal(result.amount, 300000);
+  assert.equal(result.source, "auto");
+});
+
+test("calculateLaborCost: 実額(fixedAmount)が登録されている過去月では、修正1の趣旨通り引き続き実額を最優先する(修正2で実額入りの店舗まで自動推定に化けさせない)", () => {
+  const result = calculateLaborCost({ mode: "sales_linked", rate: 0, override: undefined, fixedAmount: 1249410, sales: 5000000, isCurrentMonth: false });
+  assert.equal(result.amount, 1249410);
+  assert.equal(result.source, "fixed");
+});
+
 // 2026-09-04: ユーザー報告の再発防止テスト(calculateMonthSummary経由のend-to-end)。
 // 「単月・期間限定費用を入力(INTRO店舗2026年8月の実例を再現)→翌月以降に移動→前月を
 // 再表示」しても、人件費・材料費・その他費用のいずれも同じ数値のままであることを保証する。
@@ -4516,36 +4539,53 @@ test("calculateMonthSummary: 売上連動モードでは、費用項目を1件�
   assert.equal(salesLinkedSummary.purchaseAmount, 400000);
 });
 
-test("calculateMonthSummary: 再発防止テスト — 売上連動モードで費用項目を1件も登録していない店舗(フィーネ吉祥寺の実例)は、過去月を表示しても原価・費用・営業利益が「－」(isProvisionalProfit)にならない", () => {
+test("calculateMonthSummary: 再発防止テスト — 売上連動モードで費用項目を1件も登録していない店舗(フィーネ吉祥寺の実例)は、過去月を表示しても人件費・材料費が0円や「－」にならず、売上×率の自動計算額のまま表示される", () => {
   const state = createInitialAppState();
   const store = "フィーネ吉祥寺";
   const pastMonth = "2020-06"; // どの時点でテストを実行しても確実に「過去月」
   const key = `${store}__${pastMonth}`;
   state.stores = [store];
-  state.dailyResults[key] = [{ date: `${pastMonth}-01`, totalSales: 5000000 }];
+  // ユーザー報告の実例そのままの数値(8月売上・人件費率37%・仕入率35%)。
+  state.dailyResults[key] = [{ date: `${pastMonth}-01`, totalSales: 11869547 }];
   // フィーネ吉祥寺の実例通り、labor/materialsの費用項目(fixed_costs)は一切登録しない——
   // 家賃・光熱費などの継続費用だけ登録されている状態を再現する。
   state.fixedCosts[key] = [
     { id: "rent-1", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: pastMonth, endMonth: "", baseAmount: 598400 },
   ];
-  const options = { laborCostMode: "sales_linked", laborCostRate: 30, purchaseCostMode: "sales_linked", purchaseCostRate: 42 };
+  const options = { laborCostMode: "sales_linked", laborCostRate: 37, purchaseCostMode: "sales_linked", purchaseCostRate: 35 };
 
   const summary = calculateMonthSummary(state, store, pastMonth, options);
 
-  // 過去月不具合修正(isCurrentMonthがfalseになる)の影響でsourceは"fixed"(実額0円)になるが、
-  // 売上連動モードそのものによってhasEntry=trueが保証され、暫定利益のまま止まらない。
-  assert.equal(summary.laborCostSource, "fixed");
-  assert.equal(summary.purchaseCostSource, "fixed");
+  // 修正2: 費用項目が無い(fixedAmount=0)売上連動モードの過去月は、自動計算額(売上×率)を
+  // 使う——ユーザー報告の期待値(人件費≈¥4,391,732、材料・仕入額≈¥4,154,341)と一致する。
+  assert.equal(summary.laborCostSource, "auto");
+  assert.equal(summary.purchaseCostSource, "auto");
+  assert.equal(summary.laborCost, 4391732);
+  assert.equal(summary.purchaseAmount, 4154341);
   assert.equal(summary.categoryHasEntry.labor, true);
   assert.equal(summary.categoryHasEntry.materials, true);
   assert.equal(summary.isProvisionalProfit, false);
   assert.equal(summary.missingCriticalCategories.length, 0);
-  // 費用項目が無いため実額は0円だが(自動推定に化けることもない、過去月不具合修正の趣旨通り)、
-  // 営業利益・原価・費用は「－」ではなく実際に計算された数値になる。
-  assert.equal(summary.laborCost, 0);
-  assert.equal(summary.purchaseAmount, 0);
   assert.equal(typeof summary.operatingProfit, "number");
   assert.ok(!Number.isNaN(summary.operatingProfit));
+});
+
+test("calculateMonthSummary: 再発防止テスト — 売上連動・費用項目未登録の店舗でも、各月は自分自身の売上だけを使って独立に計算され、他の月の売上や設定を読み込んで書き換えない", () => {
+  const state = createInitialAppState();
+  const store = "フィーネ吉祥寺";
+  const options = { laborCostMode: "sales_linked", laborCostRate: 37, purchaseCostMode: "sales_linked", purchaseCostRate: 42 };
+  state.stores = [store];
+  state.dailyResults[`${store}__2020-08`] = [{ date: "2020-08-01", totalSales: 5000000 }];
+  state.dailyResults[`${store}__2020-09`] = [{ date: "2020-09-01", totalSales: 6000000 }];
+
+  const august = calculateMonthSummary(state, store, "2020-08", options);
+  const september = calculateMonthSummary(state, store, "2020-09", options);
+  assert.equal(august.laborCost, 1850000); // 500万×37%
+  assert.equal(september.laborCost, 2220000); // 600万×37%
+
+  // 9月を計算した後でもう一度8月を計算しても、9月の売上が混入せず同じ結果のまま。
+  const augustAgain = calculateMonthSummary(state, store, "2020-08", options);
+  assert.equal(augustAgain.laborCost, august.laborCost);
 });
 
 test("calculateMonthSummary: 再発防止テスト(全月共通ルール) — 売上連動・費用項目0件の店舗は、過去月・当月・未来月のどれを表示してもisProvisionalProfitがfalseのまま一貫する", () => {
