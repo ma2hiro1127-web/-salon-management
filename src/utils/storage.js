@@ -2075,8 +2075,21 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   // (isProvisionalProfit・月締めチェックリスト双方が参照するcategoryHasEntryを、費用入力の
   // 有無だけでなく実際に使える金額があるかどうかに広げる、要件1の目的そのもの——売上連動に
   // 切り替えただけで損益表が「算出できません」のまま止まってしまわないようにする)。
-  if (laborCostSource !== "fixed") categoryHasEntry.labor = true;
-  if (purchaseCostSource !== "fixed") categoryHasEntry.materials = true;
+  //
+  // 不具合修正(2026-09、過去月の損益消失): 過去月集計不具合の修正でsource(実際に使った
+  // 計算方法)がisCurrentMonthに応じて変わるようになったため、「source !== 'fixed' なら
+  // hasEntry」という以前の判定は、売上連動モードでも過去月では必ずsource==='fixed'になる
+  // (isCurrentMonthがfalseのため自動推定を使わない、fixedAmountを使う——これ自体は正しい)
+  // ことで常にfalseになってしまい、費用項目を一度も登録したことが無い売上連動モードの店舗
+  // (例: フィーネ吉祥寺——人件費・材料とも売上連動のみで固定費項目を一切登録していない)は、
+  // 過去月を開くたびにisProvisionalProfit=trueとなり原価・費用・営業利益がすべて「－」表示に
+  // なっていた(実際のfixed_costs/cost_monthly_amountsデータは一切消えておらず、この
+  // hasEntry判定だけが誤って過去月をブロックしていた)。
+  // 「その月の計算にauto推定を実際に使ったか」ではなく「この店舗のこのカテゴリはそもそも
+  // 入力不要な運用(売上連動モード)になっているか」で判定するよう修正——モードそのもので
+  // 判定するため、現在月・過去月を問わず一貫して正しく動く。
+  if (laborCostSource === "manual" || options.laborCostMode === "sales_linked") categoryHasEntry.labor = true;
+  if (purchaseCostSource === "manual" || options.purchaseCostMode === "sales_linked") categoryHasEntry.materials = true;
   // 設備投資は新カテゴリに対応枠を持たない(要件3: 必要以上に細かい分類を避ける) — 過去の
   // 月締め項目(closingItems)に残っている旧カテゴリ「設備投資」の行だけ、後方互換のため
   // 引き続き集計する(新規入力では発生しない)。

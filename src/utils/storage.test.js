@@ -4516,6 +4516,51 @@ test("calculateMonthSummary: 売上連動モードでは、費用項目を1件�
   assert.equal(salesLinkedSummary.purchaseAmount, 400000);
 });
 
+test("calculateMonthSummary: 再発防止テスト — 売上連動モードで費用項目を1件も登録していない店舗(フィーネ吉祥寺の実例)は、過去月を表示しても原価・費用・営業利益が「－」(isProvisionalProfit)にならない", () => {
+  const state = createInitialAppState();
+  const store = "フィーネ吉祥寺";
+  const pastMonth = "2020-06"; // どの時点でテストを実行しても確実に「過去月」
+  const key = `${store}__${pastMonth}`;
+  state.stores = [store];
+  state.dailyResults[key] = [{ date: `${pastMonth}-01`, totalSales: 5000000 }];
+  // フィーネ吉祥寺の実例通り、labor/materialsの費用項目(fixed_costs)は一切登録しない——
+  // 家賃・光熱費などの継続費用だけ登録されている状態を再現する。
+  state.fixedCosts[key] = [
+    { id: "rent-1", name: "家賃", categoryKey: "rent", periodType: "ongoing", startMonth: pastMonth, endMonth: "", baseAmount: 598400 },
+  ];
+  const options = { laborCostMode: "sales_linked", laborCostRate: 30, purchaseCostMode: "sales_linked", purchaseCostRate: 42 };
+
+  const summary = calculateMonthSummary(state, store, pastMonth, options);
+
+  // 過去月不具合修正(isCurrentMonthがfalseになる)の影響でsourceは"fixed"(実額0円)になるが、
+  // 売上連動モードそのものによってhasEntry=trueが保証され、暫定利益のまま止まらない。
+  assert.equal(summary.laborCostSource, "fixed");
+  assert.equal(summary.purchaseCostSource, "fixed");
+  assert.equal(summary.categoryHasEntry.labor, true);
+  assert.equal(summary.categoryHasEntry.materials, true);
+  assert.equal(summary.isProvisionalProfit, false);
+  assert.equal(summary.missingCriticalCategories.length, 0);
+  // 費用項目が無いため実額は0円だが(自動推定に化けることもない、過去月不具合修正の趣旨通り)、
+  // 営業利益・原価・費用は「－」ではなく実際に計算された数値になる。
+  assert.equal(summary.laborCost, 0);
+  assert.equal(summary.purchaseAmount, 0);
+  assert.equal(typeof summary.operatingProfit, "number");
+  assert.ok(!Number.isNaN(summary.operatingProfit));
+});
+
+test("calculateMonthSummary: 再発防止テスト(全月共通ルール) — 売上連動・費用項目0件の店舗は、過去月・当月・未来月のどれを表示してもisProvisionalProfitがfalseのまま一貫する", () => {
+  const state = createInitialAppState();
+  const store = "フィーネ吉祥寺";
+  const options = { laborCostMode: "sales_linked", laborCostRate: 30, purchaseCostMode: "sales_linked", purchaseCostRate: 42 };
+  ["2020-01", "2020-02", "2099-12"].forEach((month) => {
+    const key = `${store}__${month}`;
+    state.stores = [store];
+    state.dailyResults[key] = [{ date: `${month}-01`, totalSales: 1000000 }];
+    const summary = calculateMonthSummary(state, store, month, options);
+    assert.equal(summary.isProvisionalProfit, false, `${month}: isProvisionalProfitがtrueになってはいけない`);
+  });
+});
+
 test("getStoreDashboardRows(要件17): 全店舗ビューは各店舗ごとにmode/rateで計算してから合算する(全店舗売上×平均率のような近似計算はしない)", () => {
   const state = createInitialAppState();
   // 売上連動の自動推定は当月だけに適用される(2026-09-04修正、過去月集計不具合)ため、
