@@ -729,6 +729,30 @@ export const ensureProfileForAuthUser = async ({ authUserId, email, role = null,
   return profile;
 };
 
+// SupabaseプロジェクトのPostgREST設定(supabase/config.toml の [api] max_rows)により、
+// .limit()を指定しない/大きな値を指定しても1リクエストあたり最大1000行しか返らない
+// (max_rowsはサーバー側のハード上限で、クライアント側の.limit()では超えられない)。
+// system_admin向けの全社横断クエリ(companies/stores/profiles/user_stores、いずれも
+// company_idで絞り込まない)は、会社数・ユーザー数が増えるとこの上限に達し、1000件目
+// より後(created_at昇順で後ろ)の行が黙って欠落する——本番で「新規追加した会社の
+// ユーザー数がsystem_admin画面に反映されない」形で顕在化した実際の不具合。
+// queryBuilderFnが返すクエリに.range()でページングをかけ、1000件未満の応答が返るまで
+// 繰り返し全件取得する。呼び出し側のクエリはorder("created_at", {ascending:true})を
+// 指定済みである前提(ページ境界をまたいでも順序が安定するため)。
+const fetchAllRowsPaginated = async (queryBuilderFn, pageSize = 1000) => {
+  let offset = 0;
+  let allRows = [];
+  for (;;) {
+    const { data, error } = await queryBuilderFn().range(offset, offset + pageSize - 1);
+    if (error) return { data: null, error };
+    const rows = data || [];
+    allRows = allRows.concat(rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return { data: allRows, error: null };
+};
+
 // companiesの契約管理まわりの列一覧。loadTenantStateFromSupabaseとloadFranchiseCompanyMetadata
 // (フランチャイズ相手企業の閲覧用ローダー)の両方で同じ列を取得するため1箇所にまとめている
 // (2026-09-02、契約管理の拡張。supabase/migrations/20260906000000_contract_billing_fields.sql
@@ -758,7 +782,7 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // このログイン時ブートストラップ経由では取得・保持しない)。
     companyFilter
       ? supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).eq("id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).order("created_at", { ascending: true }),
+      : fetchAllRowsPaginated(() => supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).order("created_at", { ascending: true })),
     // Ordered by creation time, not name: a fresh session/device with no cached selection
     // below defaults to stores[0], and name-alphabetical ordering means a store rename (or
     // simply naming a newly added store earlier in the alphabet) can silently reshuffle which
@@ -766,11 +790,11 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     // stable across renames and naturally favors whichever store has been in use longest.
     companyFilter
       ? supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").eq("company_id", companyFilter).order("created_at", { ascending: true })
-      : supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").order("created_at", { ascending: true }),
+      : fetchAllRowsPaginated(() => supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").order("created_at", { ascending: true })),
     role === "system_admin"
-      ? supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").order("created_at", { ascending: true })
+      ? fetchAllRowsPaginated(() => supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").order("created_at", { ascending: true }))
       : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
-    supabase.from("user_stores").select("user_id, company_id, store_id, is_primary").order("created_at", { ascending: true }),
+    fetchAllRowsPaginated(() => supabase.from("user_stores").select("user_id, company_id, store_id, is_primary").order("created_at", { ascending: true })),
     // store_profiles(在籍スタッフ数・生産性計算人数・住所・電話番号等)。以前はここで取得
     // しておらず、ログイン直後のこの軽量ブートストラップだけで作った store オブジェクトは
     // staffCount等が常にundefinedだった——その後の完全なhydrateFromSupabase(store_profiles
