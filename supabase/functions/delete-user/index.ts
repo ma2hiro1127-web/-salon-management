@@ -1,16 +1,31 @@
-// Deletes a user completely and safely: Supabase Auth account + profiles row + user_stores
-// assignments + any pending invite state. Runs with the service role key (never exposed to the
-// browser) because deleting an auth.users row requires the admin API, and because verifying
-// "is this the last admin" needs to see across the whole company, not just what RLS would let
-// the caller see of themselves.
+// Removes a user's ability to sign in and their store/company affiliation, without destroying
+// their history. Runs with the service role key (never exposed to the browser) because deleting
+// an auth.users row requires the admin API, and because verifying "is this the last admin" needs
+// to see across the whole company, not just what RLS would let the caller see of themselves.
 //
-// Historical business data (daily_sales, monthly_closings, monthly_targets, fixed_costs,
-// variable_costs, monthly_closing_items, store_business_holidays, company_all_stores_*,
-// store_profiles, company_settings) is deliberately NOT touched here — see
-// 20260809050000_profile_delete_preserves_history.sql, which switched every created_by/
-// updated_by/closed_by foreign key referencing profiles(id) to ON DELETE SET NULL. Deleting the
-// profiles row lets Postgres itself null out those references automatically; the business rows
-// stay exactly as they were, just without an attributed user.
+// Two different deletion shapes depending on whether the target ever actually registered
+// (2026-09-04, changed from a full profiles row DELETE to a soft delete — see
+// 20260909000000_profiles_soft_delete.sql):
+//
+// - Still-pending invite (target.auth_user_id is null): nothing they could have created any
+//   business data with yet, so this stays a hard delete of the profiles row (and any orphaned
+//   unconfirmed auth.users shell — see the comment further down) exactly as before.
+// - Already registered (target.auth_user_id is set): the profiles row is preserved and marked
+//   deleted_at instead of being removed. Historical business data (daily_sales,
+//   monthly_closings, monthly_targets, fixed_costs, variable_costs, monthly_closing_items,
+//   store_business_holidays, company_all_stores_*, store_profiles, company_settings) keeps
+//   pointing at this same profiles.id — created_by/updated_by/closed_by stay resolvable to a
+//   name instead of going null, unlike the old ON DELETE SET NULL behavior
+//   (20260809050000_profile_delete_preserves_history.sql). The Supabase Auth account itself is
+//   still deleted here (not banned) — this profiles.email is a completely ordinary email again
+//   afterward: profiles_email_active_key (the migration above) only enforces uniqueness among
+//   deleted_at IS NULL rows, and every profiles query that lists/looks up active staff or checks
+//   for a duplicate invite (checkExistingProfilesByEmail, ensureProfileForAuthUser,
+//   loadTenantStateFromSupabase — see src/utils/supabase.js) filters deleted_at IS NULL, so a
+//   soft-deleted row is invisible to all of them. A brand-new invite to the same email, from any
+//   company, creates a completely fresh profiles row and a completely fresh auth.users account
+//   (accept-invite's admin.auth.admin.createUser call succeeds cleanly since the old auth
+//   account is gone) — there is no stale ban or leftover invite state to fight through.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -178,8 +193,26 @@ Deno.serve(async (req) => {
     const { error: storesError } = await admin.from("user_stores").delete().eq("user_id", target.id);
     if (storesError) throw storesError;
 
-    const { error: profileDeleteError } = await admin.from("profiles").delete().eq("id", target.id);
-    if (profileDeleteError) throw profileDeleteError;
+    // 招待中(一度もログインしていない)なら業務データを一切生んでいないため、そのまま
+    // 物理削除する(従来通り)。登録済み(実際にauth.usersと紐付いた)なら論理削除に切り替え、
+    // profiles行そのものは残す(コメント冒頭を参照)。
+    if (target.auth_user_id) {
+      const { error: softDeleteError } = await admin
+        .from("profiles")
+        .update({
+          deleted_at: new Date().toISOString(),
+          auth_user_id: null,
+          is_active: false,
+          invitation_status: "disabled",
+          invite_token: null,
+          invite_expires_at: null,
+        })
+        .eq("id", target.id);
+      if (softDeleteError) throw softDeleteError;
+    } else {
+      const { error: profileDeleteError } = await admin.from("profiles").delete().eq("id", target.id);
+      if (profileDeleteError) throw profileDeleteError;
+    }
 
     return json({ ok: true, deletedName: target.name });
   } catch (error) {

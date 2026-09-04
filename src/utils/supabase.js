@@ -666,13 +666,16 @@ export const ensureProfileForAuthUser = async ({ authUserId, email, role = null,
   let existingProfile = null;
 
   if (authUserId) {
-    const { data, error } = await supabase.from("profiles").select(profileSelect).eq("auth_user_id", authUserId).maybeSingle();
+    const { data, error } = await supabase.from("profiles").select(profileSelect).eq("auth_user_id", authUserId).is("deleted_at", null).maybeSingle();
     if (error) throw error;
     existingProfile = data;
   }
 
   if (!existingProfile) {
-    const { data, error } = await supabase.from("profiles").select(profileSelect).eq("email", normalizedEmail).maybeSingle();
+    // deleted_at IS NULL に絞らないと、論理削除済みの古い行(auth_user_idはnull化済み)が
+    // ここでヒットしてしまい、別会社からの新しい招待を受けてログインしたはずの人が誤って
+    // 削除済みの古いprofileへ再アタッチされてしまう(2026-09-04)。
+    const { data, error } = await supabase.from("profiles").select(profileSelect).eq("email", normalizedEmail).is("deleted_at", null).maybeSingle();
     if (error) throw error;
     existingProfile = data;
   }
@@ -791,9 +794,10 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     companyFilter
       ? supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").eq("company_id", companyFilter).order("created_at", { ascending: true })
       : fetchAllRowsPaginated(() => supabase.from("stores").select("id, company_id, name, code, is_active, status, daily_field_settings").order("created_at", { ascending: true })),
+    // deleted_at IS NULL に絞り、論理削除済みのスタッフをユーザー一覧に出さない(2026-09-04)。
     role === "system_admin"
-      ? fetchAllRowsPaginated(() => supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").order("created_at", { ascending: true }))
-      : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").eq("company_id", profile.company_id).order("created_at", { ascending: true }),
+      ? fetchAllRowsPaginated(() => supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").is("deleted_at", null).order("created_at", { ascending: true }))
+      : supabase.from("profiles").select("id, auth_user_id, company_id, name, email, role, is_active, invitation_status, invite_token, invite_expires_at").eq("company_id", profile.company_id).is("deleted_at", null).order("created_at", { ascending: true }),
     fetchAllRowsPaginated(() => supabase.from("user_stores").select("user_id, company_id, store_id, is_primary").order("created_at", { ascending: true })),
     // store_profiles(在籍スタッフ数・生産性計算人数・住所・電話番号等)。以前はここで取得
     // しておらず、ログイン直後のこの軽量ブートストラップだけで作った store オブジェクトは
@@ -1470,10 +1474,13 @@ export const checkExistingProfilesByEmail = async ({ email }) => {
   const normalizedEmail = normalizeEmail(email);
   if (!isSupabaseConfigured || !normalizedEmail) return { ok: true, data: [] };
   try {
+    // 論理削除済み(deleted_at設定済み)の行は「現在有効な所属・招待」ではないため対象外
+    // (2026-09-04)。削除済みのスタッフを理由に新規招待をブロックしない、という要件どおり。
     const { data, error } = await supabase
       .from("profiles")
       .select("id, email, company_id, role, is_active, invitation_status, invite_expires_at, auth_user_id")
-      .eq("email", normalizedEmail);
+      .eq("email", normalizedEmail)
+      .is("deleted_at", null);
     if (error) throw error;
     return { ok: true, data: data || [] };
   } catch (error) {

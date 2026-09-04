@@ -4685,11 +4685,14 @@ function App() {
     setDeleteUserSaving(false);
   };
 
-  // 誤操作防止の2段階確認: このハンドラ自体が確認ダイアログの「削除する」ボタンから呼ばれ、
-  // ここでさらにwindow.confirmの最終確認を挟んでから実際に削除を実行する。削除対象は
-  // Supabase Auth・profiles・user_stores・招待情報のみで、そのユーザーが過去に入力した
-  // 売上・費用・月締め等の業務データは20260809050000のマイグレーションによりON DELETE
-  // SET NULLで保持される(created_by等が null になるだけでレコード自体は消えない)。
+  // 確認は下のモーダル(deleteUserTargetId)1回のみ(2026-09-04: 以前はここでさらに
+  // window.confirmの二重確認をしていたが、文言が食い違う上に単なる冗長な二度手間だったため
+  // 1本化した)。登録済みユーザーの削除は論理削除(profiles.deleted_atを立てるだけ)に
+  // 変更済み——所属店舗の解除・ログイン権限の解除(Supabase Authアカウント削除)は行うが、
+  // そのユーザーが過去に入力した売上・費用・月締め等の業務データはprofiles行ごと保持され、
+  // created_by等の参照も維持される(delete-user Edge Function・20260909000000_profiles_
+  // soft_delete.sql参照)。招待中(未登録)の取り消しは業務データが存在しないため、
+  // これまで通り物理削除のまま。
   const handleConfirmDeleteUser = async () => {
     const targetUser = (appState.users || []).find((user) => user.id === deleteUserTargetId);
     if (!targetUser) return;
@@ -4698,12 +4701,6 @@ function App() {
       return;
     }
     const isPendingInvite = !targetUser.authUserId;
-    const confirmMessage = isPendingInvite
-      ? `${targetUser.name}（${targetUser.email}）への招待を取り消します。よろしいですか？`
-      : `${targetUser.name}（${targetUser.email}）を削除します。この操作は取り消せません。本当によろしいですか？`;
-    if (!window.confirm(confirmMessage)) {
-      return;
-    }
     setDeleteUserSaving(true);
     setDeleteUserError("");
     try {
@@ -10275,18 +10272,18 @@ function App() {
               <div className="modal-card" onClick={(event) => event.stopPropagation()}>
                 <div className="panel-heading compact">
                   <div>
-                    <p className="eyebrow">{isPendingInvite ? "CANCEL INVITE" : "DELETE USER"}</p>
-                    <h3>{isPendingInvite ? "この招待を取り消しますか？" : "このユーザーを削除しますか？"}</h3>
+                    <p className="eyebrow">{isPendingInvite ? "CANCEL INVITE" : "DELETE STAFF"}</p>
+                    <h3>{isPendingInvite ? "この招待を取り消しますか？" : "このスタッフを削除しますか？"}</h3>
                   </div>
                 </div>
                 {deleteUserError ? <div className="notice-box">{deleteUserError}</div> : null}
                 <p>
-                  <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）{isPendingInvite ? "への招待を取り消します。" : "を削除します。"}
+                  <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）
                 </p>
                 <p className="helper-text">
                   {isPendingInvite
                     ? "このメールアドレスはまだ登録が完了していないため、招待情報を削除するだけです。あとから同じメールアドレスで再度招待できます。"
-                    : "Supabaseの認証アカウント・ユーザー情報・所属店舗・招待情報が削除されます。このユーザーが過去に入力した売上・費用・月締め等の業務データは削除されず、履歴として保持されます。この操作は取り消せません。"}
+                    : "過去に入力した売上・日計などのデータは保持されます。このスタッフのログイン権限と所属のみ解除されます。あとから同じメールアドレスで再度招待できます。"}
                 </p>
                 <div className="row-actions" style={{ marginTop: 12 }}>
                   <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>キャンセル</button>
