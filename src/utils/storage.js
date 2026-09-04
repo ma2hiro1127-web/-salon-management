@@ -1779,12 +1779,19 @@ export const getDailyResultsForStoreMonth = (state, storeId, monthValue) => {
   return entries;
 };
 
-// 「費用入力」(継続/期間限定の2択を明示的に持つ費用マスター、金額は含まない)。periodTypeで
-// 適用可否を判定する:
+// 「費用入力」(継続/単月・期間限定の2択を明示的に持つ費用マスター、金額は含まない)。
+// periodTypeで表示可否を判定する:
 //   - "ongoing" (継続)       → startMonth以降ずっと対象月として表示され続ける(endMonthは無視)
-//   - "limited" (期間限定)   → startMonth〜endMonthの範囲内(両端含む)だけ対象
+//   - "limited" (単月・期間限定) → startMonth以降ずっと表示され続ける(endMonthは無視)
 // 金額はここでは解決しない(呼び出し側でgetCostMonthlyAmountを使う) — 月ごとにレコードを複製
 // せず、1件のマスターから対象月かどうかをその都度判定する設計は従来通り。
+//
+// 2026-09仕様変更: 以前はlimited項目をendMonthで絞り込み、範囲外の月では一覧からも消して
+// いた。しかし「翌月以降も費用項目自体は一覧に残す(ただし自動では損益に反映しない、翌月も
+// 使いたい場合だけ明示的に「今月も反映」する)」という仕様に統一したため、limited項目も
+// ongoingと同じく「登録月(startMonth)以降は常に表示」に変更した。表示されることと当月の
+// 損益に計上されることは別の話——実際に計上されるかどうかはgetCostMonthlyAmountが対象月
+// ちょうどのcost_monthly_amounts行の有無だけで厳密に判定する(このファイル内の該当関数参照)。
 export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
   const itemsByKey = Object.entries(state.fixedCosts || {})
     .filter(([key]) => key.startsWith(`${storeId}__`))
@@ -1798,8 +1805,9 @@ export const getFixedCostsForStoreMonth = (state, storeId, monthValue) => {
     const startMonth = item.startMonth || item._sourceKey?.split("__")?.[1] || "";
     if (!startMonth) return item._sourceKey === buildMonthKey(storeId, monthValue);
     if (item.periodType === "limited") {
-      const endMonth = item.endMonth || "";
-      return monthValue >= startMonth && (!endMonth || monthValue <= endMonth);
+      // startMonth(登録月)以降はずっと表示し続ける(endMonthはもう見ない)。登録前の月に
+      // 遡った場合は表示しない——limited項目は「登録して初めて存在する」費用のため。
+      return monthValue >= startMonth;
     }
     // "ongoing"(継続、または旧データでperiodTypeが記録されていない行)は店舗に継続して
     // 存在する費用項目そのものなので、startMonth(登録された月)より前の対象月へ遡っても
@@ -1843,54 +1851,48 @@ const findFixedCostItemById = (state, costItemId) => {
 // uses (no periodType recorded + no end_month = 継続として扱う).
 export const getCostPatternLabel = (item) => item?.periodType || (item?.endMonth ? "limited" : "ongoing");
 
-// 単月・期間限定費用(period_type='limited')専用のキャリーフォワード解決(既存仕様を維持、
-// 要件10)。対象月にちょうど保存された行があれば最優先、無ければ対象月以前で最も新しい行を
-// 引き継ぐ、それも無ければ対象月より後で最も古い行を使う(登録月より過去を見たときに
-// 「未入力」にならないようにするため)。継続費用(ongoing)にはこの関数を使わない——
-// getCostMonthlyAmountで基本値(baseAmount)ベースの別ロジックに分岐する。
-const resolveEffectiveCostMonthlyAmountRow = (state, costItemId, monthValue) => {
-  if (!costItemId) return undefined;
-  const exactRow = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
-  if (exactRow && exactRow.amount !== undefined) return exactRow;
-  let latestMonthAtOrBefore = null;
-  let latestRowAtOrBefore;
-  let earliestMonthAfter = null;
-  let earliestRowAfter;
-  Object.entries(state.costMonthlyAmounts || {}).forEach(([key, row]) => {
-    const [rowCostItemId, rowMonth] = key.split("__");
-    if (rowCostItemId !== costItemId || !rowMonth) return;
-    if (rowMonth <= monthValue) {
-      if (!latestMonthAtOrBefore || rowMonth > latestMonthAtOrBefore) {
-        latestMonthAtOrBefore = rowMonth;
-        latestRowAtOrBefore = row;
-      }
-    } else if (!earliestMonthAfter || rowMonth < earliestMonthAfter) {
-      earliestMonthAfter = rowMonth;
-      earliestRowAfter = row;
-    }
-  });
-  return latestRowAtOrBefore || earliestRowAfter;
-};
-
-// 対象月ごとの金額(cost_monthly_amounts)。
+// 対象月ごとの金額(cost_monthly_amounts)。「費用項目そのもの」(fixed_costs)と「その月に
+// 実際に反映した実績」(cost_monthly_amounts)を明確に分離する(2026-09仕様変更の核心)——
+// この関数の返り値が「その月の損益に計上される金額」の唯一の情報源であり、undefinedは
+// 「その月は未反映(=0円として集計する、getCostMonthlyAmount(...) ?? 0)」を意味する。
 //   - 継続費用(period_type='ongoing'): 対象月にちょうど保存された上書き行があればそれを
 //     最優先、無ければ費用マスター(fixed_costs)の基本値(baseAmount)を使う。過去に他の月へ
 //     入力した金額を引き継ぐことは一切しない(要件1-4: 対象月だけ変更しても翌月以降は
-//     自動的に基本値へ戻る)。
-//   - 単月・期間限定費用(period_type='limited'): 既存仕様のキャリーフォワードのまま
-//     (resolveEffectiveCostMonthlyAmountRow、要件10で変更しないと指定されている)。
-// 損益集計ではundefinedを0として扱う(getCostMonthlyAmount(...) ?? 0)。
+//     自動的に基本値へ戻る)——「継続」は常に自動で毎月反映される。
+//   - 単月・期間限定費用(period_type='limited'): 対象月にちょうど保存された行(=「今月も
+//     反映」またはその項目自身の登録月に保存された行)が無ければundefined。前後の月から
+//     金額を引き継ぐことは一切しない(旧仕様は要件10でキャリーフォワードを維持していたが、
+//     2026-09の仕様変更でこれを廃止した——「単月・期間限定は登録月だけ自動反映、翌月以降は
+//     明示的に「今月も反映」した月だけ反映する」という新仕様の核心がここにある)。
+//     未反映月の入力欄に「直近の金額」をプレフィルする用途にはgetMostRecentReflectedCostAmount
+//     を使う(この関数とは完全に別経路——プレフィル表示が損益集計に紛れ込まないようにする)。
 export const getCostMonthlyAmount = (state, costItemId, monthValue) => {
   const exactRow = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
   if (exactRow && exactRow.amount !== undefined) return exactRow.amount;
   const item = findFixedCostItemById(state, costItemId);
   if (item && item.periodType !== "limited") return item.baseAmount;
-  return resolveEffectiveCostMonthlyAmountRow(state, costItemId, monthValue)?.amount;
+  return undefined;
 };
 
-// 「前月の金額をコピー」用。前月に金額が保存されていなければundefined。
-export const getPreviousMonthCostAmount = (state, costItemId, monthValue) =>
-  getCostMonthlyAmount(state, costItemId, getMonthOffset(monthValue, -1));
+// 単月・期間限定費用の「未反映月の入力欄プレフィル」専用。対象月以前(対象月を含む)で、
+// 実際にcost_monthly_amountsへ保存されたことがある最新の金額を返す——損益集計
+// (getCostMonthlyAmount/calculateMonthSummary)には一切使わない。「今月も反映」ボタンの
+// 初期値表示にだけ使うことで、「表示されているだけで損益に計上された」と誤解させない。
+export const getMostRecentReflectedCostAmount = (state, costItemId, monthValue) => {
+  if (!costItemId) return undefined;
+  let latestMonth = null;
+  let latestAmount;
+  Object.entries(state.costMonthlyAmounts || {}).forEach(([key, row]) => {
+    const [rowCostItemId, rowMonth] = key.split("__");
+    if (rowCostItemId !== costItemId || !rowMonth || rowMonth > monthValue) return;
+    if (row.amount === undefined) return;
+    if (!latestMonth || rowMonth > latestMonth) {
+      latestMonth = rowMonth;
+      latestAmount = row.amount;
+    }
+  });
+  return latestAmount;
+};
 
 // 対象月末時点の在庫金額(store_inventory_balances)。未入力の月はundefined。
 export const getInventoryBalance = (state, storeId, monthValue) => {
@@ -1899,7 +1901,7 @@ export const getInventoryBalance = (state, storeId, monthValue) => {
 };
 
 // 「前月末在庫」参照用。初回利用時にこれがundefinedなら、UI側で「期首在庫」入力欄を出し、
-// 入力値をmonthValueの前月分としてこのテーブルに保存する(getPreviousMonthCostAmountと同じ考え方)。
+// 入力値をmonthValueの前月分としてこのテーブルに保存する。
 export const getPreviousMonthInventoryBalance = (state, storeId, monthValue) =>
   getInventoryBalance(state, storeId, getMonthOffset(monthValue, -1));
 
@@ -2351,13 +2353,12 @@ export const needsMonthReconfirmation = (state, storeId, monthValue) => {
     // item.updatedAtはfixed_costs行自体の更新日時 — 継続費用の基本値(base_amount)の変更も
     // 同じ行のupdated_atを更新するため、ここで既に検知できる。
     ...fixedCosts.map((item) => item.updatedAt || ""),
-    // 対象月ごとの上書き(cost_monthly_amounts)のupdatedAtも見る。継続費用は対象月の上書き
-    // 行(あれば)だけを見れば十分(要件1-4の仕様変更でキャリーフォワードをやめたため)。
-    // 単月・期間限定費用は既存仕様のまま、キャリーフォワード解決後の行のupdatedAtを見る
-    // (対象月に固有の行が無い場合でも、引き継いでいる別月の行の変更を検知する必要があるため)。
-    ...fixedCosts.map((item) => (item.periodType === "limited"
-      ? resolveEffectiveCostMonthlyAmountRow(state, item.id, monthValue)?.updatedAt || ""
-      : state.costMonthlyAmounts?.[`${item.id}__${monthValue}`]?.updatedAt || "")),
+    // 対象月ごとの上書き(cost_monthly_amounts)のupdatedAtも見る。継続・単月/期間限定とも
+    // 対象月ちょうどの行(あれば)だけを見れば十分(2026-09仕様変更でlimited項目も
+    // キャリーフォワードを廃止したため、両者の扱いが完全に同じになった——対象月に行が
+    // 無い=未反映=その月の損益には計上されていないので、他の月の行の更新日時を見る必要が
+    // そもそも無い)。
+    ...fixedCosts.map((item) => state.costMonthlyAmounts?.[`${item.id}__${monthValue}`]?.updatedAt || ""),
     ...getClosingItemsForStoreMonth(state, storeId, monthValue).map((item) => item.updatedAt || ""),
     state.storeInventoryBalances?.[`${storeId}__${monthValue}`]?.updatedAt || "",
     // 人件費・仕入の手動確定額(store_monthly_cost_overrides)の変更も損益に直結するため、
@@ -2367,47 +2368,16 @@ export const needsMonthReconfirmation = (state, storeId, monthValue) => {
   return timestamps.some((timestamp) => timestamp > status.lockedAt);
 };
 
-// 単月(periodType:"limited"、開始月=終了月)の費用は月ごとに新しいitem idになるため、
-// 「前月をコピー」がcostMonthlyAmounts側では効かない(そのidに前月分の金額が無いため)。
-// 費用名+カテゴリが一致する前月の項目があれば、その金額をサジェストできるようにする
-// (自動入力はしない、入力欄のプレースホルダー用)。
-export const getPreviousMonthAmountByNameAndCategory = (state, storeId, name, categoryKey, monthValue) => {
-  if (!name || !categoryKey) return undefined;
-  const previousMonth = getMonthOffset(monthValue, -1);
-  const previousItems = getFixedCostsForStoreMonth(state, storeId, previousMonth);
-  const match = previousItems.find((item) => item.name === name && item.categoryKey === categoryKey);
-  if (!match) return undefined;
-  return getCostMonthlyAmount(state, match.id, previousMonth);
-};
-
-// 費用入力タブの「今月に反映」(単一項目)・「前月の単月・期間限定項目をまとめてコピー」
-// (一括)用。前月に存在していた単月・期間限定費用のうち、当月にまだ同名+同カテゴリの項目が
-// 登録されていないものを「未反映」候補として返す(名前+カテゴリでの照合は
-// getPreviousMonthAmountByNameAndCategoryと同じ考え方——単月項目は月ごとに新しいitem idに
-// なるため、idベースでは前月分を辿れない)。
-//
-// 重要: この関数はUI表示専用の別経路として完全に独立させており、calculateMonthSummaryが
-// 内部で呼ぶgetFixedCostsForStoreMonth自体の絞り込みには一切手を入れていない。そのため、
-// この関数が返す「未反映」候補は当月のfixedCosts/損益集計には一切含まれない——一覧に見えて
-// いるだけでは当月の人件費・経費合計・営業利益に加算されず、実際に「今月に反映」して
-// 新しい費用項目(fixed_costs行)が当月分として作成・保存された時点で初めて反映される
-// (過去月集計不具合の再発防止と同じ設計方針: 表示と集計の対象月判定を混同しない)。
-export const getUnreflectedPreviousMonthLimitedItems = (state, storeId, monthValue) => {
-  const previousMonth = getMonthOffset(monthValue, -1);
-  const previousItems = getFixedCostsForStoreMonth(state, storeId, previousMonth)
-    .filter((item) => item.periodType === "limited");
-  const currentItems = getFixedCostsForStoreMonth(state, storeId, monthValue);
-  return previousItems
-    .filter((item) => !currentItems.some((current) => current.name === item.name && current.categoryKey === item.categoryKey))
-    .map((item) => ({
-      previousItemId: item.id,
-      name: item.name,
-      category: item.category || "",
-      categoryKey: item.categoryKey,
-      memo: item.memo || "",
-      previousAmount: getCostMonthlyAmount(state, item.id, previousMonth) ?? 0,
-    }))
-    .sort((a, b) => (a.name || "").localeCompare(b.name || "", "ja"));
+// 単月・期間限定費用が対象月に「反映済み」かどうか(=対象月ちょうどのcost_monthly_amounts
+// 行が存在するかどうか)。継続費用は常にtrue扱い(毎月自動で損益に計上されるため、
+// 「反映/未反映」という状態自体を持たない)。費用入力タブのバッジ表示・「今月も反映」
+// ボタンの出し分け・一括反映の対象抽出、すべてこの1つの判定関数を共通で使うことで、
+// カテゴリごとに別ロジックになることを防ぐ(人件費だけ特別扱いにしない、という要件の核心)。
+export const isCostItemReflectedForMonth = (state, costItemId, monthValue) => {
+  const item = findFixedCostItemById(state, costItemId);
+  if (item && item.periodType !== "limited") return true;
+  const row = state.costMonthlyAmounts?.[`${costItemId}__${monthValue}`];
+  return Boolean(row && row.amount !== undefined && row.amount !== null);
 };
 
 // 「全店舗」(company_admin専用の仮想集計ビュー)専用の売上サマリー。calculateMonthSummaryを

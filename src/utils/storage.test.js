@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getPreviousMonthCostAmount, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getPreviousMonthAmountByNameAndCategory, getUnreflectedPreviousMonthLimitedItems, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -594,59 +594,55 @@ test("needsMonthReconfirmation(継続費用の新仕様): 対象月に固有の�
   assert.equal(needsMonthReconfirmation(state, store, month), true);
 });
 
-test("getPreviousMonthAmountByNameAndCategory: 前月に同名・同カテゴリの単月項目があればその金額を返す", () => {
-  const state = createInitialAppState();
-  const store = "横浜店";
-  state.fixedCosts[`${store}__2026-07`] = [
-    { id: "labor-jul", name: "人件費", categoryKey: "labor", periodType: "limited", startMonth: "2026-07", endMonth: "2026-07" },
-  ];
-  state.costMonthlyAmounts = { "labor-jul__2026-07": { amount: 320000 } };
-
-  assert.equal(getPreviousMonthAmountByNameAndCategory(state, store, "人件費", "labor", "2026-08"), 320000);
-  assert.equal(getPreviousMonthAmountByNameAndCategory(state, store, "人件費", "materials", "2026-08"), undefined);
-  assert.equal(getPreviousMonthAmountByNameAndCategory(state, store, "存在しない費用", "labor", "2026-08"), undefined);
-});
-
-test("getUnreflectedPreviousMonthLimitedItems: 前月の単月・期間限定費用のうち、当月にまだ同名・同カテゴリの項目が無いものだけを未反映候補として返す", () => {
+test("isCostItemReflectedForMonth: 単月・期間限定費用は対象月ちょうどのcost_monthly_amounts行がある時だけtrue、カテゴリを問わず同じ判定になる", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   state.fixedCosts[`${store}__2026-08`] = [
-    { id: "labor-aug-a", name: "タカベ給料", categoryKey: "labor", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" },
-    { id: "labor-aug-b", name: "大也給料", categoryKey: "labor", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" },
-    { id: "materials-aug", name: "仕入", categoryKey: "materials", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" },
-    { id: "rent-aug", name: "家賃", categoryKey: "rent", periodType: "ongoing", baseAmount: 100000, startMonth: "2026-08", endMonth: "" },
-  ];
-  // 9月には「大也給料」だけ既に同名・同カテゴリで作り直されている(=反映済み)。
-  state.fixedCosts[`${store}__2026-09`] = [
-    { id: "labor-sep-b", name: "大也給料", categoryKey: "labor", periodType: "limited", startMonth: "2026-09", endMonth: "2026-09" },
+    { id: "labor-aug", name: "タカベ給料", categoryKey: "labor", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" },
+    { id: "other-aug", name: "レコード代", categoryKey: "other", periodType: "limited", startMonth: "2026-08", endMonth: "2026-08" },
   ];
   state.costMonthlyAmounts = {
-    "labor-aug-a__2026-08": { amount: 500000 },
-    "labor-aug-b__2026-08": { amount: 400000 },
-    "materials-aug__2026-08": { amount: 300000 },
-    "labor-sep-b__2026-09": { amount: 400000 },
+    "labor-aug__2026-08": { amount: 500000 },
+    "other-aug__2026-08": { amount: 52943 },
   };
 
-  const candidates = getUnreflectedPreviousMonthLimitedItems(state, store, "2026-09");
-  // 大也給料(反映済み)・家賃(継続費用)は候補に含まれない。
-  assert.equal(candidates.length, 2);
-  const byName = Object.fromEntries(candidates.map((candidate) => [candidate.name, candidate]));
-  assert.equal(byName["タカベ給料"].previousAmount, 500000);
-  assert.equal(byName["タカベ給料"].categoryKey, "labor");
-  assert.equal(byName["仕入"].previousAmount, 300000);
-  assert.equal(byName["大也給料"], undefined);
+  // 登録月(8月)は自動で反映済み。
+  assert.equal(isCostItemReflectedForMonth(state, "labor-aug", "2026-08"), true);
+  assert.equal(isCostItemReflectedForMonth(state, "other-aug", "2026-08"), true);
+  // 9月分の行が無ければ、人件費もその他費用も同じく未反映(人件費だけ特別扱いしない)。
+  assert.equal(isCostItemReflectedForMonth(state, "labor-aug", "2026-09"), false);
+  assert.equal(isCostItemReflectedForMonth(state, "other-aug", "2026-09"), false);
 
-  // 未反映候補は表示専用であり、getFixedCostsForStoreMonth(=calculateMonthSummaryが使う実際の
-  // 集計対象)には一切含まれない(一覧に見えるだけでは当月損益に加算しないという要件の保証)。
-  const septemberRealItems = getFixedCostsForStoreMonth(state, store, "2026-09").map((item) => item.name);
-  assert.ok(!septemberRealItems.includes("タカベ給料"));
-  assert.ok(!septemberRealItems.includes("仕入"));
+  // 「今月も反映」相当の操作(9月分の行を作成)をすれば、以後9月はtrueになる。
+  state.costMonthlyAmounts["other-aug__2026-09"] = { amount: 52943 };
+  assert.equal(isCostItemReflectedForMonth(state, "other-aug", "2026-09"), true);
 });
 
-test("getUnreflectedPreviousMonthLimitedItems: 前月に単月・期間限定費用が無ければ空配列を返す", () => {
+test("isCostItemReflectedForMonth: 継続費用は常にtrue(反映/未反映という状態を持たない)", () => {
   const state = createInitialAppState();
   const store = "横浜店";
-  assert.deepEqual(getUnreflectedPreviousMonthLimitedItems(state, store, "2026-09"), []);
+  state.fixedCosts[`${store}__2026-08`] = [
+    { id: "rent", name: "家賃", categoryKey: "rent", periodType: "ongoing", baseAmount: 100000, startMonth: "2026-08", endMonth: "" },
+  ];
+  assert.equal(isCostItemReflectedForMonth(state, "rent", "2026-08"), true);
+  assert.equal(isCostItemReflectedForMonth(state, "rent", "2026-12"), true);
+});
+
+test("getMostRecentReflectedCostAmount: 未反映月の入力欄プレフィル用に、対象月以前で最後に反映された金額を返す(損益集計には使わない別経路)", () => {
+  const state = createInitialAppState();
+  state.costMonthlyAmounts = {
+    "item-1__2026-08": { amount: 52943 },
+  };
+
+  // 9月はまだ未反映だが、直近(8月)の金額をプレフィル候補として返す。
+  assert.equal(getMostRecentReflectedCostAmount(state, "item-1", "2026-09"), 52943);
+  // 10月に9月分が反映されれば、10月時点での「直近」はそちらに更新される。
+  state.costMonthlyAmounts["item-1__2026-09"] = { amount: 48000 };
+  assert.equal(getMostRecentReflectedCostAmount(state, "item-1", "2026-10"), 48000);
+  // 8月より前(7月)は何も無いのでundefined——未来の行を勝手に拾わない。
+  assert.equal(getMostRecentReflectedCostAmount(state, "item-1", "2026-07"), undefined);
+  // 一度も反映されたことが無い項目はundefined。
+  assert.equal(getMostRecentReflectedCostAmount(state, "item-nonexistent", "2026-09"), undefined);
 });
 
 test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 常に計算されるが、OFFなら引当率未設定=0円のまま", () => {
@@ -1407,29 +1403,46 @@ test("buildFixedCostsStateFromRows: a continuing (ongoing) item entered in an ea
   assert.equal(getCostMonthlyAmount(state, "fc-rent", "2026-05"), 0);
 });
 
-test("getFixedCostsForStoreMonth: a single-month limited item (start_month === end_month) never carries into later months", () => {
+test("getFixedCostsForStoreMonth: a single-month limited item stays visible in every later month (2026-09仕様変更: 翌月以降も費用項目自体は一覧に残す), but is only actually reflected (counted) in its own registration month unless explicitly re-saved", () => {
   const rows = [
     { id: "fc-onetime", store_id: "store-honten", entry_month: "2026-06", name: "修繕費", category: "その他", memo: "", period_type: "limited", start_month: "2026-06", end_month: "2026-06" },
   ];
   const { fixedCosts } = buildFixedCostsStateFromRows(rows);
-  const state = { ...createInitialAppState(), fixedCosts };
+  const state = { ...createInitialAppState(), fixedCosts, costMonthlyAmounts: { "fc-onetime__2026-06": { amount: 30000 } } };
 
+  // 一覧には登録月以降ずっと表示され続ける。
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-06").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 0);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 1);
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-12").length, 1);
+  // 登録月より前には表示されない。
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-05").length, 0);
+
+  // だが、実際に反映(=損益に計上)されるのは登録月(cost_monthly_amounts行がある月)だけ。
+  assert.equal(isCostItemReflectedForMonth(state, "fc-onetime", "2026-06"), true);
+  assert.equal(isCostItemReflectedForMonth(state, "fc-onetime", "2026-07"), false);
+  assert.equal(getCostMonthlyAmount(state, "fc-onetime", "2026-06"), 30000);
+  assert.equal(getCostMonthlyAmount(state, "fc-onetime", "2026-07"), undefined);
 });
 
-test("getFixedCostsForStoreMonth: a limited period item (start_month < end_month) reflects every month in range, inclusive, and stops the month after", () => {
+test("getFixedCostsForStoreMonth: a legacy limited item with start_month < end_month stays visible forever from start_month onward (end_monthはもう絞り込みに使わない), but reflection still requires an exact cost_monthly_amounts row for each month", () => {
   const rows = [
     { id: "fc-period", store_id: "store-honten", entry_month: "2026-08", name: "求人広告", category: "求人費", memo: "", period_type: "limited", start_month: "2026-08", end_month: "2026-10" },
   ];
   const { fixedCosts } = buildFixedCostsStateFromRows(rows);
-  const state = { ...createInitialAppState(), fixedCosts };
+  const state = { ...createInitialAppState(), fixedCosts, costMonthlyAmounts: { "fc-period__2026-08": { amount: 50000 } } };
 
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-07").length, 0);
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-08").length, 1);
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-09").length, 1);
   assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-10").length, 1);
-  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-11").length, 0);
+  // 旧仕様ではend_month(2026-10)の翌月に消えていたが、新仕様では消えない。
+  assert.equal(getFixedCostsForStoreMonth(state, "store-honten", "2026-11").length, 1);
+
+  // 反映(損益計上)は8月だけ——9月・10月・11月はキャリーフォワードされず未反映のまま。
+  assert.equal(getCostMonthlyAmount(state, "fc-period", "2026-08"), 50000);
+  assert.equal(getCostMonthlyAmount(state, "fc-period", "2026-09"), undefined);
+  assert.equal(getCostMonthlyAmount(state, "fc-period", "2026-10"), undefined);
+  assert.equal(getCostMonthlyAmount(state, "fc-period", "2026-11"), undefined);
 });
 
 test("getFixedCostsForStoreMonth: a row with no explicit start_month falls back to entry_month as its start (entry_month is NOT NULL, so this is always available) and, with no end_month or period_type either, is treated as ongoing (visible in every month, before and after)", () => {
@@ -1484,7 +1497,7 @@ test("固定費・継続費用の再設計(要件1-4): 基本値は全月に自�
   assert.equal(septSummary.fixedCosts.length, 1);
 });
 
-test("固定費・継続費用の再設計: 単月・期間限定費用(periodType:'limited')は既存のキャリーフォワード仕様のまま維持する(要件10)", () => {
+test("固定費・継続費用の再設計(2026-09仕様変更で要件10のキャリーフォワードは廃止): 単月・期間限定費用は対象月ちょうどの行が無い限り未反映のまま、前後の月から金額を引き継がない", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   const key = `${store}__2026-08`;
@@ -1493,14 +1506,20 @@ test("固定費・継続費用の再設計: 単月・期間限定費用(periodTy
   };
   state.costMonthlyAmounts = { "fc-campaign__2026-08": { amount: 50000 } };
 
-  // 期間限定は従来通り、対象月に固有の行が無ければ以前の最新の行を引き継ぐ。
-  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-09"), 50000);
-  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-10"), 50000);
+  // 対象月に固有の行が無い9月・10月はもう引き継がない(=未反映=undefined)。
+  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-09"), undefined);
+  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-10"), undefined);
 
+  // 「今月も反映」相当の操作(明示的にcost_monthly_amounts行を作成)をした月だけ反映される。
   state.costMonthlyAmounts["fc-campaign__2026-09"] = { amount: 60000 };
   assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-09"), 60000);
-  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-10"), 60000); // 引き継ぎ継続
-  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-08"), 50000); // 過去へは遡らない
+  // 9月を反映しても10月・8月には一切影響しない。
+  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-10"), undefined);
+  assert.equal(getCostMonthlyAmount(state, "fc-campaign", "2026-08"), 50000);
+
+  // 未反映月の入力欄プレフィル用には、直近の反映済み金額(この場合9月の60000)を返す
+  // (損益集計には使われない別経路であることをgetCostMonthlyAmountとの対比で確認)。
+  assert.equal(getMostRecentReflectedCostAmount(state, "fc-campaign", "2026-10"), 60000);
 });
 
 test("固定費・継続費用の再設計(要件5・9): getFixedCostsForStoreMonthはsort_order昇順で返し、金額(costMonthlyAmounts)だけを変更しても並び順は変わらない", () => {
@@ -1530,32 +1549,39 @@ test("固定費・継続費用の再設計(要件5・9): getFixedCostsForStoreMo
   assert.equal(state.fixedCosts[key].find((item) => item.id === "fc-a").baseAmount, 400000);
 });
 
-test("費用入力「継続」の金額引き継ぎ: 期間限定費用も範囲内では金額を引き継ぐが、範囲外(開始月より前・終了月より後)には一切表示・反映しない", () => {
+test("費用入力(2026-09仕様変更): 期間限定費用は登録月だけ自動で損益に反映され、それ以降の月は一覧に残るが明示的に反映するまで損益には計上されない", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   const key = `${store}__2026-09`;
-  // 2026年9月〜11月の期間限定「広告キャンペーン」、9月に¥50,000で登録。
+  // 2026年9月に登録した期間限定「広告キャンペーン」、9月に¥50,000で登録。
   state.fixedCosts = {
     [key]: [{ id: "fc-ad", name: "広告キャンペーン", categoryKey: "advertising", periodType: "limited", startMonth: "2026-09", endMonth: "2026-11" }],
   };
   state.costMonthlyAmounts = { "fc-ad__2026-09": { amount: 50000 } };
 
-  // 範囲内(9〜11月)は明示保存が無い月(10月・11月)でも同じ金額を引き継いで表示・反映する。
-  ["2026-09", "2026-10", "2026-11"].forEach((month) => {
+  // 登録月(9月)は自動で損益に反映される。
+  assert.equal(calculateMonthSummary(state, store, "2026-09").adCost, 50000);
+
+  // 10月・11月は一覧には残るが(getFixedCostsForStoreMonth)、明示的に反映していないので
+  // 損益(adCost)には計上されない——「今月も反映」を押すまで自動では計上しないという仕様。
+  ["2026-10", "2026-11"].forEach((month) => {
     const items = getFixedCostsForStoreMonth(state, store, month);
-    assert.equal(items.length, 1, `${month} should show the item`);
-    assert.equal(getCostMonthlyAmount(state, "fc-ad", month), 50000);
-    assert.equal(calculateMonthSummary(state, store, month).adCost, 50000);
+    assert.equal(items.length, 1, `${month} should still show the item in the list`);
+    assert.equal(calculateMonthSummary(state, store, month).adCost, 0, `${month} should NOT auto-reflect into the P&L`);
   });
 
-  // 範囲外(8月・12月)は項目自体が表示されず、損益表にも一切反映しない(要件7)。
+  // 10月分を明示的に反映(「今月も反映」相当)すれば、10月の損益にだけ計上される。11月には
+  // 一切影響しない。
+  state.costMonthlyAmounts["fc-ad__2026-10"] = { amount: 55000 };
+  assert.equal(calculateMonthSummary(state, store, "2026-10").adCost, 55000);
+  assert.equal(calculateMonthSummary(state, store, "2026-11").adCost, 0);
+
+  // 登録月より前(8月)には一覧にも損益にも一切現れない。
   assert.equal(getFixedCostsForStoreMonth(state, store, "2026-08").length, 0);
-  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-12").length, 0);
   assert.equal(calculateMonthSummary(state, store, "2026-08").adCost, 0);
-  assert.equal(calculateMonthSummary(state, store, "2026-12").adCost, 0);
 });
 
-test("費用入力「継続」の金額引き継ぎ: 単月費用はその月にしか表示・反映されない(引き継ぎの影響を受けない)", () => {
+test("費用入力(2026-09仕様変更): 単月費用は登録月にしか自動反映されないが、翌月以降も一覧には残り続ける(削除されない)", () => {
   const state = createInitialAppState();
   const store = "横浜店";
   const key = `${store}__2026-08`;
@@ -1566,11 +1592,12 @@ test("費用入力「継続」の金額引き継ぎ: 単月費用はその月に
 
   assert.equal(getFixedCostsForStoreMonth(state, store, "2026-08").length, 1);
   assert.equal(calculateMonthSummary(state, store, "2026-08").fixedCost, 100000);
-  // 7月・9月には表示・反映されない(要件6)。
-  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-07").length, 0);
-  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-09").length, 0);
-  assert.equal(calculateMonthSummary(state, store, "2026-07").fixedCost, 0);
+  // 9月以降も一覧には残るが、明示的に反映するまで損益には計上されない。
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-09").length, 1);
   assert.equal(calculateMonthSummary(state, store, "2026-09").fixedCost, 0);
+  // 登録月より前(7月)には表示されない。
+  assert.equal(getFixedCostsForStoreMonth(state, store, "2026-07").length, 0);
+  assert.equal(calculateMonthSummary(state, store, "2026-07").fixedCost, 0);
 });
 
 test("固定費・継続費用の再設計: 店舗が異なれば同名の継続費用でも基本値は混ざらない(company_id/store_id分離の維持・要件9)", () => {
@@ -1591,7 +1618,7 @@ test("固定費・継続費用の再設計: 店舗が異なれば同名の継続
   assert.equal(calculateMonthSummary(state, "store-b", "2026-09").fixedCost, 500000);
 });
 
-test("buildCostMonthlyAmountsStateFromRows builds a costItemId__targetMonth -> amount lookup from cost_monthly_amounts rows", () => {
+test("buildCostMonthlyAmountsStateFromRows builds an exact costItemId__targetMonth -> amount lookup from cost_monthly_amounts rows (2026-09仕様変更: getCostMonthlyAmountはもう前後の月から引き継がない)", () => {
   const rows = [
     { id: "cma-1", cost_item_id: "fc-rent", target_month: "2026-08", amount: 150000, updated_at: "2026-08-01T00:00:00.000Z" },
     { id: "cma-2", cost_item_id: "fc-rent", target_month: "2026-09", amount: 160000, updated_at: "2026-09-01T00:00:00.000Z" },
@@ -1601,29 +1628,16 @@ test("buildCostMonthlyAmountsStateFromRows builds a costItemId__targetMonth -> a
 
   assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-08"), 150000);
   assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-09"), 160000);
-  // A month with no row of its own carries forward the most recent saved amount at or before it
-  // (費用入力「継続」の金額引き継ぎ仕様) — 2026-10's own row doesn't exist, so it inherits
-  // 2026-09's 160000, not 2026-08's 150000 (the *latest* applicable row wins).
-  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-10"), 160000);
-  // A month before any row exists at all falls back to the earliest recorded amount (2026-08's
-  // 150000) rather than showing 未入力 — a continuing cost is assumed to already have existed
-  // before the month it happened to first get entered into the app (不具合修正).
-  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-07"), 150000);
+  // 対象月に固有の行が無い月は、fixed_costs側の項目情報が無い(=種別不明、状態にfixedCostsが
+  // 無い)場合はundefined——前後の月から引き継がない。
+  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-10"), undefined);
+  assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-rent", "2026-07"), undefined);
   // A cost item with no rows saved at all (different id) is still genuinely undefined.
   assert.equal(getCostMonthlyAmount({ costMonthlyAmounts }, "fc-nonexistent", "2026-07"), undefined);
-});
-
-test("getPreviousMonthCostAmount reads the prior month's effective amount for the copy button, falling back to the earliest recorded amount if the item didn't exist yet that far back, and is undefined only when nothing was ever saved for it at all", () => {
-  const rows = [{ id: "cma-1", cost_item_id: "fc-rent", target_month: "2026-08", amount: 150000 }];
-  const { costMonthlyAmounts } = buildCostMonthlyAmountsStateFromRows(rows);
-  const state = { costMonthlyAmounts };
-
-  assert.equal(getPreviousMonthCostAmount(state, "fc-rent", "2026-09"), 150000);
-  // 2026-08の1つ前(2026-07)は2026-08より前で行が無いが、2026-08の金額を暫定的に引き継ぐ
-  // (不具合修正 — 継続費用は登録月より前でも「未入力」にしない)。
-  assert.equal(getPreviousMonthCostAmount(state, "fc-rent", "2026-08"), 150000);
-  // その項目自体が1件も保存されたことが無ければ、依然としてundefined。
-  assert.equal(getPreviousMonthCostAmount(state, "fc-nonexistent", "2026-08"), undefined);
+  // 未反映月の入力欄プレフィル用には、対象月以前の直近の反映済み金額を返す(損益集計には
+  // 使わない別経路)。
+  assert.equal(getMostRecentReflectedCostAmount({ costMonthlyAmounts }, "fc-rent", "2026-10"), 160000);
+  assert.equal(getMostRecentReflectedCostAmount({ costMonthlyAmounts }, "fc-rent", "2026-07"), undefined);
 });
 
 test("calculateMonthSummary: an ongoing cost item with no cost_monthly_amounts row for the selected month automatically uses its base amount (固定費・継続費用の再設計・要件1・5)", () => {
@@ -4249,6 +4263,81 @@ test("calculateMonthSummary: 再発防止テスト — 単月・期間限定費�
   assert.equal(summaryAgainLater.purchaseAmount, summary.purchaseAmount);
   assert.equal(summaryAgainLater.otherCost, summary.otherCost);
   assert.equal(summaryAgainLater.operatingProfit, summary.operatingProfit);
+});
+
+test("費用管理: 単月・期間限定項目の月またぎ仕様(2026-09仕様変更)を一連の流れで確認する — 登録月に自動反映→翌月は一覧に残るが未反映→「今月も反映」で明示的に反映→金額編集が損益に即時反映→「反映解除」で当月の損益からのみ削除され、他の月・項目自体には影響しない。人件費・材料・その他費用すべてで同一の挙動になることも確認する(レコード代・東和材料のようなケースの再現)", () => {
+  const state = createInitialAppState();
+  const store = "INTRO";
+  const sepKey = `${store}__2026-09`;
+  state.stores = [store];
+  state.dailyResults[sepKey] = [{ date: "2026-09-01", totalSales: 500000 }];
+  state.dailyResults[`${store}__2026-10`] = [{ date: "2026-10-01", totalSales: 500000 }];
+
+  // 9月に登録: 人件費・材料・その他費用それぞれ1件ずつ(レコード代・東和材料の実例を再現)。
+  state.fixedCosts[sepKey] = [
+    { id: "labor-1", name: "タカベ給料", categoryKey: "labor", periodType: "limited", startMonth: "2026-09", endMonth: "2026-09" },
+    { id: "materials-1", name: "東和材料", categoryKey: "materials", periodType: "limited", startMonth: "2026-09", endMonth: "2026-09" },
+    { id: "other-1", name: "レコード代", categoryKey: "other", periodType: "limited", startMonth: "2026-09", endMonth: "2026-09" },
+  ];
+  state.costMonthlyAmounts = {
+    "labor-1__2026-09": { amount: 500000 },
+    "materials-1__2026-09": { amount: 9850 },
+    "other-1__2026-09": { amount: 52943 },
+  };
+  const options = { laborCostMode: "fixed", laborCostRate: 0, purchaseCostMode: "fixed", purchaseCostRate: 0 };
+
+  // 1) 登録月(9月)は3項目とも自動で損益に反映され、表示上の「反映済み」バッジと実際の
+  //    損益金額が完全に一致する(最重要要件: 表示と損益の整合性)。
+  const septemberSummary = calculateMonthSummary(state, store, "2026-09", options);
+  assert.equal(isCostItemReflectedForMonth(state, "labor-1", "2026-09"), true);
+  assert.equal(isCostItemReflectedForMonth(state, "materials-1", "2026-09"), true);
+  assert.equal(isCostItemReflectedForMonth(state, "other-1", "2026-09"), true);
+  assert.equal(septemberSummary.laborCost, 500000);
+  assert.equal(septemberSummary.purchaseAmount, 9850);
+  assert.equal(septemberSummary.otherCost, 52943);
+
+  // 2) 翌月(10月)は3項目とも一覧には残るが(getFixedCostsForStoreMonth)、まだ未反映
+  //    (人件費だけ特別扱いになっていないことをここで確認する)。
+  const octoberItems = getFixedCostsForStoreMonth(state, store, "2026-10").map((item) => item.name);
+  assert.ok(octoberItems.includes("タカベ給料"));
+  assert.ok(octoberItems.includes("東和材料"));
+  assert.ok(octoberItems.includes("レコード代"));
+  ["labor-1", "materials-1", "other-1"].forEach((id) => {
+    assert.equal(isCostItemReflectedForMonth(state, id, "2026-10"), false);
+  });
+  const octoberSummaryBeforeReflect = calculateMonthSummary(state, store, "2026-10", options);
+  assert.equal(octoberSummaryBeforeReflect.laborCost, 0);
+  assert.equal(octoberSummaryBeforeReflect.purchaseAmount, 0);
+  assert.equal(octoberSummaryBeforeReflect.otherCost, 0);
+
+  // 3) 「今月も反映」(=対象月ちょうどのcost_monthly_amounts行を保存)を人件費・その他費用の
+  //    2件だけに行う。材料(東和材料)はあえて反映しないままにする。
+  state.costMonthlyAmounts["labor-1__2026-10"] = { amount: 500000 };
+  state.costMonthlyAmounts["other-1__2026-10"] = { amount: 52943 };
+  const octoberSummaryAfterReflect = calculateMonthSummary(state, store, "2026-10", options);
+  assert.equal(octoberSummaryAfterReflect.laborCost, 500000);
+  assert.equal(octoberSummaryAfterReflect.otherCost, 52943);
+  // 反映しなかった材料は引き続き0円のまま(一括反映ではなく項目ごとに独立している)。
+  assert.equal(octoberSummaryAfterReflect.purchaseAmount, 0);
+  assert.equal(isCostItemReflectedForMonth(state, "materials-1", "2026-10"), false);
+
+  // 4) 反映後の金額変更(修正後保存)が、その月の損益へ即時に連動することを確認する
+  //    (表示上だけ金額が変わって損益が古いまま、ということが無い)。
+  state.costMonthlyAmounts["labor-1__2026-10"] = { amount: 480000 };
+  assert.equal(calculateMonthSummary(state, store, "2026-10", options).laborCost, 480000);
+
+  // 5) 「今月の反映を解除」(=対象月ちょうどの行だけ削除)。10月の人件費だけが未反映へ戻り、
+  //    損益からも消える。ただし費用項目自体(fixed_costs)や、9月の反映実績・その他費用の
+  //    10月反映には一切影響しない。
+  delete state.costMonthlyAmounts["labor-1__2026-10"];
+  assert.equal(isCostItemReflectedForMonth(state, "labor-1", "2026-10"), false);
+  const octoberSummaryAfterUnreflect = calculateMonthSummary(state, store, "2026-10", options);
+  assert.equal(octoberSummaryAfterUnreflect.laborCost, 0);
+  assert.equal(octoberSummaryAfterUnreflect.otherCost, 52943); // その他費用は解除の影響を受けない
+  // 費用項目自体はまだ一覧に残っている(削除されていない)。
+  assert.ok(getFixedCostsForStoreMonth(state, store, "2026-10").some((item) => item.id === "labor-1"));
+  // 9月の反映実績(損益)には一切影響しない。
+  assert.equal(calculateMonthSummary(state, store, "2026-09", options).laborCost, 500000);
 });
 
 test("calculateLaborCost/calculatePurchaseCost: 固定額モード(既定)では既存の費用入力合計(fixedAmount)をそのまま使う(要件2・5-3、既存データを壊さない)", () => {

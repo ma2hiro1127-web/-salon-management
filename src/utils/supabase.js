@@ -2535,6 +2535,26 @@ export const upsertCostMonthlyAmountToSupabase = async ({ costItemId, companyId,
   }
 };
 
+// 「今月の反映を解除」用。対象月ちょうどの行だけを削除する——費用項目(fixed_costs)自体や
+// 他の月のcost_monthly_amounts行には一切触れない(2026-09仕様: 費用項目そのものと、その月の
+// 反映実績を明確に分離する設計の一部)。
+export const deleteCostMonthlyAmountFromSupabase = async ({ costItemId, targetMonth }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  if (!costItemId || !targetMonth) return { ok: true, skipped: true };
+  try {
+    const { error } = await supabase
+      .from("cost_monthly_amounts")
+      .delete()
+      .eq("cost_item_id", costItemId)
+      .eq("target_month", targetMonth);
+    if (error) throw error;
+    return { ok: true };
+  } catch (error) {
+    logSupabaseError({ operation: "deleteCostMonthlyAmountFromSupabase", table: "cost_monthly_amounts", costItemId, targetMonth, error });
+    return { ok: false, error };
+  }
+};
+
 // 継続費用は「その月から有効になる金額」を履歴として持ち、対象月に直接一致する行が無ければ
 // 対象月以前で最も新しい行の金額を引き継ぐ(getCostMonthlyAmount参照、費用入力の金額引き継ぎ
 // 仕様)。この「以前の履歴」は現在月から見て3か月より前の場合もあるため、fixed_costsと同じ

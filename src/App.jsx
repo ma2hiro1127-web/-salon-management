@@ -52,8 +52,6 @@ import {
   needsMonthReconfirmation,
   formatMoneyOrDash,
   formatPercentOrDash,
-  getPreviousMonthAmountByNameAndCategory,
-  getUnreflectedPreviousMonthLimitedItems,
   getCustomerTargetSummary,
   getStaffProductivitySummary,
   getDailyResultsForStoreMonth,
@@ -61,7 +59,8 @@ import {
   resolveDailyEntryEditState,
   runWithSaveGuard,
   getCostMonthlyAmount,
-  getPreviousMonthCostAmount,
+  getMostRecentReflectedCostAmount,
+  isCostItemReflectedForMonth,
   buildCostMonthlyAmountsStateFromRows,
   getInventoryBalance,
   getPreviousMonthInventoryBalance,
@@ -175,6 +174,7 @@ import {
   reorderFixedCostsInSupabase,
   loadCostMonthlyAmountsForCompany,
   upsertCostMonthlyAmountToSupabase,
+  deleteCostMonthlyAmountFromSupabase,
   loadStoreInventoryBalancesForCompany,
   upsertStoreInventoryBalanceToSupabase,
   loadVariableCostsForCompany,
@@ -7059,7 +7059,7 @@ function App() {
       return;
     }
     // 人件費・材料/発注費は月途中は未確定なことが多く、対象月ごとに単月入力する運用のため、
-    // 「継続」を選ばせず常に単月(開始月=終了月=対象年月)として登録する。
+    // 「継続」を選ばせず常に単月として登録する。
     const isSingleMonthCategory = fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials";
     const periodType = isSingleMonthCategory || fixedForm.periodType === "limited" ? "limited" : "ongoing";
     // 継続費用の基本値(要件1-4): 新規登録時は必須、既存項目の編集時も(このフォームに基本値
@@ -7068,22 +7068,17 @@ function App() {
       setNotice("金額は必須です");
       return;
     }
-    let startMonth = fixedForm.startMonth || selectedMonth;
-    let endMonth = "";
-    if (isSingleMonthCategory) {
-      startMonth = fixedForm.startMonth || selectedMonth;
-      endMonth = startMonth;
-    } else if (periodType === "limited") {
-      if (!fixedForm.startMonth || !fixedForm.endMonth) {
-        setNotice("期間限定の場合は開始月・終了月が必須です");
-        return;
-      }
-      startMonth = fixedForm.startMonth;
-      endMonth = fixedForm.endMonth;
-      if (endMonth < startMonth) {
-        setNotice("終了月は開始月以降にしてください");
-        return;
-      }
+    // 単月・期間限定費用は、カテゴリを問わず常に単月(開始月=終了月=対象年月)として登録する
+    // (2026-09仕様変更: 以前は人件費・材料/発注費以外のカテゴリだけ開始月・終了月を別々に
+    // 入力させていたが、終了月をまたぐと自動で費用が計上され続けてしまい、「継続」との違いが
+    // 分かりにくい・翌月以降も本当に計上してよいかをユーザーが都度確認できない、という問題が
+    // あった。翌月以降も同じ費用を計上したい場合は、月次一覧の「今月も反映」から都度明示的に
+    // 反映する仕様に統一する——全カテゴリ共通)。
+    const startMonth = fixedForm.startMonth || selectedMonth;
+    const endMonth = periodType === "limited" ? startMonth : "";
+    if (periodType === "limited" && !startMonth) {
+      setNotice("対象年月を入力してください");
+      return;
     }
 
     const key = buildMonthKey(selectedStoreId, startMonth);
@@ -7249,7 +7244,16 @@ function App() {
   const getCostAmountDraft = (item) => {
     if (Object.prototype.hasOwnProperty.call(costAmountDrafts, item.id)) return costAmountDrafts[item.id];
     const saved = getCostMonthlyAmount(appState, item.id, selectedMonth);
-    return saved === undefined ? "" : String(saved);
+    if (saved !== undefined) return String(saved);
+    // 単月・期間限定費用が当月まだ未反映の場合、直近に反映された金額を入力欄の初期値として
+    // プレフィルする(要件: 「翌月へ表示される際は、直前の金額を初期値として表示」)。これは
+    // あくまで編集可能な下書きであり、「今月も反映」を押して保存するまで当月の損益には
+    // 一切計上されない(getMostRecentReflectedCostAmountはgetCostMonthlyAmountとは別経路)。
+    if (item.periodType === "limited") {
+      const suggested = getMostRecentReflectedCostAmount(appState, item.id, selectedMonth);
+      if (suggested !== undefined) return String(suggested);
+    }
+    return "";
   };
 
   const setCostAmountDraft = (itemId, value) => {
@@ -7271,129 +7275,15 @@ function App() {
     return costAmountDraftHandlersRef.current.get(itemId);
   };
 
-  // 「今月に反映」(単一項目、既にこの項目自体が当月一覧に存在するケース——同一idのまま
-  // 複数月にまたがる期間限定費用の途中月など)。以前はdraftへ値をセットするだけで、
-  // 別途「保存」を押すまで確定しない仕様だったが、「押しても反応しない(ように見える)」
-  // という不具合報告を受け、クリック1回で即座に保存まで完了する仕様へ変更した。
-  const reflectPreviousMonthAmountFor = async (item) => {
-    const previous = getPreviousMonthCostAmount(appState, item.id, selectedMonth);
-    if (previous === undefined) return;
-    const ok = await persistCostMonthlyAmount({ costItemId: item.id, targetMonth: selectedMonth, amount: previous });
-    if (ok) {
-      setCostAmountDrafts((prev) => {
-        const next = { ...prev };
-        delete next[item.id];
-        return next;
-      });
-    }
-  };
-
-  // 前月の単月・期間限定費用のうち、当月にまだ反映されていないもの(getUnreflectedPreviousMonthLimitedItems
-  // 参照)。当月の一覧には実在しない「未反映」候補として別枠で表示し、「今月に反映」を押した
-  // 時点で初めて当月分のfixed_costs行を新規作成する——一覧に見えているだけでは当月の損益に
-  // 一切加算しない(過去月集計不具合の再発防止と同じ設計方針)。
-  const previousMonthCarryForwardCandidates = useMemo(
-    () => getUnreflectedPreviousMonthLimitedItems(appState, selectedStoreId, selectedMonth),
-    [appState, selectedStoreId, selectedMonth],
-  );
-  const [reflectingCandidateIds, setReflectingCandidateIds] = useState(() => new Set());
-  const [bulkReflectBusy, setBulkReflectBusy] = useState(false);
-
-  // 単一の未反映候補を当月へ反映する(新規のfixed_costs行を作成し、その場でcost_monthly_amounts
-  // も保存する)。sortOrderHintは一括反映(reflectAllPreviousMonthCarryForwardItems)から連番で
-  // 渡される——1件ずつだとappStateの再描画待ちでsort_orderが衝突しうるため、呼び出し元で
-  // 採番済みの値を使う。
-  const reflectCarryForwardCandidate = async (candidate, sortOrderHint) => {
-    if (!canEditMonthlyData(currentRole)) {
-      setNotice("費用の金額を変更できるのは会社管理者・店舗管理者以上です。");
-      return false;
-    }
-    if (guardFranchiseReadOnly()) return false;
-    const { company, store } = resolveTargetCompanyAndStore();
-    if (!store?.id) {
-      setNotice("店舗情報を確認できませんでした");
-      return false;
-    }
-    if (store?.status === "suspended") {
-      setNotice("この店舗は現在停止中のため、新しい費用を登録できません");
-      return false;
-    }
-    if (isSupabaseConfigured && !company?.id) {
-      setNotice("店舗情報を確認できませんでした");
-      return false;
-    }
-    const itemId = crypto.randomUUID();
-    const sortOrder = sortOrderHint ?? (
-      getFixedCostsForStoreMonth(appStateRef.current, selectedStoreId, selectedMonth)
-        .reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 0) + 1
-    );
-    const nextItem = {
-      id: itemId,
-      name: candidate.name,
-      category: candidate.category || "",
-      categoryKey: candidate.categoryKey,
-      memo: candidate.memo || "",
-      periodType: "limited",
-      startMonth: selectedMonth,
-      endMonth: selectedMonth,
-      baseAmount: 0,
-      sortOrder,
-    };
-    if (isSupabaseConfigured) {
-      const result = await upsertFixedCostToSupabase({ id: itemId, companyId: company.id, storeId: store.id, entryMonth: selectedMonth, userId: appState.currentUserId, item: nextItem });
-      if (!result.ok) {
-        setNotice(getSupabaseErrorMessage(result.error));
-        return false;
-      }
-    }
-    setAppState((prev) => {
-      const mapKey = buildMonthKey(selectedStoreId, selectedMonth);
-      return { ...prev, fixedCosts: { ...prev.fixedCosts, [mapKey]: [...(prev.fixedCosts[mapKey] || []), nextItem] } };
-    });
-    return persistCostMonthlyAmount({ costItemId: itemId, targetMonth: selectedMonth, amount: candidate.previousAmount });
-  };
-
-  const handleReflectCarryForwardCandidate = async (candidate) => {
-    if (reflectingCandidateIds.has(candidate.previousItemId)) return;
-    setReflectingCandidateIds((prev) => new Set(prev).add(candidate.previousItemId));
-    try {
-      await reflectCarryForwardCandidate(candidate);
-    } finally {
-      setReflectingCandidateIds((prev) => {
-        const next = new Set(prev);
-        next.delete(candidate.previousItemId);
-        return next;
-      });
-    }
-  };
-
-  // 画面上部の「前月の単月項目をまとめてコピー」。確認ダイアログの上で、その時点で未反映の
-  // 候補だけを連番のsortOrderで順番に反映する(Promise.allではなく直列awaitにすることで、
-  // 同時書き込みによるsort_order衝突・状態上書きを避ける——このファイルの他の一括処理と同じ方針)。
-  const reflectAllPreviousMonthCarryForwardItems = async () => {
-    if (guardFranchiseReadOnly()) return;
-    if (previousMonthCarryForwardCandidates.length === 0) return;
-    if (!window.confirm("前月の単月・期間限定項目を今月へコピーしますか？")) return;
-    setBulkReflectBusy(true);
-    try {
-      const candidates = getUnreflectedPreviousMonthLimitedItems(appStateRef.current, selectedStoreId, selectedMonth);
-      let sortOrderCursor = getFixedCostsForStoreMonth(appStateRef.current, selectedStoreId, selectedMonth)
-        .reduce((max, item) => Math.max(max, item.sortOrder ?? 0), 0);
-      let succeeded = 0;
-      for (const candidate of candidates) {
-        sortOrderCursor += 1;
-        // eslint-disable-next-line no-await-in-loop
-        const ok = await reflectCarryForwardCandidate(candidate, sortOrderCursor);
-        if (ok) succeeded += 1;
-      }
-      if (succeeded > 0) {
-        setSuccessNotice(`前月の単月・期間限定項目を${succeeded}件、今月へ反映しました。`);
-      }
-    } finally {
-      setBulkReflectBusy(false);
-    }
-  };
-
+  // 単月・期間限定費用の保存(=「反映」)。「保存」ボタンと「今月も反映」ボタンは実体として
+  // 完全に同じ操作——対象月ちょうどのcost_monthly_amounts行をupsertするだけ(2026-09仕様
+  // 変更: 費用項目そのもの(fixed_costs)と、その月に反映した実績(cost_monthly_amounts)を
+  // 分離したことで、月をまたいでも同じitem.idを使い続けられるようになったため、以前のように
+  // 「反映のたびに新しいfixed_costs行を作る」必要が無くなった)。呼び出し元(JSX)がボタンの
+  // 文言をisCostItemReflectedForMonthの状態で出し分けるだけで、カテゴリを問わずすべての
+  // 単月・期間限定費用で共通の1本の経路になる。DB側の一意性(cost_item_id×target_month)は
+  // 既存のcost_monthly_amounts_cost_item_id_target_month_key制約がそのまま担保するため、
+  // 連打・通信遅延があっても同じ行がupsertされるだけで二重登録は起こらない。
   const saveCostAmountFor = async (item) => {
     const draft = getCostAmountDraft(item);
     if (draft === "") {
@@ -7407,6 +7297,65 @@ function App() {
         delete next[item.id];
         return next;
       });
+    }
+  };
+
+  // 「今月の反映を解除」。対象月ちょうどのcost_monthly_amounts行だけを削除する——費用項目
+  // (fixed_costs)自体は削除しない、他の月の反映実績にも一切触れない(要件通り)。
+  const unreflectCostItemForMonth = async (item) => {
+    if (!canEditMonthlyData(currentRole)) {
+      setNotice("費用の金額を変更できるのは会社管理者・店舗管理者以上です。");
+      return;
+    }
+    if (guardFranchiseReadOnly()) return;
+    if (!window.confirm(`「${item.name}」の今月の反映を解除しますか？\n(費用項目自体や他の月の反映は削除されません)`)) return;
+    if (isSupabaseConfigured) {
+      const result = await deleteCostMonthlyAmountFromSupabase({ costItemId: item.id, targetMonth: selectedMonth });
+      if (!result.ok) {
+        setNotice(getSupabaseErrorMessage(result.error));
+        return;
+      }
+    }
+    setAppState((prev) => {
+      const nextCostMonthlyAmounts = { ...prev.costMonthlyAmounts };
+      delete nextCostMonthlyAmounts[`${item.id}__${selectedMonth}`];
+      return { ...prev, costMonthlyAmounts: nextCostMonthlyAmounts };
+    });
+    setCostAmountDrafts((prev) => {
+      const next = { ...prev };
+      delete next[item.id];
+      return next;
+    });
+  };
+
+  // 画面上部の「今月も反映（まとめて）」。当月まだ未反映の単月・期間限定費用すべてを、
+  // それぞれの直近の反映済み金額(getCostAmountDraftのプレフィルと同じ値)のまま一括反映する。
+  // 既に当月分が反映済みの項目には触れない(上書きしない)。
+  const [bulkReflectBusy, setBulkReflectBusy] = useState(false);
+  const unreflectedLimitedCostItems = useMemo(
+    () => fixedCosts.filter((item) => item.periodType === "limited" && !isCostItemReflectedForMonth(appState, item.id, selectedMonth)),
+    [fixedCosts, appState, selectedMonth],
+  );
+  const reflectAllUnreflectedCostsForMonth = async () => {
+    if (guardFranchiseReadOnly()) return;
+    if (unreflectedLimitedCostItems.length === 0) return;
+    if (!window.confirm("前月以前の単月・期間限定項目を、直近の金額のまま今月へ反映しますか？")) return;
+    setBulkReflectBusy(true);
+    try {
+      let succeeded = 0;
+      for (const item of unreflectedLimitedCostItems) {
+        const amount = getCostAmountDraft(item);
+        if (amount === "") continue;
+        // eslint-disable-next-line no-await-in-loop
+        const ok = await persistCostMonthlyAmount({ costItemId: item.id, targetMonth: selectedMonth, amount });
+        if (ok) succeeded += 1;
+      }
+      if (succeeded > 0) {
+        setCostAmountDrafts({});
+        setSuccessNotice(`単月・期間限定項目を${succeeded}件、今月へ反映しました。`);
+      }
+    } finally {
+      setBulkReflectBusy(false);
     }
   };
 
@@ -9373,14 +9322,14 @@ function App() {
                         <p className="eyebrow">EXPENSE</p>
                         <h2>費用入力</h2>
                       </div>
-                      {canEditMonthlyData(currentRole) && previousMonthCarryForwardCandidates.length > 0 ? (
+                      {canEditMonthlyData(currentRole) && unreflectedLimitedCostItems.length > 0 ? (
                         <button
                           className="secondary-button"
                           type="button"
                           disabled={bulkReflectBusy}
-                          onClick={reflectAllPreviousMonthCarryForwardItems}
+                          onClick={reflectAllUnreflectedCostsForMonth}
                         >
-                          {bulkReflectBusy ? "反映中…" : "前月の単月項目をまとめてコピー"}
+                          {bulkReflectBusy ? "反映中…" : "単月・期間限定項目をまとめて今月も反映"}
                         </button>
                       ) : null}
                     </div>
@@ -9449,8 +9398,7 @@ function App() {
                             ...prev,
                             categoryKey: nextCategoryKey,
                             periodType: nextIsSingleMonth ? "limited" : prev.periodType,
-                            startMonth: nextIsSingleMonth ? (prev.startMonth || selectedMonth) : prev.startMonth,
-                            endMonth: nextIsSingleMonth ? (prev.startMonth || selectedMonth) : prev.endMonth,
+                            startMonth: prev.startMonth || selectedMonth,
                           }));
                         }}
                         required
@@ -9467,48 +9415,39 @@ function App() {
                           placeholder={fixedForm.periodType === "ongoing" ? "基本値（毎月自動反映）" : "今月の金額"}
                         />
                       ) : null}
-                      {fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials" ? (
+                      {/* 「継続」トグルは人件費・材料/発注費では出さない(常に単月扱い、既存仕様通り)。
+                          単月・期間限定を選んだ場合は、カテゴリを問わず対象年月を1つだけ入力する
+                          (2026-09仕様変更: 開始月・終了月を別々に入力する旧UIは廃止——終了月は
+                          もう集計に一切影響しないため、混乱を避けるため入力自体させない)。 */}
+                      {fixedForm.categoryKey === "labor" || fixedForm.categoryKey === "materials" ? null : (
+                        <div className="segmented-control" role="group" aria-label="適用期間">
+                          <button
+                            type="button"
+                            className={fixedForm.periodType === "limited" ? "segmented-button" : "segmented-button active"}
+                            onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "ongoing" }))}
+                          >
+                            継続
+                          </button>
+                          <button
+                            type="button"
+                            className={fixedForm.periodType === "limited" ? "segmented-button active" : "segmented-button"}
+                            onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "limited", startMonth: prev.startMonth || selectedMonth }))}
+                          >
+                            単月・期間限定
+                          </button>
+                        </div>
+                      )}
+                      {fixedForm.periodType === "limited" ? (
                         <label className="field">
                           <span>対象年月</span>
                           <input
                             type="month"
                             value={fixedForm.startMonth || ""}
-                            onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value, endMonth: event.target.value }))}
+                            onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value }))}
                             required
                           />
                         </label>
-                      ) : (
-                        <>
-                          <div className="segmented-control" role="group" aria-label="適用期間">
-                            <button
-                              type="button"
-                              className={fixedForm.periodType === "limited" ? "segmented-button" : "segmented-button active"}
-                              onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "ongoing", endMonth: "" }))}
-                            >
-                              継続
-                            </button>
-                            <button
-                              type="button"
-                              className={fixedForm.periodType === "limited" ? "segmented-button active" : "segmented-button"}
-                              onClick={() => setFixedForm((prev) => ({ ...prev, periodType: "limited" }))}
-                            >
-                              単月・期間限定
-                            </button>
-                          </div>
-                          {fixedForm.periodType === "limited" ? (
-                            <>
-                              <label className="field">
-                                <span>開始月</span>
-                                <input type="month" value={fixedForm.startMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, startMonth: event.target.value }))} required />
-                              </label>
-                              <label className="field">
-                                <span>終了月</span>
-                                <input type="month" value={fixedForm.endMonth || ""} onChange={(event) => setFixedForm((prev) => ({ ...prev, endMonth: event.target.value }))} required />
-                              </label>
-                            </>
-                          ) : null}
-                        </>
-                      )}
+                      ) : null}
                       <button className="primary-button" type="submit" disabled={fixedCostFormBusy}>{fixedCostFormBusy ? "保存中…" : (fixedForm.id ? "更新" : "追加")}</button>
                       {fixedForm.id ? <button className="secondary-button" type="button" onClick={cancelEditFixedCost}>キャンセル</button> : null}
                       <details className="advanced-fields">
@@ -9523,59 +9462,22 @@ function App() {
                         タッチを統一的に処理)。入力欄・編集・削除ボタンはハンドルと別要素なので、
                         誤操作にはならない。 */}
                     <div className="list-card">
-                      {/* 前月の単月・期間限定費用のうち当月にまだ反映されていないもの(未反映)。
-                          実在のfixedCosts項目ではなく表示専用の候補のため、当月の損益には一切
-                          加算されない——「今月に反映」を押して初めて実項目として作成・保存される。 */}
-                      {previousMonthCarryForwardCandidates.map((candidate) => (
-                        <div key={`carry-${candidate.previousItemId}`} className="list-row cost-row cost-row-carry-forward">
-                          <div>
-                            <strong>{candidate.name}</strong>
-                            <small>{getCostCategoryLabel(candidate.categoryKey)} ／ 単月・期間限定 ／ 前月項目・今月未反映{candidate.memo ? ` ／ ${candidate.memo}` : ""}</small>
-                          </div>
-                          <div className="cost-row-amount">
-                            <span className="cost-row-carry-forward-badge">前月 {money(candidate.previousAmount)}</span>
-                            {canEditMonthlyData(currentRole) ? (
-                              <button
-                                className="primary-button"
-                                type="button"
-                                disabled={reflectingCandidateIds.has(candidate.previousItemId)}
-                                onClick={() => handleReflectCarryForwardCandidate(candidate)}
-                              >
-                                {reflectingCandidateIds.has(candidate.previousItemId) ? "反映中…" : "今月に反映"}
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      ))}
                       {fixedCosts.map((item) => {
-                        const periodLabel = item.periodType === "limited"
-                          ? (item.startMonth && item.startMonth === item.endMonth ? `${item.startMonth}のみ` : `${item.startMonth}〜${item.endMonth}`)
-                          : "継続";
-                        // item.startMonth < selectedMonthの場合だけ「この項目自体が前月以前から
-                        // 存在する」と言える(=真に同一idの複数月にまたがる期間限定費用)ため、
-                        // item.id基準の前月金額(previousAmount)をそのまま使う。単月項目
-                        // (startMonth === selectedMonth、今月新規作成された項目)でこれを使うと、
-                        // getCostMonthlyAmountの「対象月にちょうど保存された行が無ければ、対象月
-                        // より後で最も古い行を使う」というキャリーフォワード(過去月を遡って
-                        // 見た時に未入力にしないための仕様)が働き、この項目自身の当月金額を
-                        // 誤って「前月分」として検出してしまう(反映直後に「今月反映済み」バッジ
-                        // ではなく前月コピー用ボタンが出てしまう不具合の修正)。
-                        const hasSameIdMultiMonthHistory = item.periodType === "limited" && item.startMonth && item.startMonth < selectedMonth;
-                        const previousAmount = hasSameIdMultiMonthHistory ? getPreviousMonthCostAmount(appState, item.id, selectedMonth) : undefined;
+                        // 単月・期間限定費用は、登録月(startMonth)以降ずっと一覧に残る(要件:
+                        // 「翌月以降も費用項目自体は一覧に残す」)。実際にその月の損益へ計上
+                        // されるかどうかは、対象月ちょうどのcost_monthly_amounts行があるかどうか
+                        // だけで判定する(isCostItemReflectedForMonth)——これは人件費・材料・
+                        // 広告費・その他費用など、カテゴリを問わず全く同じ1本のロジック。
+                        const isReflected = isCostItemReflectedForMonth(appState, item.id, selectedMonth);
+                        const isLimited = item.periodType === "limited";
                         const savedAmount = getCostMonthlyAmount(appState, item.id, selectedMonth);
                         const draftAmount = getCostAmountDraft(item);
-                        // 単月項目(人件費/材料・発注費等)は月ごとに新しいitem idになるため上のidベースの
-                        // 前月比較が効かない。名前+カテゴリが一致する前月項目があれば「今月反映済み」
-                        // (前月から引き継がれた項目)として扱う。
-                        const suggestedPreviousAmount = previousAmount === undefined
-                          ? getPreviousMonthAmountByNameAndCategory(appState, selectedStoreId, item.name, item.categoryKey, selectedMonth)
-                          : undefined;
-                        const isReflectedFromPreviousMonth = item.periodType === "limited" && suggestedPreviousAmount !== undefined;
+                        const periodLabel = isLimited ? `${item.startMonth}に登録` : "継続";
                         return (
                           <div
                             key={item.id}
                             data-cost-item-id={item.id}
-                            className={`list-row cost-row ${isReflectedFromPreviousMonth ? "cost-row-reflected" : ""} ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
+                            className={`list-row cost-row ${isLimited && isReflected ? "cost-row-reflected" : ""} ${isLimited && !isReflected ? "cost-row-carry-forward" : ""} ${fixedCostDragId === item.id ? "cost-row-dragging" : ""} ${fixedCostDragOverId === item.id && fixedCostDragId && fixedCostDragId !== item.id ? "cost-row-drag-over" : ""}`}
                           >
                             <span
                               className="cost-row-drag-handle"
@@ -9591,29 +9493,34 @@ function App() {
                             </span>
                             <div>
                               <strong>{item.name}</strong>
-                              <small>{getCostCategoryLabel(item.categoryKey)} ／ {item.periodType === "limited" ? "単月・期間限定" : "継続"} ／ {periodLabel}{item.memo ? ` ／ ${item.memo}` : ""}</small>
+                              <small>{getCostCategoryLabel(item.categoryKey)} ／ {isLimited ? "単月・期間限定" : "継続"} ／ {periodLabel}{item.memo ? ` ／ ${item.memo}` : ""}</small>
                             </div>
                             <div className="cost-row-amount">
                               <NumericInput
                                 value={draftAmount}
-                                placeholder={savedAmount === undefined ? "未入力" : ""}
+                                placeholder={draftAmount === "" ? "未入力" : ""}
                                 onChange={getCostAmountDraftHandler(item.id)}
                               />
-                              {/* 要件6: 継続費用は基本値が毎月自動反映されるため「今月に反映」は
-                                  不要(常に基本値=前月扱いになってしまい紛らわしいため非表示にする)。
-                                  単月・期間限定費用のうち、この項目自体が前月と同一idのまま複数月に
-                                  またがるケース(previousAmount)だけボタンを出す。名前+カテゴリ一致
-                                  による引き継ぎ(isReflectedFromPreviousMonth)は既に反映済みなので
-                                  バッジ表示のみでコピー操作は出さない。 */}
-                              {item.periodType === "limited" && previousAmount !== undefined ? (
+                              {/* 継続費用は基本値が毎月自動反映されるためバッジ・反映操作は不要。
+                                  単月・期間限定費用だけ、反映済み(緑バッジ+反映解除)/未反映
+                                  (黄色背景+「今月も反映」)を出し分ける——全カテゴリ共通。 */}
+                              {isLimited && isReflected ? (
                                 <>
-                                  <small className="helper-text">前月 {money(previousAmount)}</small>
-                                  <button className="text-button" type="button" onClick={() => reflectPreviousMonthAmountFor(item)}>今月に反映</button>
+                                  <span className="cost-row-reflected-badge">今月反映済み {money(savedAmount ?? 0)}</span>
+                                  {canEditMonthlyData(currentRole) ? (
+                                    <button className="text-button cost-row-unreflect-button" type="button" onClick={() => unreflectCostItemForMonth(item)}>今月の反映を解除</button>
+                                  ) : null}
                                 </>
-                              ) : isReflectedFromPreviousMonth ? (
-                                <span className="cost-row-reflected-badge">今月反映済み {money(savedAmount ?? 0)}</span>
+                              ) : isLimited ? (
+                                <span className="cost-row-carry-forward-badge">今月未反映</span>
                               ) : null}
-                              <button className="secondary-button" type="button" onClick={() => saveCostAmountFor(item)}>保存</button>
+                              <button
+                                className={isLimited && !isReflected ? "primary-button" : "secondary-button"}
+                                type="button"
+                                onClick={() => saveCostAmountFor(item)}
+                              >
+                                {isLimited && !isReflected ? "今月も反映" : "保存"}
+                              </button>
                             </div>
                             <div className="row-actions">
                               <button className="text-button" type="button" onClick={() => editFixedCost(item)}>項目編集</button>

@@ -452,6 +452,9 @@ button.list-row:hover { border-color: var(--accent); }
 .cost-row-carry-forward-badge { font-size: 0.85rem; font-weight: 600; color: var(--warning); }
 .cost-row-reflected { background: rgba(46, 163, 97, 0.08); border-color: rgba(46, 163, 97, 0.28); }
 .cost-row-reflected-badge { font-size: 0.85rem; font-weight: 600; color: var(--success); padding: 6px 10px; border-radius: 10px; background: rgba(46, 163, 97, 0.14); }
+/* 「今月の反映を解除」— 誤操作しやすい派手なボタンにはせず、控えめな小さいリンク風にする。 */
+.cost-row-unreflect-button { font-size: 0.78rem; color: var(--muted); }
+.cost-row-unreflect-button:hover { color: var(--danger); }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
