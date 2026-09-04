@@ -769,6 +769,16 @@ function App() {
   const [freeReasonSavingId, setFreeReasonSavingId] = useState("");
   // 契約状態(トライアル/契約中/停止中)ボタンの多重クリック防止。
   const [companyStatusSavingId, setCompanyStatusSavingId] = useState("");
+  // 会社カードの「管理者を追加」用(2026-09-04、復活)。system_adminが会社を都度切り替えて
+  // からユーザー管理画面で招待する(=切り替え忘れによる誤company_id招待の事故が起きうる)
+  // のではなく、会社カードのボタンから直接その会社のidを指定して追加できるようにする。
+  // どの会社カードのインラインフォームを開いているかだけを保持し、実際の氏名・メール入力は
+  // 専用のaddAdminFormで持つ(ユーザー管理ページの招待フォーム(userForm)とは完全に独立
+  // させ、干渉させない)。
+  const [addAdminCompanyId, setAddAdminCompanyId] = useState("");
+  const [addAdminForm, setAddAdminForm] = useState({ name: "", email: "" });
+  const [addAdminBusy, setAddAdminBusy] = useState(false);
+  const [addAdminError, setAddAdminError] = useState("");
   // 契約状態変更の確認モーダル(2026-09-02)。{ company, targetStatus } | null。
   // window.confirmではなく、遷移先に応じた必要情報(無料利用の終了日選択、課金開始予定日の
   // プレビュー等)を見せてから変更してもらうためのモーダル。
@@ -4244,6 +4254,152 @@ function App() {
       }
     } catch (error) {
       setNotice(getSupabaseErrorMessage(error));
+    }
+  };
+
+  const openAddAdminForm = (company) => {
+    setAddAdminCompanyId(company.id);
+    setAddAdminForm({ name: "", email: "" });
+    setAddAdminError("");
+  };
+  const closeAddAdminForm = () => {
+    setAddAdminCompanyId("");
+    setAddAdminForm({ name: "", email: "" });
+    setAddAdminError("");
+  };
+
+  // 会社カードの「管理者を追加」の実処理。会社idは常に引数のcompany(=このボタンが
+  // 描画されているカードそのもの)から取るだけで、appState.currentCompanyId(現在
+  // 切り替え中の会社)には一切依存しない——system_adminが会社の切り替えを忘れたまま
+  // 別会社のカードのボタンを押しても、常にそのカードの会社へ正しく追加される。
+  //
+  // 既存の招待の重複判定(classifyEmailDuplicateForInvite)と同じ「1メールアドレス=
+  // 1会社」という制約はここでも一切崩さない:
+  //   - 対象会社に既に存在するメールアドレス → 新しいprofile行は作らず、role列を
+  //     company_adminへ更新するだけ(要件: 既存ユーザーなら対象会社との所属を追加)。
+  //   - 別会社に既に存在するメールアドレス → 既存の招待フォームと全く同じ文言でブロック
+  //     する(会社分離を絶対に崩さない、この画面からもバイパスできない)。
+  //   - どの会社にも存在しないメールアドレス → 既存の招待機能(createUserProfileRecord+
+  //     sendInviteEmail)をそのまま使う。role/companyIdだけをcompany_admin/対象会社に
+  //     固定する。
+  const handleAddCompanyAdmin = async (company) => {
+    if (!canManageCompanies(currentRole) || addAdminBusy) return;
+    const normalizedName = addAdminForm.name.trim();
+    const normalizedEmail = addAdminForm.email.trim().toLowerCase();
+    if (!normalizedEmail) {
+      setAddAdminError("メールアドレスを入力してください");
+      return;
+    }
+    setAddAdminBusy(true);
+    setAddAdminError("");
+    try {
+      const existingResult = await checkExistingProfilesByEmail({ email: normalizedEmail });
+      if (!existingResult.ok) {
+        setAddAdminError(getSupabaseErrorMessage(existingResult.error));
+        return;
+      }
+      const rows = existingResult.data || [];
+      const sameCompanyRow = rows.find((row) => row.company_id === company.id);
+      const otherCompanyRow = rows.find((row) => row.company_id !== company.id);
+
+      if (otherCompanyRow) {
+        setAddAdminError(
+          otherCompanyRow.auth_user_id
+            ? "このメールアドレスは既に別の会社で登録済みです。1つのメールアドレスは1つの会社にのみ登録できます。"
+            : "このメールアドレスは別の会社で招待待ちの状態です。先にその会社のユーザー管理画面から招待を削除してから、あらためてこちらで追加してください。"
+        );
+        return;
+      }
+
+      if (sameCompanyRow) {
+        if (!sameCompanyRow.is_active) {
+          setAddAdminError("このメールアドレスは停止中のユーザーとして登録されています。先にユーザー一覧から状態をご確認ください");
+          return;
+        }
+        if (sameCompanyRow.role === "company_admin") {
+          setAddAdminError("このメールアドレスは既にこの会社の管理者です");
+          return;
+        }
+        const roleResult = await updateProfileRole({ profileId: sameCompanyRow.id, role: "company_admin" });
+        if (!roleResult.ok) {
+          setAddAdminError(getSupabaseErrorMessage(roleResult.error));
+          return;
+        }
+        const nextState = {
+          ...appStateRef.current,
+          users: (appStateRef.current.users || []).map((user) => (user.id === sameCompanyRow.id ? { ...user, role: "company_admin" } : user)),
+        };
+        persistTenantState(nextState);
+        setNotice(`${normalizedName || normalizedEmail} を ${company.name} の管理者にしました`);
+        closeAddAdminForm();
+        return;
+      }
+
+      if (!normalizedName) {
+        setAddAdminError("氏名を入力してください");
+        return;
+      }
+      const inviteTokenValue = createInviteToken();
+      const inviteLink = buildInviteLink(typeof window !== "undefined" && window.location?.origin ? window.location.origin : "", inviteTokenValue);
+      const inviteExpiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+      const createdProfile = await createUserProfileRecord({
+        name: normalizedName,
+        email: normalizedEmail,
+        role: "company_admin",
+        companyId: company.id,
+        storeIds: [],
+        primaryStoreId: "",
+        authUserId: null,
+        invitationStatus: "invited",
+        inviteToken: inviteTokenValue,
+        inviteExpiresAt,
+      });
+      const nextUser = {
+        id: createdProfile?.id || `user-${Date.now()}`,
+        name: normalizedName,
+        email: normalizedEmail,
+        role: "company_admin",
+        companyId: company.id,
+        storeIds: [],
+        primaryStoreId: "",
+        isActive: true,
+        invitationStatus: "invited",
+        lastLoginAt: "",
+        loginCount: 0,
+        inviteExpiresAt,
+        inviteToken: inviteTokenValue,
+        inviteLink,
+        authUserId: createdProfile?.auth_user_id || "",
+      };
+      const nextState = {
+        ...appStateRef.current,
+        users: [...(appStateRef.current.users || []), nextUser],
+      };
+      persistTenantState(nextState);
+
+      if (isSupabaseConfigured) {
+        const emailResult = await sendInviteEmail({
+          token: inviteTokenValue,
+          redirectOrigin: typeof window !== "undefined" && window.location?.origin ? window.location.origin : "",
+        });
+        if (!emailResult.ok) {
+          const latestAppState = appStateRef.current;
+          const pendingState = {
+            ...latestAppState,
+            users: (latestAppState.users || []).map((user) => (user.id === nextUser.id ? { ...user, invitationStatus: "pending" } : user)),
+          };
+          persistTenantState(pendingState);
+          setNotice(`${normalizedName} を招待しましたが、招待メールの送信に失敗しました: ${resolveInviteEmailErrorMessage(emailResult.error)}(ユーザー管理画面の「再招待」から送信し直せます)`);
+          closeAddAdminForm();
+          return;
+        }
+      }
+      setNotice(`${normalizedName} を ${company.name} の管理者として招待しました`);
+      closeAddAdminForm();
+    } catch (error) {
+      setAddAdminError(getSupabaseErrorMessage(error));
+    } finally {
+      setAddAdminBusy(false);
     }
   };
 
@@ -9700,6 +9856,19 @@ function App() {
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
+                        {/* 会社カードから直接その会社のcompany_admin管理者を追加する導線
+                            (system_admin限定)。切り替え忘れによる誤company_id招待の事故を
+                            構造的に防ぐため、対象会社はこのカードのcompany固定で、現在
+                            切り替え中の会社(appState.currentCompanyId)には一切依存しない。 */}
+                        {canManageCompanies(currentRole) && (
+                          <button
+                            className="text-button"
+                            type="button"
+                            onClick={() => (addAdminCompanyId === company.id ? closeAddAdminForm() : openAddAdminForm(company))}
+                          >
+                            {addAdminCompanyId === company.id ? "管理者追加フォームを閉じる" : "管理者を追加"}
+                          </button>
+                        )}
                         {/* 許可されている遷移先だけを選択肢にする(無料利用/トライアル/契約中/
                             停止中の組み合わせはCONTRACT_STATUS_ALLOWED_NEXT参照) —
                             company_id・店舗・ユーザー・売上等の既存データには一切触れない、
@@ -9730,6 +9899,29 @@ function App() {
                           </button>
                         )}
                       </div>
+                      {addAdminCompanyId === company.id && (
+                        <div className="inline-form">
+                          {addAdminError ? <div className="notice-box error">{addAdminError}</div> : null}
+                          <input
+                            value={addAdminForm.name}
+                            onChange={(event) => setAddAdminForm((prev) => ({ ...prev, name: event.target.value }))}
+                            placeholder="管理者の氏名"
+                          />
+                          <input
+                            value={addAdminForm.email}
+                            onChange={(event) => setAddAdminForm((prev) => ({ ...prev, email: event.target.value }))}
+                            placeholder="管理者のメールアドレス"
+                          />
+                          <button
+                            className="primary-button"
+                            type="button"
+                            disabled={addAdminBusy}
+                            onClick={() => handleAddCompanyAdmin(company)}
+                          >
+                            {addAdminBusy ? "処理中…" : "追加する"}
+                          </button>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
