@@ -212,6 +212,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice-box { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 12px; margin-bottom: 14px; }
 .notice-box.warning { background: rgba(180, 83, 9, 0.12); color: var(--warning); }
 .notice-box.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
+.notice-box.success { background: rgba(46, 163, 97, 0.12); color: var(--success); }
+.notice-box .notice-sub { display: block; margin-top: 2px; font-size: 0.8em; opacity: 0.85; font-weight: 400; }
 .notice-box.sw-update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 /* 加盟店連携リクエストの通知バナー(未対応リクエストがある間だけ表示)。既存.notice-boxと
    同じ丸み・余白・コンパクトさを踏襲し、警告色(danger/warning)は使わない — 通常のお知らせと

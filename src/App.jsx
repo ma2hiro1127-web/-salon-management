@@ -1010,7 +1010,27 @@ function App() {
   // state。refだけだと再レンダーが起きないためボタンが押せる見た目のままになる——他の保存系
   // フォーム(店舗設定のstoreFormStatus等)と同じ二段構え。
   const [fixedCostFormBusy, setFixedCostFormBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  // notice(画面下部の通知バー)は元々失敗・警告系のメッセージ専用に作られており、
+  // 126箇所ある既存のsetNotice(...)呼び出しはすべて「赤系のエラー表示」を前提にしている。
+  // 2026-09-04: 成功メッセージ(スタッフ削除完了等)を緑系で出したいという要件が出たが、
+  // 126箇所すべてを個別に「これは成功/これは失敗」と判定し直すのは大掛かりで危険すぎる。
+  // そのため、rawのstate setter(setNoticeRaw)は直接エクスポートせず、既存の呼び出し全てが
+  // 引き続き同じ名前で呼べる薄いラッパー関数setNoticeを用意し、そちらは常にtone="error"へ
+  // 戻す——既存126箇所の見た目は一切変えず、成功時だけ専用のsetSuccessNoticeを新設して
+  // tone="success"にする、という形にした。
+  const [notice, setNoticeRaw] = useState("");
+  const [noticeTone, setNoticeTone] = useState("error");
+  const [noticeSubMessage, setNoticeSubMessage] = useState("");
+  const setNotice = (message) => {
+    setNoticeTone("error");
+    setNoticeSubMessage("");
+    setNoticeRaw(message);
+  };
+  const setSuccessNotice = (message, subMessage = "") => {
+    setNoticeTone("success");
+    setNoticeSubMessage(subMessage);
+    setNoticeRaw(message);
+  };
   const [businessDayInput, setBusinessDayInput] = useState("");
   const [manualBusinessDayInput, setManualBusinessDayInput] = useState("");
   const [isBusinessDayEditing, setIsBusinessDayEditing] = useState(false);
@@ -4725,7 +4745,7 @@ function App() {
       };
       persistTenantState(nextState);
       closeDeleteUserModal();
-      setNotice("スタッフを削除しました。再度同じメールアドレスへ招待できます。");
+      setSuccessNotice("スタッフを削除しました。", "同じメールアドレスへ再度招待できます。");
     } catch (error) {
       setDeleteUserError(getSupabaseErrorMessage(error));
     } finally {
@@ -8187,7 +8207,12 @@ function App() {
         {/* このnoticeは「成功しました」等の完了通知には使わない — 画面上部にはエラーのみ
             表示する(誤操作でデータを失わないための警告や、対応が必要な保存失敗など)。
             成功・完了の確認は、各操作の近く(保存ステータスチップ・ボタンラベル等)に留める。 */}
-        {notice ? <div className="notice-box error">{notice}</div> : null}
+        {notice ? (
+          <div className={`notice-box ${noticeTone}`}>
+            {notice}
+            {noticeSubMessage ? <span className="notice-sub">{noticeSubMessage}</span> : null}
+          </div>
+        ) : null}
         {activePage === "dashboard" && (
           <div className="dashboard-layout">
             {showSetupChecklist ? (
@@ -10283,17 +10308,17 @@ function App() {
                     <h3>このスタッフを削除しますか？</h3>
                   </div>
                 </div>
-                {deleteUserError ? <div className="notice-box">{deleteUserError}</div> : null}
+                {deleteUserError ? <div className="notice-box error">{deleteUserError}</div> : null}
                 <p>
                   <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）
                 </p>
                 <p className="helper-text">
-                  過去に入力したデータは保持されます。このスタッフのログイン権限と所属のみ解除されます。あとから同じメールアドレスで再度招待できます。
+                  削除するとスタッフ一覧から削除されます。過去に入力した売上・日計などのデータは保持されます。
                 </p>
                 <div className="row-actions" style={{ marginTop: 12 }}>
-                  <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>キャンセル</button>
+                  <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>いいえ</button>
                   <button className="primary-button danger-button" type="button" onClick={handleConfirmDeleteUser} disabled={deleteUserSaving}>
-                    {deleteUserSaving ? "削除中..." : "削除する"}
+                    {deleteUserSaving ? "削除中..." : "はい、削除する"}
                   </button>
                 </div>
               </div>
