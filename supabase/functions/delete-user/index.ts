@@ -106,13 +106,20 @@ Deno.serve(async (req) => {
       return json({ error: "自分自身のアカウントは削除できません" }, 400);
     }
 
-    // Guard: system_admin can never be deleted through this screen, by anyone — including
-    // another system_admin. Previously this was only blocked for company_admin/store_manager
-    // callers (below); a system_admin caller had no such guard at all, relying solely on the
-    // "last admin in the company" count check further down, which only fires once every other
-    // admin is already gone. This is an unconditional, explicit protection per the "誤操作で
+    // Guard: an actually-registered system_admin (auth_user_id set — they've completed signup
+    // and could really sign in) can never be deleted through this screen, by anyone — including
+    // another system_admin. This is an unconditional, explicit protection per the "誤操作で
     // 削除できない" requirement.
-    if (target.role === "system_admin") {
+    //
+    // 2026-09-04: narrowed to auth_user_id != null. Previously this blocked *any* row labeled
+    // system_admin, including one that never got past a pending invite — e.g. an email that
+    // resolveRoleForEmail auto-promotes to system_admin (src/utils/supabase.js) gets that role
+    // stamped onto its profiles row the moment it's invited, before the person has ever signed
+    // in. Such a row holds zero real privilege (no auth account exists yet) and zero business
+    // data, but the old blanket guard made it permanently undeletable — exactly the stuck state
+    // reported for a suspended, never-accepted invite. A still-pending row instead falls through
+    // to the ordinary hard-delete path below (it has no history to preserve).
+    if (target.role === "system_admin" && target.auth_user_id) {
       return json({ error: "システム管理者は削除できません" }, 403);
     }
 

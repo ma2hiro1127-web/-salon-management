@@ -4692,7 +4692,14 @@ function App() {
   // そのユーザーが過去に入力した売上・費用・月締め等の業務データはprofiles行ごと保持され、
   // created_by等の参照も維持される(delete-user Edge Function・20260909000000_profiles_
   // soft_delete.sql参照)。招待中(未登録)の取り消しは業務データが存在しないため、
-  // これまで通り物理削除のまま。
+  // これまで通り物理削除のまま(isPendingInviteはボタン表示の出し分けにはもう使わないが、
+  // エラーメッセージの出し分けと削除メカニズムの理解のために引き続き参照する)。
+  //
+  // 2026-09-04追記2: system_admin行であっても、実際に登録済み(authUserIdあり)でなければ
+  // 削除できるようにした(getUserRowPermissions・delete-user Edge Function側の両方を変更)。
+  // メールアドレス起因の自動昇格(resolveRoleForEmail)でsystem_admin役割のまま招待が止まり、
+  // 一度もログインしていない行が、以前の「system_adminは一律削除不可」ガードのせいで
+  // 永久に片付けられなかった実際の不具合の修正。
   const handleConfirmDeleteUser = async () => {
     const targetUser = (appState.users || []).find((user) => user.id === deleteUserTargetId);
     if (!targetUser) return;
@@ -4718,6 +4725,7 @@ function App() {
       };
       persistTenantState(nextState);
       closeDeleteUserModal();
+      setNotice("スタッフを削除しました。再度同じメールアドレスへ招待できます。");
     } catch (error) {
       setDeleteUserError(getSupabaseErrorMessage(error));
     } finally {
@@ -10172,7 +10180,7 @@ function App() {
                                               </>
                                             )}
                                             {!isSelf && rowPermissions.canDelete && (
-                                              <button className="text-button danger" type="button" onClick={() => requestDeleteUser(user)}>{isRegistered ? "削除" : "招待取消"}</button>
+                                              <button className="text-button danger" type="button" onClick={() => requestDeleteUser(user)}>削除</button>
                                             )}
                                           </div>
                                         </div>
@@ -10266,14 +10274,13 @@ function App() {
         {deleteUserTargetId && (() => {
           const deleteTarget = (appState.users || []).find((user) => user.id === deleteUserTargetId);
           if (!deleteTarget) return null;
-          const isPendingInvite = !deleteTarget.authUserId;
           return (
             <div className="modal-overlay" onClick={closeDeleteUserModal}>
               <div className="modal-card" onClick={(event) => event.stopPropagation()}>
                 <div className="panel-heading compact">
                   <div>
-                    <p className="eyebrow">{isPendingInvite ? "CANCEL INVITE" : "DELETE STAFF"}</p>
-                    <h3>{isPendingInvite ? "この招待を取り消しますか？" : "このスタッフを削除しますか？"}</h3>
+                    <p className="eyebrow">DELETE STAFF</p>
+                    <h3>このスタッフを削除しますか？</h3>
                   </div>
                 </div>
                 {deleteUserError ? <div className="notice-box">{deleteUserError}</div> : null}
@@ -10281,14 +10288,12 @@ function App() {
                   <strong>{deleteTarget.name}</strong>（{deleteTarget.email}）
                 </p>
                 <p className="helper-text">
-                  {isPendingInvite
-                    ? "このメールアドレスはまだ登録が完了していないため、招待情報を削除するだけです。あとから同じメールアドレスで再度招待できます。"
-                    : "過去に入力した売上・日計などのデータは保持されます。このスタッフのログイン権限と所属のみ解除されます。あとから同じメールアドレスで再度招待できます。"}
+                  過去に入力したデータは保持されます。このスタッフのログイン権限と所属のみ解除されます。あとから同じメールアドレスで再度招待できます。
                 </p>
                 <div className="row-actions" style={{ marginTop: 12 }}>
                   <button className="secondary-button" type="button" onClick={closeDeleteUserModal} disabled={deleteUserSaving}>キャンセル</button>
                   <button className="primary-button danger-button" type="button" onClick={handleConfirmDeleteUser} disabled={deleteUserSaving}>
-                    {deleteUserSaving ? (isPendingInvite ? "取消中..." : "削除中...") : (isPendingInvite ? "招待を取り消す" : "削除する")}
+                    {deleteUserSaving ? "削除中..." : "削除する"}
                   </button>
                 </div>
               </div>

@@ -141,13 +141,18 @@ test("isFranchiseReadOnly: 加盟店を閲覧していない(通常時)は誰で
   assert.equal(isFranchiseReadOnly(null, "company_admin"), false);
 });
 
-test("getUserRowPermissions: system_adminは誰の行も編集できるが、system_admin自身の行だけは削除できない", () => {
+test("getUserRowPermissions: system_adminは誰の行も編集できるが、実際に登録済み(authUserIdあり)のsystem_admin行だけは削除できない", () => {
   assert.deepEqual(getUserRowPermissions("system_admin", { role: "company_admin" }), { canEdit: true, canDelete: true });
-  assert.deepEqual(getUserRowPermissions("system_admin", { role: "system_admin" }), { canEdit: true, canDelete: false });
+  assert.deepEqual(getUserRowPermissions("system_admin", { role: "system_admin", authUserId: "auth-1" }), { canEdit: true, canDelete: false });
+  // 2026-09-04: メールアドレス起因の自動昇格等でsystem_admin役割のまま一度もログインして
+  // いない(authUserIdなし)行は、実権限・業務データを一切持たないため削除できる——これが
+  // できないと、招待中断・停止のまま永久に片付けられない行が残り続けてしまっていた不具合。
+  assert.deepEqual(getUserRowPermissions("system_admin", { role: "system_admin", authUserId: null }), { canEdit: true, canDelete: true });
 });
 
-test("getUserRowPermissions: company_adminはsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)", () => {
-  assert.deepEqual(getUserRowPermissions("company_admin", { role: "system_admin" }), { canEdit: false, canDelete: false });
+test("getUserRowPermissions: company_adminはsystem_admin行を編集できないが、未登録(authUserIdなし)のsystem_admin行は削除できる", () => {
+  assert.deepEqual(getUserRowPermissions("company_admin", { role: "system_admin", authUserId: "auth-1" }), { canEdit: false, canDelete: false });
+  assert.deepEqual(getUserRowPermissions("company_admin", { role: "system_admin", authUserId: null }), { canEdit: false, canDelete: true });
   assert.deepEqual(getUserRowPermissions("company_admin", { role: "store_manager" }), { canEdit: true, canDelete: true });
   assert.deepEqual(getUserRowPermissions("company_admin", { role: "staff" }), { canEdit: true, canDelete: true });
 });

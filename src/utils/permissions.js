@@ -185,20 +185,28 @@ export const isFranchiseReadOnly = (isViewingFranchise, role) => Boolean(isViewi
 // ユーザー管理画面で、ある行の編集・削除ボタンを表示してよいかどうかの判定。あくまでUIを
 // わかりやすくするためのもので、実際の可否はSupabase RLS/Edge Function側のチェックが
 // 最終的な担保(要件5: UIを隠すだけでなくサーバー側でも保護する)。
-// - system_adminは誰からも削除できない(自分自身を含め、他のsystem_adminからも)。
-// - company_adminはsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)。
+// - 実際に稼働しているsystem_admin(authUserIdあり=登録済み)は誰からも削除できない
+//   (自分自身を含め、他のsystem_adminからも)。
+// - company_adminは稼働中のsystem_admin行を編集・削除できない(自社に紛れ込んでいた場合の保険)。
 // - store_managerが見る一覧(manageableUsers)は、そもそも自分の管理する店舗のstaffのみに
 //   絞り込み済みなので、そこに並ぶ行は常に操作対象になり得る。
+// 2026-09-04追記: 「system_adminは削除できない」の対象を、実際に登録済み(authUserIdあり)の
+// 行だけに絞った。以前はrole==='system_admin'というだけで一律ブロックしていたため、
+// メールアドレス起因の自動昇格(resolveRoleForEmail)によってsystem_admin役割のまま
+// 一度もログインせずに招待中断・停止となった行(業務データも実権限も一切持たない)が
+// 永久に削除できなくなる不具合があった——実際の管理者アカウントを守るという本来の目的は
+// authUserIdの有無で十分に達成できる。
 // 以前はApp.jsx内のコンポーネント外(モジュールレベル)にあったが、他の役割別権限判定と
 // 同じくpermissions.jsへ集約し、単体テストできるようにした(ロジック自体は無変更)。
 export const getUserRowPermissions = (currentRole, targetUser) => {
   const role = normalizeRole(currentRole);
+  const isTargetActiveSystemAdmin = targetUser.role === "system_admin" && Boolean(targetUser.authUserId);
   if (role === "system_admin") {
-    return { canEdit: true, canDelete: targetUser.role !== "system_admin" };
+    return { canEdit: true, canDelete: !isTargetActiveSystemAdmin };
   }
   if (role === "company_admin") {
     const isTargetSystemAdmin = targetUser.role === "system_admin";
-    return { canEdit: !isTargetSystemAdmin, canDelete: !isTargetSystemAdmin };
+    return { canEdit: !isTargetSystemAdmin, canDelete: !isTargetActiveSystemAdmin };
   }
   return { canEdit: true, canDelete: true };
 };
