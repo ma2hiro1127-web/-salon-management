@@ -9551,7 +9551,17 @@ function App() {
                         const periodLabel = item.periodType === "limited"
                           ? (item.startMonth && item.startMonth === item.endMonth ? `${item.startMonth}のみ` : `${item.startMonth}〜${item.endMonth}`)
                           : "継続";
-                        const previousAmount = getPreviousMonthCostAmount(appState, item.id, selectedMonth);
+                        // item.startMonth < selectedMonthの場合だけ「この項目自体が前月以前から
+                        // 存在する」と言える(=真に同一idの複数月にまたがる期間限定費用)ため、
+                        // item.id基準の前月金額(previousAmount)をそのまま使う。単月項目
+                        // (startMonth === selectedMonth、今月新規作成された項目)でこれを使うと、
+                        // getCostMonthlyAmountの「対象月にちょうど保存された行が無ければ、対象月
+                        // より後で最も古い行を使う」というキャリーフォワード(過去月を遡って
+                        // 見た時に未入力にしないための仕様)が働き、この項目自身の当月金額を
+                        // 誤って「前月分」として検出してしまう(反映直後に「今月反映済み」バッジ
+                        // ではなく前月コピー用ボタンが出てしまう不具合の修正)。
+                        const hasSameIdMultiMonthHistory = item.periodType === "limited" && item.startMonth && item.startMonth < selectedMonth;
+                        const previousAmount = hasSameIdMultiMonthHistory ? getPreviousMonthCostAmount(appState, item.id, selectedMonth) : undefined;
                         const savedAmount = getCostMonthlyAmount(appState, item.id, selectedMonth);
                         const draftAmount = getCostAmountDraft(item);
                         // 単月項目(人件費/材料・発注費等)は月ごとに新しいitem idになるため上のidベースの
