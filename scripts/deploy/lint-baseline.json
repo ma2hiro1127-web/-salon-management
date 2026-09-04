@@ -1,216 +1,216 @@
 [
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "no-extra-boolean-cast",
     "Redundant Boolean call."
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/immutability",
     "Error: Cannot access variable before it is declared\n\n`getCashBreakdownAutoSaveSignature` is accessed before it is declared, which prevents the earlier access from updating when this value changes over time.\n\n  5743 |       : { cashAmount: \"\", cashlessAmount: \"\", pointAmount: \"\" };\n  5744 |     setCashBreakdownForm(nextForm);\n> 5745 |     lastCashBreakdownAutoSaveSignatureRef.current = getCashBreakdownAutoSaveSignature(nextForm);\n       |                                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `getCashBreakdownAutoSaveSignature` accessed before it is declared\n  5746 |   }, [dailyForm.date, selectedStoreId, appState.cashBreakdownResults]);\n  5747 |\n  5748 |   // 日計専用の自動保存(要件6・7・19: 差額があっても・未入力でも保存自体は妨げない、\n\n  6388 |   };\n  6389 |\n> 6390 |   const getCashBreakdownAutoSaveSignature = (form) => JSON.stringify({\n       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6391 |     cashAmount: form.cashAmount ?? \"\",\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6392 |     cashlessAmount: form.cashlessAmount ?? \"\",\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6393 |     pointAmount: form.pointAmount ?? \"\",\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6394 |   });\n       | ^^^^^^ `getCashBreakdownAutoSaveSignature` is declared here\n  6395 |\n  6396 |   // 日計の保存。daily_cash_breakdown(要件14: company_id・store_id・対象日・現金・\n  6397 |   // キャッシュレス・ポイント利用を紐付けて保存)への独立した保存経路 — daily_sales/"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/immutability",
     "Error: Cannot access variable before it is declared\n\n`getDailyAutoSaveSignature` is accessed before it is declared, which prevents the earlier access from updating when this value changes over time.\n\n  5702 |\n  5703 |     const hasAnyValue = [dailyForm.totalSales, dailyForm.technicalSales, dailyForm.retailSales, dailyForm.otherSales, dailyForm.customers, dailyForm.newCustomers, dailyForm.repeatCustomers, dailyForm.reviewCount].some((value) => parseNumber(value) > 0) || Boolean(dailyForm.memo);\n> 5704 |     const signature = getDailyAutoSaveSignature(dailyForm);\n       |                       ^^^^^^^^^^^^^^^^^^^^^^^^^ `getDailyAutoSaveSignature` accessed before it is declared\n  5705 |     if (!dailyForm.date || (!hasAnyValue && !dailyForm.id)) {\n  5706 |       return;\n  5707 |     }\n\n  6000 |   };\n  6001 |\n> 6002 |   const getDailyAutoSaveSignature = (form) => JSON.stringify({\n       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6003 |     date: form.date || \"\",\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6004 |     totalSales: form.totalSales ?? \"\",\n       …\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6012 |     memo: form.memo ?? \"\",\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6013 |   });\n       | ^^^^^^ `getDailyAutoSaveSignature` is declared here\n  6014 |\n  6015 |   const saveDailyEntry = async ({ silent = false, force = false, autoSave = false, switchToView = false } = {}) => {\n  6016 |     if (isFranchiseReadOnlyForCurrentUser()) {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/immutability",
     "Error: Cannot access variable before it is declared\n\n`saveCashBreakdown` is accessed before it is declared, which prevents the earlier access from updating when this value changes over time.\n\n  5772 |\n  5773 |     cashBreakdownAutoSaveTimerRef.current = window.setTimeout(() => {\n> 5774 |       void saveCashBreakdown();\n       |            ^^^^^^^^^^^^^^^^^ `saveCashBreakdown` accessed before it is declared\n  5775 |     }, 400);\n  5776 |\n  5777 |     return () => {\n\n  6399 |   // (要件13)。差額があっても・未入力でも保存自体は妨げない(要件6・7) — 3項目とも\n  6400 |   // 未入力の場合は何もしない(空のdaily_cash_breakdown行を作らない)。\n> 6401 |   const saveCashBreakdown = async () => {\n       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6402 |     if (isFranchiseReadOnlyForCurrentUser()) return { ok: false, skipped: true };\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6403 |     if (dailyMode === \"view\") return { ok: true, skipped: true };\n       …\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6445 |     }\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6446 |   };\n       | ^^^^^ `saveCashBreakdown` is declared here\n  6447 |\n  6448 |   useEffect(() => {\n  6449 |     if (!selectedStore || !targetSelectedMonth) return;"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/immutability",
     "Error: Cannot access variable before it is declared\n\n`saveDailyEntry` is accessed before it is declared, which prevents the earlier access from updating when this value changes over time.\n\n  5715 |\n  5716 |     autoSaveTimerRef.current = window.setTimeout(() => {\n> 5717 |       void saveDailyEntry({ silent: true, force: false, autoSave: true });\n       |            ^^^^^^^^^^^^^^ `saveDailyEntry` accessed before it is declared\n  5718 |     }, 400);\n  5719 |\n  5720 |     return () => {\n\n  6013 |   });\n  6014 |\n> 6015 |   const saveDailyEntry = async ({ silent = false, force = false, autoSave = false, switchToView = false } = {}) => {\n       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6016 |     if (isFranchiseReadOnlyForCurrentUser()) {\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6017 |       if (!silent) setNotice(\"加盟店データは閲覧のみです（編集・保存はできません）\");\n       …\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6197 |     }\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 6198 |   };\n       | ^^^^^ `saveDailyEntry` is declared here\n  6199 |\n  6200 |   const resolveTargetCompanyAndStore = () => {\n  6201 |     const company = (appState.companies || []).find((item) => item.id === appState.currentCompanyId) || null;"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/purity",
     "Error: Cannot call impure function during render\n\n`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).\n\n  2981 |       // store_input_settingsは元々ベストエフォート扱いで.okをチェックしていなかった——その\n  2982 |       // 扱いも変更していない)。\n> 2983 |       const hydrateBatchStartedAt = (typeof performance !== \"undefined\" ? performance.now() : Date.now());\n       |                                                                                               ^^^^^^^^^^ Cannot call impure function\n  2984 |       const [\n  2985 |         dailySalesResult,\n  2986 |         cashBreakdownResult,"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/purity",
     "Error: Cannot call impure function during render\n\n`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).\n\n  3083 |         timeHydrateQuery(\"storeMonthlyCostOverrides\", loadStoreMonthlyCostOverridesForCompany({ companyId })),\n  3084 |       ]);\n> 3085 |       console.info(\"[hydrate-query] total (Promise.all batch)\", { durationMs: Math.round((typeof performance !== \"undefined\" ? performance.now() : Date.now()) - hydrateBatchStartedAt) });\n       |                                                                                                                                                    ^^^^^^^^^^ Cannot call impure function\n  3086 |\n  3087 |       if (!dailySalesResult.ok) throw dailySalesResult.error || new Error(\"日次売上データの取得に失敗しました\");\n  3088 |       const dailySalesState = buildDailyStateFromRows(dailySalesResult.data);"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/purity",
     "Error: Cannot call impure function during render\n\n`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).\n\n  4985 |         const nextCompany = {\n  4986 |           ...currentCompany,\n> 4987 |           stores: [...(currentCompany?.stores || []), { ...store, id: `${store.id}-copy-${Date.now()}`, name: duplicateName, code: crypto.randomUUID(), isActive: true, status: \"active\" }],\n       |                                                                                           ^^^^^^^^^^ Cannot call impure function\n  4988 |         };\n  4989 |         persistTenantState(syncLegacyStoreNamesSnapshot({ ...appState, companies: (appState.companies || []).map((company) => (company.id === currentCompany?.id ? nextCompany : company)) }, currentCompany?.id, nextCompany.stores));\n  4990 |         return;"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/purity",
     "Error: Cannot call impure function during render\n\n`Date.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).\n\n  6337 |       const savedEntry = result.data\n  6338 |         ? dailyBatchEntryRowToEntry(result.data)\n> 6339 |         : { id: batchEditId || `local-${Date.now()}`, ...payload };\n       |                                         ^^^^^^^^^^ Cannot call impure function\n  6340 |       const key = buildMonthKey(store?.id || selectedStoreId, batchForm.startDate.slice(0, 7));\n  6341 |       setAppState((prev) => {\n  6342 |         const currentList = (prev.dailyBatchEntries?.[key] || []).filter((item) => item.id !== savedEntry.id);"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/purity",
     "Error: Cannot call impure function during render\n\n`performance.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).\n\n  2981 |       // store_input_settingsは元々ベストエフォート扱いで.okをチェックしていなかった——その\n  2982 |       // 扱いも変更していない)。\n> 2983 |       const hydrateBatchStartedAt = (typeof performance !== \"undefined\" ? performance.now() : Date.now());\n       |                                                                           ^^^^^^^^^^^^^^^^^ Cannot call impure function\n  2984 |       const [\n  2985 |         dailySalesResult,\n  2986 |         cashBreakdownResult,"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/purity",
     "Error: Cannot call impure function during render\n\n`performance.now` is an impure function. Calling an impure function can produce unstable results that update unpredictably when the component happens to re-render. (https://react.dev/reference/rules/components-and-hooks-must-be-pure#components-and-hooks-must-be-idempotent).\n\n  3083 |         timeHydrateQuery(\"storeMonthlyCostOverrides\", loadStoreMonthlyCostOverridesForCompany({ companyId })),\n  3084 |       ]);\n> 3085 |       console.info(\"[hydrate-query] total (Promise.all batch)\", { durationMs: Math.round((typeof performance !== \"undefined\" ? performance.now() : Date.now()) - hydrateBatchStartedAt) });\n       |                                                                                                                                ^^^^^^^^^^^^^^^^^ Cannot call impure function\n  3086 |\n  3087 |       if (!dailySalesResult.ok) throw dailySalesResult.error || new Error(\"日次売上データの取得に失敗しました\");\n  3088 |       const dailySalesState = buildDailyStateFromRows(dailySalesResult.data);"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/refs",
     "Error: Cannot access refs during render\n\nReact refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).\n\n  6565 |   // onChangeを渡す)。\n  6566 |   const updateTargetDraftFieldRef = useRef(updateTargetDraftField);\n> 6567 |   updateTargetDraftFieldRef.current = updateTargetDraftField;\n       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot update ref during render\n  6568 |   const [targetFieldChangeHandlers] = useState(() => {\n  6569 |     const makeHandler = (field) => (value) => updateTargetDraftFieldRef.current(field, value);\n  6570 |     return [\"targetSales\", \"targetTechnicalSales\", \"targetRetailSales\", \"targetCustomers\", \"targetAverageSpend\", \"targetNewCustomers\", \"targetRepeatCustomers\", \"targetReviewCount\"].reduce((acc, field) => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/refs",
     "Error: Cannot access refs during render\n\nReact refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).\n\n  7081 |   // ロジックは無変更)。\n  7082 |   const setCostAmountDraftRef = useRef(setCostAmountDraft);\n> 7083 |   setCostAmountDraftRef.current = setCostAmountDraft;\n       |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot update ref during render\n  7084 |   const costAmountDraftHandlersRef = useRef(new Map());\n  7085 |   const getCostAmountDraftHandler = (itemId) => {\n  7086 |     if (!costAmountDraftHandlersRef.current.has(itemId)) {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/refs",
     "Error: Cannot access refs during render\n\nReact refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).\n\n  900 |   // 計算ロジック・呼び出しタイミングは一切変更していない)。\n  901 |   const updateDailyFieldRef = useRef(updateDailyField);\n> 902 |   updateDailyFieldRef.current = updateDailyField;\n      |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot update ref during render\n  903 |   const [dailyFieldChangeHandlers] = useState(() => {\n  904 |     const makeHandler = (field) => (value) => updateDailyFieldRef.current(field, value);\n  905 |     return [\"technicalSales\", \"retailSales\", \"otherSales\", \"totalSales\", \"newCustomers\", \"repeatCustomers\", \"customers\", \"reviewCount\"].reduce((acc, field) => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/refs",
     "Error: Cannot access refs during render\n\nReact refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).\n\n  9210 |                         誤操作にはならない。 */}\n  9211 |                     <div className=\"list-card\">\n> 9212 |                       {fixedCosts.map((item) => {\n       |                                       ^^^^^^^^^^^\n> 9213 |                         const periodLabel = item.periodType === \"limited\"\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 9214 |                           ? (item.startMonth && item.startMonth === item.endMonth ? `${item.startMonth}のみ` : `${item.startMonth}〜${item.endMonth}`)\n       …\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 9267 |                         );\n       | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n> 9268 |                       })}\n       | ^^^^^^^^^^^^^^^^^^^^^^^^ Cannot access ref value during render\n  9269 |                     </div>\n  9270 |                   </section>\n  9271 |                 )}"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/refs",
     "Error: Cannot access refs during render\n\nReact refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).\n\n  922 |   // Fieldへ渡し、memo化の効果を実際に効かせる)。\n  923 |   const updateCashBreakdownFieldRef = useRef(updateCashBreakdownField);\n> 924 |   updateCashBreakdownFieldRef.current = updateCashBreakdownField;\n      |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot update ref during render\n  925 |   const [cashBreakdownFieldChangeHandlers] = useState(() => {\n  926 |     const makeHandler = (field) => (value) => updateCashBreakdownFieldRef.current(field, value);\n  927 |     return [\"cashAmount\", \"cashlessAmount\", \"pointAmount\"].reduce((acc, field) => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/refs",
     "Error: Cannot access refs during render\n\nReact refs are values that are not needed for rendering. Refs should only be accessed outside of render, such as in event handlers or effects. Accessing a ref value (the `current` property) during render can cause your component not to update as expected (https://react.dev/reference/react/useRef).\n\n  973 |   // 計算ロジックは無変更)。\n  974 |   const updateBatchFieldRef = useRef(updateBatchField);\n> 975 |   updateBatchFieldRef.current = updateBatchField;\n      |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^ Cannot update ref during render\n  976 |   const [batchFieldChangeHandlers] = useState(() => {\n  977 |     const makeHandler = (field) => (value) => updateBatchFieldRef.current(field, value);\n  978 |     return [\"technicalSales\", \"retailSales\", \"otherSales\", \"totalSales\", \"newCustomers\", \"repeatCustomers\", \"customers\", \"reviewCount\", \"cashAmount\", \"cashlessAmount\", \"pointAmount\"].reduce((acc, field) => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1613 |   useEffect(() => {\n  1614 |     if (currentCompany) {\n> 1615 |       setCompanySettingsForm(currentCompany.settings || createCompanySettingsDefaults());\n       |       ^^^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1616 |     }\n  1617 |   }, [currentCompany?.id, currentCompany?.settings]);\n  1618 |"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1618 |\n  1619 |   useEffect(() => {\n> 1620 |     setTaxSettingsForm({\n       |     ^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1621 |       considerConsumptionTax: Boolean(appState.taxSettings?.considerConsumptionTax),\n  1622 |       // 引当率が未設定(未保存=0/空)の間は、日本の標準消費税率に合わせた10%を初期値として\n  1623 |       // 表示する(保存済みの値があればそちらを優先し、上書きしない)。"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1628 |   useEffect(() => {\n  1629 |     if (selectedStoreEntity) {\n> 1630 |       setStoreSettingsForm(selectedStoreEntity.settings || createStoreSettingsDefaults());\n       |       ^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1631 |     }\n  1632 |   }, [selectedStoreEntity]);\n  1633 |"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1643 |   useEffect(() => {\n  1644 |     if (!selectedStoreEntity) {\n> 1645 |       setStoreEditId(\"\");\n       |       ^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1646 |       return;\n  1647 |     }\n  1648 |     setStoreEditId(selectedStoreEntity.id);"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1660 |   // (fixedForm.idがある)場合はその項目自体の開始月を上書きしないよう手を出さない。\n  1661 |   useEffect(() => {\n> 1662 |     setFixedForm((prev) => (prev.id ? prev : { ...prev, startMonth: selectedMonth }));\n       |     ^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1663 |   }, [selectedMonth]);\n  1664 |\n  1665 |   // 加盟店連携リクエスト一覧の読み込み。company_partnershipsはhydrateFromSupabaseの対象外"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1676 |   useEffect(() => {\n  1677 |     if (authMode !== \"app\" || !isSupabaseConfigured || !currentUser?.authUserId) return;\n> 1678 |     void refreshCompanyPartnerships();\n       |          ^^^^^^^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1679 |   }, [authMode, currentUser?.authUserId, appState.currentCompanyId]);\n  1680 |\n  1681 |   // 加盟店閲覧中でも常に「自社の本当のcompany_id」を指す(閲覧中はcurrentCompanyIdが"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  1854 |     // 別の店舗に切り替えるたびに読み込み直す。保存していない変更は切り替え時に破棄される\n  1855 |     // (この設定は数個のスイッチのみなので、対象月切り替えのような確認ダイアログは設けていない)。\n> 1856 |     setDailyFieldDraft(normalizeDailyFieldSettings(selectedStoreEntity?.settings?.dailyFieldSettings));\n       |     ^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  1857 |     setDailyFieldDirty(false);\n  1858 |     setMonthlyTargetFieldDraft(normalizeMonthlyTargetFieldSettings(selectedStoreEntity?.settings?.monthlyTargetFields));\n  1859 |     setMonthlyTargetFieldDirty(false);"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  2076 |   const [rankingExpanded, setRankingExpanded] = useState(false);\n  2077 |   useEffect(() => {\n> 2078 |     setRankingExpanded(false);\n       |     ^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  2079 |   }, [selectedStoreId, selectedMonth]);\n  2080 |   // 全店舗 月カレンダーで「まだ緑になっていない営業日」をクリックすると、どの店舗が未締めか\n  2081 |   // 表示するポップオーバー(要件13)。{dateIso, anchorEl}か、閉じている間はnull。"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  2102 |   // 前の月のdateIso・anchorElのまま表示され続ける食い違いを防ぐ)。\n  2103 |   useEffect(() => {\n> 2104 |     setUnclosedStoresPopover(null);\n       |     ^^^^^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  2105 |   }, [selectedMonth, isAllStoresView]);\n  2106 |   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);\n  2107 |   // 損益表・費用入力を使っていない店舗でも使える独立指標。店舗単位の設定値(生産性計算人数)"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  2311 |   // 切替でデータが混ざらない、の一種——ここでのdismiss状態も一種の店舗ごとの表示状態)。\n  2312 |   useEffect(() => {\n> 2313 |     setSetupChecklistDismissed(false);\n       |     ^^^^^^^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  2314 |   }, [selectedStoreId]);\n  2315 |   // 現在表示中の対象月で5項目すべてが完了と判定された最初のタイミングで、店舗単位の恒久\n  2316 |   // フラグ(initialSetupCompleted)を1回だけ立てる——以後はどの対象月を表示しても"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  2873 |   useEffect(() => {\n  2874 |     if (authLoading || !currentUser || canAccessCurrentPage) return;\n> 2875 |     setActivePage(resolveDefaultPage(currentRole));\n       |     ^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  2876 |   }, [canAccessCurrentPage, authLoading, currentUser, currentRole]);\n  2877 |\n  2878 |   // companyIdOverride: 加盟店連携(閲覧専用)で、自社のprofile.company_idではなく明示的に"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  5742 |       ? { cashAmount: existing.cashAmount, cashlessAmount: existing.cashlessAmount, pointAmount: existing.pointAmount }\n  5743 |       : { cashAmount: \"\", cashlessAmount: \"\", pointAmount: \"\" };\n> 5744 |     setCashBreakdownForm(nextForm);\n       |     ^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  5745 |     lastCashBreakdownAutoSaveSignatureRef.current = getCashBreakdownAutoSaveSignature(nextForm);\n  5746 |   }, [dailyForm.date, selectedStoreId, appState.cashBreakdownResults]);\n  5747 |"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  5844 |     if (storeMatchedById) {\n  5845 |       if (storeMatchedById.name !== selectedStore) {\n> 5846 |         setAppState((prev) => ({ ...prev, selectedStore: storeMatchedById.name, selectedStoreId: storeMatchedById.id }));\n       |         ^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  5847 |       }\n  5848 |       return;\n  5849 |     }"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  5886 |     const fallbackCompany = companies[0];\n  5887 |     if (!fallbackCompany) return;\n> 5888 |     setAppState((prev) => {\n       |     ^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  5889 |       // effectの実行順で他の変更と競合しないよう、判定時点のprevへ改めて同じ条件を確認する\n  5890 |       // (React 18のバッチ処理・StrictModeの二重実行下でも安全な、標準的な防御パターン)。\n  5891 |       const prevCompanies = prev.companies || [];"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  5953 |\n  5954 |   useEffect(() => {\n> 5955 |     setBusinessDayInput(businessDaySettings.holidayCount ? String(businessDaySettings.holidayCount) : \"\");\n       |     ^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  5956 |   }, [businessDaySettings.holidayCount, selectedStore, selectedMonth]);\n  5957 |\n  5958 |   useEffect(() => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  5957 |\n  5958 |   useEffect(() => {\n> 5959 |     setManualBusinessDayInput(businessDaySettings.mode === \"manual\" && businessDaySettings.businessDayCount ? String(businessDaySettings.businessDayCount) : \"\");\n       |     ^^^^^^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  5960 |   }, [businessDaySettings.mode, businessDaySettings.businessDayCount, selectedStore, selectedMonth]);\n  5961 |\n  5962 |   useEffect(() => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  5974 |     }\n  5975 |     if (!selectedStore) {\n> 5976 |       setDailyForm({ ...defaultDailyEntry });\n       |       ^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  5977 |       setDailyMode(\"create\");\n  5978 |       setDailyOriginalEntry(null);\n  5979 |       setDailyInsight(\"\");"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  6452 |     // Clear immediately so a month/store switch never shows the previous selection's\n  6453 |     // numbers, even briefly, while the new ones are being fetched.\n> 6454 |     setTargetLoadStatus({ status: \"loading\", loadedMonth: \"\", loadedStore: \"\" });\n       |     ^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  6455 |     setTargetDraft({ ...defaultTarget });\n  6456 |     setTargetHolidayDraft(\"\");\n  6457 |"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  7062 |   const [costAmountDrafts, setCostAmountDrafts] = useState({});\n  7063 |   useEffect(() => {\n> 7064 |     setCostAmountDrafts({});\n       |     ^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  7065 |   }, [selectedMonth, selectedStoreId]);\n  7066 |\n  7067 |   const getCostAmountDraft = (item) => {"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/App.jsx",
+    "src/App.jsx",
     "react-hooks/set-state-in-effect",
     "Error: Calling setState synchronously within an effect can trigger cascading renders\n\nEffects are intended to synchronize state between React and external systems such as manually updating the DOM, state management libraries, or other platform APIs. In general, the body of an effect should do one or both of the following:\n* Update external systems with the latest state from React.\n* Subscribe for updates from some external system, calling setState in a callback function when external state changes.\n\nCalling setState synchronously within an effect body causes cascading renders that can hurt performance, and is not recommended. (https://react.dev/learn/you-might-not-need-an-effect).\n\n  7221 |   );\n  7222 |   useEffect(() => {\n> 7223 |     setOpeningInventoryDraft(\"\");\n       |     ^^^^^^^^^^^^^^^^^^^^^^^^ Avoid calling setState() directly within an effect\n  7224 |     setClosingInventoryDraft(currentInventoryBalance === undefined ? \"\" : String(currentInventoryBalance));\n  7225 |   }, [selectedStoreId, selectedMonth, currentInventoryBalance]);\n  7226 |"
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/utils/storage.js",
+    "src/utils/storage.js",
     "no-unused-vars",
     "'averageTicket' is assigned a value but never used."
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/utils/storage.js",
+    "src/utils/storage.js",
     "no-unused-vars",
     "'selectedCurrentMonth' is assigned a value but never used."
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/utils/supabase.js",
+    "src/utils/supabase.js",
     "no-useless-assignment",
     "The value assigned to 'resolvedCompanyId' is not used in subsequent statements."
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/utils/supabaseRemote.js",
+    "src/utils/supabaseRemote.js",
     "no-unused-vars",
     "'allowOfflineFallback' is assigned a value but never used."
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/utils/supabaseRemote.js",
+    "src/utils/supabaseRemote.js",
     "no-unused-vars",
     "'createdBy' is assigned a value but never used."
   ],
   [
-    "/Users/hirotomatsumoto/Documents/salon-management/src/utils/supabaseRemote.js",
+    "src/utils/supabaseRemote.js",
     "no-unused-vars",
     "'user' is defined but never used."
   ]

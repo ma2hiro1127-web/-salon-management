@@ -13,12 +13,15 @@ BASELINE_FILE="$REPO_ROOT/scripts/deploy/lint-baseline.json"
 
 echo "現在のlint結果からベースラインを再生成します..."
 (npx eslint . -f json || true) | python3 -c "
-import json, sys
+import json, os, sys
 
+repo_root = sys.argv[1] if len(sys.argv) > 1 else '.'
 data = json.load(sys.stdin)
 entries = []
 for file_result in data:
-    path = file_result.get('filePath', '')
+    # 相対パスで保存する(絶対パスのまま保存すると、生成したマシンと実行環境で
+    # パスが一致せず、verify.sh側で既存分が丸ごと新規と誤判定されてしまう)。
+    path = os.path.relpath(file_result.get('filePath', ''), repo_root)
     for msg in file_result.get('messages', []):
         if msg.get('severity') != 2:
             continue
@@ -27,7 +30,7 @@ for file_result in data:
 # 決定的な出力にするため整列
 entries.sort()
 print(json.dumps(entries, ensure_ascii=False, indent=2))
-" > "$BASELINE_FILE"
+" "$REPO_ROOT" > "$BASELINE_FILE"
 
 COUNT="$(python3 -c "import json; print(len(json.load(open('$BASELINE_FILE'))))")"
 echo "✅ ${COUNT}件のベースラインを $BASELINE_FILE に書き込みました。"

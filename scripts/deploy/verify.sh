@@ -28,7 +28,7 @@ LINT_JSON_FILE="$(mktemp)"
 trap 'rm -f "$LINT_JSON_FILE"' EXIT
 (npx eslint . -f json || true) > "$LINT_JSON_FILE"
 
-NEW_VIOLATIONS="$(python3 "$REPO_ROOT/scripts/deploy/lint_diff.py" "$BASELINE_FILE" "$LINT_JSON_FILE")"
+NEW_VIOLATIONS="$(python3 "$REPO_ROOT/scripts/deploy/lint_diff.py" "$BASELINE_FILE" "$LINT_JSON_FILE" "$REPO_ROOT")"
 
 if echo "$NEW_VIOLATIONS" | grep -q "__PARSE_ERROR__"; then
   echo "⚠️ lint結果の解析に失敗しました。念のため詳細を表示します。" >&2
