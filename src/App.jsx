@@ -132,6 +132,7 @@ import {
   syncStoreBillingQuantity,
   generateTestSignupLink,
   cancelTestContract,
+  deleteTestContractCompany,
   loadCompanyAdminEmails,
   logClientDiagnostic,
   TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT,
@@ -807,6 +808,8 @@ function App() {
   const [testContractAdminEmails, setTestContractAdminEmails] = useState({}); // companyId -> email
   const [cancelTestContractBusyId, setCancelTestContractBusyId] = useState("");
   const [cancelTestContractError, setCancelTestContractError] = useState("");
+  const [deleteTestContractBusyId, setDeleteTestContractBusyId] = useState("");
+  const [deleteTestContractError, setDeleteTestContractError] = useState("");
   // 契約状態変更の確認モーダル(2026-09-02)。{ company, targetStatus } | null。
   // window.confirmではなく、遷移先に応じた必要情報(無料利用の終了日選択、課金開始予定日の
   // プレビュー等)を見せてから変更してもらうためのモーダル。
@@ -4622,6 +4625,49 @@ function App() {
       return;
     }
     setSuccessNotice(`「${company.name}」のStripeサブスクリプションをキャンセルしました。DBの契約状態はWebhook受信後に自動的に反映されます。`);
+  };
+
+  // テスト契約フロー専用の使い捨て会社(is_test_contract_run)の完全削除(2026-09追加)。
+  // delete-test-contract-company Edge Function側でis_test_contract_run=trueの会社にしか
+  // 実行できないよう構造的にガードされているため、正式な「テストサロン」や実際の顧客企業を
+  // 誤って削除することは構造的にできない。Stripe側にサブスクリプションが残っていれば
+  // サーバー側で先にキャンセルしてからDBデータを削除する(要件: Stripe Subscriptionを
+  // 残したままDB上の会社だけ削除しない)。取り消せない操作のため、会社名の完全一致入力を
+  // 確認として要求する(通常会社の完全削除と同じ安全水準)。
+  const handleDeleteTestContractCompany = async (company) => {
+    if (deleteTestContractBusyId) return;
+    const typed = window.prompt(
+      `「${company.name}」を完全に削除します。この操作は取り消せません。\nStripeにサブスクリプションが残っていれば先にキャンセルしたうえで、紐づく店舗・ユーザー・契約データをすべて削除します。\n\n続行するには会社名を正確に入力してください。`
+    );
+    if (typed === null) return;
+    if (typed.trim() !== company.name) {
+      setDeleteTestContractError("入力された会社名が一致しなかったため、削除を中止しました。");
+      return;
+    }
+    setDeleteTestContractBusyId(company.id);
+    setDeleteTestContractError("");
+    const result = await deleteTestContractCompany({ companyId: company.id, confirmName: typed.trim() });
+    setDeleteTestContractBusyId("");
+    if (!result.ok) {
+      setDeleteTestContractError(getSupabaseErrorMessage(result.error));
+      return;
+    }
+    // 状態上書き防止(ここまでにdeleteTestContractCompanyをawaitしているため、
+    // appStateRef.currentから最新状態を読み直す)。
+    const latestAppState = appStateRef.current;
+    const nextState = {
+      ...latestAppState,
+      companies: (latestAppState.companies || []).filter((item) => item.id !== company.id),
+      currentCompanyId: latestAppState.currentCompanyId === company.id ? "" : latestAppState.currentCompanyId,
+    };
+    persistTenantState(nextState);
+    const stripeResultLabel =
+      result.data?.stripeSubscriptionResult === "canceled"
+        ? "Stripeサブスクリプションをキャンセル済み"
+        : result.data?.stripeSubscriptionResult === "already_canceled"
+          ? "Stripeサブスクリプションは既にキャンセル済みでした"
+          : "Stripe契約はありませんでした";
+    setSuccessNotice(`「${company.name}」を削除しました。`, stripeResultLabel);
   };
 
   // テスト契約フロー一覧(会社管理画面)の「登録メールアドレス」表示用。対象会社が
@@ -10084,6 +10130,7 @@ function App() {
             ) : null}
 
             {cancelTestContractError ? <div className="notice-box error">{cancelTestContractError}</div> : null}
+            {deleteTestContractError ? <div className="notice-box error">{deleteTestContractError}</div> : null}
             {(() => {
               const testContractCompanies = (appState.companies || []).filter((company) => company.isTestContractRun && !company.deletedAt);
               if (testContractCompanies.length === 0) return null;
@@ -10117,6 +10164,14 @@ function App() {
                         >
                           {cancelTestContractBusyId === company.id ? "キャンセル中…" : "今すぐキャンセル(Stripe)"}
                         </button>
+                        <button
+                          className="text-button danger"
+                          type="button"
+                          disabled={deleteTestContractBusyId === company.id}
+                          onClick={() => handleDeleteTestContractCompany(company)}
+                        >
+                          {deleteTestContractBusyId === company.id ? "削除中…" : "テスト会社を削除"}
+                        </button>
                       </div>
                     </div>
                   ))}
@@ -10124,7 +10179,7 @@ function App() {
               );
             })()}
             <p className="helper-text">
-              テスト完了後、不要になったテスト契約会社はStripeのキャンセル後、下の会社一覧から「会社データを削除」→ゴミ箱から「完全削除」で片付けてください（既存のテストサロン本体には一切影響しません）。
+              「テスト会社を削除」はStripeにサブスクリプションが残っていれば自動的に先にキャンセルしたうえで、店舗・ユーザー・契約データを含めて完全に削除します(取り消せません)。この一覧に表示されるのは今回の契約フローテストで作られた使い捨て会社だけで、正式な「テストサロン」や実際の顧客企業がここに表示・削除されることはありません。
             </p>
           </section>
         )}

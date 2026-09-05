@@ -1366,6 +1366,32 @@ export const cancelTestContract = async ({ companyId }) => {
   return { ok: true, data };
 };
 
+// テスト契約フロー専用の使い捨て会社(is_test_contract_run=true)を完全削除する
+// (2026-09追加、system_admin限定)。delete-test-contract-company Edge Function側で
+// is_test_contract_run=trueの会社にしか実行できないよう構造的にガードしているため、
+// 正式な「テストサロン」や実際の顧客企業を誤って削除することはできない。Stripe側の
+// サブスクリプションが残っていれば先にキャンセルしてからDBデータを削除する。
+export const deleteTestContractCompany = async ({ companyId, confirmName }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("delete-test-contract-company", {
+    body: { companyId, confirmName },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
 // 加盟店連携リクエストの送信 — create-franchise-request Edge Function(service-role)経由。
 // system_admin限定。company_id・既存データには一切触れず、company_partnershipsの1行を
 // pending状態で作成(または過去に拒否/解除された行をpendingへ再利用)する。
