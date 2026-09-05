@@ -416,6 +416,12 @@ enabled = true
 # (他の関数はすべて既定のverify_jwt=trueのまま、この1関数だけの例外)。
 [functions.stripe-webhook]
 verify_jwt = false
+# 問い合わせメール内「スクリーンショットを確認する」リンクの実体(2026-09追加)。
+# メール受信者はアプリにログインしていない=Supabase JWTを持たないため、こちらもverify_jwt
+# を無効化する。認証は関数内で自前実装したHMAC署名付きトークン(URLのsig/exp)だけで行う
+# (stripe-webhookと同じ理由・同じ例外パターン)。
+[functions.view-support-attachment]
+verify_jwt = false
 # Directory under `supabase/` where declarative files are written.
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.

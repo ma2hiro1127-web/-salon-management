@@ -87,6 +87,20 @@ function formatJst(isoString: string): string {
 // メール本文(HTML版)へ差し込むテキストは、ユーザー入力(問い合わせ内容・会社名等)を
 // そのまま埋め込むとHTMLが壊れる/意図しないタグが解釈されるおそれがあるため、
 // 必ずエスケープしてから使う。
+// view-support-attachmentと同じHMAC-SHA256(stripe-webhookの署名検証と同じWeb Crypto実装)。
+// 2ファイルで実装を分けているのはstripe-webhookと同様の既存パターン(Edge Function間で
+// 共有モジュールを持たない)を踏襲しているため。
+async function hmacSha256Hex(secret: string, message: string): Promise<string> {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+  ]);
+  const signatureBuffer = await crypto.subtle.sign("HMAC", key, enc.encode(message));
+  return Array.from(new Uint8Array(signatureBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 function escapeHtml(value: string): string {
   return String(value || "")
     .replace(/&/g, "&amp;")
@@ -284,6 +298,8 @@ Deno.serve(async (req) => {
     // email_status='failed'のまま問い合わせ自体は保存済みとして扱う(要件17)。
     const emailStatus = await sendInquiryEmail({
       admin,
+      supabaseUrl,
+      serviceRoleKey,
       inquiryId,
       category,
       message,
@@ -312,6 +328,8 @@ Deno.serve(async (req) => {
 
 async function sendInquiryEmail(params: {
   admin: ReturnType<typeof createClient>;
+  supabaseUrl: string;
+  serviceRoleKey: string;
   inquiryId: string;
   category: string;
   message: string;
@@ -338,19 +356,22 @@ async function sendInquiryEmail(params: {
   const subject = `【Salon Manager問い合わせ】${categoryLabel}｜${params.companyName || "不明な会社"}｜${params.storeName || "店舗未指定"}`;
   const createdAtJst = formatJst(params.createdAt);
 
-  // 添付画像はSigned URL(7日間有効)を本文に必ず載せる(要件15: 永久公開URL禁止・妥当な
-  // 有効期限)。加えて、実バイトの取得・base64化に成功した分だけメール本体にも直接添付する
+  // 添付画像は、Supabase Storageのcreated SignedUrlをそのままメールへ載せず、専用の
+  // view-support-attachment Edge Function経由のURLにする(iPhoneのGmailアプリ内ブラウザで
+  // 開くと画像がインライン表示されず「ダウンロード」扱いになる不具合の対策——このFunctionが
+  // Content-Type: image/* + Content-Disposition: inlineを確実に付けて返す)。有効期限は
+  // 従来のSigned URLと同じ7日間(SIGNED_URL_EXPIRES_IN)のまま、HMAC署名の期限として実装する。
+  // 加えて、実バイトの取得・base64化に成功した分だけメール本体にも直接添付する
   // (要件15: 「可能であればスクリーンショットをメールにも添付」)——1件でも失敗しても
   // メール送信自体は継続する。
   const signedUrlLines: string[] = [];
   const emailAttachments: Array<{ filename: string; content: string }> = [];
   for (const attachment of params.attachments) {
     try {
-      const { data: signed, error: signError } = await params.admin.storage
-        .from(BUCKET)
-        .createSignedUrl(attachment.path, SIGNED_URL_EXPIRES_IN);
-      if (signError) throw signError;
-      if (signed?.signedUrl) signedUrlLines.push(signed.signedUrl);
+      const exp = Math.floor(Date.now() / 1000) + SIGNED_URL_EXPIRES_IN;
+      const sig = await hmacSha256Hex(params.serviceRoleKey, `${attachment.path}.${exp}`);
+      const viewUrl = `${params.supabaseUrl}/functions/v1/view-support-attachment?path=${encodeURIComponent(attachment.path)}&exp=${exp}&sig=${sig}`;
+      signedUrlLines.push(viewUrl);
     } catch (error) {
       logStage("signed_url_failed", { inquiryId: params.inquiryId, path: attachment.path, message: (error as Error)?.message });
     }
