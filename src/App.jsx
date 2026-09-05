@@ -7168,7 +7168,19 @@ function App() {
 
   const removeFixedCost = async (itemId) => {
     if (guardFranchiseReadOnly()) return;
-    if (!window.confirm("この費用を削除しますか？")) {
+    // 不具合防止(要件15): cost_monthly_amountsはcost_item_idにON DELETE CASCADEが
+    // 設定されているため、この項目を削除すると紐づく月別の反映実績(cost_monthly_amounts)も
+    // まとめて削除される。単月・期間限定費用は同じidのまま複数月にわたって「今月も反映」
+    // されうる(2026-09の仕様変更)ため、うっかり削除すると当月分だけでなく過去に確定済みの
+    // 月の損益データまで一緒に失われかねない。対象月が2件以上ある場合は、その旨を確認
+    // ダイアログで明示し、誤操作による過去データ消失を防ぐ。
+    const affectedMonths = Object.keys(appStateRef.current.costMonthlyAmounts || {})
+      .filter((key) => key.startsWith(`${itemId}__`));
+    const item = getFixedCostsForStoreMonth(appStateRef.current, selectedStoreId, selectedMonth).find((candidate) => candidate.id === itemId);
+    const confirmMessage = affectedMonths.length > 1
+      ? `「${item?.name || "この費用"}」は${affectedMonths.length}ヶ月分の損益データ(${affectedMonths.map((key) => key.split("__")[1]).sort().join("、")})が記録されています。削除するとこれらすべての月の記録が失われます。本当に削除しますか？`
+      : "この費用を削除しますか？";
+    if (!window.confirm(confirmMessage)) {
       return;
     }
     if (isSupabaseConfigured) {
@@ -9535,13 +9547,20 @@ function App() {
                               />
                               {/* 継続費用は基本値が毎月自動反映されるためバッジ・反映操作は不要。
                                   単月・期間限定費用のうち、未反映(先月以前から持ち越し)の項目
-                                  だけ「今月未反映」を出す。反映済みの項目(今月新規登録・「今月も
-                                  反映」済みのどちらも)は通常表示にし、小さな「今月の反映を解除」
-                                  リンクだけを添える(常時目立つバッジは出さない、要件3)。 */}
+                                  だけ黄色背景+「今月未反映」を出す(色を付けるのは未反映の項目
+                                  だけ、という要件)。反映済みの項目(今月新規登録・「今月も反映」
+                                  済みのどちらも)は色を付けず通常表示にし、状態が一目で分かる
+                                  よう控えめな「今月反映中」ラベル+「今月の反映を解除」リンクを
+                                  添える(常時目立つ金額入りバッジは出さない)。 */}
                               {isUnreflectedCarryOver ? (
                                 <span className="cost-row-carry-forward-badge">今月未反映</span>
-                              ) : isLimited && canEditMonthlyData(currentRole) ? (
-                                <button className="text-button cost-row-unreflect-button" type="button" onClick={() => unreflectCostItemForMonth(item)}>今月の反映を解除</button>
+                              ) : isLimited ? (
+                                <>
+                                  <span className="cost-row-status-label">今月反映中</span>
+                                  {canEditMonthlyData(currentRole) ? (
+                                    <button className="text-button cost-row-unreflect-button" type="button" onClick={() => unreflectCostItemForMonth(item)}>今月の反映を解除</button>
+                                  ) : null}
+                                </>
                               ) : null}
                               <button
                                 className={isUnreflectedCarryOver ? "primary-button" : "secondary-button"}

@@ -454,6 +454,9 @@ button.list-row:hover { border-color: var(--accent); }
 /* 「今月の反映を解除」— 誤操作しやすい派手なボタンにはせず、控えめな小さいリンク風にする。 */
 .cost-row-unreflect-button { font-size: 0.78rem; color: var(--muted); }
 .cost-row-unreflect-button:hover { color: var(--danger); }
+/* 「今月反映中」— 反映済みの単月・期間限定費用に添える控えめなステータスラベル。色は付けず
+   (色付けは未反映の項目だけ、という要件)、状態だけを文字で示す。 */
+.cost-row-status-label { font-size: 0.78rem; color: var(--muted); }
 
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
