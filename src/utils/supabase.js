@@ -76,10 +76,26 @@ const fetchWithAuthRetry = async (input, init = {}) => {
   }
 };
 
+// system_adminの「新規契約フローをテスト」(?owner-signup=1&testKey=...)は、system_admin
+// 自身が既にログイン中の同じブラウザで新しいタブとして開かれることが多い(2026-09追加)。
+// Supabaseのセッションは既定でlocalStorageの共通キーに保存されるため、そのタブで新規登録
+// (別アカウント)しても既定の共通キーのままだと、system_admin自身の元タブのセッションを
+// 上書き・混同してしまう恐れがある(signOut自体をscope:"local"にしても、localStorageの
+// キーを共有している限り、後から書き込まれるsignIn/selfSignup後のセッションが上書きする
+// 問題は残る)。このURLパターンの時だけ専用のstorageKeyを使い、完全に別のセッションとして
+// 隔離することで、system_adminの元のログイン状態への影響を構造的にゼロにする
+// (要件: 「system_adminの現在のログイン状態を壊さない」)。通常のURL(このパラメータが
+// 無い、大多数のアクセス)では従来どおり既定のキーのままで、一切の変更が無い。
+const isOwnerSignupTestLink =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("owner-signup") === "1" &&
+  Boolean(new URLSearchParams(window.location.search).get("testKey"));
+
 export const supabase = createClient(supabaseUrl || "https://example.supabase.co", supabaseAnonKey || "dummy-key", {
   auth: {
     persistSession: true,
     autoRefreshToken: true,
+    ...(isOwnerSignupTestLink ? { storageKey: "sb-test-contract-flow-auth-token" } : {}),
   },
   global: {
     fetch: fetchWithAuthRetry,
@@ -416,8 +432,14 @@ export const signInWithEmail = async (email, password) => {
   return supabase.auth.signInWithPassword({ email: normalizeEmail(email), password });
 };
 
-export const signOutFromSupabase = async () => {
-  const { error } = await supabase.auth.signOut();
+// scope省略時は既存どおりデフォルト("global" — このユーザーの全セッション・全タブを
+// サインアウトする)。scope:"local"は、このブラウザタブだけをサインアウトし、同じ
+// アカウントの他のタブ・他デバイスのセッションには一切影響しない(2026-09追加:
+// system_adminが「新規契約フローをテスト」で発行したリンクを、自分がログイン中の
+// ブラウザで新しいタブとして開いた場合に、元のタブのログイン状態を壊さずにこの新しい
+// タブだけを未ログイン状態へ戻すために使う)。
+export const signOutFromSupabase = async ({ scope } = {}) => {
+  const { error } = await supabase.auth.signOut(scope ? { scope } : undefined);
   return { error };
 };
 

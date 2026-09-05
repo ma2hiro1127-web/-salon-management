@@ -1547,6 +1547,27 @@ function App() {
           setAuthLoading(false);
           return;
         }
+        if (hasOwnerSignupIntent && session?.user) {
+          // system_adminの「新規契約フローをテスト」で発行したリンク(?owner-signup=1&
+          // testKey=...)を、system_admin自身が既にログイン中のブラウザ(window.open()で
+          // 開いた別タブ)で開いた場合の不具合修正: 下のhasInviteIntentと全く同じ理由・
+          // 同じ対処。このURLは常に「新しいテスト会社を作る」という明示的な意図であり、
+          // 既存セッションのまま通常画面へ入られては目的を果たせない——ここで強制的に
+          // サインアウトし、必ずownerSignup(新規登録フォーム)から始められるようにする。
+          // scope:"local"が肝心——このタブだけをサインアウトし、system_admin自身の元の
+          // タブ(同じアカウントの別セッション)のログイン状態には一切影響しない
+          // (supabase.auth.signOut()の既定scope="global"のまま呼ぶと、同一ユーザーの
+          // 全セッションが失効し、元のタブも次のトークン更新時にログアウトされてしまう)。
+          await signOutFromSupabase({ scope: "local" });
+          setCurrentUser(null);
+          setCurrentRole("staff");
+          setAuthMode("ownerSignup");
+          setActivePage("dashboard");
+          setAppState(initialAppStateValue);
+          setSyncStatus({ status: "idle", message: "同期待機中", timestamp: "", error: false });
+          setAuthLoading(false);
+          return;
+        }
         if (hasInviteIntent && session?.user) {
           // Clicking a real invitation email link auto-establishes a Supabase session (Supabase
           // verifies the invite token at its own /auth/v1/verify endpoint before redirecting
