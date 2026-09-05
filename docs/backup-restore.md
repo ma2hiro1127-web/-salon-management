@@ -185,3 +185,94 @@ Actions タブ → 「Database Backup」ワークフロー → 「Run workflow�
 | monthly | 直近3か月 | 毎月1日 |
 
 古い世代は`scripts/backup/store_and_prune.sh`が自動削除する。
+
+---
+
+## 5. 運用ルール(再発防止、2026-09-05の障害を受けて追記)
+
+### 5-1. SupabaseのDatabase passwordを変更・リセットした場合
+
+- **GitHub Actionsの`SUPABASE_DB_URL`も必ず同時に更新すること。** Supabase側でパスワードだけを
+  変更しても、GitHub Secrets側は自動的には追従しない——放置すると次回のバックアップから
+  `password authentication failed`で失敗し続ける(下記「6. 過去の障害事例」参照)。
+- **パスワード単体ではなく、正しい接続URL全体を保存すること。** `postgresql://postgres.<project-ref>:<パスワード>@aws-0-<region>.pooler.supabase.com:5432/postgres`
+  のような完全な接続文字列(Session pooler、port 5432)をそのまま`SUPABASE_DB_URL`へ設定する
+  — パスワード部分だけを差し替えた断片を保存しない。
+
+### 5-2. 更新先のGitHubリポジトリ(重要・取り違え注意)
+
+- 正しいリポジトリは **`ma2hiro1127-web/-salon-management`**(先頭にハイフンが付く)。
+- このアカウントには**ハイフンなしの`salon-management`という別リポジトリ(private)も存在する**
+  ため、検索・自動補完で誤って開きやすい。**取り違えないこと。**
+- 心配な場合は、リポジトリ直下で`git remote -v`を実行し、表示されたURLと同じリポジトリで
+  Secretsを設定しているか確認する。
+
+### 5-3. GitHubでの更新場所
+
+```
+Settings
+→ Secrets and variables
+→ Actions
+→ Repository secrets
+→ SUPABASE_DB_URL
+→ Update secret
+```
+
+### 5-4. 更新後の確認手順
+
+1. `SUPABASE_DB_URL`の **Last updated** が更新されたことを確認する
+2. GitHub Actionsの **Database Backup** ワークフローを手動実行(Run workflow)する
+3. 全ステップが **Success** になることを確認する
+4. バックアップ用private リポジトリ(`BACKUP_REPO`)の`daily/<当日の日付>/`に、
+   `roles.sql.gz` / `schema.sql.gz` / `data.sql.gz` の3ファイルが実際に生成されていることを
+   確認する(存在確認だけでなく、サイズが0バイトでないことも見る)
+
+### 5-5. 障害時の確認順序
+
+1. まず`password authentication failed`が出ていないか確認する——出ていれば
+   `SUPABASE_DB_URL`の**パスワードが古い**ことを最初に疑う(上記5-1)。
+2. ワークフローの「Show connection info (safe, no password)」ステップのログで、
+   接続先ホスト名・ポート・ユーザー名・DB名が意図した値かを診断する
+   (**パスワードの値そのものはこのログにも一切出力されない** — 長さのみ表示)。
+3. Secretの更新先リポジトリが正しいか(上記5-2)を確認する。
+4. 上記のいずれにも該当しない場合のみ、Supabase CLIのバージョン・pg_dump互換性・
+   ネットワーク到達性(Session pooler経由か等)を疑う。
+
+### 5-6. 現在の正常仕様(変更しないこと)
+
+- 毎日04:00 JST(cron `0 19 * * *`)に自動バックアップを実行する
+- Supabase CLIのバージョンは動作確認済みバージョンに固定する(現在: 2.111.0。`latest`には
+  戻さない — 詳細は`.github/workflows/db-backup.yml`のコメント参照)
+- 失敗時はGitHubの標準通知(ワークフロー失敗メール)がそのまま届く仕様を維持する
+- daily 7日 / weekly 4週 / monthly 3か月の世代管理・古い世代の自動削除(上記「4. 世代管理」)は
+  継続する
+- 上記以外の、現在正常稼働している既存のバックアップ処理・スクリプトには変更を加えない
+
+---
+
+## 6. 過去の障害事例
+
+### 事例1: 2026-09-03〜09-05, `password authentication failed`によるバックアップ全滅
+
+- **内容**: 2026-09-03・09-04の定期実行(毎日04:00 JST)が2日連続で失敗。GitHubから
+  「Database Backup: All jobs have failed」の通知が届いた。
+- **原因**: `SUPABASE_DB_URL`シークレットは2026-08-19から変更されておらず、9/2までは正常に
+  動作していたが、その間にSupabase側のデータベースパスワードが変更されており、シークレットに
+  保存された古いパスワードのままでは認証が通らなくなっていた。接続先ホスト・ポート・
+  ユーザー名(project ref付きの正しい形式)自体は問題なかった。
+- **復旧手順**:
+  1. `gh run view --log-failed`で失敗ログを確認し、`pg_dumpall: FATAL: password authentication failed for user "postgres"`を特定
+  2. ワークフローに「接続情報(パスワード以外)を安全に表示する診断ステップ」を追加し、
+     ホスト・ポート・ユーザー名・DB名が正しいことを確認、パスワードのみが原因と切り分け
+  3. Supabase Dashboard → Project Settings → Database → Connection string から
+     現在の正しいSession pooler接続文字列を取得
+  4. GitHub側`SUPABASE_DB_URL`シークレットを更新
+     - 1回目の更新はハイフンなしの別リポジトリ(`ma2hiro1127-web/salon-management`)へ
+       誤って保存してしまい、正しいリポジトリ(`-salon-management`)側は未更新のままだった
+       ため、再度失敗を確認(上記「5-2」の注意点はこの実体験から追記した)
+     - 正しいリポジトリで再更新し、Last updatedの変化を確認
+  5. `gh workflow run "Database Backup" --ref main`で手動実行し、全ステップSuccessを確認
+  6. バックアップ用リポジトリに`roles.sql.gz` / `schema.sql.gz` / `data.sql.gz`(37テーブル、
+     約4.5MB)が実際に生成されていることを確認して完了
+- **再発防止**: 本節「5. 運用ルール」を新設。あわせてCLIバージョンの固定と、パスワードを
+  含まない接続情報の診断ログをワークフローに追加した。
