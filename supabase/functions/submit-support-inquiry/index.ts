@@ -64,6 +64,38 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+// 問い合わせ日時をUTC(ISO文字列)のままメールへ出さず、JST(Asia/Tokyo)の
+// "YYYY/MM/DD HH:mm"表示に変換する(要件)。
+function formatJst(isoString: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("ja-JP", {
+      timeZone: "Asia/Tokyo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(new Date(isoString));
+    const get = (type: string) => parts.find((p) => p.type === type)?.value || "";
+    return `${get("year")}/${get("month")}/${get("day")} ${get("hour")}:${get("minute")}`;
+  } catch {
+    return isoString;
+  }
+}
+
+// メール本文(HTML版)へ差し込むテキストは、ユーザー入力(問い合わせ内容・会社名等)を
+// そのまま埋め込むとHTMLが壊れる/意図しないタグが解釈されるおそれがあるため、
+// 必ずエスケープしてから使う。
+function escapeHtml(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -304,6 +336,7 @@ async function sendInquiryEmail(params: {
 
   const categoryLabel = CATEGORY_LABELS[params.category] || params.category;
   const subject = `【Salon Manager問い合わせ】${categoryLabel}｜${params.companyName || "不明な会社"}｜${params.storeName || "店舗未指定"}`;
+  const createdAtJst = formatJst(params.createdAt);
 
   // 添付画像はSigned URL(7日間有効)を本文に必ず載せる(要件15: 永久公開URL禁止・妥当な
   // 有効期限)。加えて、実バイトの取得・base64化に成功した分だけメール本体にも直接添付する
@@ -334,29 +367,50 @@ async function sendInquiryEmail(params: {
     }
   }
 
+  // 本文の構成(要件): 上部=問い合わせ種別・会社名・店舗名・問い合わせ内容・スクリーン
+  // ショット確認、下部=技術情報(端末・URL・問い合わせID等)。プレーンテキスト版では
+  // 「ボタン」は表現できないため、Signed URLをそのままリンクとして載せる(HTML版だけが
+  // ボタン化の対象——要件2の「メール本文に直接表示しない」はHTML版のリンクボタンで満たす)。
   const bodyLines = [
     `問い合わせ種別: ${categoryLabel}`,
     `会社名: ${params.companyName || "不明"}`,
     `店舗名: ${params.storeName || "未指定"}`,
-    `ユーザー名: ${params.userName || "不明"}`,
-    `ユーザー権限: ${params.userRole || "不明"}`,
-    `対象月: ${params.targetMonth || "不明"}`,
-    `表示中画面: ${params.currentPage || "不明"}`,
-    `問い合わせ日時: ${params.createdAt}`,
     "",
     "お問い合わせ内容：",
     "ーーーーーーーー",
     params.message,
     "ーーーーーーーー",
     "",
+    `スクリーンショット: ${params.attachments.length > 0 ? "添付あり" : "なし"}`,
+    ...(signedUrlLines.length > 0 ? ["", "スクリーンショットを確認する(7日間有効):", ...signedUrlLines] : []),
+    "",
+    "――――――――――",
+    `ユーザー名: ${params.userName || "不明"}`,
+    `ユーザー権限: ${params.userRole || "不明"}`,
+    `対象月: ${params.targetMonth || "不明"}`,
+    `表示中画面: ${params.currentPage || "不明"}`,
+    `問い合わせ日時: ${createdAtJst}`,
     `端末・ブラウザ情報: ${params.userAgent || "不明"}`,
     `URL: ${params.currentUrl || "不明"}`,
-    "",
     `問い合わせID: ${params.inquiryId}`,
-    "",
-    `スクリーンショット: ${params.attachments.length > 0 ? "添付あり" : "なし"}`,
-    ...(signedUrlLines.length > 0 ? ["", "スクリーンショット確認用リンク(7日間有効):", ...signedUrlLines] : []),
   ];
+
+  const html = buildHtmlBody({
+    categoryLabel,
+    companyName: params.companyName,
+    storeName: params.storeName,
+    message: params.message,
+    hasAttachments: params.attachments.length > 0,
+    signedUrls: signedUrlLines,
+    userName: params.userName,
+    userRole: params.userRole,
+    targetMonth: params.targetMonth,
+    currentPage: params.currentPage,
+    createdAtJst,
+    userAgent: params.userAgent,
+    currentUrl: params.currentUrl,
+    inquiryId: params.inquiryId,
+  });
 
   try {
     const res = await fetch("https://api.resend.com/emails", {
@@ -370,6 +424,7 @@ async function sendInquiryEmail(params: {
         to: [toAddress],
         subject,
         text: bodyLines.join("\n"),
+        html,
         attachments: emailAttachments.length > 0 ? emailAttachments : undefined,
       }),
     });
@@ -398,4 +453,73 @@ async function sendInquiryEmail(params: {
     }).then(() => {}, () => {});
     return "failed";
   }
+}
+
+// メール本文のHTML版(要件): スマホで見やすいよう1カラム・インラインスタイルのみで組む
+// (メールクライアントは外部/<style>タグを無視することが多いため)。上部=問い合わせ種別・
+// 会社名・店舗名・問い合わせ内容・スクリーンショット確認ボタン、下部=技術情報という
+// 構成にする。Signed URLの生文字列は本文に出さず、ボタン(リンク)としてのみ埋め込む。
+function buildHtmlBody(params: {
+  categoryLabel: string;
+  companyName: string;
+  storeName: string;
+  message: string;
+  hasAttachments: boolean;
+  signedUrls: string[];
+  userName: string;
+  userRole: string;
+  targetMonth: string;
+  currentPage: string;
+  createdAtJst: string;
+  userAgent: string;
+  currentUrl: string;
+  inquiryId: string;
+}): string {
+  const row = (label: string, value: string) => `
+    <tr>
+      <td style="padding:4px 0;color:#64748b;font-size:12px;white-space:nowrap;vertical-align:top;">${escapeHtml(label)}</td>
+      <td style="padding:4px 0 4px 10px;color:#334155;font-size:12px;word-break:break-all;">${escapeHtml(value || "不明")}</td>
+    </tr>`;
+
+  const screenshotButtons = params.signedUrls
+    .map(
+      (url, index) => `
+      <a href="${escapeHtml(url)}" target="_blank" rel="noopener"
+         style="display:inline-block;margin:4px 8px 4px 0;padding:10px 18px;background:#2563eb;color:#ffffff;
+                text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">
+        スクリーンショットを確認する${params.signedUrls.length > 1 ? `(${index + 1}/${params.signedUrls.length})` : ""}
+      </a>`
+    )
+    .join("");
+
+  return `
+<div style="max-width:520px;margin:0 auto;padding:16px;font-family:-apple-system,'Hiragino Kaku Gothic ProN',sans-serif;color:#0f172a;">
+  <div style="background:#eff6ff;border-radius:12px;padding:16px;margin-bottom:16px;">
+    <p style="margin:0 0 4px;font-size:13px;color:#2563eb;font-weight:700;">${escapeHtml(params.categoryLabel)}</p>
+    <p style="margin:0;font-size:15px;font-weight:700;">${escapeHtml(params.companyName || "不明な会社")} ／ ${escapeHtml(params.storeName || "店舗未指定")}</p>
+  </div>
+
+  <div style="margin-bottom:16px;">
+    <p style="margin:0 0 6px;font-size:13px;color:#64748b;font-weight:700;">お問い合わせ内容</p>
+    <p style="margin:0;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;background:#f8fafc;border-radius:8px;padding:12px;">${escapeHtml(params.message)}</p>
+  </div>
+
+  ${params.hasAttachments
+    ? `<div style="margin-bottom:20px;">${screenshotButtons || `<p style="margin:0;font-size:13px;color:#64748b;">添付あり(リンクの発行に失敗しました)</p>`}</div>`
+    : `<p style="margin:0 0 20px;font-size:13px;color:#94a3b8;">スクリーンショット: なし</p>`
+  }
+
+  <hr style="border:none;border-top:1px solid #e2e8f0;margin:0 0 12px;" />
+
+  <table style="width:100%;border-collapse:collapse;">
+    ${row("ユーザー名", params.userName)}
+    ${row("ユーザー権限", params.userRole)}
+    ${row("対象月", params.targetMonth)}
+    ${row("表示中画面", params.currentPage)}
+    ${row("問い合わせ日時", params.createdAtJst)}
+    ${row("端末・ブラウザ情報", params.userAgent)}
+    ${row("URL", params.currentUrl)}
+    ${row("問い合わせID", params.inquiryId)}
+  </table>
+</div>`;
 }
