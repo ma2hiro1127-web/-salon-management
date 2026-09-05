@@ -99,6 +99,17 @@ const urlHasOwnerSignupTestLink =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("owner-signup") === "1" &&
   Boolean(new URLSearchParams(window.location.search).get("testKey"));
+// 障害調査用(2026-09): マーカーを新規に書き込む「前」の時点で既に立っていたかどうかを
+// 別途記録しておく——「今回のURLで新たにtrueになった」のか「前回までのページ読み込みで
+// 既に立っていたものを引き継いだ」のかを、この後のログで区別できるようにするため。
+let sessionMarkerWasAlreadyPresent = false;
+if (typeof window !== "undefined") {
+  try {
+    sessionMarkerWasAlreadyPresent = window.sessionStorage.getItem(TEST_CONTRACT_SESSION_MARKER) === "1";
+  } catch {
+    sessionMarkerWasAlreadyPresent = false;
+  }
+}
 if (urlHasOwnerSignupTestLink) {
   try {
     window.sessionStorage.setItem(TEST_CONTRACT_SESSION_MARKER, "1");
@@ -107,16 +118,19 @@ if (urlHasOwnerSignupTestLink) {
     // (この場合はStripe決済からの復帰時にログイン画面へ戻るだけで、致命的ではない)。
   }
 }
-const isOwnerSignupTestLink =
-  urlHasOwnerSignupTestLink ||
-  (typeof window !== "undefined" &&
-    (() => {
-      try {
-        return window.sessionStorage.getItem(TEST_CONTRACT_SESSION_MARKER) === "1";
-      } catch {
-        return false;
-      }
-    })());
+const isOwnerSignupTestLink = urlHasOwnerSignupTestLink || sessionMarkerWasAlreadyPresent;
+
+// 障害調査用(2026-09、決済完了後にログイン画面へ戻る不具合のトレース)。App.jsx側の
+// 初期化処理から、このモジュール読み込み時点でのURL・マーカー状態・実際に選ばれた
+// storageKeyをclient_diagnostic_logsへ記録できるよう、スナップショットとして公開する。
+export const TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT = {
+  href: typeof window !== "undefined" ? window.location.href : "",
+  search: typeof window !== "undefined" ? window.location.search : "",
+  urlHasOwnerSignupTestLink,
+  sessionMarkerWasAlreadyPresent,
+  isOwnerSignupTestLink,
+  appVersion: typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev",
+};
 
 export const supabase = createClient(supabaseUrl || "https://example.supabase.co", supabaseAnonKey || "dummy-key", {
   auth: {

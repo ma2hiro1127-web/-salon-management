@@ -132,6 +132,8 @@ import {
   generateTestSignupLink,
   cancelTestContract,
   loadCompanyAdminEmails,
+  logClientDiagnostic,
+  TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT,
   softDeleteCompany,
   deleteCompanyCompletely,
   createStoreRecord,
@@ -1507,6 +1509,17 @@ function App() {
     const fallbackAuthMode = () => (hasInviteIntent ? "signup" : hasOwnerSignupIntent ? "ownerSignup" : "login");
     const initializeAuth = async () => {
       authLog("auth初期化開始");
+      // 障害調査用(2026-09、決済完了後にログイン画面へ戻る不具合のトレース)。この時点
+      // (セッション確認より前)でのURL・sessionStorageマーカーの状態を記録する——
+      // テスト契約フローのURLでなければ何も記録しない(通常の本番アクセスには一切影響
+      // しない、ベストエフォート・失敗しても認証処理は止めない)。
+      if (typeof window !== "undefined" && (TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT.isOwnerSignupTestLink || window.location.search.includes("checkout="))) {
+        logClientDiagnostic({
+          screen: "test-contract-flow-trace",
+          actionType: "module-init",
+          message: JSON.stringify(TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT).slice(0, 500),
+        });
+      }
       try {
         if (!isSupabaseConfigured) {
           setCurrentUser(null);
@@ -1539,6 +1552,14 @@ function App() {
         const { data: { session }, error } = await getSupabaseSession();
         if (error) throw error;
         authLog("session取得成功", { hasSession: Boolean(session?.user) });
+        if (typeof window !== "undefined" && (TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT.isOwnerSignupTestLink || window.location.search.includes("checkout="))) {
+          logClientDiagnostic({
+            screen: "test-contract-flow-trace",
+            actionType: "session-check",
+            // authUserIdの末尾6文字だけ(相関確認用、フルIDやメールアドレスは記録しない)。
+            message: JSON.stringify({ hasSession: Boolean(session?.user), authUserIdTail: session?.user?.id ? session.user.id.slice(-6) : "" }),
+          });
+        }
         // supabase-jsのdetectSessionInUrlは、access_token等をURLのハッシュ(#…)から読み取った
         // 時点でセッションを確立するが、ハッシュ自体はブラウザのアドレスバーに残り続ける。
         // getSupabaseSession()が完了した今、ハッシュに含まれていた情報は既に処理済みなので、
