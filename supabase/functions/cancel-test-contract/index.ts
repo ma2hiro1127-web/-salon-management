@@ -50,9 +50,13 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
-  if (!supabaseUrl || !anonKey || !serviceRoleKey || !stripeSecretKey) {
-    return json({ error: "サーバー設定が不足しています" }, 500);
+  // このFunctionはis_test_contract_run=trueの会社にしか作用しない(下の安全ガード参照)。
+  // そのようなテスト契約は必ずSTRIPE_TEST_SECRET_KEYで作られたテストモードのサブスク
+  // リプションのため、本番のライブキー(STRIPE_SECRET_KEY)は絶対に使わない
+  // (要件: 本番のライブキー・ライブPrice IDを絶対に使用しない)。
+  const stripeTestSecretKey = Deno.env.get("STRIPE_TEST_SECRET_KEY");
+  if (!supabaseUrl || !anonKey || !serviceRoleKey || !stripeTestSecretKey) {
+    return json({ error: "サーバー設定が不足しています(STRIPE_TEST_SECRET_KEYが未設定です)" }, 500);
   }
 
   const authHeader = req.headers.get("Authorization") || "";
@@ -101,7 +105,7 @@ Deno.serve(async (req) => {
 
     const res = await fetch(`https://api.stripe.com/v1/subscriptions/${encodeURIComponent(company.stripe_subscription_id)}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${stripeSecretKey}` },
+      headers: { Authorization: `Bearer ${stripeTestSecretKey}` },
     });
     const resJson = await res.json();
     if (!res.ok) {

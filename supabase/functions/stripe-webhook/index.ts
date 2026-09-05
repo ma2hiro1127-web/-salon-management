@@ -131,6 +131,11 @@ Deno.serve(async (req) => {
   }
 
   const webhookSecret = Deno.env.get("STRIPE_WEBHOOK_SECRET");
+  // テスト契約フロー(2026-09追加)からのイベントは、Stripeダッシュボードのテストモード側で
+  // 別途登録したWebhookエンドポイント用の、ライブとは異なる署名シークレットで届く
+  // (同じStripeアカウントでも、ライブ/テストのWebhook署名シークレットは常に別々)。
+  // STRIPE_TEST_WEBHOOK_SECRETは任意——未設定でも本番のライブWebhook検証には一切影響しない。
+  const webhookTestSecret = Deno.env.get("STRIPE_TEST_WEBHOOK_SECRET");
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!webhookSecret || !supabaseUrl || !serviceRoleKey) {
@@ -142,7 +147,13 @@ Deno.serve(async (req) => {
   // (1文字でも再シリアライズでずれると署名が一致しなくなるため)。
   const rawBody = await req.text();
   const signatureHeader = req.headers.get("stripe-signature") || "";
-  const isValid = await verifyStripeSignature(rawBody, signatureHeader, webhookSecret);
+  // ライブ用シークレットで検証し、失敗した場合だけテスト用シークレット(設定されていれば)で
+  // 再検証する——どちらのモードのイベントも同じエンドポイントURLで正しく受け付けられる
+  // ようにするため(要件: WebhookもStripeテストモードのイベントを正しく受信できるようにする)。
+  let isValid = await verifyStripeSignature(rawBody, signatureHeader, webhookSecret);
+  if (!isValid && webhookTestSecret) {
+    isValid = await verifyStripeSignature(rawBody, signatureHeader, webhookTestSecret);
+  }
   if (!isValid) {
     logStage("invalid_signature", { hasHeader: Boolean(signatureHeader) });
     return json({ error: "署名の検証に失敗しました" }, 400);

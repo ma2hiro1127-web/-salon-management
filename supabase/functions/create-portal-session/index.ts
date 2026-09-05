@@ -75,6 +75,9 @@ Deno.serve(async (req) => {
   const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
   // .trim()が肝心 — create-checkout-sessionと同じ理由(APP_URL末尾改行混入の障害対策)。
   const appUrl = Deno.env.get("APP_URL")?.trim();
+  // テスト契約フロー専用会社(is_test_contract_run)のPortalは、テストモードのcustomerに
+  // 対してはテストモードのキーでしか開けない(create-checkout-sessionと同じ理由)。
+  const stripeTestSecretKey = Deno.env.get("STRIPE_TEST_SECRET_KEY");
   if (!supabaseUrl || !anonKey || !serviceRoleKey || !stripeSecretKey || !appUrl) {
     logStage("missing_server_config", {});
     return json({ error: "サーバー設定が不足しています" }, 500);
@@ -106,15 +109,19 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, stripe_customer_id")
+      .select("id, stripe_customer_id, is_test_contract_run")
       .eq("id", callerProfile.company_id)
       .maybeSingle();
     if (companyError) throw companyError;
     if (!company?.stripe_customer_id) {
       return json({ error: "この会社はまだStripeでの契約が開始されていません" }, 409);
     }
+    const effectiveSecretKey = company.is_test_contract_run ? stripeTestSecretKey : stripeSecretKey;
+    if (!effectiveSecretKey) {
+      return json({ error: "テストモード用のStripe設定が未設定です" }, 500);
+    }
 
-    const session = await stripeRequest("billing_portal/sessions", stripeSecretKey, {
+    const session = await stripeRequest("billing_portal/sessions", effectiveSecretKey, {
       customer: company.stripe_customer_id,
       return_url: `${appUrl}/`,
     });

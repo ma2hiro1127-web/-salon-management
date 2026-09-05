@@ -110,6 +110,17 @@ Deno.serve(async (req) => {
   const priceBaseYearly = Deno.env.get("STRIPE_PRICE_BASE_YEARLY");
   const priceAddonMonthly = Deno.env.get("STRIPE_PRICE_STORE_ADDON_MONTHLY");
   const priceAddonYearly = Deno.env.get("STRIPE_PRICE_STORE_ADDON_YEARLY");
+  // Stripeテストモード用の並行セット(2026-09追加、契約フロー実機検証)。system_adminの
+  // 「新規契約フローをテスト」経由で作られた使い捨て会社(is_test_contract_run=true)だけ、
+  // 本番のライブキー・ライブPrice IDを一切使わず、これらのテストモード専用の値だけを使う。
+  // 本番顧客の契約(is_test_contract_run=false、大多数)は、このブロック自体を一切参照せず
+  // 従来どおりライブモードのまま——このガードのおかげで、テストキー未設定でも本番顧客の
+  // 契約フローには何の影響も出ない。
+  const stripeTestSecretKey = Deno.env.get("STRIPE_TEST_SECRET_KEY");
+  const priceTestBaseMonthly = Deno.env.get("STRIPE_TEST_PRICE_BASE_MONTHLY");
+  const priceTestBaseYearly = Deno.env.get("STRIPE_TEST_PRICE_BASE_YEARLY");
+  const priceTestAddonMonthly = Deno.env.get("STRIPE_TEST_PRICE_STORE_ADDON_MONTHLY");
+  const priceTestAddonYearly = Deno.env.get("STRIPE_TEST_PRICE_STORE_ADDON_YEARLY");
   if (
     !supabaseUrl || !anonKey || !serviceRoleKey || !stripeSecretKey || !appUrl ||
     !priceBaseMonthly || !priceBaseYearly || !priceAddonMonthly || !priceAddonYearly
@@ -146,7 +157,7 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, name, contract_status, stripe_customer_id, deleted_at")
+      .select("id, name, contract_status, stripe_customer_id, deleted_at, is_test_contract_run")
       .eq("id", callerProfile.company_id)
       .maybeSingle();
     if (companyError) throw companyError;
@@ -156,6 +167,21 @@ Deno.serve(async (req) => {
     if (company.contract_status === "active") {
       return json({ error: "既に契約中です。プラン変更はStripe Customer Portalから行ってください" }, 409);
     }
+
+    // テスト契約フロー専用会社は、本番のライブキー・ライブPrice IDを絶対に使わない
+    // (要件: 誤課金の可能性を構造的にゼロにする)。テストモード側の設定が1つでも
+    // 欠けている場合は、ライブへフォールバックせずエラーで停止する——「設定漏れで
+    // うっかりライブ決済になる」事故を防ぐため。
+    const isTestContractRun = Boolean(company.is_test_contract_run);
+    if (isTestContractRun && (!stripeTestSecretKey || !priceTestBaseMonthly || !priceTestBaseYearly || !priceTestAddonMonthly || !priceTestAddonYearly)) {
+      logStage("missing_test_mode_config", { companyId: company.id });
+      return json({ error: "テストモード用のStripe設定(STRIPE_TEST_SECRET_KEY等)が未設定です。system_adminへご確認ください" }, 500);
+    }
+    const effectiveSecretKey = isTestContractRun ? stripeTestSecretKey! : stripeSecretKey;
+    const effectiveBaseMonthly = isTestContractRun ? priceTestBaseMonthly! : priceBaseMonthly;
+    const effectiveBaseYearly = isTestContractRun ? priceTestBaseYearly! : priceBaseYearly;
+    const effectiveAddonMonthly = isTestContractRun ? priceTestAddonMonthly! : priceAddonMonthly;
+    const effectiveAddonYearly = isTestContractRun ? priceTestAddonYearly! : priceAddonYearly;
 
     const { count: storeCount, error: storeCountError } = await admin
       .from("stores")
@@ -167,9 +193,20 @@ Deno.serve(async (req) => {
 
     // Stripe Customerを確保する(既存があれば再利用、無ければ新規作成してすぐに保存する
     // ——checkout session作成の途中で失敗しても、customer自体の紐付けは残るようにするため)。
+    // ライブ/テストは同じStripeアカウントでも完全に別データ空間のため、以前ライブモードで
+    // 作られたcustomer idをテストモードのキーで参照すると「No such customer」で拒否される
+    // (逆も同様)。この場合は保存済みのidを諦めて新規作成し直す(要件8のトライアル運用開始
+    // 前に見つかった、モード切替時に起こりうる不整合への自己修復)。
     let stripeCustomerId = company.stripe_customer_id || "";
+    if (stripeCustomerId) {
+      try {
+        await stripeRequest("GET", `customers/${stripeCustomerId}`, effectiveSecretKey);
+      } catch {
+        stripeCustomerId = "";
+      }
+    }
     if (!stripeCustomerId) {
-      const customer = await stripeRequest("POST", "customers", stripeSecretKey, {
+      const customer = await stripeRequest("POST", "customers", effectiveSecretKey, {
         name: company.name,
         email: callerProfile.email || undefined,
         metadata: { company_id: company.id },
@@ -182,8 +219,8 @@ Deno.serve(async (req) => {
       if (saveCustomerError) throw saveCustomerError;
     }
 
-    const basePriceId = billingInterval === "year" ? priceBaseYearly : priceBaseMonthly;
-    const addonPriceId = billingInterval === "year" ? priceAddonYearly : priceAddonMonthly;
+    const basePriceId = billingInterval === "year" ? effectiveBaseYearly : effectiveBaseMonthly;
+    const addonPriceId = billingInterval === "year" ? effectiveAddonYearly : effectiveAddonMonthly;
     const lineItems: Array<{ price: string; quantity: number }> = [{ price: basePriceId, quantity: 1 }];
     if (addonQuantity > 0) {
       lineItems.push({ price: addonPriceId, quantity: addonQuantity });
@@ -192,7 +229,7 @@ Deno.serve(async (req) => {
     const successUrl = `${appUrl}/?checkout=success`;
     const cancelUrl = `${appUrl}/?checkout=cancelled`;
 
-    const session = await stripeRequest("POST", "checkout/sessions", stripeSecretKey, {
+    const session = await stripeRequest("POST", "checkout/sessions", effectiveSecretKey, {
       mode: "subscription",
       customer: stripeCustomerId,
       line_items: lineItems,
@@ -207,7 +244,7 @@ Deno.serve(async (req) => {
       managed_payments: { enabled: false },
     });
 
-    logStage("checkout_session_created", { companyId: company.id, billingInterval, addonQuantity });
+    logStage("checkout_session_created", { companyId: company.id, billingInterval, addonQuantity, isTestContractRun });
     return json({ ok: true, url: session.url });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Checkout Sessionの作成に失敗しました";
