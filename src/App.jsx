@@ -128,6 +128,7 @@ import {
   updateCompanyContractStatus,
   createCheckoutSession,
   createPortalSession,
+  confirmCheckoutSession,
   syncStoreBillingQuantity,
   generateTestSignupLink,
   cancelTestContract,
@@ -1465,17 +1466,56 @@ function App() {
       setAuthMode("app");
       setActivePage(resolveDefaultPage(profile?.role || "staff"));
       authLog("認証完了、appへ遷移");
-      // Stripe Checkout完了後の復帰(success_url=/?checkout=success)を検知し、単に
-      // ログイン後の通常画面へ黙って戻すのではなく、契約が完了したことが分かる案内を
-      // 一度だけ表示する(要件: UXの改善)。表示後はURLからこのクエリを取り除き、
-      // ページ再読み込みで再表示されないようにする。
+      // Stripe Checkout完了後の復帰(success_url=/?checkout=success&session_id=...)を
+      // 検知し、単にログイン後の通常画面へ黙って戻すのではなく、契約が完了したことが
+      // 分かる案内を表示する(要件: UXの改善)。URLからクエリを取り除くのはここで即座に
+      // 行う(ページ再読み込みで再表示・再処理されないようにするため)が、実際の契約状態の
+      // 確認はcheckout_session_id(Stripeの{CHECKOUT_SESSION_ID})を基準に別途行う——
+      // Webhookの反映には多少のタイムラグがあり得るため、反映を数秒リトライで待ってから
+      // 案内を出す(要件: Webhook反映が少し遅れても確認できるようにする)。認証セッション
+      // 自体は既にこの時点で確立している(loadProfileAndEnterAppがsession?.userを前提に
+      // 呼ばれている)ため、この確認処理が失敗・タイムアウトしても、それを理由に
+      // ログイン画面へ戻すことは絶対にしない(要件: 認証セッションが残っている場合は
+      // 絶対にログアウト扱いにしない)。
       if (typeof window !== "undefined") {
-        const checkoutParam = new URLSearchParams(window.location.search).get("checkout");
-        if (checkoutParam === "success") {
+        const checkoutUrlParams = new URLSearchParams(window.location.search);
+        const checkoutParam = checkoutUrlParams.get("checkout");
+        const checkoutSessionId = checkoutUrlParams.get("session_id") || "";
+        if (checkoutParam === "success" || checkoutParam === "cancelled") {
+          window.history.replaceState(null, "", window.location.pathname);
+        }
+        if (checkoutParam === "success" && checkoutSessionId) {
+          void (async () => {
+            const maxAttempts = 7;
+            const delayMs = 1500;
+            let confirmed = false;
+            for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+              const result = await confirmCheckoutSession({ sessionId: checkoutSessionId });
+              if (result.ok && result.company?.contractStatus === "active") {
+                confirmed = true;
+                break;
+              }
+              if (!result.ok) {
+                authLog("checkout確認APIが失敗", result.error?.message);
+                break;
+              }
+              if (attempt < maxAttempts) {
+                await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+              }
+            }
+            // 確認できた場合はcompaniesの最新状態(contract_status='active'等)を
+            // 画面へ反映させるため、もう一度hydrateし直す(初回のhydrateFromSupabaseは
+            // Webhook反映前に走っている可能性があるため)。確認できなかった場合でも、
+            // 支払い自体はStripeのsuccess_url経由で戻ってきている(=決済は完了している)
+            // ため、案内は表示する(Webhook反映がその後追いつく想定、要件どおり
+            // ログイン画面には絶対に戻さない)。
+            if (confirmed) {
+              void hydrateFromSupabase({ authUser: session.user, profile, tenantState: reconciledState });
+            }
+            setSuccessNotice("ご契約が完了しました。", "サロンマネージャーの利用を開始できます。");
+          })();
+        } else if (checkoutParam === "success") {
           setSuccessNotice("ご契約が完了しました。", "サロンマネージャーの利用を開始できます。");
-          window.history.replaceState(null, "", window.location.pathname);
-        } else if (checkoutParam === "cancelled") {
-          window.history.replaceState(null, "", window.location.pathname);
         }
       }
     } catch (error) {
@@ -1631,23 +1671,26 @@ function App() {
         }
 
         authLog("redirect理由: 有効なセッションが確認できなかった(未ログイン)");
-        // tcr=1(テスト契約フローのStripe決済戻り、上記urlHasTestContractReturnMarker相当)
-        // にも関わらずセッションが見つからない場合は、tcr=1のURL方式に切り替えても
-        // なお回避できない、ストレージ自体が本当に別区画になっているケース(例: 実機の
-        // ブラウザ設定・プライベートブラウジング等)への最後の保険。無言でログイン画面へ
-        // 戻すのではなく、決済自体は完了している旨とログイン先メールアドレスを案内する
-        // (要件: UXの改善、第二候補のフォールバック)。通常の本番ログインフローには
-        // このtcrパラメータが付くことは無いため一切影響しない。
+        // Stripe決済戻り(?checkout=success&session_id=...)にも関わらず認証セッションが
+        // 見つからない場合(実機のブラウザ設定等で本当にストレージが別区画になっている
+        // 稀なケース)への最後の保険。無言でログイン画面へ戻すのではなく、契約状態自体は
+        // Stripe Checkout Session IDを基準に確認し(認証セッションの有無に依存しない
+        // confirm-checkout-session関数)、決済完了とログイン先メールアドレスを案内する
+        // (要件: 認証セッションが本当に失われていても契約処理自体はCheckout Sessionを
+        // 基準に確定できるようにする)。通常の本番ログインフローにはsession_idパラメータは
+        // 決済完了直後にしか付かないため、この分岐に入ることは無い。
         if (typeof window !== "undefined") {
           const params = new URLSearchParams(window.location.search);
-          if (params.get("checkout") === "success" && params.get("tcr") === "1") {
-            const tcrEmail = params.get("tcrEmail") || "";
+          const checkoutSessionId = params.get("session_id") || "";
+          if (params.get("checkout") === "success" && checkoutSessionId) {
+            window.history.replaceState(null, "", window.location.pathname);
+            const confirmResult = await confirmCheckoutSession({ sessionId: checkoutSessionId });
+            const confirmedEmail = confirmResult.ok ? confirmResult.session?.customerEmail || "" : "";
             setAuthSuccess(
-              tcrEmail
-                ? `ご契約の決済は完了しました。${tcrEmail} でログインしてご利用を開始してください。`
+              confirmedEmail
+                ? `ご契約の決済は完了しました。${confirmedEmail} でログインしてご利用を開始してください。`
                 : "ご契約の決済は完了しました。登録したメールアドレスでログインしてご利用を開始してください。"
             );
-            window.history.replaceState(null, "", window.location.pathname);
           }
         }
         setCurrentUser(null);

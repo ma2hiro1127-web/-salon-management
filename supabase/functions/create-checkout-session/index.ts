@@ -219,6 +219,23 @@ Deno.serve(async (req) => {
       if (saveCustomerError) throw saveCustomerError;
     }
 
+    // 二重契約防止(要件): 同じ顧客に対して既にactive/trialing/past_due/未完了の
+    // サブスクリプションが存在する場合は、新しいCheckout Sessionを作らせない。
+    // ページの再読み込みや連打で複数回このAPIを呼んでも、Stripe側で二重にサブスクリプション
+    // が作られることが無いようにする(Webhook反映のタイムラグ中に呼ばれた場合の保険)。
+    const existingSubscriptions = await stripeRequest(
+      "GET",
+      `subscriptions?customer=${encodeURIComponent(stripeCustomerId)}&status=all&limit=10`,
+      effectiveSecretKey
+    );
+    const blockingSubscription = (existingSubscriptions.data as Array<{ id: string; status: string }> | undefined)?.find(
+      (sub) => ["active", "trialing", "past_due", "incomplete"].includes(sub.status)
+    );
+    if (blockingSubscription) {
+      logStage("blocked_duplicate_subscription", { companyId: company.id, subscriptionId: blockingSubscription.id, status: blockingSubscription.status });
+      return json({ error: "既に処理中または有効な契約があります。しばらく待ってから画面を再読み込みしてください" }, 409);
+    }
+
     const basePriceId = billingInterval === "year" ? effectiveBaseYearly : effectiveBaseMonthly;
     const addonPriceId = billingInterval === "year" ? effectiveAddonYearly : effectiveAddonMonthly;
     const lineItems: Array<{ price: string; quantity: number }> = [{ price: basePriceId, quantity: 1 }];
@@ -226,25 +243,25 @@ Deno.serve(async (req) => {
       lineItems.push({ price: addonPriceId, quantity: addonQuantity });
     }
 
-    // テスト契約フロー(is_test_contract_run)の戻りURLにだけ、隔離storageKeyを再選択する
-    // ための目印(tcr=1)を付ける。sessionStorageマーカー方式(2026-09-05に追加)は、
-    // Stripeの外部サイトへの往復後、実機で「決済用のタブが元のタブと別ブラウジング
-    // コンテキスト扱いになる」ケースがあり(sessionStorageはタブ単位、localStorageは
-    // 起源単位のため、後者なら本来は引き継げるはずだが、前者に依存した判定ロジック自体が
-    // 往復後に必ずfalseへ戻ってしまっていた)、実機検証で解消できないことが分かった。
-    // Stripeのsuccess_url/cancel_urlはクエリパラメータをそのまま保持して返す仕様のため、
-    // ここへ直接埋め込めば、戻り先がどのタブ/コンテキストであってもURLだけで復元できる
-    // (ストレージの生死に依存しない、より確実な方式)。本番の通常契約フローの
-    // success_url/cancel_urlはこれまでと完全に同一のまま変更しない。
-    const testContractReturnParams = isTestContractRun
-      ? `&tcr=1&tcrEmail=${encodeURIComponent(callerProfile.email || "")}`
-      : "";
-    const successUrl = `${appUrl}/?checkout=success${testContractReturnParams}`;
-    const cancelUrl = `${appUrl}/?checkout=cancelled${testContractReturnParams}`;
+    // 決済完了後の状態確認は、ブラウザのsessionStorage/localStorageに一切依存せず、
+    // StripeのCheckout Session ID自体を基準に行う(2026-09、再修正)。以前は復帰用の
+    // 目印(tcr=1)をURLへ埋め込む方式だったが、それでも「隔離storageKeyへ保存していた
+    // 認証セッション自体をどう復元するか」という問題は別途残っていた。Stripeが公式に
+    // サポートしている{CHECKOUT_SESSION_ID}テンプレートをsuccess_url/cancel_urlへ
+    // 埋め込むことで、戻ってきたページがsession_idをconfirm-checkout-session関数へ
+    // 渡すだけで、認証セッションの有無に関わらずStripe側の実際の状態(支払い完了/
+    // サブスクリプション状況)とDB側の反映状況(Webhook経由)の両方を確認できる。
+    // client_reference_idにcompany_idを設定しておくことで、confirm-checkout-session側は
+    // 認証情報を一切使わずに対象会社を特定できる(metadataにも同じ値を入れているが、
+    // client_reference_idはStripeがCheckout Session自体のトップレベルに保持する
+    // フィールドで、確認時にexpand不要で常に取得できるため、確認専用の経路として分ける)。
+    const successUrl = `${appUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
+    const cancelUrl = `${appUrl}/?checkout=cancelled&session_id={CHECKOUT_SESSION_ID}`;
 
     const session = await stripeRequest("POST", "checkout/sessions", effectiveSecretKey, {
       mode: "subscription",
       customer: stripeCustomerId,
+      client_reference_id: company.id,
       line_items: lineItems,
       success_url: successUrl,
       cancel_url: cancelUrl,

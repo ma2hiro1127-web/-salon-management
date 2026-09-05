@@ -86,58 +86,61 @@ const fetchWithAuthRetry = async (input, init = {}) => {
 // 隔離することで、system_adminの元のログイン状態への影響を構造的にゼロにする
 // (要件: 「system_adminの現在のログイン状態を壊さない」)。通常のURL(このパラメータが
 // 無い、大多数のアクセス)では従来どおり既定のキーのままで、一切の変更が無い。
-// 不具合修正(2026-09-05発見・第1版): Stripe Checkoutは外部サイト(checkout.stripe.com)への
-// 本当のページ遷移を伴うため、決済完了後にsuccess_urlへ戻ってきた時点でこのモジュールが
-// 最初から読み込み直される。戻り先URL(?checkout=success)にはowner-signup/testKeyが
-// 付いていないため、URLだけを見るとisOwnerSignupTestLinkがfalseに戻ってしまい、
-// 隔離したstorageKeyへ保存していたテストアカウントのセッションを見失って、決済完了後に
-// ログイン画面へ戻されてしまっていた。この時点ではsessionStorageのマーカー(タブ単位で
-// 保持される想定)で対処したが、実機検証(2026-09-05)では決済用のブラウジング
-// コンテキストが元のタブと同一視されない実例があり、sessionStorageマーカーも往復後に
-// 失われていた(client_diagnostic_logsで実測: sessionMarkerWasAlreadyPresent=false)。
-// 第2版(現行): success_url/cancel_url自体に目印(tcr=1)を埋め込む方式に変更した
-// (create-checkout-session Edge Function側、isTestContractRunの時のみ付与)。Stripeは
-// success_url/cancel_urlのクエリパラメータをそのまま保持して返すため、戻り先がどんな
-// ブラウジングコンテキストであっても、ストレージの生死に一切依存せずURLだけで隔離
-// storageKeyを再選択できる。sessionStorageマーカーは同一タブ内でのその後の再読み込み等の
-// 保険として引き続き併用する(害はないため残すが、もはや唯一の判定根拠ではない)。
-const TEST_CONTRACT_SESSION_MARKER = "sb-test-contract-flow-marker";
+//
+// 不具合修正の変遷(2026-09-05、決済完了後にログイン画面へ戻ってしまう不具合):
+//   第1版: sessionStorageのマーカーで、Stripe往復後も隔離storageKeyの選択を維持しようと
+//     したが、実機で「決済用のブラウジングコンテキストが元のタブと同一視されない」
+//     ケースがあり、sessionStorage自体が往復後に失われていた(client_diagnostic_logsで
+//     実測: sessionMarkerWasAlreadyPresent=false)。
+//   第2版: success_url/cancel_urlへtcr=1を埋め込みURLだけで判定する方式にしたが、
+//     これは「隔離storageKeyを選ぶかどうか」の判定は往復に強くなったものの、根本的には
+//     「認証セッション自体が本当にそこにあるか」を直接確認していなかった。
+//   第3版(現行、ユーザー指摘により再修正): ブラウザストレージの目印に一切頼らず、
+//     戻ってきたページで実際に両方のstorageKey(既定/隔離)を直接のぞき、有効そうな
+//     セッションが入っている方をそのまま採用する。契約状態そのものの確定は
+//     confirm-checkout-session関数(success_urlへStripe公式の{CHECKOUT_SESSION_ID}を
+//     埋め込み、戻ってきたらそのIDでStripeへ照会する)に完全に切り離した——認証
+//     セッションの有無は「どの画面(ダッシュボード/ログイン)を出すか」だけに影響し、
+//     「契約が完了したかどうか」の判定には一切関与しない設計にした。
+const OWNER_SIGNUP_STORAGE_KEY = "sb-test-contract-flow-auth-token";
 const urlHasOwnerSignupTestLink =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("owner-signup") === "1" &&
   Boolean(new URLSearchParams(window.location.search).get("testKey"));
-const urlHasTestContractReturnMarker =
-  typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tcr") === "1";
-// 障害調査用(2026-09): マーカーを新規に書き込む「前」の時点で既に立っていたかどうかを
-// 別途記録しておく——「今回のURLで新たにtrueになった」のか「前回までのページ読み込みで
-// 既に立っていたものを引き継いだ」のかを、この後のログで区別できるようにするため。
-let sessionMarkerWasAlreadyPresent = false;
-if (typeof window !== "undefined") {
+// StripeからCheckout Session ID付きで戻ってきたページかどうか(success_urlの形式、
+// create-checkout-session Edge Function参照)。この場合だけ、隔離storageKeyに
+// 実際にセッションが残っているかを直接のぞいてみる——決済前にownerSignupで作成した
+// テストアカウントのセッションは、ブラウジングコンテキストが変わっても同一originの
+// localStorageである限り引き継がれているはずなので、これで復元できる。
+const urlLooksLikeCheckoutReturn =
+  typeof window !== "undefined" && ["success", "cancelled"].includes(new URLSearchParams(window.location.search).get("checkout") || "");
+function storageKeyHoldsSession(storageKey) {
+  if (typeof window === "undefined") return false;
   try {
-    sessionMarkerWasAlreadyPresent = window.sessionStorage.getItem(TEST_CONTRACT_SESSION_MARKER) === "1";
+    const raw = window.localStorage.getItem(storageKey);
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    // supabase-js v2はセッションオブジェクト(access_token/refresh_token等)をそのまま
+    // このキーの値として保存する。実際の有効性(期限切れ等)はこの後の
+    // supabase.auth.getSession()が判断するため、ここでは「セッションらしき値が
+    // 存在するか」だけを見る。
+    return Boolean(parsed && typeof parsed === "object" && parsed.access_token);
   } catch {
-    sessionMarkerWasAlreadyPresent = false;
+    return false;
   }
 }
-if (urlHasOwnerSignupTestLink || urlHasTestContractReturnMarker) {
-  try {
-    window.sessionStorage.setItem(TEST_CONTRACT_SESSION_MARKER, "1");
-  } catch {
-    // プライベートブラウジング等でsessionStorageが使えない場合はベストエフォート
-    // (URL方式(tcr=1)が主たる判定根拠のため、これが使えなくても致命的ではない)。
-  }
-}
-const isOwnerSignupTestLink = urlHasOwnerSignupTestLink || urlHasTestContractReturnMarker || sessionMarkerWasAlreadyPresent;
+const isolatedStorageHasSession = urlLooksLikeCheckoutReturn && storageKeyHoldsSession(OWNER_SIGNUP_STORAGE_KEY);
+const isOwnerSignupTestLink = urlHasOwnerSignupTestLink || isolatedStorageHasSession;
 
 // 障害調査用(2026-09、決済完了後にログイン画面へ戻る不具合のトレース)。App.jsx側の
-// 初期化処理から、このモジュール読み込み時点でのURL・マーカー状態・実際に選ばれた
-// storageKeyをclient_diagnostic_logsへ記録できるよう、スナップショットとして公開する。
+// 初期化処理から、このモジュール読み込み時点でのURL・実際に選ばれたstorageKeyを
+// client_diagnostic_logsへ記録できるよう、スナップショットとして公開する。
 export const TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT = {
   href: typeof window !== "undefined" ? window.location.href : "",
   search: typeof window !== "undefined" ? window.location.search : "",
   urlHasOwnerSignupTestLink,
-  urlHasTestContractReturnMarker,
-  sessionMarkerWasAlreadyPresent,
+  urlLooksLikeCheckoutReturn,
+  isolatedStorageHasSession,
   isOwnerSignupTestLink,
   appVersion: typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev",
 };
@@ -146,7 +149,12 @@ export const supabase = createClient(supabaseUrl || "https://example.supabase.co
   auth: {
     persistSession: true,
     autoRefreshToken: true,
-    ...(isOwnerSignupTestLink ? { storageKey: "sb-test-contract-flow-auth-token" } : {}),
+    // isOwnerSignupTestLinkがfalseの場合はstorageKeyを一切渡さず、supabase-js既定の
+    // キー(プロジェクト参照から自動導出される値)のままにする——ここで別の固定値を
+    // 明示してしまうと、本番で既にログイン中の全ユーザーのセッションが次回デプロイの瞬間
+    // 見つからなくなり、全員が強制ログアウトされる重大な事故になる(通常の本番ログイン
+    // フローには絶対に影響を与えないという要件に反するため、既定キーには一切触れない)。
+    ...(isOwnerSignupTestLink ? { storageKey: OWNER_SIGNUP_STORAGE_KEY } : {}),
   },
   global: {
     fetch: fetchWithAuthRetry,
@@ -1237,6 +1245,32 @@ export const createCheckoutSession = async ({ billingInterval }) => {
     return { ok: false, error: new Error(data.error) };
   }
   return { ok: true, url: data?.url };
+};
+
+// Stripe Checkout Session IDを基準にした契約状態の確認 — confirm-checkout-session
+// Edge Function経由(2026-09、決済完了後にログイン画面へ戻ってしまう不具合の再修正)。
+// この関数は認証を要求しない(verify_jwt=false)ため、Supabase Authセッションが
+// 確立していない状態(決済直後に何らかの理由でセッションが見つからない場合)でも
+// 呼び出せる。DBへの書き込みは一切行わない読み取り専用の確認だけを行う。
+export const confirmCheckoutSession = async ({ sessionId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("confirm-checkout-session", {
+    body: { sessionId },
+  });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, session: data?.session, stripeSubscriptionStatus: data?.stripeSubscriptionStatus, company: data?.company };
 };
 
 // Stripe Customer Portal Sessionの作成 — create-portal-session Edge Function経由。

@@ -422,6 +422,13 @@ verify_jwt = false
 # (stripe-webhookと同じ理由・同じ例外パターン)。
 [functions.view-support-attachment]
 verify_jwt = false
+# Stripe Checkout Session ID(success_urlへ{CHECKOUT_SESSION_ID}として埋め込み済み)を
+# 基準に契約状態を確認するための関数(2026-09追加)。決済直後にSupabase Authセッションが
+# 何らかの理由で確立していなくても契約状態を確認できる必要があるため、ここもJWT必須にしない
+# (認証はStripeのCheckout Session ID自体の高いランダム性に依拠する、stripe-webhookと同種の
+# 例外パターン。関数はDBへの書き込みを一切行わない読み取り専用)。
+[functions.confirm-checkout-session]
+verify_jwt = false
 # Directory under `supabase/` where declarative files are written.
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
