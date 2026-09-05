@@ -306,6 +306,13 @@ Deno.serve(async (req) => {
           patch.contract_status = "active";
           patch.contract_started_at = nowIso;
           patch.stopped_at = null;
+          // トライアル/無料利用/停止中から実際に課金開始(Stripe側でactive)した時点で、
+          // companies.planを実際の有料プラン名へ更新する(2026-09、契約フロー実機検証で
+          // 発見: contract_statusはactiveへ正しく遷移するのに、planだけがself-signup時の
+          // 'trial'のまま取り残されていた——現状はサロンマネージャー基本プランのみのため
+          // 固定で'basic'とする。将来プランが複数になった場合はPrice IDから逆引きする形に
+          // 拡張する)。
+          patch.plan = "basic";
         }
       } else if (subscriptionStatus === "canceled" || subscriptionStatus === "unpaid") {
         // Stripeの再試行がすべて尽きて最終的に失効した状態。ここで初めて停止中にする。
