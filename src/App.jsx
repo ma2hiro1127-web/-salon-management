@@ -1631,6 +1631,25 @@ function App() {
         }
 
         authLog("redirect理由: 有効なセッションが確認できなかった(未ログイン)");
+        // tcr=1(テスト契約フローのStripe決済戻り、上記urlHasTestContractReturnMarker相当)
+        // にも関わらずセッションが見つからない場合は、tcr=1のURL方式に切り替えても
+        // なお回避できない、ストレージ自体が本当に別区画になっているケース(例: 実機の
+        // ブラウザ設定・プライベートブラウジング等)への最後の保険。無言でログイン画面へ
+        // 戻すのではなく、決済自体は完了している旨とログイン先メールアドレスを案内する
+        // (要件: UXの改善、第二候補のフォールバック)。通常の本番ログインフローには
+        // このtcrパラメータが付くことは無いため一切影響しない。
+        if (typeof window !== "undefined") {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get("checkout") === "success" && params.get("tcr") === "1") {
+            const tcrEmail = params.get("tcrEmail") || "";
+            setAuthSuccess(
+              tcrEmail
+                ? `ご契約の決済は完了しました。${tcrEmail} でログインしてご利用を開始してください。`
+                : "ご契約の決済は完了しました。登録したメールアドレスでログインしてご利用を開始してください。"
+            );
+            window.history.replaceState(null, "", window.location.pathname);
+          }
+        }
         setCurrentUser(null);
         setCurrentRole("staff");
         setAuthMode(fallbackAuthMode());

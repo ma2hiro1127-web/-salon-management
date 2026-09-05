@@ -86,19 +86,28 @@ const fetchWithAuthRetry = async (input, init = {}) => {
 // 隔離することで、system_adminの元のログイン状態への影響を構造的にゼロにする
 // (要件: 「system_adminの現在のログイン状態を壊さない」)。通常のURL(このパラメータが
 // 無い、大多数のアクセス)では従来どおり既定のキーのままで、一切の変更が無い。
-// 不具合修正(2026-09-05発見): Stripe Checkoutは外部サイト(checkout.stripe.com)への
+// 不具合修正(2026-09-05発見・第1版): Stripe Checkoutは外部サイト(checkout.stripe.com)への
 // 本当のページ遷移を伴うため、決済完了後にsuccess_urlへ戻ってきた時点でこのモジュールが
 // 最初から読み込み直される。戻り先URL(?checkout=success)にはowner-signup/testKeyが
 // 付いていないため、URLだけを見るとisOwnerSignupTestLinkがfalseに戻ってしまい、
 // 隔離したstorageKeyへ保存していたテストアカウントのセッションを見失って、決済完了後に
-// ログイン画面へ戻されてしまっていた(要件: 決済完了後に正常に戻れること)。
-// sessionStorageのマーカー(タブ単位で保持され、外部サイトへの往復をまたいでも残る)を
-// 併用することで、同じタブ内である限りURLが変わっても隔離を維持できるようにする。
+// ログイン画面へ戻されてしまっていた。この時点ではsessionStorageのマーカー(タブ単位で
+// 保持される想定)で対処したが、実機検証(2026-09-05)では決済用のブラウジング
+// コンテキストが元のタブと同一視されない実例があり、sessionStorageマーカーも往復後に
+// 失われていた(client_diagnostic_logsで実測: sessionMarkerWasAlreadyPresent=false)。
+// 第2版(現行): success_url/cancel_url自体に目印(tcr=1)を埋め込む方式に変更した
+// (create-checkout-session Edge Function側、isTestContractRunの時のみ付与)。Stripeは
+// success_url/cancel_urlのクエリパラメータをそのまま保持して返すため、戻り先がどんな
+// ブラウジングコンテキストであっても、ストレージの生死に一切依存せずURLだけで隔離
+// storageKeyを再選択できる。sessionStorageマーカーは同一タブ内でのその後の再読み込み等の
+// 保険として引き続き併用する(害はないため残すが、もはや唯一の判定根拠ではない)。
 const TEST_CONTRACT_SESSION_MARKER = "sb-test-contract-flow-marker";
 const urlHasOwnerSignupTestLink =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("owner-signup") === "1" &&
   Boolean(new URLSearchParams(window.location.search).get("testKey"));
+const urlHasTestContractReturnMarker =
+  typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tcr") === "1";
 // 障害調査用(2026-09): マーカーを新規に書き込む「前」の時点で既に立っていたかどうかを
 // 別途記録しておく——「今回のURLで新たにtrueになった」のか「前回までのページ読み込みで
 // 既に立っていたものを引き継いだ」のかを、この後のログで区別できるようにするため。
@@ -110,15 +119,15 @@ if (typeof window !== "undefined") {
     sessionMarkerWasAlreadyPresent = false;
   }
 }
-if (urlHasOwnerSignupTestLink) {
+if (urlHasOwnerSignupTestLink || urlHasTestContractReturnMarker) {
   try {
     window.sessionStorage.setItem(TEST_CONTRACT_SESSION_MARKER, "1");
   } catch {
     // プライベートブラウジング等でsessionStorageが使えない場合はベストエフォート
-    // (この場合はStripe決済からの復帰時にログイン画面へ戻るだけで、致命的ではない)。
+    // (URL方式(tcr=1)が主たる判定根拠のため、これが使えなくても致命的ではない)。
   }
 }
-const isOwnerSignupTestLink = urlHasOwnerSignupTestLink || sessionMarkerWasAlreadyPresent;
+const isOwnerSignupTestLink = urlHasOwnerSignupTestLink || urlHasTestContractReturnMarker || sessionMarkerWasAlreadyPresent;
 
 // 障害調査用(2026-09、決済完了後にログイン画面へ戻る不具合のトレース)。App.jsx側の
 // 初期化処理から、このモジュール読み込み時点でのURL・マーカー状態・実際に選ばれた
@@ -127,6 +136,7 @@ export const TEST_CONTRACT_FLOW_DEBUG_SNAPSHOT = {
   href: typeof window !== "undefined" ? window.location.href : "",
   search: typeof window !== "undefined" ? window.location.search : "",
   urlHasOwnerSignupTestLink,
+  urlHasTestContractReturnMarker,
   sessionMarkerWasAlreadyPresent,
   isOwnerSignupTestLink,
   appVersion: typeof __APP_VERSION__ !== "undefined" ? __APP_VERSION__ : "dev",

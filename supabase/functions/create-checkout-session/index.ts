@@ -226,8 +226,21 @@ Deno.serve(async (req) => {
       lineItems.push({ price: addonPriceId, quantity: addonQuantity });
     }
 
-    const successUrl = `${appUrl}/?checkout=success`;
-    const cancelUrl = `${appUrl}/?checkout=cancelled`;
+    // テスト契約フロー(is_test_contract_run)の戻りURLにだけ、隔離storageKeyを再選択する
+    // ための目印(tcr=1)を付ける。sessionStorageマーカー方式(2026-09-05に追加)は、
+    // Stripeの外部サイトへの往復後、実機で「決済用のタブが元のタブと別ブラウジング
+    // コンテキスト扱いになる」ケースがあり(sessionStorageはタブ単位、localStorageは
+    // 起源単位のため、後者なら本来は引き継げるはずだが、前者に依存した判定ロジック自体が
+    // 往復後に必ずfalseへ戻ってしまっていた)、実機検証で解消できないことが分かった。
+    // Stripeのsuccess_url/cancel_urlはクエリパラメータをそのまま保持して返す仕様のため、
+    // ここへ直接埋め込めば、戻り先がどのタブ/コンテキストであってもURLだけで復元できる
+    // (ストレージの生死に依存しない、より確実な方式)。本番の通常契約フローの
+    // success_url/cancel_urlはこれまでと完全に同一のまま変更しない。
+    const testContractReturnParams = isTestContractRun
+      ? `&tcr=1&tcrEmail=${encodeURIComponent(callerProfile.email || "")}`
+      : "";
+    const successUrl = `${appUrl}/?checkout=success${testContractReturnParams}`;
+    const cancelUrl = `${appUrl}/?checkout=cancelled${testContractReturnParams}`;
 
     const session = await stripeRequest("POST", "checkout/sessions", effectiveSecretKey, {
       mode: "subscription",
