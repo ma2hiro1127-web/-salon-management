@@ -10,6 +10,8 @@
   --success: #2ea361;
   --danger: #e35757;
   --warning: #b45309;
+  --test-accent: #7c3aed;
+  --test-accent-soft: rgba(124, 58, 237, 0.12);
   --shadow: 0 16px 42px rgba(15, 23, 42, 0.06);
   background: linear-gradient(135deg, #f7fbff 0%, #f4f8ff 45%, #f8fcff 100%);
   color: var(--text);
@@ -39,6 +41,8 @@
   --success: #5ad48c;
   --danger: #ff7b7b;
   --warning: #fbbf24;
+  --test-accent: #c4b5fd;
+  --test-accent-soft: rgba(124, 58, 237, 0.22);
   --shadow: 0 12px 36px rgba(2, 8, 23, 0.32);
   background: linear-gradient(135deg, #0b1420, #101b2b);
 }
@@ -215,6 +219,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notice-box.success { background: rgba(46, 163, 97, 0.12); color: var(--success); }
 .notice-box .notice-sub { display: block; margin-top: 2px; font-size: 0.8em; opacity: 0.85; font-weight: 400; }
 .notice-box.sw-update-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+/* 運営専用の検証会社(テストサロン)を閲覧中の常時バナー。本番会社の通知(warning/error/
+   success)とは意図的に別のトーン(紫系、--test-accent)にして混同を防ぐ——本番データの
+   操作だと誤認しないための事故防止が目的なので、目立つが警告色ではない配色にする。 */
+.notice-box.test-company-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  background: var(--test-accent-soft); color: var(--test-accent); font-weight: 600;
+}
 /* 加盟店連携リクエストの通知バナー(未対応リクエストがある間だけ表示)。既存.notice-boxと
    同じ丸み・余白・コンパクトさを踏襲し、警告色(danger/warning)は使わない — 通常のお知らせと
    同じ落ち着いたトーンにする。加盟店を閲覧中であることを示す専用バナーは意図的に置かない —

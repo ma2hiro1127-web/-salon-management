@@ -1689,6 +1689,55 @@ test("固定費・継続費用の再設計: 店舗が異なれば同名の継続
   assert.equal(calculateMonthSummary(state, "store-b", "2026-09").fixedCost, 500000);
 });
 
+test("会社間データ分離の回帰テスト(最優先項目): A社の店舗を操作してもB社の店舗データへは一切影響しない——店舗名・費用名・カテゴリが偶然同じでも混ざらない(company_id/store_idはUUIDで完全に別なので、名前の一致だけでは絶対に混ざらないことを保証する)", () => {
+  const state = createInitialAppState();
+  // わざと同じ店舗名(「本店」)・同じ費用名(「人件費A」)を2社に持たせる — 名前の一致では
+  // なくID(店舗キー)で分離されていることを厳密に検証する。
+  const storeA = "storeA-uuid";
+  const storeB = "storeB-uuid";
+  state.stores = ["本店", "本店"]; // 表示名は同じでも呼び出し側は必ずstoreIdで区別する
+  state.dailyResults[`${storeA}__2026-09`] = [{ date: "2026-09-01", totalSales: 1000000 }];
+  state.dailyResults[`${storeB}__2026-09`] = [{ date: "2026-09-01", totalSales: 2000000 }];
+  state.fixedCosts[`${storeA}__2026-09`] = [
+    { id: "laborA", name: "人件費A", categoryKey: "labor", periodType: "limited", startMonth: "2026-09", endMonth: "2026-09" },
+  ];
+  state.fixedCosts[`${storeB}__2026-09`] = [
+    { id: "laborB", name: "人件費A", categoryKey: "labor", periodType: "limited", startMonth: "2026-09", endMonth: "2026-09" },
+  ];
+  state.costMonthlyAmounts = {
+    "laborA__2026-09": { amount: 300000 },
+    "laborB__2026-09": { amount: 700000 },
+  };
+  const options = { laborCostMode: "fixed", purchaseCostMode: "fixed" };
+
+  // 操作前: それぞれ自社の金額のまま。
+  assert.equal(calculateMonthSummary(state, storeA, "2026-09", options).laborCost, 300000);
+  assert.equal(calculateMonthSummary(state, storeB, "2026-09", options).laborCost, 700000);
+
+  // A社の「人件費A」だけ金額変更(9月だけ反映相当の操作)しても、B社の同名項目には
+  // 一切影響しない(idが別のため)。
+  state.costMonthlyAmounts["laborA__2026-09"] = { amount: 450000 };
+  assert.equal(calculateMonthSummary(state, storeA, "2026-09", options).laborCost, 450000);
+  assert.equal(calculateMonthSummary(state, storeB, "2026-09", options).laborCost, 700000);
+
+  // A社の「人件費A」の反映を解除(cost_monthly_amounts行を削除)しても、B社には無関係。
+  delete state.costMonthlyAmounts["laborA__2026-09"];
+  assert.equal(calculateMonthSummary(state, storeA, "2026-09", options).laborCost, 0);
+  assert.equal(isCostItemReflectedForMonth(state, "laborA", "2026-09"), false);
+  assert.equal(calculateMonthSummary(state, storeB, "2026-09", options).laborCost, 700000);
+  assert.equal(isCostItemReflectedForMonth(state, "laborB", "2026-09"), true);
+
+  // getFixedCostsForStoreMonthも店舗ごとに完全に独立(A社の一覧にB社の項目が混入しない)。
+  const storeAItems = getFixedCostsForStoreMonth(state, storeA, "2026-09").map((item) => item.id);
+  const storeBItems = getFixedCostsForStoreMonth(state, storeB, "2026-09").map((item) => item.id);
+  assert.deepEqual(storeAItems, ["laborA"]);
+  assert.deepEqual(storeBItems, ["laborB"]);
+
+  // 売上もそれぞれ独立(A社の売上100万円、B社の売上200万円が混ざらない)。
+  assert.equal(calculateMonthSummary(state, storeA, "2026-09", options).sales, 1000000);
+  assert.equal(calculateMonthSummary(state, storeB, "2026-09", options).sales, 2000000);
+});
+
 test("buildCostMonthlyAmountsStateFromRows builds an exact costItemId__targetMonth -> amount lookup from cost_monthly_amounts rows (2026-09仕様変更: getCostMonthlyAmountはもう前後の月から引き継がない)", () => {
   const rows = [
     { id: "cma-1", cost_item_id: "fc-rent", target_month: "2026-08", amount: 150000, updated_at: "2026-08-01T00:00:00.000Z" },

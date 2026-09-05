@@ -768,7 +768,9 @@ const COMPANY_CONTRACT_SELECT_COLUMNS =
   // 2026-09-02、Stripe決済導入で追加した3列(billing_interval/current_period_start/
   // cancel_at_period_end)。current_period_endに相当する値は既存のnext_billing_atを
   // そのまま流用する(新しい列は追加しない)。
-  "billing_interval, current_period_start, cancel_at_period_end";
+  "billing_interval, current_period_start, cancel_at_period_end, " +
+  // 2026-09-05、運営専用の検証会社(テストサロン)フラグ。会社名では判定しない。
+  "is_test_company";
 
 export const loadTenantStateFromSupabase = async ({ authUserId, email, currentProfile = null }) => {
   const profile = currentProfile || (await ensureProfileForAuthUser({ authUserId, email }));
@@ -878,6 +880,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     billingInterval: company.billing_interval || "",
     currentPeriodStart: company.current_period_start || null,
     cancelAtPeriodEnd: Boolean(company.cancel_at_period_end),
+    // 運営専用の検証会社(テストサロン)フラグ。会社名では判定しない(要件)。
+    isTestCompany: Boolean(company.is_test_company),
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },

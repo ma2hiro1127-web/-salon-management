@@ -8273,6 +8273,17 @@ function App() {
           </div>
         ) : null}
 
+        {/* 運営専用の検証会社(テストサロン)を閲覧中であることを常時表示する(要件:
+            本番会社だと誤認して操作しないための事故防止)。system_admin(owner含む)が
+            company.isTestCompanyの会社を開いている間だけ表示する——通常の契約会社を
+            閲覧中は何も表示されない。「システム管理へ戻る」はcurrentCompanyIdを変更せず
+            会社管理ページへ遷移するだけ(ログアウト不要で戻れる、要件)。 */}
+        {canManageCompanies(currentRole) && currentCompany?.isTestCompany ? (
+          <div className="notice-box test-company-banner">
+            <span>🧪 テストサロンとして閲覧中（{currentCompany.name}）</span>
+            <button type="button" className="secondary-button" onClick={() => setActivePage("companies")}>システム管理へ戻る</button>
+          </div>
+        ) : null}
         {!isOnline ? <div className="notice-box">オフラインです。入力内容は端末に保存されています。</div> : null}
         {/* PWAアップデート対策(要件6): 新しいバージョンが既に用意できている(Service Worker
             は待機中)ことをユーザー自身の判断で適用してもらうバナー。押すまでは何も起きない
@@ -10011,6 +10022,14 @@ function App() {
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
+                        {/* 運営専用の検証会社(テストサロン)だけに表示する専用ボタン(要件)。
+                            通常の契約会社には出さない——company.isTestCompanyはDB上の
+                            companies.is_test_companyフラグ由来で、会社名では判定しない。
+                            処理自体は既存のhandleCompanySwitch(上の「切替」と同じ経路)を
+                            そのまま使う——テスト用だからといって別ロジックにはしない(要件)。 */}
+                        {company.isTestCompany && (
+                          <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>テストサロンとして開く</button>
+                        )}
                         {/* 会社カードから直接その会社のcompany_admin管理者を追加する導線
                             (system_admin限定)。切り替え忘れによる誤company_id招待の事故を
                             構造的に防ぐため、対象会社はこのカードのcompany固定で、現在
