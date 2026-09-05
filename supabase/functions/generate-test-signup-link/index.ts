@@ -38,7 +38,10 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  const appUrl = Deno.env.get("APP_URL");
+  // .trim()が肝心 — create-checkout-sessionと同じ理由(APP_URL末尾改行混入の障害対策)。
+  // new URL(appUrl)自体はWHATWG URLパーサーが前後の空白・制御文字を自動除去するため
+  // 改行があっても気づかれなかったが、念のため他の2関数と統一しておく。
+  const appUrl = Deno.env.get("APP_URL")?.trim();
   const testSignupKey = Deno.env.get("SELF_SIGNUP_TEST_KEY");
   if (!supabaseUrl || !anonKey || !serviceRoleKey || !appUrl) {
     return json({ error: "サーバー設定が不足しています" }, 500);

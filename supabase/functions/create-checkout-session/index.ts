@@ -71,7 +71,8 @@ async function stripeRequest(
   const responseJson = await res.json();
   if (!res.ok) {
     const message = responseJson?.error?.message || `Stripe API error (${res.status})`;
-    throw new Error(message);
+    const param = responseJson?.error?.param || "";
+    throw new Error(param ? `${message} (param: ${param})` : message);
   }
   return responseJson;
 }
@@ -99,7 +100,12 @@ Deno.serve(async (req) => {
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
-  const appUrl = Deno.env.get("APP_URL");
+  // .trim()が肝心(2026-09の障害調査で発見): Supabase SecretsのAPP_URLに末尾改行が
+  // 混入していたため、文字列結合で組み立てるsuccess_url/cancel_urlに改行がそのまま
+  // 残り、Stripeが"Not a valid URL"で拒否していた(new URL()経由の箇所はWHATWG URL
+  // パーサーが前後の空白・制御文字を自動で取り除くため気づかれなかった)。secret値自体も
+  // 修正するが、コード側でも防御的にtrimしておく。
+  const appUrl = Deno.env.get("APP_URL")?.trim();
   const priceBaseMonthly = Deno.env.get("STRIPE_PRICE_BASE_MONTHLY");
   const priceBaseYearly = Deno.env.get("STRIPE_PRICE_BASE_YEARLY");
   const priceAddonMonthly = Deno.env.get("STRIPE_PRICE_STORE_ADDON_MONTHLY");
@@ -183,12 +189,15 @@ Deno.serve(async (req) => {
       lineItems.push({ price: addonPriceId, quantity: addonQuantity });
     }
 
+    const successUrl = `${appUrl}/?checkout=success`;
+    const cancelUrl = `${appUrl}/?checkout=cancelled`;
+
     const session = await stripeRequest("POST", "checkout/sessions", stripeSecretKey, {
       mode: "subscription",
       customer: stripeCustomerId,
       line_items: lineItems,
-      success_url: `${appUrl}/?checkout=success`,
-      cancel_url: `${appUrl}/?checkout=cancelled`,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       metadata: { company_id: company.id },
       subscription_data: { metadata: { company_id: company.id } },
       allow_promotion_codes: true,
@@ -203,6 +212,17 @@ Deno.serve(async (req) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : "Checkout Sessionの作成に失敗しました";
     logStage("unhandled_error", { message });
+    // 一時的な調査用: supabase functions logsが使えない環境でも原因を追えるよう、
+    // 機密情報を含まない範囲でclient_diagnostic_logs(既存テーブル)へも残す。
+    try {
+      await admin.from("client_diagnostic_logs").insert({
+        screen: "create-checkout-session",
+        action_type: "unhandled_error",
+        message: String(message).slice(0, 500),
+      });
+    } catch {
+      // ログ失敗は無視
+    }
     return json({ error: message }, 500);
   }
 });

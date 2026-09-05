@@ -73,7 +73,8 @@ Deno.serve(async (req) => {
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
-  const appUrl = Deno.env.get("APP_URL");
+  // .trim()が肝心 — create-checkout-sessionと同じ理由(APP_URL末尾改行混入の障害対策)。
+  const appUrl = Deno.env.get("APP_URL")?.trim();
   if (!supabaseUrl || !anonKey || !serviceRoleKey || !stripeSecretKey || !appUrl) {
     logStage("missing_server_config", {});
     return json({ error: "サーバー設定が不足しています" }, 500);
