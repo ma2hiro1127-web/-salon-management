@@ -14,14 +14,18 @@ export const FAQ_CATEGORIES = [
   { id: "monthlyDashboard", label: "月次ダッシュボード", displayOrder: 5 },
   { id: "batchEntry", label: "まとめて入力", displayOrder: 6 },
   { id: "monthClosing", label: "月締め・損益表", displayOrder: 7 },
+  // ヘルプ・お問い合わせ機能追加(要件3)で新設。人件費・材料/仕入費用・固定費・単月費用・
+  // 損益表の見方など「費用・損益」まわりの質問だけをまとめた専用カテゴリ——月締め自体の
+  // 手順(monthClosing)とは分けて、費用登録の実務的な「どう登録するか」に絞る。
+  { id: "costs", label: "費用・損益", displayOrder: 8 },
   // 会社管理・システム管理者向けの操作(会社データ削除・アーカイブ等)は一般利用者向け
   // FAQの対象外とし、このカテゴリは店舗追加・設定反映まわりに絞る。
-  { id: "companyStore", label: "店舗設定", displayOrder: 8 },
-  { id: "invitePermission", label: "スタッフ招待・権限", displayOrder: 9 },
-  { id: "csv", label: "CSV・レポート出力", displayOrder: 10 },
-  { id: "account", label: "ログイン・アカウント", displayOrder: 11 },
-  { id: "contract", label: "トライアル・契約・利用停止", displayOrder: 12 },
-  { id: "trouble", label: "よくあるトラブル", displayOrder: 13 },
+  { id: "companyStore", label: "店舗設定", displayOrder: 9 },
+  { id: "invitePermission", label: "スタッフ招待・権限", displayOrder: 10 },
+  { id: "csv", label: "CSV・レポート出力", displayOrder: 11 },
+  { id: "account", label: "ログイン・アカウント", displayOrder: 12 },
+  { id: "contract", label: "トライアル・契約・利用停止", displayOrder: 13 },
+  { id: "trouble", label: "よくあるトラブル", displayOrder: 14 },
 ];
 
 // 各項目: id / category(FAQ_CATEGORIESのidと一致させる) / question / answer / keywords
@@ -53,6 +57,15 @@ export const FAQ_ITEMS = [
   },
 
   // ==================== 日次入力・日締め ====================
+  {
+    id: "daily-0",
+    category: "daily",
+    displayOrder: 0,
+    enabled: true,
+    question: "毎日の売上を入力するには？",
+    answer: "サイドメニューの「日次入力」から、その日の売上・客数などを入力して「保存」を押します。入力後、必要に応じて「日締め」で確定してください。",
+    keywords: ["売上入力", "毎日の入力", "日次入力 方法"],
+  },
   {
     id: "daily-1",
     category: "daily",
@@ -143,6 +156,15 @@ export const FAQ_ITEMS = [
     answer: "日次入力画面の「日計」カードにある「月別日計を見る」から、現金・キャッシュレス・ポイント利用の月間合計と日別内訳を確認できます。",
     keywords: ["月別日計", "日計の月間合計", "日計履歴"],
   },
+  {
+    id: "daily-11",
+    category: "daily",
+    displayOrder: 11,
+    enabled: true,
+    question: "営業日・店休日を設定するには？",
+    answer: "「日次入力」画面にある「営業日設定」ボタンを押すと、カレンダーで店休日を選択・解除できます。営業日数は自動で計算されます。",
+    keywords: ["営業日設定", "店休日", "定休日", "休業日"],
+  },
 
   // ==================== 売上 ====================
   {
@@ -163,8 +185,26 @@ export const FAQ_ITEMS = [
     answer: "はい。月間目標は任意です。\n\n設定していない場合でも売上入力や日次管理は利用でき、目標達成率など目標に関連する表示のみ省略されます。",
     keywords: ["目標なし", "任意設定", "月間目標"],
   },
+  {
+    id: "sales-3",
+    category: "sales",
+    displayOrder: 3,
+    enabled: true,
+    question: "過去の月を見るには？",
+    answer: "画面上部の「対象月」を過去の月に切り替えると、その月の実績を確認できます。過去月のデータが消えたり書き換わったりすることはありません。",
+    keywords: ["過去月", "過去のデータ", "対象月 切替"],
+  },
 
   // ==================== 月間目標 ====================
+  {
+    id: "monthlyTarget-0",
+    category: "monthlyTarget",
+    displayOrder: 0,
+    enabled: true,
+    question: "月間目標を設定するには？",
+    answer: "「管理画面」→「目標設定」タブから、目標売上・目標客数などを月ごとに登録できます。",
+    keywords: ["月間目標 設定方法", "目標設定"],
+  },
   {
     id: "monthlyTarget-1",
     category: "monthlyTarget",
@@ -298,7 +338,99 @@ export const FAQ_ITEMS = [
     keywords: ["固定費", "継続費用", "毎月入力", "月ごとの変更"],
   },
 
+  // ==================== 費用・損益 ====================
+  {
+    id: "costs-1",
+    category: "costs",
+    displayOrder: 1,
+    enabled: true,
+    question: "人件費を登録するには？",
+    answer: "「管理画面」→「費用入力」タブを開きます。\n\n売上に応じて自動で計算したい場合は「人件費」カードで「売上連動」を選び、人件費率（％）を保存してください。毎月ほぼ決まった金額で管理したい場合は「固定額」を選ぶか、下の「固定費・その他費用」から個別に登録してください。",
+    keywords: ["人件費", "人件費登録", "給料", "人件費 入力"],
+  },
+  {
+    id: "costs-2",
+    category: "costs",
+    displayOrder: 2,
+    enabled: true,
+    question: "材料費・仕入費用を登録するには？",
+    answer: "「費用入力」タブの「仕入・発注額」カードから登録します。人件費と同じく「固定額」「売上連動」（仕入率を設定）のどちらかを選べます。",
+    keywords: ["材料費", "仕入", "発注費", "仕入率"],
+  },
+  {
+    id: "costs-3",
+    category: "costs",
+    displayOrder: 3,
+    enabled: true,
+    question: "家賃・光熱費などの固定費を登録するには？",
+    answer: "「費用入力」タブの「固定費・その他費用」で「継続」を選んで登録してください。毎月同じ金額が自動的に引き継がれます。",
+    keywords: ["固定費登録", "家賃", "光熱費", "継続費用"],
+  },
+  {
+    id: "costs-4",
+    category: "costs",
+    displayOrder: 4,
+    enabled: true,
+    question: "単月費用とは？",
+    answer: "「継続」ではなく「単月・期間限定」を選んで登録した費用です。登録した対象年月にだけ計上され、翌月には自動で繰り越されません。",
+    keywords: ["単月費用", "期間限定", "単発の費用"],
+  },
+  {
+    id: "costs-5",
+    category: "costs",
+    displayOrder: 5,
+    enabled: true,
+    question: "前月の単月費用を今月も計上したい場合は？",
+    answer: "「費用入力」タブの対象項目に表示される「今月も反映」ボタンを押してください。複数まとめて反映したい場合は、画面上部の「単月・期間限定項目をまとめて今月も反映」が使えます。\n\n反映を取り消したい場合は「今月の反映を解除」から戻せます（項目自体や他の月の記録は消えません）。",
+    keywords: ["今月も反映", "単月費用 繰越", "反映を解除", "未反映"],
+  },
+  {
+    id: "costs-6",
+    category: "costs",
+    displayOrder: 6,
+    enabled: true,
+    question: "売上連動の人件費・仕入費用とは？",
+    answer: "「固定額」ではなく「売上連動」を選ぶと、その月の実売上×設定した率で自動計算されます。金額は「自動計算額」として常に確認でき、率はいつでも変更できます。",
+    keywords: ["売上連動", "人件費率", "仕入率", "自動計算額"],
+  },
+  {
+    id: "costs-7",
+    category: "costs",
+    displayOrder: 7,
+    enabled: true,
+    question: "損益表の見方は？",
+    answer: "「管理画面」→「損益表」タブで確認できます。売上から人件費・仕入費用・固定費・単月費用などを差し引いた営業利益と、営業利益率が表示されます。",
+    keywords: ["損益表", "損益表の見方", "月次損益"],
+  },
+  {
+    id: "costs-8",
+    category: "costs",
+    displayOrder: 8,
+    enabled: true,
+    question: "営業利益・営業利益率とは？",
+    answer: "売上からすべての費用（人件費・仕入費用・固定費・単月費用など）を差し引いた金額が営業利益、売上に対する割合が営業利益率です。\n\n必須の費用項目が未入力の場合は「－」表示になり、正しく算出できません。",
+    keywords: ["営業利益", "営業利益率", "利益が出ない", "損益 計算されない"],
+  },
+  {
+    id: "costs-9",
+    category: "costs",
+    displayOrder: 9,
+    enabled: true,
+    question: "消費税考慮とは？",
+    answer: "「損益表」タブにある「消費税考慮」をONにすると、設定した税率で消費税相当額を差し引いたうえで営業利益を確認できます。任意の設定で、OFFのままでも損益表は利用できます。",
+    keywords: ["消費税", "消費税考慮", "税率"],
+  },
+
   // ==================== 店舗設定 ====================
+  {
+    id: "companyStore-0",
+    category: "companyStore",
+    displayOrder: 0,
+    enabled: true,
+    question: "店舗の初期設定方法は？",
+    answer: "「管理画面」→「基本設定」タブで、店舗名・在籍スタッフ数などを登録できます。まずはここから設定を始めてください。",
+    keywords: ["初期設定", "店舗設定", "基本設定"],
+  },
   {
     id: "companyStore-1",
     category: "companyStore",
@@ -327,6 +459,15 @@ export const FAQ_ITEMS = [
     question: "スタッフを招待するには？",
     answer: "「ユーザー管理」から、氏名・メールアドレス・権限を設定して招待できます。\n\n招待メールが届かない場合は、「招待リンクをコピー」して直接共有することもできます。",
     keywords: ["スタッフ招待", "ユーザー追加", "招待方法", "招待"],
+  },
+  {
+    id: "invitePermission-1b",
+    category: "invitePermission",
+    displayOrder: 1.5,
+    enabled: true,
+    question: "スタッフを停止・削除するには？",
+    answer: "「ユーザー管理」の対象スタッフから「停止」（再開も可能）または「削除」を選べます。\n\n削除しても、それまでに入力された売上・日計などのデータは保持されます。",
+    keywords: ["スタッフ停止", "スタッフ削除", "退職", "アカウント停止"],
   },
   {
     id: "invitePermission-2",

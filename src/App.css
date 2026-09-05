@@ -389,6 +389,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 /* βテスト用の不具合・改善要望導線(要件8): 「管理者に問い合わせる」ボタンの下に、
    目立ちすぎない形で控えめに配置する。 */
 .faq-beta-feedback-row { margin: 8px 0 0; }
+/* ヘルプ・お問い合わせ(2026-09追加)のトップ画面: 「使い方を確認する」/「不具合・お問い合わせ」
+   の2枚の大きなカード。スマホ幅では1列に積む(要件19: 横スクロールを発生させない)。 */
+.help-home-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-top: 12px; }
+@media (max-width: 700px) { .help-home-grid { grid-template-columns: 1fr; } }
+.help-home-card {
+  display: flex; flex-direction: column; gap: 8px; align-items: flex-start; text-align: left;
+  padding: 20px; min-height: 96px; border-radius: 16px; border: 1px solid var(--border);
+  background: var(--surface-strong); cursor: pointer;
+}
+.help-home-card:hover { border-color: var(--accent); }
+.help-home-card strong { font-size: 1.05rem; }
+.help-home-card span { color: var(--muted); font-size: 0.86rem; }
+/* お問い合わせフォームの種類選択(segmented-controlの複数行版)。4択を横一列に固定すると
+   スマホ幅で文字が潰れるため、折り返しを許可する(要件19)。 */
+.support-category-select { flex-wrap: wrap; border: none; overflow: visible; gap: 8px; }
+.support-category-select .segmented-button { border: 1px solid var(--border); border-radius: 10px; }
+/* 添付画像のプレビュー(要件8): サムネイル+×ボタン。スマホ幅でも3枚並んで崩れないよう
+   小さめの固定サイズにする(要件19: 横スクロールさせない)。 */
+.support-attachment-preview-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.support-attachment-preview-item { position: relative; width: 84px; }
+.support-attachment-preview-item img { width: 84px; height: 84px; object-fit: cover; border-radius: 10px; border: 1px solid var(--border); display: block; }
+.support-attachment-preview-item small { display: block; text-align: center; color: var(--muted); font-size: 0.72rem; margin-top: 2px; }
+.support-attachment-remove {
+  position: absolute; top: -6px; right: -6px; width: 22px; height: 22px; border-radius: 50%;
+  border: none; background: var(--danger); color: #fff; line-height: 1; font-size: 0.85rem; cursor: pointer;
+  display: flex; align-items: center; justify-content: center; padding: 0;
+}
 .value-pill { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 0 12px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .value-pill.active { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .value-pill.inactive { background: rgba(100, 116, 139, 0.12); color: var(--muted); }

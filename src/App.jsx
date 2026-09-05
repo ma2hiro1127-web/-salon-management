@@ -2182,6 +2182,16 @@ function App() {
   const todayAchievement = summary.todayTarget ? (todayActual / summary.todayTarget) * 100 : 0;
 
   const visibleNavItems = useMemo(() => getVisibleNavItems(currentRole), [currentRole]);
+  // ヘルプ・お問い合わせ(2026-09追加)の自動取得情報用: 「ヘルプ・お問い合わせ」画面自体を
+  // 開いている間は"faq"のままだと、問い合わせ本文に「どの画面で起きたか」が残せない。
+  // 直前にいた実際の画面(売上・日次入力等)の表示名を覚えておき、FaqPageへ渡す
+  // (レンダー中にrefを読むlintエラーを避けるため、refではなくstateとして保持する)。
+  const [lastNonFaqPageLabel, setLastNonFaqPageLabel] = useState("売上");
+  useEffect(() => {
+    if (activePage === "faq") return;
+    const matched = visibleNavItems.find((item) => item.id === activePage);
+    setLastNonFaqPageLabel(matched?.label || activePage);
+  }, [activePage, visibleNavItems]);
   const applyCompanySnapshot = (state, companyId) => {
     const targetCompany = (state.companies || []).find((company) => company.id === companyId) || null;
     const snapshot = (state.companySnapshots || {})[companyId] || {
@@ -10881,8 +10891,15 @@ function App() {
         {activePage === "faq" && (
           <FaqPage
             companyId={appState.currentCompanyId}
-            storeId={selectedStoreId}
+            storeId={selectedStoreId === ALL_STORES_VALUE ? "" : selectedStoreId}
             userId={appState.currentUserId}
+            companyName={currentCompany?.name || ""}
+            storeName={selectedStoreEntity?.name || ""}
+            userName={currentUserProfile?.name || ""}
+            targetMonth={selectedMonth}
+            // 直前にいた実際の画面(「ヘルプ・お問い合わせ」自体ではない)を、問い合わせの
+            // 「現在表示中の画面」欄へ自動入力するためのラベル。
+            originScreenLabel={lastNonFaqPageLabel}
           />
         )}
         {/* AI広告自動運用システム(V1)。system_admin専用の完全に独立したモジュール

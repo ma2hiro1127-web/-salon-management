@@ -4,10 +4,10 @@ import { FAQ_CATEGORIES, FAQ_ITEMS, searchFaqItems } from "../data/faq.js";
 
 // 使い方・FAQ全面ブラッシュアップ(要件)でカテゴリを13個(「まとめて入力」を独立カテゴリとして
 // 新設、表示順も一般スタッフが最も使う画面が上位に来るよう並び替え)に再編した。
-test("FAQ_CATEGORIES: 全カテゴリのidが一意で、要件通りの13カテゴリが揃っている", () => {
+test("FAQ_CATEGORIES: 全カテゴリのidが一意で、要件通りの14カテゴリが揃っている(ヘルプ・お問い合わせ機能追加で「費用・損益」を新設)", () => {
   const ids = FAQ_CATEGORIES.map((category) => category.id);
   assert.equal(new Set(ids).size, ids.length);
-  assert.equal(FAQ_CATEGORIES.length, 13);
+  assert.equal(FAQ_CATEGORIES.length, 14);
 });
 
 test("FAQ_CATEGORIES: 表示順(displayOrder)が要件通り、日次入力・日締めが売上より上位(一般スタッフが最も使う画面を優先する方針)", () => {
@@ -18,6 +18,7 @@ test("FAQ_CATEGORIES: 表示順(displayOrder)が要件通り、日次入力・�
   assert.ok(byId.monthlyTarget < byId.monthlyDashboard);
   assert.ok(byId.monthlyDashboard < byId.batchEntry);
   assert.ok(byId.batchEntry < byId.monthClosing);
+  assert.ok(byId.monthClosing < byId.costs, "「費用・損益」は「月締め・損益表」より後(月締めの手順→費用の登録実務の順)");
   assert.ok(byId.trouble === Math.max(...Object.values(byId)), "「よくあるトラブル」が最後");
 });
 

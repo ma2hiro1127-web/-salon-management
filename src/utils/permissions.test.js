@@ -99,13 +99,11 @@ test("「franchise」ナビ項目追加後もresolveDefaultPage(先頭は常にd
   assert.ok(!getVisibleNavItems("staff").map((item) => item.id).includes("franchise"));
 });
 
-test("「使い方・FAQ」はAI機能とは無関係だが、管理者向けヘルプとしてsystem_admin/company_admin/store_managerのみアクセスでき、staffには表示・URL直接アクセスとも許可しない(権限体系の正式仕様・要件8)", () => {
-  ["system_admin", "company_admin", "store_manager"].forEach((role) => {
+test("「ヘルプ・お問い合わせ」はAI機能とは無関係な全社共通の自己解決窓口で、staffを含む全ロールがアクセスできる(2026-09のヘルプ・お問い合わせ機能追加で管理者限定を撤廃)", () => {
+  ["system_admin", "company_admin", "store_manager", "staff"].forEach((role) => {
     assert.equal(canAccessPage(role, "faq"), true, `${role} should be able to access faq`);
     assert.ok(getVisibleNavItems(role).map((item) => item.id).includes("faq"), `${role} nav should include faq`);
   });
-  assert.equal(canAccessPage("staff", "faq"), false);
-  assert.ok(!getVisibleNavItems("staff").map((item) => item.id).includes("faq"));
   // 先頭は引き続きdashboardのまま(faqが初期表示ページになってしまわないこと)。
   assert.equal(resolveDefaultPage("staff"), "dashboard");
 });
@@ -179,7 +177,8 @@ test("設定ページ削除: 'settings'はどのロール(owner/admin エイリ�
 test("設定ページ削除: company_admin/store_manager/staffそれぞれの、settings以外の既存アクセス可能ページは変わっていない", () => {
   assert.deepEqual(getVisibleNavItems("company_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "franchise", "faq"]);
   assert.deepEqual(getVisibleNavItems("store_manager").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "faq"]);
-  assert.deepEqual(getVisibleNavItems("staff").map((item) => item.id), ["dashboard", "daily", "monthlyReview"]);
+  // faqは2026-09のヘルプ・お問い合わせ機能追加でstaffにも開放されたため、末尾への追加を許容する。
+  assert.deepEqual(getVisibleNavItems("staff").map((item) => item.id), ["dashboard", "daily", "monthlyReview", "faq"]);
   // adOps(AI広告運用)はAI広告自動運用システム追加時にsystem_admin専用として新設された
   // ページのため、settings削除後の既存範囲チェックとしては末尾への追加のみを許容する。
   assert.deepEqual(getVisibleNavItems("system_admin").map((item) => item.id), ["dashboard", "daily", "monthly", "monthlyDashboard", "monthlyReview", "stores", "users", "companies", "franchise", "faq", "adOps"]);

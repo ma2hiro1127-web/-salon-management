@@ -30,9 +30,10 @@ export const NAV_ITEMS_BY_ROLE = {
   // "franchise"(加盟店連携)はsystem_admin/company_adminだけに追加する — 加盟店連携リクエスト
   // の送信(system_admin限定)・承認/拒否・閲覧切替はどちらのロールにも関係するが、
   // store_manager/staffには加盟店データを一切見せない(要件10)ため含めない。
-  // "faq"(使い方・FAQ)は権限体系の正式仕様(会社管理画面・まとめて入力の権限整理)により
-  // system_admin/company_admin/store_managerの管理者向けヘルプとして扱う — staffには
-  // ナビゲーション・URL直接アクセスとも表示しない(要件8)。
+  // "faq"(ヘルプ・お問い合わせ)は2026-09の機能追加で、使い方に関する問い合わせを自己解決
+  // できるようにする全社共通の窓口へ役割が変わったため、staffにも表示する(以前は管理者向け
+  // ヘルプとしてsystem_admin/company_admin/store_manager限定だったが、日々入力を行う
+  // staffこそ「使い方がわからない」の当事者であり、除外する理由が無くなったため)。
   // "adOps"(AI広告運用)はsystem_admin専用の完全に独立したモジュール(要件2: 一般ユーザーには
   // 絶対に表示しない)。company_admin以下には一切追加しない——この配列がURLの存在しないこの
   // SPAにおける唯一の認可ゲートのため、ここに含めないこと自体が直接アクセス拒否になる。
@@ -53,7 +54,7 @@ export const NAV_ITEMS_BY_ROLE = {
   // とは異なり、店舗全体で「今月どうだったか」を共有するのが目的の画面のため、staffも含めて
   // 見える状態にする——編集可否はページ内でcanEditMonthlyData(既存のsystem_admin/
   // company_admin/store_manager限定の判定関数、新規に権限判定を作らない)で別途ゲートする。
-  staff: ["dashboard", "daily", "monthlyReview"],
+  staff: ["dashboard", "daily", "monthlyReview", "faq"],
   owner: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "companies", "franchise", "faq"],
   admin: ["dashboard", "daily", "monthly", "monthlyDashboard", "stores", "users", "franchise", "faq"],
 };
@@ -156,7 +157,7 @@ export const getVisibleNavItems = (role) => {
       stores: "店舗管理",
       users: "ユーザー管理",
       franchise: "加盟店連携",
-      faq: "使い方・FAQ",
+      faq: "ヘルプ・お問い合わせ",
       adOps: "AI広告運用",
     }[page] || page,
   }));

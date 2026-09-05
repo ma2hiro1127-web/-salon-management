@@ -2842,6 +2842,72 @@ export const submitBetaFeedback = async ({ companyId = null, storeId = null, use
   }
 };
 
+// ヘルプ・お問い合わせ(2026-09追加)。使い方の質問はFAQへ誘導し、ここは不具合・表示異常・
+// 契約/料金・その他に限定した正式な問い合わせフォームからのみ呼ばれる。DB書き込み・メール送信は
+// すべてsubmit-support-inquiry Edge Function(service role)側で行う——このファイルからは
+// 直接テーブルへ書き込まない(company_id/氏名/メールアドレス等をクライアントに信用させない
+// ため、create-checkout-session等と同じ設計)。
+
+export const SUPPORT_ATTACHMENT_MAX_COUNT = 3;
+export const SUPPORT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
+// iPhoneから一般的に送信される画像形式(HEIC/HEIF)も可能な範囲で受け付ける(要件7)。
+export const SUPPORT_ATTACHMENT_ALLOWED_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"];
+
+const SUPPORT_ATTACHMENTS_BUCKET = "support-attachments";
+
+const guessExtensionFromMimeType = (mimeType) => {
+  const map = { "image/jpeg": "jpg", "image/jpg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic", "image/heif": "heif" };
+  return map[mimeType] || "bin";
+};
+
+// 添付画像を1枚、support-attachments private bucketへ直接アップロードする。元のファイル名は
+// 一切使わず(要件9)、ランダムUUIDのファイル名を生成する。パスの先頭をcompanyIdにすることで、
+// storage.objects側のRLS(20260911000000_support_inquiries.sql)が自社のパスだけを許可する。
+export const uploadSupportInquiryAttachment = async ({ companyId, inquiryId, file }) => {
+  if (!isSupabaseConfigured) return { ok: false, error: new Error("Supabaseが設定されていません") };
+  if (!companyId || !inquiryId || !file) return { ok: false, error: new Error("添付に必要な情報が不足しています") };
+  const path = `${companyId}/${inquiryId}/${crypto.randomUUID()}.${guessExtensionFromMimeType(file.type)}`;
+  try {
+    const { error } = await supabase.storage.from(SUPPORT_ATTACHMENTS_BUCKET).upload(path, file, {
+      contentType: file.type || "application/octet-stream",
+      upsert: false,
+    });
+    if (error) throw error;
+    return { ok: true, path };
+  } catch (error) {
+    logSupabaseError({ operation: "uploadSupportInquiryAttachment", table: "storage:support-attachments", companyId, error });
+    return { ok: false, error };
+  }
+};
+
+// 問い合わせ本体の送信。inquiryIdは呼び出し元(FaqPage.jsx)が一度だけ生成し、通信失敗時の
+// 再試行でも同じidを使い回すことで、Edge Function側のidempotency(同じidの2回目以降は
+// 何もしない)により二重送信を防ぐ(要件18)。
+export const submitSupportInquiry = async ({ inquiryId, category, message, storeId = "", currentPage = "", targetMonth = "", currentUrl = "", attachmentPaths = [] }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("submit-support-inquiry", {
+    body: { inquiryId, category, message, storeId, currentPage, targetMonth, currentUrl, attachmentPaths },
+  });
+  // send-invite-email等と同じパターン: 非2xxレスポンスはerror(FunctionsHttpError)側に来て、
+  // 実際のJSON本文({error: "..."})はerror.context経由でしか読めない——data.errorだけを
+  // 見ているとサーバー側のエラー文言(400/403/500)を取りこぼす。
+  if (error) {
+    let serverMessage = "";
+    try {
+      const body = await error.context?.json?.();
+      serverMessage = body?.error || "";
+    } catch {
+      // ignore — fall back to error.message
+    }
+    logSupabaseError({ operation: "submitSupportInquiry", table: "support_inquiries", error });
+    return { ok: false, error: new Error(serverMessage || error.message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
+};
+
 // 障害調査用ログ(要件9)。売上金額・氏名・メールアドレス・認証トークン等の機密情報は
 // 一切含めないこと——messageには構造化された非機密情報(operation/table/error code程度)
 // だけを渡す(呼び出し元の責務、logSupabaseErrorから最小限の情報だけを転記する)。
