@@ -27,7 +27,38 @@ jobs:
       - name: Install Supabase CLI
         uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # 2026-09-05の障害調査で確認済みの動作バージョンに固定する(要件: CLIバージョンの
+          # 確認)。"latest"のままだと将来CLI側のフラグ仕様が変わった場合に、スケジュール
+          # 実行(誰も見ていない深夜帯)で気づかないまま突然壊れるリスクがあるため、意図的に
+          # 固定し、更新する場合はこの値を明示的に上げる運用にする。
+          version: "2.111.0"
+
+      # 2026-09-05の障害調査で追加(要件: 接続情報・Project Ref等の確認をしやすくする)。
+      # SUPABASE_DB_URLのホスト名・ポート・ユーザー名・DB名だけを表示し、パスワードは
+      # 絶対に出力しない(GitHub Actions自体もsecretsの値をログへマスクするが、それに
+      # 依存せずスクリプト側でも最初からパスワード部分を読み取って出力しない設計にする)。
+      # 「password authentication failed」のような認証エラー時に、接続先(pooler
+      # ホスト名・project ref相当のユーザー名)が意図した通りかをログだけで確認できるように
+      # するための診断目的の1ステップで、これ自体は失敗しても後続を止めない。
+      - name: Show connection info (safe, no password)
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          python3 -c "
+          import os, urllib.parse as up
+          url = os.environ.get('SUPABASE_DB_URL', '')
+          if not url:
+              print('::error::SUPABASE_DB_URL secret is empty or not set')
+              raise SystemExit(1)
+          parsed = up.urlparse(url)
+          print(f'[connection-info] scheme={parsed.scheme}')
+          print(f'[connection-info] host={parsed.hostname}')
+          print(f'[connection-info] port={parsed.port}')
+          print(f'[connection-info] user={parsed.username}')
+          print(f'[connection-info] dbname={parsed.path.lstrip(\"/\")}')
+          print('[connection-info] password=<redacted, length=' + str(len(parsed.password or '')) + '>')
+          "
+        continue-on-error: true
 
       - name: Run backup (dump + verify)
         env:
