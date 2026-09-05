@@ -1463,6 +1463,19 @@ function App() {
       setAuthMode("app");
       setActivePage(resolveDefaultPage(profile?.role || "staff"));
       authLog("認証完了、appへ遷移");
+      // Stripe Checkout完了後の復帰(success_url=/?checkout=success)を検知し、単に
+      // ログイン後の通常画面へ黙って戻すのではなく、契約が完了したことが分かる案内を
+      // 一度だけ表示する(要件: UXの改善)。表示後はURLからこのクエリを取り除き、
+      // ページ再読み込みで再表示されないようにする。
+      if (typeof window !== "undefined") {
+        const checkoutParam = new URLSearchParams(window.location.search).get("checkout");
+        if (checkoutParam === "success") {
+          setSuccessNotice("ご契約が完了しました。", "サロンマネージャーの利用を開始できます。");
+          window.history.replaceState(null, "", window.location.pathname);
+        } else if (checkoutParam === "cancelled") {
+          window.history.replaceState(null, "", window.location.pathname);
+        }
+      }
     } catch (error) {
       if (attempt < PROFILE_LOAD_MAX_ATTEMPTS) {
         authLog(`profile/company/store取得失敗、${PROFILE_LOAD_RETRY_DELAY_MS * attempt}ms後にリトライ(セッションは維持したまま)`, error?.message);

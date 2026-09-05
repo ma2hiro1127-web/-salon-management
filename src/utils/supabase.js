@@ -86,10 +86,37 @@ const fetchWithAuthRetry = async (input, init = {}) => {
 // 隔離することで、system_adminの元のログイン状態への影響を構造的にゼロにする
 // (要件: 「system_adminの現在のログイン状態を壊さない」)。通常のURL(このパラメータが
 // 無い、大多数のアクセス)では従来どおり既定のキーのままで、一切の変更が無い。
-const isOwnerSignupTestLink =
+// 不具合修正(2026-09-05発見): Stripe Checkoutは外部サイト(checkout.stripe.com)への
+// 本当のページ遷移を伴うため、決済完了後にsuccess_urlへ戻ってきた時点でこのモジュールが
+// 最初から読み込み直される。戻り先URL(?checkout=success)にはowner-signup/testKeyが
+// 付いていないため、URLだけを見るとisOwnerSignupTestLinkがfalseに戻ってしまい、
+// 隔離したstorageKeyへ保存していたテストアカウントのセッションを見失って、決済完了後に
+// ログイン画面へ戻されてしまっていた(要件: 決済完了後に正常に戻れること)。
+// sessionStorageのマーカー(タブ単位で保持され、外部サイトへの往復をまたいでも残る)を
+// 併用することで、同じタブ内である限りURLが変わっても隔離を維持できるようにする。
+const TEST_CONTRACT_SESSION_MARKER = "sb-test-contract-flow-marker";
+const urlHasOwnerSignupTestLink =
   typeof window !== "undefined" &&
   new URLSearchParams(window.location.search).get("owner-signup") === "1" &&
   Boolean(new URLSearchParams(window.location.search).get("testKey"));
+if (urlHasOwnerSignupTestLink) {
+  try {
+    window.sessionStorage.setItem(TEST_CONTRACT_SESSION_MARKER, "1");
+  } catch {
+    // プライベートブラウジング等でsessionStorageが使えない場合はベストエフォート
+    // (この場合はStripe決済からの復帰時にログイン画面へ戻るだけで、致命的ではない)。
+  }
+}
+const isOwnerSignupTestLink =
+  urlHasOwnerSignupTestLink ||
+  (typeof window !== "undefined" &&
+    (() => {
+      try {
+        return window.sessionStorage.getItem(TEST_CONTRACT_SESSION_MARKER) === "1";
+      } catch {
+        return false;
+      }
+    })());
 
 export const supabase = createClient(supabaseUrl || "https://example.supabase.co", supabaseAnonKey || "dummy-key", {
   auth: {
