@@ -10,12 +10,16 @@ const modeLabels = {
   ownerSignup: { title: "サロンマネージャーを無料で始める", button: "無料で始める", helper: "美容室経営の数字管理を、もっとシンプルに。" },
 };
 
-const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onOwnerSignUp, onResetPassword, onSetNewPassword, loading, error, success, inviteEmail = "", hasInviteToken = false, ownerSignupVisible = false }) => {
-  const [emailInput, setEmailInput] = useState("");
+const LoginScreen = ({ mode, onModeChange, onSubmit, onSignUp, onOwnerSignUp, onResetPassword, onSetNewPassword, loading, error, success, inviteEmail = "", hasInviteToken = false, ownerSignupVisible = false, initialOwnerSignupEmail = "", initialOwnerSignupCompanyName = "" }) => {
+  // system_adminが発行したテスト契約フローのリンク(?owner-signup=1&testKey=...)経由で
+  // 開いた場合だけ、使い捨てのテスト用メールアドレス・会社名を初期値として入れておく
+  // (要件: 実際の新規顧客と同じ登録フォームを、その場でそのまま使えるようにする)。
+  // 通常の新規オーナー登録では両方とも空文字のまま、既存の挙動を変えない。
+  const [emailInput, setEmailInput] = useState(initialOwnerSignupEmail);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [ownerName, setOwnerName] = useState("");
-  const [companyName, setCompanyName] = useState("");
+  const [companyName, setCompanyName] = useState(initialOwnerSignupCompanyName);
   const [formError, setFormError] = useState("");
 
   const currentMode = modeLabels[mode] || modeLabels.login;

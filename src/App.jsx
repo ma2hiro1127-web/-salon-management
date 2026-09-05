@@ -129,6 +129,9 @@ import {
   createCheckoutSession,
   createPortalSession,
   syncStoreBillingQuantity,
+  generateTestSignupLink,
+  cancelTestContract,
+  loadCompanyAdminEmails,
   softDeleteCompany,
   deleteCompanyCompletely,
   createStoreRecord,
@@ -691,6 +694,18 @@ function App() {
     const params = new URLSearchParams(window.location.search);
     return params.get("testKey") || "";
   });
+  // Stripe契約フロー実機検証(2026-09追加)。system_adminの「新規契約フローをテスト」が
+  // 発行したリンクだけに付く、使い捨てのテスト用メールアドレス・会社名の初期値
+  // (generate-test-signup-link Edge Function参照)。通常の新規オーナー登録URLには
+  // 付かないため、その場合は両方とも空文字のまま(既存の挙動を変えない)。
+  const [ownerSignupSuggested] = useState(() => {
+    if (typeof window === "undefined") return { email: "", companyName: "" };
+    const params = new URLSearchParams(window.location.search);
+    return {
+      email: params.get("suggestedEmail") || "",
+      companyName: params.get("suggestedCompanyName") || "",
+    };
+  });
   // AI広告自動運用システム(V1、要件6・7)。広告リンク経由でオーナー登録画面へ着地した場合の
   // UTM。本リポジトリには外部マーケティングLPが無いため、このオーナー登録画面自体が実質の
   // 計測起点になる——lp_view相当のイベントもここで記録する(下のuseEffect)。
@@ -782,6 +797,13 @@ function App() {
   const [addAdminForm, setAddAdminForm] = useState({ name: "", email: "" });
   const [addAdminBusy, setAddAdminBusy] = useState(false);
   const [addAdminError, setAddAdminError] = useState("");
+  // Stripe契約フロー実機検証(2026-09追加)。「新規契約フローをテスト」ボタンの結果表示用。
+  const [testSignupLinkResult, setTestSignupLinkResult] = useState(null); // { url, suggestedEmail, suggestedCompanyName } | null
+  const [testSignupLinkBusy, setTestSignupLinkBusy] = useState(false);
+  const [testSignupLinkError, setTestSignupLinkError] = useState("");
+  const [testContractAdminEmails, setTestContractAdminEmails] = useState({}); // companyId -> email
+  const [cancelTestContractBusyId, setCancelTestContractBusyId] = useState("");
+  const [cancelTestContractError, setCancelTestContractError] = useState("");
   // 契約状態変更の確認モーダル(2026-09-02)。{ company, targetStatus } | null。
   // window.confirmではなく、遷移先に応じた必要情報(無料利用の終了日選択、課金開始予定日の
   // プレビュー等)を見せてから変更してもらうためのモーダル。
@@ -4449,6 +4471,63 @@ function App() {
     persistTenantState(nextState);
   };
 
+  // Stripe契約フロー実機検証(2026-09追加)。実際の新規顧客と同じ「新規登録→プラン選択→
+  // Stripe Checkout→決済→Webhook→利用開始」の導線を確認するための、使い捨てテスト会社
+  // 発行リンクを取得する。会社の作成自体はここでは行わない——リンク先の登録フォームで
+  // system_admin自身が実際に登録操作をすることで、初めてself-signup Edge Functionが
+  // (実際の一般利用者と全く同じロジックで)会社・店舗・アカウントを作る(要件8)。
+  const handleGenerateTestSignupLink = async () => {
+    if (testSignupLinkBusy) return;
+    setTestSignupLinkBusy(true);
+    setTestSignupLinkError("");
+    setTestSignupLinkResult(null);
+    const result = await generateTestSignupLink();
+    setTestSignupLinkBusy(false);
+    if (!result.ok) {
+      setTestSignupLinkError(getSupabaseErrorMessage(result.error));
+      return;
+    }
+    setTestSignupLinkResult({ url: result.url, suggestedEmail: result.suggestedEmail, suggestedCompanyName: result.suggestedCompanyName });
+  };
+
+  // テスト契約フロー専用の使い捨て会社(is_test_contract_run)だけを対象にした、Stripe
+  // サブスクリプションの即時キャンセル(要件6: 誤課金防止)。DBの契約状態はこのAPI自体では
+  // 書き換えない——本物のWebhookが届いて既存ロジックが反映するのを待つ(要件8)。
+  const handleCancelTestContract = async (company) => {
+    if (cancelTestContractBusyId) return;
+    if (!window.confirm(`「${company.name}」のStripeサブスクリプションを今すぐキャンセルしますか？\n(テスト契約フロー専用会社にのみ実行できます)`)) return;
+    setCancelTestContractBusyId(company.id);
+    setCancelTestContractError("");
+    const result = await cancelTestContract({ companyId: company.id });
+    setCancelTestContractBusyId("");
+    if (!result.ok) {
+      setCancelTestContractError(getSupabaseErrorMessage(result.error));
+      return;
+    }
+    setSuccessNotice(`「${company.name}」のStripeサブスクリプションをキャンセルしました。DBの契約状態はWebhook受信後に自動的に反映されます。`);
+  };
+
+  // テスト契約フロー一覧(会社管理画面)の「登録メールアドレス」表示用。対象会社が
+  // 増減した時だけ取得し直す(依存配列は会社idの並びを固定した文字列 — companies配列
+  // 自体はcontractStatus等の頻繁な更新で参照が変わるため、それをそのまま依存にすると
+  // 無限に取得し直してしまう)。
+  const testContractCompanyIdsKey = (appState.companies || [])
+    .filter((company) => company.isTestContractRun)
+    .map((company) => company.id)
+    .sort()
+    .join(",");
+  useEffect(() => {
+    if (normalizeRole(currentRole) !== "system_admin") return;
+    const companyIds = testContractCompanyIdsKey ? testContractCompanyIdsKey.split(",") : [];
+    if (companyIds.length === 0) return;
+    let cancelled = false;
+    loadCompanyAdminEmails({ companyIds }).then((result) => {
+      if (cancelled || !result.ok) return;
+      setTestContractAdminEmails((prev) => ({ ...prev, ...result.data }));
+    });
+    return () => { cancelled = true; };
+  }, [testContractCompanyIdsKey, currentRole]);
+
   // 加盟店連携(閲覧専用)への切り替え。system_adminのhandleCompanySwitchとは意図的に別関数
   // にする — こちらはcompanyIdOverride付きでhydrateFromSupabaseを明示的に呼び、加盟店の
   // 実データ取得を即座に(待ち時間・エラーをこの関数内でハンドリングできる形で)行う。
@@ -7955,7 +8034,7 @@ function App() {
   }
 
   if (!currentUser && !authLoading) {
-    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onOwnerSignUp={handleOwnerSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} hasInviteToken={Boolean(inviteToken)} ownerSignupVisible={selfSignupEnabled} />;
+    return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onOwnerSignUp={handleOwnerSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} hasInviteToken={Boolean(inviteToken)} ownerSignupVisible={selfSignupEnabled} initialOwnerSignupEmail={ownerSignupSuggested.email} initialOwnerSignupCompanyName={ownerSignupSuggested.companyName} />;
   }
 
   // 停止中、または削除(論理削除)済みの会社は、データを保持したまま通常ユーザー
@@ -9854,6 +9933,85 @@ function App() {
           </div>
         )}
 
+        {activePage === "companies" && normalizeRole(currentRole) === "system_admin" && (
+          <section className="panel">
+            <div className="panel-heading">
+              <div>
+                <p className="eyebrow">CONTRACT FLOW TEST</p>
+                <h2>契約フローのテスト</h2>
+              </div>
+            </div>
+            <p className="helper-text">
+              「テストサロンとして開く」(既存のテストサロン本体を直接切り替える機能)とは別に、実際の新規顧客と全く同じ
+              <strong>新規登録 → プラン選択 → Stripe Checkout → 決済 → Webhook → 利用開始</strong>
+              の導線を、使い捨てのテスト会社で確認できます。登録・契約ロジック自体は本番顧客と完全に同じコード(self-signup / Stripe Checkout / Webhook)を通ります。
+            </p>
+            <div className="button-row">
+              <button className="primary-button" type="button" onClick={handleGenerateTestSignupLink} disabled={testSignupLinkBusy}>
+                {testSignupLinkBusy ? "リンクを発行中…" : "新規契約フローをテスト"}
+              </button>
+            </div>
+            {testSignupLinkError ? <div className="notice-box error">{testSignupLinkError}</div> : null}
+            {testSignupLinkResult ? (
+              <div className="setup-card">
+                <p className="helper-text">
+                  以下のリンクを新しいタブ（できればシークレットウィンドウ）で開き、実際の登録フォームからそのまま登録・プラン選択・Stripe決済まで進めてください。会社名・メールアドレスは登録フォームに自動で入力されています。
+                </p>
+                <div className="button-row">
+                  <button className="secondary-button" type="button" onClick={() => window.open(testSignupLinkResult.url, "_blank", "noopener")}>
+                    新しいタブで登録ページを開く
+                  </button>
+                </div>
+                <p className="helper-text">サロン名: {testSignupLinkResult.suggestedCompanyName} ／ メールアドレス: {testSignupLinkResult.suggestedEmail}</p>
+              </div>
+            ) : null}
+
+            {cancelTestContractError ? <div className="notice-box error">{cancelTestContractError}</div> : null}
+            {(() => {
+              const testContractCompanies = (appState.companies || []).filter((company) => company.isTestContractRun && !company.deletedAt);
+              if (testContractCompanies.length === 0) return null;
+              return (
+                <div className="card-grid">
+                  {testContractCompanies.map((company) => (
+                    <div key={company.id} className="info-card">
+                      <div className="info-card-head">
+                        <strong>{company.name}</strong>
+                        <span className={`status-pill ${company.contractStatus === "active" ? "good" : "warning"}`}>
+                          契約：{CONTRACT_STATUS_LABELS[company.contractStatus] || company.contractStatus}
+                        </span>
+                      </div>
+                      <div className="info-card-meta">
+                        <span>登録メール: {testContractAdminEmails[company.id] || "取得中…"}</span>
+                        <span>プラン: {company.plan || "-"}</span>
+                        <span>Stripe Customer ID: {company.stripeCustomerId || "未発行"}</span>
+                        <span>Stripe Subscription ID: {company.stripeSubscriptionId || "未発行"}</span>
+                        <span>契約開始日時: {company.contractStartedAt ? formatDateLabel(company.contractStartedAt) : "未契約"}</span>
+                        <span>
+                          キャンセル状態: {company.subscriptionStatus === "canceled" ? "解約済み" : company.cancelAtPeriodEnd ? "次回更新で解約予定" : company.stripeSubscriptionId ? "継続中" : "未契約"}
+                        </span>
+                      </div>
+                      <div className="row-actions">
+                        <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>通常画面で開く</button>
+                        <button
+                          className="text-button danger"
+                          type="button"
+                          disabled={cancelTestContractBusyId === company.id || !company.stripeSubscriptionId}
+                          onClick={() => handleCancelTestContract(company)}
+                        >
+                          {cancelTestContractBusyId === company.id ? "キャンセル中…" : "今すぐキャンセル(Stripe)"}
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+            <p className="helper-text">
+              テスト完了後、不要になったテスト契約会社はStripeのキャンセル後、下の会社一覧から「会社データを削除」→ゴミ箱から「完全削除」で片付けてください（既存のテストサロン本体には一切影響しません）。
+            </p>
+          </section>
+        )}
+
         {activePage === "companies" && (
           <section className="panel">
             <div className="panel-heading">
@@ -10032,13 +10190,17 @@ function App() {
                       <div className="row-actions">
                         <button className="text-button" type="button" onClick={() => handleEditCompany(company)}>編集</button>
                         <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>切替</button>
-                        {/* 運営専用の検証会社(テストサロン)だけに表示する専用ボタン(要件)。
-                            通常の契約会社には出さない——company.isTestCompanyはDB上の
-                            companies.is_test_companyフラグ由来で、会社名では判定しない。
-                            処理自体は既存のhandleCompanySwitch(上の「切替」と同じ経路)を
-                            そのまま使う——テスト用だからといって別ロジックにはしない(要件)。 */}
+                        {/* 運営専用の検証会社(テストサロン、および下記の使い捨てテスト契約
+                            会社)だけに表示する専用ボタン(要件)。通常の契約会社には出さない
+                            ——company.isTestCompanyはDB上のcompanies.is_test_companyフラグ
+                            由来で、会社名では判定しない。処理自体は既存のhandleCompanySwitch
+                            (上の「切替」と同じ経路)をそのまま使う——テスト用だからといって
+                            別ロジックにはしない(要件)。ラベルは2026-09の契約フロー実機検証
+                            機能追加時に「テストサロンとして開く」から「通常画面で開く」へ変更
+                            (同じ画面内に「新規契約フローをテスト」という別の入口が増えたため、
+                            両者を区別できる名前にした——動作自体は完全に無変更)。 */}
                         {company.isTestCompany && (
-                          <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>テストサロンとして開く</button>
+                          <button className="text-button" type="button" onClick={() => handleCompanySwitch(company.id)}>通常画面で開く</button>
                         )}
                         {/* 会社カードから直接その会社のcompany_admin管理者を追加する導線
                             (system_admin限定)。切り替え忘れによる誤company_id招待の事故を

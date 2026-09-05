@@ -263,6 +263,13 @@ Deno.serve(async (req) => {
           plan: "trial",
           trial_started_at: trialStartedAt,
           trial_ends_at: trialEndsAt,
+          // 運営がSELF_SIGNUP_TEST_KEYバイパス経由(=system_adminが発行したテスト契約用リンク
+          // からのみ到達しうる、実際の一般利用者が満たすことはない条件)でこの登録を行った場合
+          // だけ、最初からテスト会社として明示的にマークする(2026-09、契約フロー実機検証の
+          // 要件6)。これにより新規登録→Stripe Checkout→Webhookという実際の顧客と全く同じ
+          // コードパスを通しながら、システム管理画面から一目でテスト用と判別できるようにする。
+          is_test_company: isTestBypass,
+          is_test_contract_run: isTestBypass,
         })
         .select()
         .single();

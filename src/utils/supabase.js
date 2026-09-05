@@ -770,7 +770,9 @@ const COMPANY_CONTRACT_SELECT_COLUMNS =
   // そのまま流用する(新しい列は追加しない)。
   "billing_interval, current_period_start, cancel_at_period_end, " +
   // 2026-09-05、運営専用の検証会社(テストサロン)フラグ。会社名では判定しない。
-  "is_test_company";
+  "is_test_company, " +
+  // 2026-09-12、Stripe契約フロー実機検証用の使い捨て会社フラグ(is_test_companyとは別軸)。
+  "is_test_contract_run";
 
 export const loadTenantStateFromSupabase = async ({ authUserId, email, currentProfile = null }) => {
   const profile = currentProfile || (await ensureProfileForAuthUser({ authUserId, email }));
@@ -882,6 +884,8 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     cancelAtPeriodEnd: Boolean(company.cancel_at_period_end),
     // 運営専用の検証会社(テストサロン)フラグ。会社名では判定しない(要件)。
     isTestCompany: Boolean(company.is_test_company),
+    // Stripe契約フロー実機検証用の使い捨て会社かどうか(2026-09-12)。
+    isTestContractRun: Boolean(company.is_test_contract_run),
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },
@@ -961,6 +965,31 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     selectedStore: selectedStore?.name || "",
     selectedStoreId: selectedStore?.id || "",
   };
+};
+
+// Stripe契約フロー実機検証(2026-09追加)。system_admin向けの「契約フローのテスト」一覧に
+// 表示する「登録メールアドレス」を、対象会社のcompany_adminプロフィールから取得する
+// (companiesテーブル自体にはメール列が無いため)。1社に複数のcompany_adminがいる場合は
+// 作成日時が最も古い1件(=自己サインアップした本人)を採用する。
+export const loadCompanyAdminEmails = async ({ companyIds }) => {
+  if (!isSupabaseConfigured || !Array.isArray(companyIds) || companyIds.length === 0) return { ok: true, data: {} };
+  try {
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("company_id, email, created_at")
+      .in("company_id", companyIds)
+      .eq("role", "company_admin")
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+    const emailByCompanyId = {};
+    (data || []).forEach((row) => {
+      if (!emailByCompanyId[row.company_id]) emailByCompanyId[row.company_id] = row.email || "";
+    });
+    return { ok: true, data: emailByCompanyId };
+  } catch (error) {
+    logSupabaseError({ operation: "loadCompanyAdminEmails", table: "profiles", error });
+    return { ok: false, error, data: {} };
+  }
 };
 
 // 加盟店連携(閲覧専用)で、対象の加盟店会社1社分のcompanies/stores基本情報だけを取得する
@@ -1182,6 +1211,52 @@ export const syncStoreBillingQuantity = async ({ companyId } = {}) => {
     return { ok: false, error: new Error(data.error) };
   }
   return { ok: true, addonQuantity: data?.addonQuantity };
+};
+
+// Stripe契約フロー実機検証(2026-09追加)。system_admin限定。実際の新規顧客と全く同じ
+// 「新規登録→プラン選択→Stripe Checkout→決済→Webhook→利用開始」の導線を、使い捨ての
+// テスト会社で検証するための入口——ここではURLを発行するだけで、登録・契約ロジック自体は
+// 一切複製しない(create-checkout-session/stripe-webhook等の既存経路をそのまま使う)。
+export const generateTestSignupLink = async () => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("generate-test-signup-link", { body: {} });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore — fall back to error.message
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, url: data?.url, suggestedCompanyName: data?.suggestedCompanyName, suggestedEmail: data?.suggestedEmail };
+};
+
+// テスト契約フロー専用の使い捨て会社(is_test_contract_run=true)だけを対象に、Stripe側の
+// サブスクリプションを即時キャンセルする(誤課金防止の導線、要件6)。DBの契約状態は
+// このAPI自体では書き換えない——本物のcustomer.subscription.deleted Webhookが届いた時点で
+// 既存のstripe-webhookロジックがそのまま反映する(要件8)。
+export const cancelTestContract = async ({ companyId }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const { data, error } = await supabase.functions.invoke("cancel-test-contract", { body: { companyId } });
+  if (error) {
+    let message = error.message;
+    try {
+      const body = await error.context?.json?.();
+      if (body?.error) message = body.error;
+    } catch {
+      // ignore
+    }
+    return { ok: false, error: new Error(message) };
+  }
+  if (data?.error) {
+    return { ok: false, error: new Error(data.error) };
+  }
+  return { ok: true, data };
 };
 
 // 加盟店連携リクエストの送信 — create-franchise-request Edge Function(service-role)経由。
