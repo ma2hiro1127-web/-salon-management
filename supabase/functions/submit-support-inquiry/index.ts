@@ -375,12 +375,27 @@ async function sendInquiryEmail(params: {
     });
     if (!res.ok) {
       const errorBody = await res.text();
-      logStage("resend_api_error", { inquiryId: params.inquiryId, status: res.status, errorBody: errorBody.slice(0, 500) });
+      const detail = { inquiryId: params.inquiryId, status: res.status, errorBody: errorBody.slice(0, 500) };
+      logStage("resend_api_error", detail);
+      // 一時的な調査用: supabase functions logsが使えない環境でも原因を追えるよう、
+      // 機密情報を含まない範囲でclient_diagnostic_logs(既存テーブル)へも残す。
+      await params.admin.from("client_diagnostic_logs").insert({
+        screen: "submit-support-inquiry",
+        action_type: "resend_api_error",
+        error_type: String(res.status),
+        message: errorBody.slice(0, 500),
+      }).then(() => {}, () => {});
       return "failed";
     }
     return "sent";
   } catch (error) {
-    logStage("resend_request_failed", { inquiryId: params.inquiryId, message: (error as Error)?.message });
+    const message = (error as Error)?.message || "";
+    logStage("resend_request_failed", { inquiryId: params.inquiryId, message });
+    await params.admin.from("client_diagnostic_logs").insert({
+      screen: "submit-support-inquiry",
+      action_type: "resend_request_failed",
+      message: String(message).slice(0, 500),
+    }).then(() => {}, () => {});
     return "failed";
   }
 }
