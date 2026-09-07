@@ -77,7 +77,6 @@ import {
   getAllStoresBusinessDaySummary,
   getUnclosedStoresForDate,
   getMonthlyReviewSummary,
-  getCompanyDashboardSummary,
   resolvePreferredStoreSelection,
   resolveCurrentCompany,
   resolveHydrateDispatch,
@@ -2206,21 +2205,19 @@ function App() {
     }, selectedMonth)),
     [activePage, appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth]
   );
-  // 月次レビュー自動分析(2026-09追加、自由記述4項目の廃止に伴う置き換え。2026-09再修正:
-  // 改善/悪化の誤判定バグを受けて計算ロジックを全面的に確定値ベースへ書き直した)。
-  // 月締め後(isClosed)にだけ実際に3ブロックを計算する——月途中は「前月確定値との単純比較で
-  // 誤解を招く表示」を構造的に防ぐため、analyzeMonthlyReview自体がisClosed:falseなら
-  // 何も計算せず即座に返す。全店舗ビューの月締め判定はgetCompanyDashboardSummaryの
-  // isFullyClosed(既存の「各店舗の締め状態を横断してAND判定」ロジック)をそのまま使う。
+  // 月次レビュー自動分析(2026-09追加、自由記述4項目の廃止に伴う置き換え。2026-09に2度
+  // 再修正: ①改善/悪化の誤判定バグを受けて計算ロジックを確定値ベースへ書き直し、
+  // ②月締め状態への依存を完全に撤廃した)。月締め(monthClosingStatus)は一切参照しない
+  // ——現在入力されている当月データ(=損益表に今まさに表示されている数字と同じもの)を
+  // 直接参照し、当月に何かしら入力があれば(hasData)月途中でも即座にレビューを表示する。
+  // 月締めボタン自体は別の役割(売上連動費用の金額スナップショット等)を持つため残すが、
+  // この分析の実行条件には使わない。
   const monthlyReviewAnalysisResult = useMemo(() => {
     if (activePage !== "monthlyReview") return null;
     const metricsArgs = { storeId: selectedStoreId, isAllStoresView, company: currentCompany, storeEntity: selectedStoreEntity, companyStores: currentCompanyStores };
-    const isClosed = isAllStoresView
-      ? getCompanyDashboardSummary(appState, currentCompany, selectedMonth).isFullyClosed
-      : Boolean(appState.monthClosingStatus?.[buildMonthKey(selectedStoreId, selectedMonth)]?.closed);
     const current = getMonthlyReviewMetrics(appState, metricsArgs, selectedMonth);
     const previous = getMonthlyReviewMetrics(appState, metricsArgs, getMonthOffset(selectedMonth, -1));
-    return analyzeMonthlyReview({ current, previous, isClosed, fieldsEnabled: analysisFieldsEnabled });
+    return analyzeMonthlyReview({ current, previous, fieldsEnabled: analysisFieldsEnabled });
   }, [activePage, appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth, analysisFieldsEnabled]);
 
   // スマホUI改善(要件7): 店舗売上ランキングをスマホ幅だけTOP3に折りたたむ表示状態。

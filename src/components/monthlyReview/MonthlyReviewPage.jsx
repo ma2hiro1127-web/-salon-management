@@ -129,42 +129,39 @@ export default function MonthlyReviewPage({ summary, analysis, monthValue, isAll
         </section>
       ) : null}
 
-      {!analysis?.isClosed ? (
+      {!analysis?.hasData ? (
         <section className="panel">
-          <div className="panel-heading compact"><h3>月次分析</h3></div>
-          <p className="helper-text">この月はまだ月締めされていません。確定後に月次分析が表示されます。</p>
+          <div className="panel-heading compact"><h3>総評</h3></div>
+          <p className="helper-text">この月はまだ入力データがありません。売上・費用を入力すると自動でレビューが表示されます。</p>
         </section>
       ) : (
         <>
           <section className="panel">
-            <div className="panel-heading compact"><h3>今月のまとめ</h3></div>
+            <div className="panel-heading compact"><h3>総評</h3></div>
             <p className="monthly-review-summary-text">{analysis.summaryText}</p>
+            <p className="helper-text">現時点で入力されている数字に基づくレビューです。入力内容を修正すると自動的に更新されます。</p>
           </section>
 
           <section className="panel">
-            <div className="panel-heading compact"><h3>良かった点</h3></div>
-            {analysis.goodPoints.length === 0 ? (
-              <p className="helper-text">今月は大きく改善した項目はありません。</p>
+            <div className="panel-heading compact"><h3>要確認ポイント</h3></div>
+            {analysis.concernPoints.length === 0 ? (
+              <p className="helper-text">大きな要確認項目はありません。</p>
             ) : (
               <div className="monthly-review-analysis-list">
-                {analysis.goodPoints.map((point) => (
-                  <AnalysisPoint key={point.id} point={{ ...point, tone: "good" }} />
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-heading compact"><h3>改善ポイント</h3></div>
-            {analysis.improvementPoints.length === 0 ? (
-              <p className="helper-text">前月より悪化した項目はありません。</p>
-            ) : (
-              <div className="monthly-review-analysis-list">
-                {analysis.improvementPoints.map((point) => (
+                {analysis.concernPoints.map((point) => (
                   <AnalysisPoint key={point.id} point={{ ...point, tone: "warning" }} />
                 ))}
               </div>
             )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading compact"><h3>来月の注目項目</h3></div>
+            <div className="monthly-review-analysis-list">
+              {analysis.nextFocus.map((line) => (
+                <p key={line} className="monthly-review-summary-text">{line}</p>
+              ))}
+            </div>
           </section>
         </>
       )}
