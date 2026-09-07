@@ -865,9 +865,6 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
   const companyFilter = role === "system_admin" ? null : profile.company_id;
 
   const [{ data: companiesData, error: companiesError }, { data: storesData, error: storesError }, { data: profilesData, error: profilesError }, { data: userStoresData, error: userStoresError }, { data: storeProfilesData, error: storeProfilesError }] = await Promise.all([
-    // ai_analysis_enabledはここでは選択しない — AI分析設定はgetCompanyAiAnalysisSettings/
-    // updateCompanyAiAnalysisSettingだけを経由する独立した状態として扱う(tenant_snapshot/
-    // このログイン時ブートストラップ経由では取得・保持しない)。
     companyFilter
       ? supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).eq("id", companyFilter).order("created_at", { ascending: true })
       : fetchAllRowsPaginated(() => supabase.from("companies").select(COMPANY_CONTRACT_SELECT_COLUMNS).order("created_at", { ascending: true })),
@@ -1516,43 +1513,6 @@ export const deleteCompanyCompletely = async ({ companyId, confirmName, confirmP
     return { ok: false, error: new Error(data.error) };
   }
   return { ok: true, data };
-};
-
-// AI分析ON/OFFの唯一のsource of truthは companies.ai_analysis_enabled。tenant_snapshot・
-// hydrateFromSupabase・localStorage・appStateのどれも経由せず、常にこの2関数だけを通じて
-// companiesテーブルへ直接読み書きする(App.jsx側は独立したaiAnalysisSettings stateとして
-// 保持し、他の同期処理からは一切触らない)。
-export const getCompanyAiAnalysisSettings = async ({ companyIds }) => {
-  const ids = Array.from(new Set((companyIds || []).filter(Boolean)));
-  if (!isSupabaseConfigured || !ids.length) return { ok: true, data: [] };
-  try {
-    const { data, error } = await supabase.from("companies").select("id, ai_analysis_enabled").in("id", ids);
-    if (error) throw error;
-    return { ok: true, data: (data || []).map((row) => ({ id: row.id, aiAnalysisEnabled: Boolean(row.ai_analysis_enabled) })) };
-  } catch (error) {
-    logSupabaseError({ operation: "getCompanyAiAnalysisSettings", table: "companies", error });
-    return { ok: false, error, data: [] };
-  }
-};
-
-// AI分析(AI経営アシスタント)の会社単位ON/OFF。companiesのUPDATE用RLS(companies_update_
-// system_only)が既にsystem_admin限定になっているため、他の会社管理操作(createCompanyRecord
-// 等)と同じくEdge Functionを介さず直接クライアントから更新する — RLSそのものが権限の実体。
-export const updateCompanyAiAnalysisSetting = async ({ companyId, enabled }) => {
-  if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  const validationError = validateRequiredKeys({ companyId });
-  if (validationError) {
-    const detail = logSupabaseError({ operation: "updateCompanyAiAnalysisSetting", table: "companies", companyId, error: new Error(validationError) });
-    return { ok: false, error: new Error(detail.message) };
-  }
-  try {
-    const { data, error } = await supabase.from("companies").update({ ai_analysis_enabled: Boolean(enabled), updated_at: new Date().toISOString() }).eq("id", companyId).select("id, ai_analysis_enabled").single();
-    if (error) throw error;
-    return { ok: true, data: { id: data.id, aiAnalysisEnabled: Boolean(data.ai_analysis_enabled) } };
-  } catch (error) {
-    logSupabaseError({ operation: "updateCompanyAiAnalysisSetting", table: "companies", companyId, error });
-    return { ok: false, error };
-  }
 };
 
 export const createStoreRecord = async ({ companyId, name, code }) => {

@@ -121,8 +121,6 @@ import {
   loadTenantStateFromSupabase,
   ensureProfileForAuthUser,
   createCompanyRecord,
-  updateCompanyAiAnalysisSetting,
-  getCompanyAiAnalysisSettings,
   updateCompanyContractStatus,
   createCheckoutSession,
   createPortalSession,
@@ -225,9 +223,6 @@ import {
   formatDateLabel,
   formatYenOrEmpty,
 } from "./utils/contractBilling.js";
-import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
-import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
-import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
 import DailyInsightsCard from "./components/dashboard/DailyInsightsCard.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
@@ -456,11 +451,10 @@ const normalizeStoreNameForSimilarity = (name) =>
 // するため——店舗追加の重複防止を機に、資金・所属関連の同種の判定と同じくApp.jsxコンポーネント
 // 内の生のconstではなく独立した純粋関数へ切り出した)。
 
-// 日次入力画面の「今日のAI分析」を組み立てる。ここは詳しい原因分析・改善提案の場ではなく、
+// 日次入力画面の「今日のポイント」を組み立てる。ここは詳しい原因分析・改善提案の場ではなく、
 // (1)当日の売上・目標に対する状況 (2)入力KPIの中から特徴的な1〜2項目 (3)前向きな一言、を
-// 1〜3文で短く総括するだけの役割 — 詳細な分析・改善策は別画面の「AI経営アシスタント」に
-// 任せる。抽象的な「頑張りましょう」だけで終わらせず、必ず実際の入力値・設定済み目標値を
-// 根拠に文章を組み立てる。
+// 1〜3文で短く総括するだけの役割。抽象的な「頑張りましょう」だけで終わらせず、必ず実際の
+// 入力値・設定済み目標値を根拠に文章を組み立てる。100%ローカル計算(外部API不使用)。
 const buildDailyInsight = ({ form, target = {}, businessDayCount }) => {
   const totalSales = parseNumber(form.totalSales);
   const retailSales = parseNumber(form.retailSales);
@@ -1106,15 +1100,13 @@ function App() {
   const [inventoryTrackingDirty, setInventoryTrackingDirty] = useState(false);
   const [inputSettingsSaveStatus, setInputSettingsSaveStatus] = useState({ status: "idle", message: "" });
   const inputSettingsDirty = dailyFieldDirty || cashBreakdownDirty || inventoryTrackingDirty;
-  const [aiChatOpen, setAiChatOpen] = useState(false);
-  const [aiChatInitialQuestion, setAiChatInitialQuestion] = useState("");
   // モバイル(≤900px)のハンバーガーメニュー開閉。PC(>900px)ではCSS側で常時表示のため
   // この状態は一切参照されない。
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const lastPersistedRef = useRef("");
   // persistToSupabase(tenant_snapshotsへの丸ごと自動保存)は、下の useEffect が appState の
   // 変更のたびに(デバウンス無しで)即座に発火する。appStateが短時間に連続して変わると
-  // (例: 会社のAI分析トグルをONにした直後の再レンダリング)、1回目の書き込み(古いデータ)が
+  // (例: 会社情報を更新した直後の再レンダリング)、1回目の書き込み(古いデータ)が
   // 2回目の書き込み(新しいデータ)より後にSupabase側で完了することがあり、その場合
   // 「後に完了した方」が勝って新しい値を古い値で上書きしてしまう — 実際に本番の
   // tenant_snapshotsで、companiesテーブル側は正しくtrueなのに、直後に保存されたスナップ
@@ -1149,12 +1141,6 @@ function App() {
   // しまう(appStateRefで各呼び出しの入力を最新化しても、この完了順の逆転自体は防げない)。
   // 呼び出しごとに増分するIDを持たせ、自分より新しい呼び出しが既に開始されていたら、
   // 自分の結果は適用せずに破棄する。
-  //
-  // 注: AI分析ON/OFF(companies.ai_analysis_enabled)はこのhydrateFromSupabase/
-  // tenant_snapshotの経路を一切経由しない、完全に独立した状態として管理している
-  // (下のaiAnalysisSettings/getCompanyAiAnalysisSettings/updateCompanyAiAnalysisSetting
-  // 参照)。hydrateRequestRefはAI分析設定には無関係で、それ以外のcompanies/stores/
-  // 日次売上等のフィールドの新旧判定にのみ使う。
   const hydrateRequestRef = useRef(0);
   const hydrateRetryTimerRef = useRef(null);
   const hydrateRetryCountRef = useRef(0);
@@ -1170,18 +1156,6 @@ function App() {
   // 吸収される)。company_id・対象月のどちらかが異なる呼び出しは別キー扱いになるため、
   // 店舗切替・対象月変更で本当に必要な再取得を妨げることはない。
   const hydrateInFlightRef = useRef(null);
-  // AI分析ON/OFFの唯一のsource of truthは companies.ai_analysis_enabled。tenant_snapshot・
-  // hydrateFromSupabase・localStorage・appState.companiesのどれも経由しない、完全に独立した
-  // company単位のstate(companyId -> boolean)として持つ — ログイン時/会社一覧が変わった時に
-  // だけ取得し直し、それ以外(hydrate・focus・visibilitychange・pageshow・realtime・他の
-  // 画面の保存操作)からは一切書き換えない。値を変えられるのはhandleToggleCompanyAiAnalysis
-  // だけ。
-  const [aiAnalysisSettings, setAiAnalysisSettings] = useState({});
-  // トグル操作中のcompanyId集合。更新中のcompanyについては、並行して走る一覧再取得の結果で
-  // 上書きしない(更新中に古い取得結果が割り込んで一瞬OFFに戻る、のような表示のちらつきを
-  // 防ぐ)。setTimeout等の時間ベースの回避策ではなく、「今まさに更新中かどうか」という
-  // 状態そのもので判定する。
-  const aiAnalysisUpdatingRef = useRef(new Set());
   const { stores, selectedStore, selectedStoreId, selectedMonth } = appState;
   // 「全店舗」はcompany_admin専用の仮想ビュー(storesテーブルに実店舗として存在しない)。
   // selectedStoreがこの予約値のときは、以降のすべての店舗依存ロジックを分岐させる。
@@ -1200,31 +1174,6 @@ function App() {
   // 参照している全箇所は元々null許容の書き方(currentCompany?.や早期returnガード)に
   // なっているため、新たな崩れ方は生まない)。
   const currentCompany = useMemo(() => resolveCurrentCompany(appState.companies, appState.currentCompanyId), [appState.companies, appState.currentCompanyId]);
-  // ログイン時、および会社一覧の中身(id構成)が変わった時にだけ、companiesテーブルから
-  // AI分析設定を直接取得し直す。tenant_snapshotのhydrate/persistとは完全に別経路 — display-
-  // modeやPWA判定による分岐も持たない(Chrome/PWAで常に同じ処理を使う)。
-  const companyIdsKey = useMemo(() => (appState.companies || []).map((company) => company.id).filter(Boolean).sort().join(","), [appState.companies]);
-  useEffect(() => {
-    if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !companyIdsKey) return;
-    const companyIds = companyIdsKey.split(",");
-    let cancelled = false;
-    void getCompanyAiAnalysisSettings({ companyIds }).then((result) => {
-      if (cancelled || !result.ok) return;
-      setAiAnalysisSettings((prev) => {
-        const next = { ...prev };
-        result.data.forEach((row) => {
-          // トグル操作中のcompanyはこの一覧取得の結果で上書きしない — handleToggleCompany
-          // AiAnalysis自身が更新完了後に確定値を反映する(下記参照)。
-          if (aiAnalysisUpdatingRef.current.has(row.id)) return;
-          next[row.id] = row.aiAnalysisEnabled;
-        });
-        return next;
-      });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [authMode, currentUser?.authUserId, companyIdsKey]);
   // アーカイブ済み店舗を、店舗切替・ランキング・全店舗集計・日次入力対象など「通常運用」の
   // あらゆる場面から除外する単一の定義点(要件5)。停止中の店舗はここでは除外しない — 停止中
   // でも過去データの閲覧・店舗切替自体は引き続き可能で、新規入力のみを個別にブロックする
@@ -2078,8 +2027,8 @@ function App() {
   // (要件の正式フローの4番: 招待はsystem_adminが行う)。
   const needsFirstStoreSetup = Boolean(currentCompany) && !appState.isViewingFranchise && normalizeRole(currentRole) === "company_admin" && currentCompanyStores.length === 0;
   // 全店舗ビューではtarget/summary/businessDaySummaryを会社全体の集計版に差し替える。
-  // ここを分岐させるだけで、これらを参照しているダッシュボードのKPI・営業進捗・AI相談等
-  // (customerTargetSummary/dashboardSupportMetrics/AiChatScreen含む)は追加の変更なしに
+  // ここを分岐させるだけで、これらを参照しているダッシュボードのKPI・営業進捗等
+  // (customerTargetSummary/dashboardSupportMetrics含む)は追加の変更なしに
   // 全店舗の数値を正しく表示する。日次入力・費用入力・月締め・損益表は店舗ごとの機能のまま
   // (全店舗では別途non-store案内を表示、後述)なので、dailyEntries/fixedCostsは
   // 分岐させない(全店舗選択時はどのみち空/未使用になる)。
@@ -2400,14 +2349,6 @@ function App() {
     }
     setActivePage(item.page);
     if (item.openBusinessDayEditor) setIsBusinessDayEditing(true);
-  };
-  const openAiChat = (question = "") => {
-    setAiChatInitialQuestion(question);
-    setAiChatOpen(true);
-  };
-  const closeAiChat = () => {
-    setAiChatOpen(false);
-    setAiChatInitialQuestion("");
   };
   // Whether a monthly target actually exists in Supabase for the store+month currently on
   // screen — not just "is the target panel showing something", since that panel has its own
@@ -3078,9 +3019,6 @@ function App() {
       const companyId = companyIdOverride || profile.company_id || tenantState?.currentCompanyId || "";
       const company = (tenantState?.companies || []).find((item) => item.id === companyId) || (tenantState?.companies || [])[0] || null;
 
-      // AI分析ON/OFF(companies.ai_analysis_enabled)はこの関数の対象外 — 独立した
-      // aiAnalysisSettings state(getCompanyAiAnalysisSettings/updateCompanyAiAnalysisSetting
-      // 経由)だけが扱う。tenant_snapshotにも、以降のcompanies配列にも含まれない。
       // Single source of truth for "which store is actually selected right now" — see
       // resolvePreferredStoreSelection's own comments. tenantState here IS the current appState
       // at every call site, so it doubles as both the fresh tenant data and the "local" selection
@@ -5235,43 +5173,6 @@ function App() {
     }
   };
 
-  // AI分析(AI経営アシスタント)の会社単位ON/OFF。system_admin限定(canManageCompanies)
-  // — company_adminが自分の会社のAI契約を勝手に有効化できないようにする(要件: 通常
-  // ユーザーが自由に変更するのではなくsystem_admin側で管理する)。実際の強制力は
-  // companies_update_system_only RLS(system_admin以外はUPDATE自体が通らない)と、
-  // ai-assistant Edge Function側のcompany_id判定にある — このボタンはあくまでその操作口。
-  // OFFにしても過去のAI分析結果(チャット履歴等)は削除しない、新規のAPI呼び出しだけが
-  // 止まる(要件)。
-  // AI分析ON/OFFはappState/tenant_snapshotを一切経由しない、companiesテーブル直結の
-  // 独立した処理。Chrome/PWAで分岐は無く、常に同じ6ステップだけを行う。
-  // 1. 現在値を確認 → 2. 反対の値をUPDATE → 3. 成功を確認 → 4. 対象companyを再取得
-  // → 5. aiAnalysisSettingsへ反映 → 6. UIは再レンダリングで自動更新。
-  const handleToggleCompanyAiAnalysis = async (company) => {
-    if (!isSupabaseConfigured) return;
-    // 1. 現在のcompanies.ai_analysis_enabledを確認
-    const currentValue = Boolean(aiAnalysisSettings[company.id]);
-    const nextEnabled = !currentValue;
-    if (!window.confirm(`${company.name} のAI分析機能を${nextEnabled ? "有効化" : "無効化"}しますか？${nextEnabled ? "" : "\n無効化すると、この会社では新規のAI分析・AI APIの呼び出しができなくなります(過去の分析結果は削除されません)。"}`)) return;
-    // 更新中は、並行して走りうる一覧再取得(useEffect)がこのcompanyIdを上書きしないようにする。
-    aiAnalysisUpdatingRef.current.add(company.id);
-    try {
-      // 2. 反対の値をSupabaseへUPDATE
-      const updateResult = await updateCompanyAiAnalysisSetting({ companyId: company.id, enabled: nextEnabled });
-      // 3. UPDATE成功を確認
-      if (!updateResult.ok) {
-        setNotice(`AI分析設定の変更に失敗しました: ${getSupabaseErrorMessage(updateResult.error)}`);
-        return;
-      }
-      // 4. 対象companyをSupabaseから再取得
-      const confirmResult = await getCompanyAiAnalysisSettings({ companyIds: [company.id] });
-      const confirmedValue = confirmResult.ok && confirmResult.data.length ? confirmResult.data[0].aiAnalysisEnabled : nextEnabled;
-      // 5. 最新値を反映(6. UIはこのstateの変化で自動的に再描画される)
-      setAiAnalysisSettings((prev) => ({ ...prev, [company.id]: confirmedValue }));
-    } finally {
-      aiAnalysisUpdatingRef.current.delete(company.id);
-    }
-  };
-
   // 店舗の状態は運営中/停止中/アーカイブの3段階(要件1) — 停止/再開/アーカイブ/復元の4操作は
   // すべて update-store-status Edge Function(service-role)経由にする。以前はこの4操作が全て
   // 同じ stores.is_active フラグを書くだけで見分けがつかず、「削除」ボタンも実質同じ処理
@@ -6180,8 +6081,7 @@ function App() {
     // Dock版PWAはウィンドウが背景化/復帰する際、Chromeの通常タブとは異なる組み合わせで
     // focus/visibilitychange/pageshowが発火する(pageshowはbfcache復帰時に単独で発火する
     // ことがある)。どの経路でもhydrateFromSupabase(日次売上・目標・費用等、companies
-    // テーブル以外の同期データ)を最新化する。AI分析設定はこの経路を経由しない(独立した
-    // aiAnalysisSettings/getCompanyAiAnalysisSettingsのみで管理する)。
+    // テーブル以外の同期データ)を最新化する。
     const handleRehydrateTrigger = () => {
       if (!isSupabaseConfigured || authMode !== "app" || !currentUser?.authUserId || !currentUser?.profileId) return;
       void hydrateFromSupabase({
@@ -7178,7 +7078,7 @@ function App() {
       setDailyMode("view");
       setDailyOriginalEntry({ ...existingEntry });
       // 月をまたぐ場合、target/businessDaySummaryはまだ古い月のまま(上と同じ理由)なので、
-      // 古い月の営業日数を基準にした誤ったAI分析コメントを一瞬でも見せないよう空にする——
+      // 古い月の営業日数を基準にした誤ったポイントを一瞬でも見せないよう空にする——
       // 次のレンダーで新しい月のtarget/businessDaySummaryが揃った時点までは表示しない。
       setDailyInsight(isCrossMonth ? "" : buildDailyInsight({ form: existingEntry, target, businessDayCount: businessDaySummary.businessDayCount || 0 }));
       return;
@@ -8682,7 +8582,6 @@ function App() {
                 ))}
               </div>
               </div>
-              {currentCompany && aiAnalysisSettings[currentCompany.id] ? <AiAssistantCard onOpen={() => openAiChat()} /> : null}
               {todayEntry ? (
                 <div className="today-result-card">
                   <div className="panel-heading compact">
@@ -9299,11 +9198,11 @@ function App() {
                   </div>
 
                   {/* 要件14: 分析可能なデータが無い(buildDailyInsightが「不足」の定型文を返した)
-                      場合はカード自体を非表示にする——AI分析ロジック・判定基準は既存のまま、
-                      表示条件だけを追加する。 */}
-                  {currentCompany && aiAnalysisSettings[currentCompany.id] && dailyInsight && dailyInsight !== "分析に必要なデータが不足しています" ? (
+                      場合はカード自体を非表示にする——判定ロジック・判定基準は既存のまま、
+                      表示条件だけを追加する。100%ローカル計算のため契約状態には依存しない。 */}
+                  {currentCompany && dailyInsight && dailyInsight !== "分析に必要なデータが不足しています" ? (
                     <div className="insight-card">
-                      <p className="eyebrow">今日のAI分析</p>
+                      <p className="eyebrow">今日のポイント</p>
                       <strong>{dailyInsight}</strong>
                     </div>
                   ) : null}
@@ -10249,9 +10148,6 @@ function App() {
                         {company.contractStatus === "free" && (
                           <span>理由 {company.freeReason ? FREE_REASON_LABELS[company.freeReason] || company.freeReason : "未設定"}</span>
                         )}
-                        {canManageCompanies(currentRole) && (
-                          <span className={`status-pill ${aiAnalysisSettings[company.id] ? "saved" : "warning"}`}>AI分析 {aiAnalysisSettings[company.id] ? "ON" : "OFF"}</span>
-                        )}
                       </div>
                       {/* 契約状態ごとの利用期間・関連日付(2026-09-02、契約管理の拡張)。
                           利用期間は常にcompany.startedAt(=created_at)からの通算 — 契約状態が
@@ -10365,14 +10261,6 @@ function App() {
                               <option key={status} value={status}>{CONTRACT_STATUS_LABELS[status]}へ変更</option>
                             ))}
                           </select>
-                        )}
-                        {/* AI分析の契約ON/OFFはsystem_admin限定(要件) — company_adminには
-                            ボタン自体を出さない(UIを隠すだけでなくRLS/Edge Function側でも
-                            強制しているのは上のhandleToggleCompanyAiAnalysis参照)。 */}
-                        {canManageCompanies(currentRole) && (
-                          <button className="text-button" type="button" onClick={() => handleToggleCompanyAiAnalysis(company)}>
-                            AI分析を{aiAnalysisSettings[company.id] ? "無効化" : "有効化"}
-                          </button>
                         )}
                       </div>
                       {addAdminCompanyId === company.id && (
@@ -11195,34 +11083,6 @@ function App() {
           <AdOpsPage userId={appState.currentUserId} />
         )}
       </main>
-      {/* AI分析はaiAnalysisSettings(companies.ai_analysis_enabledの独立した取得結果)が
-          trueの会社のみ表示する(要件: OFFの会社ではAI分析ボタン・AIコメント等を一切表示
-          しない)。実際の利用停止はai-assistant Edge Function側のcompany_id判定が担保して
-          おり、これはあくまでUI上の入口を隠すだけ — フローティングボタン自体を出さなければ
-          チャット画面(AiChatScreen)を開く経路がそもそも無くなる。 */}
-      {currentCompany && aiAnalysisSettings[currentCompany.id] && (
-        <>
-          {/* 日次入力UI改善(要件9): スマホ固定アクションバー(daily-fixed-action-bar)が
-              出ている間は、AIボタンがそれに被らないよう追加でクラスを渡す
-              (ai-floating-button-raised、App.cssの≤900pxブロックでbottomをさらに上げる)。
-              他ページ・PC・バー非表示時はclassNameが空文字のまま(見た目は無変更)。 */}
-          <AiFloatingButton onClick={() => openAiChat()} className={showDailyFixedActionBar ? "ai-floating-button-raised" : ""} />
-          {aiChatOpen ? (
-            <AiChatScreen
-              role={currentRole}
-              storeName={selectedStoreEntity?.name || selectedStore}
-              storeId={selectedStoreId}
-              monthValue={selectedMonth}
-              isAllStoresView={isAllStoresView}
-              summary={summary}
-              target={target}
-              businessDaySummary={businessDaySummary}
-              initialQuestion={aiChatInitialQuestion}
-              onClose={closeAiChat}
-            />
-          ) : null}
-        </>
-      )}
     </div>
   );
 }

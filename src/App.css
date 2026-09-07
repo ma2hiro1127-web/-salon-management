@@ -618,61 +618,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .ai-focus-card.good { background: rgba(46, 163, 97, 0.08); }
 .ai-focus-card.warning { background: rgba(245, 158, 11, 0.1); }
 .ai-focus-card.saving { background: rgba(47, 125, 246, 0.1); }
-/* AI経営アシスタント: ダッシュボードカード / クイック質問チップ / フローティングボタン / チャット画面 */
-.ai-assistant-card { margin-top: 14px; padding: 16px; border-radius: 18px; border: 1px solid rgba(47, 125, 246, 0.18); background: linear-gradient(135deg, rgba(47, 125, 246, 0.06), var(--surface-strong)); display: flex; flex-direction: column; gap: 10px; }
-/* 売上画面UI/UX改善(要件7・23): 右下の常設AiFloatingButtonと役割が重複しないよう、
-   売上画面のこのカードは1行に収まるコンパクト表示にする(視線の流れで主KPIより後ろに
-   来る想定のため、面積を最小限にする)。 */
-.ai-assistant-card-compact { margin-top: 10px; padding: 12px 16px; gap: 0; }
-.ai-assistant-compact-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.ai-assistant-compact-label { font-size: 0.88rem; font-weight: 700; color: var(--text); }
-.ai-assistant-compact-button { flex-shrink: 0; white-space: nowrap; padding: 7px 14px; font-size: 0.82rem; }
-.ai-chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
-.ai-chip { border: 1px solid var(--border); background: var(--surface-strong); color: var(--text); border-radius: 999px; padding: 7px 14px; font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease; }
-.ai-chip:hover { transform: translateY(-1px); border-color: var(--accent); box-shadow: 0 4px 12px rgba(47, 125, 246, 0.14); }
-
-.ai-floating-button {
-  position: fixed;
-  /* safe-area-inset(iPhoneのホームインジケーター・ノッチ、PWAホーム追加時)を考慮する。
-     非対応ブラウザではenv()が0扱いになるため既存の20px/24pxのまま変わらない(要件8)。 */
-  right: calc(20px + env(safe-area-inset-right, 0px)); bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 40;
-  display: inline-flex; align-items: center; gap: 6px; padding: 12px 18px; border-radius: 999px;
-  border: none; background: linear-gradient(135deg, #3b8cff, #2f7df6); color: #fff; font-weight: 800; font-size: 0.95rem;
-  box-shadow: 0 14px 28px rgba(47, 125, 246, 0.32); cursor: pointer; transition: transform 140ms ease, box-shadow 140ms ease;
-}
-.ai-floating-button:hover { transform: translateY(-2px); box-shadow: 0 18px 34px rgba(47, 125, 246, 0.4); }
-
-.ai-chat-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(15, 23, 42, 0.45); display: flex; align-items: stretch; justify-content: center; }
-.ai-chat-screen { width: 100%; max-width: 720px; margin: 0 auto; background: var(--surface-strong); display: flex; flex-direction: column; box-shadow: -12px 0 40px rgba(15, 23, 42, 0.18); }
-.ai-chat-header { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); flex-shrink: 0; }
-.ai-chat-back { border: 1px solid var(--border); background: var(--surface); border-radius: 999px; width: 36px; height: 36px; font-size: 1.1rem; cursor: pointer; flex-shrink: 0; }
-.ai-chat-header-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ai-chat-header-text strong { font-size: 1rem; }
-.ai-chat-header-text span { color: var(--muted); font-size: 0.82rem; }
-.ai-chat-messages { flex: 1; overflow-y: auto; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
-.ai-chat-empty { display: flex; flex-direction: column; gap: 10px; }
-.ai-chat-message { max-width: 82%; padding: 10px 14px; border-radius: 16px; font-size: 0.92rem; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
-.ai-chat-message.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-.ai-chat-message.assistant { align-self: flex-start; background: var(--surface); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
-.ai-chat-typing { color: var(--muted); font-style: italic; }
-
-/* AIの回答(Markdown)の見た目。react-markdownが生成する通常のブロック要素を装飾するだけで、
-   HTMLを直接注入する実装ではない。white-space:normal でブロック要素自身の余白に任せる。 */
-.ai-chat-markdown { white-space: normal; }
-.ai-chat-markdown > *:first-child { margin-top: 0; }
-.ai-chat-markdown > *:last-child { margin-bottom: 0; }
-.ai-chat-markdown p { margin: 0 0 10px; }
-.ai-chat-markdown h1, .ai-chat-markdown h2, .ai-chat-markdown h3 { margin: 14px 0 8px; font-size: 1rem; line-height: 1.4; }
-.ai-chat-markdown strong { font-weight: 700; }
-.ai-chat-markdown ul, .ai-chat-markdown ol { margin: 0 0 10px; padding-left: 1.3em; }
-.ai-chat-markdown li { margin-bottom: 4px; }
-.ai-chat-markdown li > p { margin: 0; }
-.ai-chat-markdown hr { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
-.ai-chat-markdown code { background: rgba(148, 163, 184, 0.16); border-radius: 4px; padding: 1px 5px; font-size: 0.85em; word-break: break-word; }
-.ai-chat-error { margin: 0; }
-.ai-chat-input-row { display: flex; gap: 10px; padding: 14px 18px; border-top: 1px solid var(--border); flex-shrink: 0; }
-.ai-chat-input-row textarea { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 14px; padding: 10px 12px; font: inherit; max-height: 120px; }
-.ai-chat-input-row button { flex-shrink: 0; }
 .today-result-card { margin-top: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 18px; background: var(--accent-soft); }
 /* 店舗売上ランキング: 順位・店舗名・現在売上・先月売上だけのシンプルな表示
    (達成率%・前回順位・トレンド矢印・展開式の詳細は廃止)。 */
@@ -916,10 +861,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      クラス自体が付かないため、空の余白が残ることはない。 */
   .stack.has-daily-fixed-action-bar { padding-bottom: calc(78px + env(safe-area-inset-bottom, 0px)); }
   .stack.has-daily-fixed-action-bar .daily-action-row-inline { display: none; }
-  /* 要件9: AIフローティングボタンが固定アクションバーに被らないよう、バー表示中だけ
-     さらに上へ逃がす(App.jsx側でshowDailyFixedActionBarの時だけai-floating-button-raised
-     クラスを付与)。 */
-  .ai-floating-button.ai-floating-button-raised { bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
 }
 
 @media (max-width: 640px) {
@@ -1070,26 +1011,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .brand { margin-bottom: 12px; }
   .brand strong { font-size: 0.92rem; }
   .brand small { font-size: 0.74rem; }
-  /* スマホUI改善(要件6): AI分析エリアをもう少しコンパクトに。「AIに相談する ＞」が1行で
-     収まるよう、ボタンは大きくしすぎず(padding据え置き)、上下の余白だけを詰める。 */
-  .ai-assistant-card-compact { margin-top: 8px; padding: 10px 12px; }
-  .ai-assistant-compact-row { gap: 8px; }
-  .ai-assistant-compact-label { font-size: 0.84rem; }
-  /* スマホ版UI最終調整(要件4): スクロール中もカードの文字・数字・ボタンに被りにくいよう、
-     現在位置(右14px/下18px)から右端・下端の余白をそれぞれ+10px広げる。ボタン自体の
-     サイズ(padding/フォント)は変更しない。PC版(このメディアクエリの外)の配置には
-     影響しない。 */
-  .ai-floating-button { right: calc(24px + env(safe-area-inset-right, 0px)); bottom: calc(28px + env(safe-area-inset-bottom, 0px)); padding: 12px 16px; font-size: 0; }
-  .ai-floating-button span:first-child { font-size: 1.2rem; }
-  /* 要件8/最終調整要件4: ランキング・売上構成カードの一番下がAIボタンの真下に来ないよう、
-     右カラム全体に安全な余白を確保する(ボタンの新しい位置に合わせて64px→76pxへ拡大)。
-     ボタン自体を押しにくくするのではなく、コンテンツ側に余白を持たせる方式。 */
-  .dashboard-right-column { padding-bottom: calc(76px + env(safe-area-inset-bottom, 0px)); }
-  .ai-chat-screen { max-width: 100%; }
-  .ai-chat-message { max-width: 90%; }
-  .ai-chat-header { padding: 12px 14px; }
-  .ai-chat-messages { padding: 14px; }
-  .ai-chat-input-row { padding: 10px 14px; }
 }
 
 /* 小型スマートフォン(iPhone SE等)だけ.kpi-gridも1列に落とす。それ以外のiPhone幅は
@@ -1250,7 +1171,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      ない — 個別に隠す(印刷実行時にたまたま開いていても紙面に出さない)。.modal-overlayは
      印刷確認モーダル自体を含む全モーダル共通クラス — 「印刷画面を開く」クリック直後の
      再レンダー猶予中に万一DOM上へ残っていても紙面に出ないようにする安全策。 */
-  .sidebar, .topbar, .dashboard-print-hide, .ai-floating-button, .month-picker-overlay, .month-picker-panel, .unclosed-stores-popover-overlay, .unclosed-stores-popover, .modal-overlay { display: none !important; }
+  .sidebar, .topbar, .dashboard-print-hide, .month-picker-overlay, .month-picker-panel, .unclosed-stores-popover-overlay, .unclosed-stores-popover, .modal-overlay { display: none !important; }
   .app-shell, .main-content { display: block !important; background: #fff !important; padding: 0 !important; }
   .dashboard-print-area { display: block !important; }
   /* 画面上は非表示の店舗名・対象月見出しを、印刷時だけ表示する(要件4)。 */
