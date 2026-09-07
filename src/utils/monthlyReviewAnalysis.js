@@ -1,7 +1,21 @@
-// 月次レビュー自動分析(2026-09追加、2026-09に2度再修正)。生成AI APIは一切使わず、既存の
+// 月次レビュー自動分析(2026-09追加、2026-09に3度再修正)。生成AI APIは一切使わず、既存の
 // 月次損益計算(calculateMonthSummary/calculateAllStoresMonthSummary/getCompanyDashboardSummary)
-// の戻り値を読むだけで、①総評 ②要確認ポイント ③来月の注目項目、の3ブロックをテンプレート+
-// 数値判定で自動生成する。
+// の戻り値を読むだけで、①総評 ②変化が大きかった項目、の2ブロックをテンプレート+数値判定で
+// 自動生成する。
+//
+// 2026-09再修正(4回目)の経緯・要件: 目的を「注意喚起」ではなく「数字から今月何が起きたかを
+// 一瞬で理解できること」に変更した。
+//   - 「〜が悪化しています」という評価語を先に出すタイトルを廃止し、指標ごとに中立な
+//     事実表現(「〜が減少しています」「〜が前月を下回っています」等)へ統一した
+//     (CONCERN_TITLE参照)。
+//   - 「来月の注目項目」ブロックは削除した(抽象的な助言で新しい情報が無いため)。
+//   - 変化が大きい項目を最大3件に絞り、同じ原因から派生する重複表示を避ける
+//     (例: 総売上減少の主要因が客数・客単価で説明できる場合は総売上を出さない、
+//     REDUNDANT_WITH参照)。加えて、営業利益率・人件費率・材料費率のような構造指標を
+//     結果指標(総売上・営業利益)より優先して選ぶ(CONCERN_TIER参照)。
+//   - 総評は売上だけで良し悪しを判断せず、売上と営業利益が逆方向に動いた場合は
+//     「売上は減少しましたが、〜により営業利益は増加しました」のように両方を対比して
+//     述べる。
 //
 // 2026-09再修正(3回目)の経緯・要件:
 //   1. 月締め(monthClosingStatus)には一切依存しない。今まさに損益表へ反映されている
@@ -31,11 +45,7 @@ import {
 } from "./storage.js";
 
 export const MONTHLY_INSIGHT_THRESHOLDS = {
-  maxConcernPoints: 5,
-  maxNextFocus: 3,
-  // 人件費率がこの値を超えている場合、今月の増減に関わらず「来月も引き続き確認すべき
-  // 項目」として扱う(要件8の例: 「人件費率45%超→来月の人件費率」)。
-  highLaborRateThreshold: 45,
+  maxConcernPoints: 3,
 };
 
 // 指標カタログ。「率」(pt差、金額換算しない)と「金額・件数」(前月比%)で計算方法が違う。
@@ -43,21 +53,41 @@ export const MONTHLY_INSIGHT_THRESHOLDS = {
 // excludeFromConcernList: trueの指標(人件費額・材料費額)は、この値の増減だけで改善/悪化
 // 一覧には出さない(要件5: 金額増加=悪化、と誤判定させないための構造的なガード)。
 // 文章の根拠説明(成長率の比較)にだけ使う。
+// concernTitle: 「変化が大きかった項目」の見出し(この指標がworsened=前月より悪い方向へ
+// 動いた時の表現)。「悪化」「問題」等の評価語を避け、まず数値の変化そのものを事実として
+// 表す中立表現に統一する(要件1)。
 const METRIC_DEFS = {
-  sales: { kind: "amount", direction: "higherIsBetter", label: "総売上", format: "yen" },
-  operatingProfit: { kind: "amount", direction: "higherIsBetter", label: "営業利益", format: "yen" },
-  technicalSales: { kind: "amount", direction: "higherIsBetter", label: "技術売上", format: "yen" },
-  retailSales: { kind: "amount", direction: "higherIsBetter", label: "店販売上", format: "yen" },
-  customers: { kind: "amount", direction: "higherIsBetter", label: "客数", format: "people" },
-  newCustomers: { kind: "amount", direction: "higherIsBetter", label: "新規客数", format: "people" },
-  repeatCustomers: { kind: "amount", direction: "higherIsBetter", label: "再来客数", format: "people" },
-  averageSpend: { kind: "amount", direction: "higherIsBetter", label: "客単価", format: "yen", verb: "rise" },
-  reviewCount: { kind: "amount", direction: "higherIsBetter", label: "口コミ数", format: "count" },
-  operatingMargin: { kind: "rate", direction: "higherIsBetter", label: "営業利益率", format: "percent" },
-  laborRate: { kind: "rate", direction: "lowerIsBetter", label: "人件費率", format: "percent" },
-  materialRate: { kind: "rate", direction: "lowerIsBetter", label: "材料・仕入原価率", format: "percent" },
+  sales: { kind: "amount", direction: "higherIsBetter", label: "総売上", format: "yen", concernTitle: "総売上が前月を下回っています" },
+  operatingProfit: { kind: "amount", direction: "higherIsBetter", label: "営業利益", format: "yen", concernTitle: "営業利益が前月を下回っています" },
+  technicalSales: { kind: "amount", direction: "higherIsBetter", label: "技術売上", format: "yen", concernTitle: "技術売上が前月を下回っています" },
+  retailSales: { kind: "amount", direction: "higherIsBetter", label: "店販売上", format: "yen", concernTitle: "店販売上が前月を下回っています" },
+  customers: { kind: "amount", direction: "higherIsBetter", label: "客数", format: "people", concernTitle: "客数が減少しています" },
+  newCustomers: { kind: "amount", direction: "higherIsBetter", label: "新規客数", format: "people", concernTitle: "新規客数が減少しています" },
+  repeatCustomers: { kind: "amount", direction: "higherIsBetter", label: "再来客数", format: "people", concernTitle: "再来客数が減少しています" },
+  averageSpend: { kind: "amount", direction: "higherIsBetter", label: "客単価", format: "yen", verb: "rise", concernTitle: "客単価が低下しています" },
+  reviewCount: { kind: "amount", direction: "higherIsBetter", label: "口コミ数", format: "count", concernTitle: "口コミ数が減少しています" },
+  operatingMargin: { kind: "rate", direction: "higherIsBetter", label: "営業利益率", format: "percent", concernTitle: "営業利益率が低下しています" },
+  laborRate: { kind: "rate", direction: "lowerIsBetter", label: "人件費率", format: "percent", concernTitle: "人件費率が上昇しています" },
+  materialRate: { kind: "rate", direction: "lowerIsBetter", label: "材料・仕入原価率", format: "percent", concernTitle: "材料・仕入原価率が上昇しています" },
   laborCost: { kind: "amount", direction: "higherIsBetter", label: "人件費", format: "yen", excludeFromConcernList: true },
   materialCost: { kind: "amount", direction: "higherIsBetter", label: "材料・仕入原価", format: "yen", excludeFromConcernList: true },
+};
+
+// 変化が大きい項目を最大3件に絞る際の優先順位(要件2)。営業利益率・人件費率・材料費率の
+// ような「構造指標」は、総売上・営業利益のような「結果指標」より優先して選ぶ——利益率が
+// 動いた原因(人件費率・材料費率)の方が、単なる結果の羅列より情報量が大きいため。
+const CONCERN_TIER = {
+  operatingMargin: 1, laborRate: 1, materialRate: 1,
+  sales: 2, operatingProfit: 2, technicalSales: 2, retailSales: 2,
+  customers: 3, newCustomers: 3, repeatCustomers: 3, averageSpend: 3, reviewCount: 3,
+};
+
+// 同じ変化から派生する項目を重複して並べない(要件2)。合計指標(総売上・客数)が、その
+// 内訳にあたる指標(客数・客単価/新規・再来)と同時に「変化が大きい項目」の候補になって
+// いる場合は、より具体的な内訳側を残し、合計側は表示から外す。
+const REDUNDANT_WITH = {
+  sales: ["customers", "averageSpend"],
+  customers: ["newCustomers", "repeatCustomers"],
 };
 
 const formatValue = (value, format) => {
@@ -179,72 +209,101 @@ function laborRateBasisClause(comparisons) {
 }
 
 // 営業利益率が動いた主要因(要件6)。人件費率・材料費率という、実際に確定済みの比較結果
-// からだけ言えることを述べる——生産性等、データの無い原因は書かない。
-function profitDriverClause(comparisons) {
+// からだけ言えることを述べる——生産性等、データの無い原因は書かない。「〜により、」と
+// 文中に埋め込める名詞句として返す(総評で「〜により営業利益は増加しました」のように
+// 使うため)。特定できない場合は空文字を返す。
+function profitDriverReason(comparisons) {
   const margin = comparisons.operatingMargin;
   if (!margin || margin.judgment === "no_comparison" || margin.judgment === "unchanged") return "";
   const laborState = comparisons.laborRate?.judgment;
   const materialState = comparisons.materialRate?.judgment;
   if (margin.judgment === "worsened") {
-    if (laborState === "worsened" && materialState === "worsened") return "人件費率・材料費率がともに上昇しており、利益を圧迫しています。";
-    if (laborState === "worsened") return "人件費率の上昇が主な要因です。";
-    if (materialState === "worsened") return "材料・仕入原価率の上昇が主な要因です。";
+    if (laborState === "worsened" && materialState === "worsened") return "人件費率・材料費率の上昇";
+    if (laborState === "worsened") return "人件費率の上昇";
+    if (materialState === "worsened") return "材料・仕入原価率の上昇";
     return "";
   }
-  if (laborState === "improved" && materialState === "improved") return "人件費率・材料費率がともに改善したことが主な要因です。";
-  if (laborState === "improved") return "人件費率の改善が主な要因です。";
-  if (materialState === "improved") return "材料・仕入原価率の改善が主な要因です。";
+  if (laborState === "improved" && materialState === "improved") return "人件費率・材料費率の改善";
+  if (laborState === "improved") return "人件費率の改善";
+  if (materialState === "improved") return "材料・仕入原価率の改善";
   return "";
 }
 
 // ①総評。実データ→差分→経営上の意味、の順で2〜4文にまとめる。抽象論・励まし文は
-// 一切含めない。前月データが無い場合は当月の実績だけを事実として述べる。
+// 一切含めない。前月データが無い場合は当月の実績だけを事実として述べる。売上だけで
+// 良し悪しを判断せず(要件4)、売上と営業利益が逆方向に動いた場合は「売上は減少しました
+// が、〜により営業利益は増加しました」のように1文で対比して述べる——売上の増減だけを
+// 強調して不必要にネガティブな印象を与えないようにする。
 function buildSummaryText(comparisons, current) {
   const sales = comparisons.sales;
-  const sentences = [];
   if (!sales || sales.judgment === "no_comparison") {
-    sentences.push(`今月の総売上は${formatValue(current.sales, "yen")}でした。比較できる前月データが無いため、今月の実績のみを表示しています。`);
-    return sentences.join("");
+    return `今月の総売上は${formatValue(current.sales, "yen")}でした。比較できる前月データが無いため、今月の実績のみを表示しています。`;
   }
-  const salesVerb = sales.diff >= 0 ? "増加" : "減少";
-  sentences.push(`売上は前月比${pct1(sales.percentChange)}${salesVerb}しました。`);
+  const salesGood = sales.diff >= 0;
+  const salesVerb = salesGood ? "増加" : "減少";
+  const salesClause = `売上は前月比${pct1(sales.percentChange)}${salesVerb}しました`;
 
+  const sentences = [];
   const profit = comparisons.operatingProfit;
   const margin = comparisons.operatingMargin;
   if (profit && margin && profit.judgment !== "no_comparison" && margin.judgment !== "no_comparison") {
     if (profit.diff === 0 && margin.diff === 0) {
-      sentences.push(`営業利益は${formatValue(profit.current, "yen")}、営業利益率は${margin.current.toFixed(1)}%で、前月から変化ありませんでした。`);
+      sentences.push(`${salesClause}。営業利益は${formatValue(profit.current, "yen")}、営業利益率は${margin.current.toFixed(1)}%で、前月から変化ありませんでした。`);
     } else {
+      const profitGood = profit.diff > 0 ? true : profit.diff < 0 ? false : null;
       const profitVerb = profit.diff > 0 ? "増加" : "減少";
-      const marginVerb = margin.diff > 0 ? "上昇" : "低下";
-      const driver = profitDriverClause(comparisons);
-      sentences.push(
-        `営業利益は${formatValue(profit.previous, "yen")}から${formatValue(profit.current, "yen")}へ${profitVerb}し、営業利益率も${margin.previous.toFixed(1)}%から${margin.current.toFixed(1)}%へ${pt1(margin.diff)}${marginVerb}しました。${driver}`
-      );
+      const marginVerb = margin.diff > 0 ? "改善" : "低下";
+      const reason = profitDriverReason(comparisons);
+      const reasonClause = reason ? `${reason}により、` : "";
+      const profitSentence = `${reasonClause}営業利益は${formatValue(profit.previous, "yen")}から${formatValue(profit.current, "yen")}へ${profitVerb}し、営業利益率も${margin.previous.toFixed(1)}%から${margin.current.toFixed(1)}%へ${pt1(margin.diff)}${marginVerb}しました。`;
+      if (profitGood !== null && profitGood !== salesGood) {
+        // 売上と営業利益が逆方向 → 「〜が、」で1文につなげ、売上だけの評価に見えないようにする。
+        sentences.push(`${salesClause}が、${profitSentence}`);
+      } else {
+        sentences.push(`${salesClause}。`);
+        sentences.push(profitSentence);
+      }
     }
+  } else {
+    sentences.push(`${salesClause}。`);
   }
 
-  const laborClause = laborRateBasisClause(comparisons);
-  // laborRateBasisClauseの"worsened"文言(要因説明)はプロフィットドライバー文と重複する
-  // ため、総評では「改善しているのに金額は増えている」ケース(要件5の例1)だけを載せる。
-  // 悪化時の詳細な根拠説明は③要確認ポイント側で個別に述べる。
+  // 要件5の例1(人件費額は増えているが人件費率は改善しているケース)だけ、金額と率が
+  // 逆方向に見えて誤解されやすいため補足する。悪化時の詳細な根拠説明は②側で個別に述べる。
   if (comparisons.laborRate?.judgment === "improved") {
+    const laborClause = laborRateBasisClause(comparisons);
     if (laborClause) sentences.push(laborClause);
   }
 
   return sentences.join("");
 }
 
-// ②要確認ポイント。実際に悪化した指標だけを、数字から直接言える根拠付きで表示する。
-// 人件費(laborCost)・材料費(materialCost)の金額そのものは対象外(要件5、excludeFromConcernList)
-// ——人件費率・材料費率(pt差)だけで判定する。
+// ②変化が大きかった項目。実際に前月より悪い方向へ動いた指標だけを、数字から直接言える
+// 根拠付きで表示する(要件2)。人件費(laborCost)・材料費(materialCost)の金額そのものは
+// 対象外(要件5、excludeFromConcernList)——人件費率・材料費率(pt差)だけで判定する。
+// 同じ変化から派生する重複表示を避け(REDUNDANT_WITH)、構造指標を優先して(CONCERN_TIER)
+// 最大3件に絞る。
 function buildConcernPoints(comparisons, thresholds) {
-  const candidates = Object.entries(comparisons).filter(([key, c]) => c.judgment === "worsened" && !METRIC_DEFS[key]?.excludeFromConcernList);
-  const magnitude = ([, c]) => (c.percentChange !== null ? Math.abs(c.percentChange) : Math.abs(c.diff));
-  return candidates
-    .sort((a, b) => magnitude(b) - magnitude(a))
+  let keys = Object.keys(comparisons).filter((key) => comparisons[key].judgment === "worsened" && !METRIC_DEFS[key]?.excludeFromConcernList);
+  const keySet = new Set(keys);
+  for (const [aggregateKey, driverKeys] of Object.entries(REDUNDANT_WITH)) {
+    if (keySet.has(aggregateKey) && driverKeys.some((driverKey) => keySet.has(driverKey))) {
+      keySet.delete(aggregateKey);
+    }
+  }
+  keys = keys.filter((key) => keySet.has(key));
+
+  const magnitude = (key) => {
+    const c = comparisons[key];
+    return c.percentChange !== null ? Math.abs(c.percentChange) : Math.abs(c.diff);
+  };
+  const tierOf = (key) => CONCERN_TIER[key] ?? 4;
+
+  return keys
+    .sort((a, b) => (tierOf(a) - tierOf(b)) || (magnitude(b) - magnitude(a)))
     .slice(0, thresholds.maxConcernPoints)
-    .map(([key, c]) => {
+    .map((key) => {
+      const c = comparisons[key];
       let detail = describeComparison(key, c);
       if (key === "laborRate") {
         const basis = laborRateBasisClause(comparisons);
@@ -252,42 +311,8 @@ function buildConcernPoints(comparisons, thresholds) {
       } else if (key === "materialRate" && comparisons.operatingMargin?.judgment === "worsened") {
         detail += "原価負担の上昇も営業利益率低下の一因です。";
       }
-      return { id: key, title: `${METRIC_DEFS[key].label}が悪化しています`, detail };
+      return { id: key, title: METRIC_DEFS[key].concernTitle, detail };
     });
-}
-
-// ③来月の注目項目。今月の要確認ポイントに挙がった指標名をそのまま拾う(具体的な指標名の
-// みで、行動提案やコンサル的な文章は書かない)。加えて、人件費率が絶対的に高い水準
-// (highLaborRateThreshold超)の場合は、今月悪化していなくても来月も見るべき項目として拾う
-// (要件8の例)。特に確認すべき項目が無ければ、ユーザー指定の定型文だけを返す。
-// 来月の注目項目は「結果指標(売上・営業利益)」より「構造指標(人件費率・材料費率・
-// 営業利益率)」を優先して選ぶ——来月実際に追う価値があるのは、要因になっている率の方
-// だという判断(要件8の例が人件費率/材料費率/営業利益率/売上回復のみを挙げているのに
-// 合わせる)。営業利益そのものは営業利益率で代替できるため候補から外す。
-const NEXT_FOCUS_PRIORITY = ["laborRate", "materialRate", "operatingMargin", "sales", "customers", "averageSpend", "newCustomers", "repeatCustomers", "retailSales", "technicalSales", "reviewCount"];
-
-function buildNextFocus(comparisons, concernPoints, thresholds) {
-  const labelFor = (key) => {
-    if (key === "sales") return "売上の回復";
-    return METRIC_DEFS[key]?.label || key;
-  };
-  const keys = concernPoints.map((point) => point.id).filter((key) => key !== "operatingProfit");
-  if (
-    Number.isFinite(comparisons.laborRate?.current) &&
-    comparisons.laborRate.current > thresholds.highLaborRateThreshold &&
-    !keys.includes("laborRate")
-  ) {
-    keys.push("laborRate");
-  }
-  const priorityRank = (key) => {
-    const index = NEXT_FOCUS_PRIORITY.indexOf(key);
-    return index === -1 ? NEXT_FOCUS_PRIORITY.length : index;
-  };
-  const uniqueKeys = [...new Set(keys)].sort((a, b) => priorityRank(a) - priorityRank(b)).slice(0, thresholds.maxNextFocus);
-  if (uniqueKeys.length === 0) {
-    return ["現在の利益率を維持できるか確認してください。"];
-  }
-  return uniqueKeys.map((key) => `来月は${labelFor(key)}を確認してください。`);
 }
 
 // hasData:false(当月にまだ何も入力が無い)の場合だけ、他の計算を一切行わず即座に返す。
@@ -300,15 +325,13 @@ export function analyzeMonthlyReview({
   thresholds = MONTHLY_INSIGHT_THRESHOLDS,
 } = {}) {
   if (!current?.hasData) {
-    return { hasData: false, summaryText: "", concernPoints: [], nextFocus: [], comparisons: {} };
+    return { hasData: false, summaryText: "", concernPoints: [], comparisons: {} };
   }
   const comparisons = buildMetricComparisons(current, previous, fieldsEnabled);
-  const concernPoints = buildConcernPoints(comparisons, thresholds);
   return {
     hasData: true,
     summaryText: buildSummaryText(comparisons, current),
-    concernPoints,
-    nextFocus: buildNextFocus(comparisons, concernPoints, thresholds),
+    concernPoints: buildConcernPoints(comparisons, thresholds),
     comparisons,
   };
 }
