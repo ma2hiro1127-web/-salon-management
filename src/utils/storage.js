@@ -1177,7 +1177,6 @@ export const buildPersistenceComparableState = (state = {}) => ({
   allStoresTargets: undefined,
   allStoresBusinessDaySettings: undefined,
   allStoresHolidays: undefined,
-  monthlyReviews: undefined,
   storeStatusAuditLog: undefined,
   cashBreakdownResults: undefined,
   dailyBatchEntries: undefined,
@@ -1207,7 +1206,6 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
   storeMonthlyCostOverrides: mergeShallowMap(localState.storeMonthlyCostOverrides, remoteState.storeMonthlyCostOverrides),
-  monthlyReviews: mergeShallowMap(localState.monthlyReviews, remoteState.monthlyReviews),
   cashBreakdownResults: mergeShallowMap(localState.cashBreakdownResults, remoteState.cashBreakdownResults),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
@@ -2985,42 +2983,11 @@ export const getMonthlyReviewSummary = (state, { storeId, isAllStoresView, compa
   };
 };
 
-// 月次レビューの自由記述4項目。company_id・store_id(全店舗はnull)・target_monthの3つで
-// 一意に定まる(要件6)。storeIdが空文字/未指定なら全店舗(会社全体)レビューのキーを使う——
-// buildMonthKey/buildCompanyMonthKeyは既存の他機能(店休日・目標設定等)と全く同じキー生成
-// 関数を再利用しているだけで、月次レビュー専用の新しいキー形式は作らない。
-export const buildMonthlyReviewKey = (companyId, storeId, monthValue) =>
-  storeId ? buildMonthKey(storeId, monthValue) : buildCompanyMonthKey(companyId, monthValue);
-
-export const getMonthlyReviewText = (state, { companyId, storeId }, monthValue) => {
-  const key = buildMonthlyReviewKey(companyId, storeId, monthValue);
-  return state.monthlyReviews?.[key] || { reflection: "", challenges: "", improvements: "", next_actions: "", updatedAt: "" };
-};
-
-export const monthlyReviewRowToEntry = (row = {}) => ({
-  id: row.id,
-  reflection: row.reflection || "",
-  challenges: row.challenges || "",
-  improvements: row.improvements || "",
-  next_actions: row.next_actions || "",
-  updatedAt: row.updated_at || "",
-});
-
-export const buildMonthlyReviewStateFromRows = (rows = []) => {
-  const monthlyReviews = {};
-  (Array.isArray(rows) ? rows : []).forEach((row) => {
-    if (!row.company_id || !row.target_month) return;
-    const key = buildMonthlyReviewKey(row.company_id, row.store_id, row.target_month);
-    monthlyReviews[key] = monthlyReviewRowToEntry(row);
-  });
-  return { monthlyReviews };
-};
-
 // 文字列シードから安定したインデックスを作るだけの軽量ハッシュ。同じシードなら常に同じ
 // バリアントを選ぶため同一レンダー内でコメントが揺れ動くことはないが、シードに日付を含めて
 // 呼び出すことで、同じ状況でも日が変われば言い回しが変わる(状態を持たずに「毎日変化し、
 // 同じ文章が続かない」を実現する)。
-const pickVariant = (variants, seed) => {
+export const pickVariant = (variants, seed) => {
   const text = String(seed || "");
   let hash = 0;
   for (let index = 0; index < text.length; index += 1) {

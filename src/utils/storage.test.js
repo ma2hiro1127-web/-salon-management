@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, buildMonthlyReviewKey, getMonthlyReviewText, buildMonthlyReviewStateFromRows, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getAiAnalysis, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -3530,7 +3530,7 @@ test("回帰再現: overlay適用前(nextRemoteState相当、店舗選択等の�
 // これらのフィールドだけが変わった場合でも「差分あり」と誤判定され、実際には中身が1バイトも
 // 変わらない無駄なtenant_snapshots書き込み→Realtime自己通知→自分自身の再取得、という連鎖が
 // 発生する(月次レビューの保存後、数秒遅れて画面全体がガクつく不具合の真因だった)。
-test("buildPersistenceComparableState: monthlyReviews/dailyResults等、独自のSupabaseテーブルを持ちtenant_snapshotsのpayloadに含まれないフィールドは比較対象から除外され、その変更だけでは「差分あり」と判定されない(無駄な書き込み・Realtime自己通知・再取得連鎖の防止)", () => {
+test("buildPersistenceComparableState: dailyResults等、独自のSupabaseテーブルを持ちtenant_snapshotsのpayloadに含まれないフィールドは比較対象から除外され、その変更だけでは「差分あり」と判定されない(無駄な書き込み・Realtime自己通知・再取得連鎖の防止)", () => {
   const baseState = { selectedStore: "A店", currentCompanyId: "c1" };
   const excludedFieldChanges = {
     dailyResults: { "A店__2026-08": [{ id: "1", date: "2026-08-01" }] },
@@ -3546,7 +3546,6 @@ test("buildPersistenceComparableState: monthlyReviews/dailyResults等、独自�
     allStoresTargets: { "c1__2026-08": { targetSales: 5000000 } },
     allStoresBusinessDaySettings: { "c1__2026-08": {} },
     allStoresHolidays: { "c1__2026-08": [] },
-    monthlyReviews: { "c1::A店::2026-08": { reflection: "今月は好調でした" } },
     storeStatusAuditLog: [{ storeId: "s1", status: "suspended" }],
     cashBreakdownResults: { "A店__2026-08": { "2026-08-01": { cashAmount: 1000 } } },
     dailyBatchEntries: { "A店__2026-08": [{ id: "b1" }] },
@@ -3762,36 +3761,6 @@ test("getMonthlyReviewSummary: 利益・営業利益・利益率にあたるフ�
   forbiddenKeys.forEach((forbiddenKey) => {
     assert.ok(!(forbiddenKey in summary), `${forbiddenKey} は月次レビューのサマリーに含めてはいけない`);
   });
-});
-
-test("buildMonthlyReviewKey: storeId指定時は店舗別キー、未指定時は会社全体キーになる(要件6: 店舗Aと店舗Bと全社のレビューが混ざらない)", () => {
-  assert.equal(buildMonthlyReviewKey("company-1", "store-a", "2026-08"), "store-a__2026-08");
-  assert.equal(buildMonthlyReviewKey("company-1", "store-b", "2026-08"), "store-b__2026-08");
-  assert.equal(buildMonthlyReviewKey("company-1", "", "2026-08"), "company-1__2026-08");
-  assert.notEqual(buildMonthlyReviewKey("company-1", "store-a", "2026-08"), buildMonthlyReviewKey("company-1", "store-b", "2026-08"));
-});
-
-test("buildMonthlyReviewStateFromRows / getMonthlyReviewText: DB行から店舗別・全社別のマップを正しく再構築し、対象月を変更して戻ってもレビュー文章が復元される", () => {
-  const rows = [
-    { company_id: "company-1", store_id: "store-a", target_month: "2026-08", reflection: "店舗Aの8月振り返り", challenges: "", improvements: "", next_actions: "", updated_at: "2026-08-20T00:00:00Z" },
-    { company_id: "company-1", store_id: "store-a", target_month: "2026-07", reflection: "店舗Aの7月振り返り", challenges: "", improvements: "", next_actions: "", updated_at: "2026-07-20T00:00:00Z" },
-    { company_id: "company-1", store_id: null, target_month: "2026-08", reflection: "全社の8月振り返り", challenges: "", improvements: "", next_actions: "", updated_at: "2026-08-20T00:00:00Z" },
-  ];
-  const { monthlyReviews } = buildMonthlyReviewStateFromRows(rows);
-  const state = { monthlyReviews };
-
-  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08").reflection, "店舗Aの8月振り返り");
-  // 2026-08 → 2026-07 → 2026-08 と対象月を切り替えても、それぞれ正しい文章が復元される。
-  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-07").reflection, "店舗Aの7月振り返り");
-  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08").reflection, "店舗Aの8月振り返り");
-  // 全社レビューは店舗Aのレビューと混ざらない。
-  assert.equal(getMonthlyReviewText(state, { companyId: "company-1", storeId: "" }, "2026-08").reflection, "全社の8月振り返り");
-});
-
-test("getMonthlyReviewText: 未保存の月は空文字のフォームを返す(存在しないキーでも例外を投げない)", () => {
-  const state = createInitialAppState();
-  const result = getMonthlyReviewText(state, { companyId: "company-1", storeId: "store-a" }, "2026-08");
-  assert.deepEqual(result, { reflection: "", challenges: "", improvements: "", next_actions: "", updatedAt: "" });
 });
 
 // 「複数アカウントでログイン後にアプリが開けない障害」の再発防止テスト群。

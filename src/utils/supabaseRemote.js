@@ -84,7 +84,7 @@ export const buildTenantSnapshotRow = ({ company, store, user, appState, targetM
     currentAuthUserId: resolvedAuthUserId,
     // dailyResults/targets/fixedCosts/costMonthlyAmounts/storeInventoryBalances/
     // variableCosts/monthClosing/monthClosingStatus/storeHolidays/allStoresTargets/
-    // allStoresBusinessDaySettings/allStoresHolidays/monthlyReviews/storeStatusAuditLog/
+    // allStoresBusinessDaySettings/allStoresHolidays/storeStatusAuditLog/
     // cashBreakdownResults/dailyBatchEntries/businessDaySettings/dayClosingStates/
     // dayClosingUpdatedAt/dailyResultBackups/companySnapshotsは意図的に含めない——上の
     // コメント参照。呼び出し元(hydrateFromSupabaseの「snapshotがある」分岐)はこれらの

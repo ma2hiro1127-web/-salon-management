@@ -77,10 +77,7 @@ import {
   getAllStoresBusinessDaySummary,
   getUnclosedStoresForDate,
   getMonthlyReviewSummary,
-  getMonthlyReviewText,
-  buildMonthlyReviewStateFromRows,
-  buildMonthlyReviewKey,
-  monthlyReviewRowToEntry,
+  getCompanyDashboardSummary,
   resolvePreferredStoreSelection,
   resolveCurrentCompany,
   resolveHydrateDispatch,
@@ -106,6 +103,8 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
+import { analyzeDailyInsights, aggregateDailyEntriesAcrossStores } from "./utils/dailyInsights.js";
+import { analyzeMonthlyReview, getMonthlyReviewMetrics } from "./utils/monthlyReviewAnalysis.js";
 import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions, canManageAdOps } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
 import { computeAnchoredPopoverPosition } from "./utils/popoverPosition.js";
@@ -176,8 +175,6 @@ import {
   deleteAllStoresHolidayFromSupabase,
   loadFixedCostsForCompany,
   loadStoreStatusAuditLogForCompany,
-  loadMonthlyReviewsForCompany,
-  upsertMonthlyReview,
   upsertFixedCostToSupabase,
   deleteFixedCostFromSupabase,
   reorderFixedCostsInSupabase,
@@ -233,6 +230,7 @@ import AiAssistantCard from "./components/ai/AiAssistantCard.jsx";
 import AiFloatingButton from "./components/ai/AiFloatingButton.jsx";
 import AiChatScreen from "./components/ai/AiChatScreen.jsx";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
+import DailyInsightsCard from "./components/dashboard/DailyInsightsCard.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
 import FaqPage from "./components/faq/FaqPage.jsx";
 import MonthlyReviewPage from "./components/monthlyReview/MonthlyReviewPage.jsx";
@@ -1812,8 +1810,8 @@ function App() {
   // 切り替えた時「だけ」下書きを作り直す——selectedStoreEntity自体は他の保存操作のたびに
   // 新しいオブジェクト参照になる(appStateが少しでも変わるたびcurrentCompanyStoresが
   // 再生成されるため)ため、依存配列にオブジェクトそのものを使うと、無関係な自動保存の
-  // たびに入力中のスタッフ数等が上書きされてしまう(MonthlyReviewPageのcontextKeyと同じ
-  // 理由の対策)。selectedStoreEntity?.id という値だけを見ることでこれを避ける。
+  // たびに入力中のスタッフ数等が上書きされてしまう。selectedStoreEntity?.id という値だけを
+  // 見ることでこれを避ける。
   const selectedStoreIdForBasicSettings = selectedStoreEntity?.id || "";
   useEffect(() => {
     if (!selectedStoreEntity) {
@@ -2153,6 +2151,41 @@ function App() {
       : getBusinessDaySummary(appState, selectedStoreId, selectedMonth)),
     [appState, currentCompanyStores, isAllStoresView, selectedStoreId, selectedMonth]
   );
+  // 日次「要確認ポイント」・月次レビュー自動分析の両方で使う「この項目は入力設定で
+  // 有効か」の判定(2026-09追加)。既存のshowXxxField/companyHasDailyFieldEnabledを
+  // そのまま再利用するだけで、新しい判定ロジックは作らない。
+  const analysisFieldsEnabled = useMemo(() => (
+    isAllStoresView
+      ? {
+          customers: companyHasDailyFieldEnabled("customers"),
+          newCustomers: companyHasDailyFieldEnabled("customers") && companyHasDailyFieldEnabled("newCustomers"),
+          repeatCustomers: companyHasDailyFieldEnabled("customers") && companyHasDailyFieldEnabled("repeatCustomers"),
+          retailSales: companyHasDailyFieldEnabled("retailSales"),
+        }
+      : {
+          customers: showCustomersField,
+          newCustomers: showNewCustomersField,
+          repeatCustomers: showRepeatCustomersField,
+          retailSales: showRetailSalesField,
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  ), [isAllStoresView, currentCompanyStores, showCustomersField, showNewCustomersField, showRepeatCustomersField, showRetailSalesField]);
+  // 日次「要確認ポイント」(2026-09追加)。売上ページ(dashboard)を見ている時だけ計算する
+  // (monthlyReviewSummaryと同じ「表示していないページのために重い計算をしない」設計)。
+  // 全店舗ビューは店舗ごとに判定して複数件出すのではなく、日付単位で店舗横断合算した
+  // 日次配列を1回だけ判定にかける(「大量表示しない」要件に沿う、既存のgetStoreDashboardRows
+  // とは異なりここでは率を扱わないため合算のみで問題ない)。
+  const dailyInsightsResult = useMemo(() => {
+    if (activePage !== "dashboard") return { insights: [], hasAnomaly: false };
+    const previousMonthValue = getMonthOffset(selectedMonth, -1);
+    const currentMonthDaily = isAllStoresView
+      ? aggregateDailyEntriesAcrossStores(currentCompanyStores.map((store) => getDailyResultsForStoreMonth(appState, store.id, selectedMonth)))
+      : dailyEntries;
+    const previousMonthDaily = isAllStoresView
+      ? aggregateDailyEntriesAcrossStores(currentCompanyStores.map((store) => getDailyResultsForStoreMonth(appState, store.id, previousMonthValue)))
+      : getDailyResultsForStoreMonth(appState, selectedStoreId, previousMonthValue);
+    return analyzeDailyInsights({ currentMonthDaily, previousMonthDaily, fieldsEnabled: analysisFieldsEnabled, seed: `${selectedStoreId}-${selectedMonth}` });
+  }, [activePage, appState, isAllStoresView, currentCompanyStores, selectedStoreId, selectedMonth, dailyEntries, analysisFieldsEnabled]);
   // 月次レビュー(利益管理ではない、店舗・会社全体で共有するための数字サマリー+自由記述)。
   // 数字はgetMonthlyReviewSummary(既存のcalculateMonthSummary/calculateAllStoresMonthSummaryを
   // そのまま再利用、重複計算ロジックを作らない)、対象は「今表示中の店舗/全店舗ビュー」——
@@ -2173,81 +2206,22 @@ function App() {
     }, selectedMonth)),
     [activePage, appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth]
   );
-  const monthlyReviewKeyStoreId = isAllStoresView ? "" : selectedStoreId;
-  const monthlyReviewText = useMemo(
-    () => getMonthlyReviewText(appState, { companyId: appState.currentCompanyId, storeId: monthlyReviewKeyStoreId }, selectedMonth),
-    [appState, monthlyReviewKeyStoreId, selectedMonth]
-  );
-  const [monthlyReviewSaveStatus, setMonthlyReviewSaveStatus] = useState({ status: "idle", message: "" });
-  const monthlyReviewSaveTimerRef = useRef(null);
-  // 権限判定の二重実装を解消(総合品質チェックで発見した問題E): 以前はコンポーネント内で
-  // もっと後ろに定義されるisFranchiseReadOnlyForCurrentUser(const、TDZの対象)を呼べず、
-  // 判定式そのものをここへ手書きで複製していた(【緊急障害の直接原因】として過去に修正した
-  // TDZクラッシュの再発防止コメントが残っていた箇所)。isFranchiseReadOnly(isViewingFranchise,
-  // role)をpermissions.js側の純粋関数として切り出し、モジュールレベルでimportする形に
-  // したことで、コンポーネント内のconst宣言順序(TDZ)に一切依存しなくなった——
-  // isFranchiseReadOnlyForCurrentUser(下記)もこの同じ関数を呼ぶだけになり、判定が
-  // 将来ズレる余地が構造的に無くなっている。
-  const canEditMonthlyReview = canEditMonthlyData(currentRole) && !isFranchiseReadOnly(appState.isViewingFranchise, currentRole);
-  // 保存直後にDBが実際に保存した値でappStateを更新する(「送ったつもりの値」で信じない、
-  // 直近の保存/削除/停止/招待の各修正と同じ方針)。company_id・store_id・target_monthの
-  // 3つで一意に定まるため、店舗Aと店舗B、全店舗ビューのレビューが混ざることは無い(要件6)。
-  const performMonthlyReviewSave = async (companyId, storeId, targetMonth, fields) => {
-    setMonthlyReviewSaveStatus({ status: "saving", message: "保存中…" });
-    try {
-      if (isSupabaseConfigured) {
-        const result = await upsertMonthlyReview({ companyId, storeId, targetMonth, userId: appState.currentUserId, fields });
-        if (!result.ok) throw result.error || new Error("保存に失敗しました");
-        const confirmedRow = result.data;
-        const key = buildMonthlyReviewKey(companyId, storeId, targetMonth);
-        setAppState((prev) => ({
-          ...prev,
-          monthlyReviews: {
-            ...prev.monthlyReviews,
-            [key]: confirmedRow
-              ? monthlyReviewRowToEntry(confirmedRow)
-              : { reflection: fields.reflection, challenges: fields.challenges, improvements: fields.improvements, next_actions: fields.next_actions, updatedAt: new Date().toISOString() },
-          },
-        }));
-      } else {
-        const key = buildMonthlyReviewKey(companyId, storeId, targetMonth);
-        setAppState((prev) => ({
-          ...prev,
-          monthlyReviews: { ...prev.monthlyReviews, [key]: { reflection: fields.reflection, challenges: fields.challenges, improvements: fields.improvements, next_actions: fields.next_actions, updatedAt: new Date().toISOString() } },
-        }));
-      }
-      setMonthlyReviewSaveStatus({ status: "saved", message: "保存済み" });
-    } catch (error) {
-      setMonthlyReviewSaveStatus({ status: "error", message: `保存に失敗しました: ${getSupabaseErrorMessage(error)}` });
-    }
-  };
-  // debounce付き自動保存(要件7) — 入力のたびにDBへ大量リクエストしないよう400ms(既存の
-  // 日次入力自動保存と同じ間隔)待ってから送信する。
-  const saveMonthlyReviewFields = (fields) => {
-    if (guardFranchiseReadOnly()) return;
-    if (!canEditMonthlyReview) return;
-    if (monthlyReviewSaveTimerRef.current) window.clearTimeout(monthlyReviewSaveTimerRef.current);
-    const companyId = appState.currentCompanyId;
-    const storeId = monthlyReviewKeyStoreId;
-    const targetMonth = selectedMonth;
-    monthlyReviewSaveTimerRef.current = window.setTimeout(() => {
-      monthlyReviewSaveTimerRef.current = null;
-      void performMonthlyReviewSave(companyId, storeId, targetMonth, fields);
-    }, 400);
-  };
-  // 入力欄からフォーカスが外れた瞬間(=画面遷移・タブ切替・他要素クリック等の直前に必ず
-  // 起こる)に、debounceを待たず即座に保存する(要件7: 「画面遷移や再読み込みで文章が
-  // 消えないように」の直接の対応)。保留中のdebounceタイマーがあれば止めて、代わりにこちらを
-  // 即実行することで、同じ内容を二重送信しない。
-  const flushMonthlyReviewSave = (fields) => {
-    if (guardFranchiseReadOnly()) return;
-    if (!canEditMonthlyReview) return;
-    if (monthlyReviewSaveTimerRef.current) {
-      window.clearTimeout(monthlyReviewSaveTimerRef.current);
-      monthlyReviewSaveTimerRef.current = null;
-    }
-    void performMonthlyReviewSave(appState.currentCompanyId, monthlyReviewKeyStoreId, selectedMonth, fields);
-  };
+  // 月次レビュー自動分析(2026-09追加、自由記述4項目の廃止に伴う置き換え)。月締め後
+  // (isClosed)にだけ実際に4ブロックを計算する——月途中は「前月確定値との単純比較で
+  // 誤解を招く表示」を構造的に防ぐため、analyzeMonthlyReview自体がisClosed:falseなら
+  // 何も計算せず即座に返す。全店舗ビューの月締め判定はgetCompanyDashboardSummaryの
+  // isFullyClosed(既存の「各店舗の締め状態を横断してAND判定」ロジック)をそのまま使う。
+  const monthlyReviewAnalysisResult = useMemo(() => {
+    if (activePage !== "monthlyReview") return null;
+    const metricsArgs = { storeId: selectedStoreId, isAllStoresView, company: currentCompany, storeEntity: selectedStoreEntity, companyStores: currentCompanyStores };
+    const isClosed = isAllStoresView
+      ? getCompanyDashboardSummary(appState, currentCompany, selectedMonth).isFullyClosed
+      : Boolean(appState.monthClosingStatus?.[buildMonthKey(selectedStoreId, selectedMonth)]?.closed);
+    const current = getMonthlyReviewMetrics(appState, metricsArgs, selectedMonth);
+    const previous = getMonthlyReviewMetrics(appState, metricsArgs, getMonthOffset(selectedMonth, -1));
+    const twoMonthsAgo = getMonthlyReviewMetrics(appState, metricsArgs, getMonthOffset(selectedMonth, -2));
+    return analyzeMonthlyReview({ current, previous, twoMonthsAgo, isClosed, fieldsEnabled: analysisFieldsEnabled, seed: `${selectedStoreId}-${selectedMonth}` });
+  }, [activePage, appState, selectedStoreId, isAllStoresView, currentCompany, selectedStoreEntity, currentCompanyStores, selectedMonth, analysisFieldsEnabled]);
 
   // スマホUI改善(要件7): 店舗売上ランキングをスマホ幅だけTOP3に折りたたむ表示状態。
   // ランキング自体の計算・順位・同額判定・先月売上は一切変更せず(rankingRowsをそのまま
@@ -3182,7 +3156,6 @@ function App() {
         storeHolidaysResult,
         allStoresHolidaysResult,
         fixedCostsResult,
-        monthlyReviewsResult,
         storeStatusAuditLogResult,
         costMonthlyAmountsResult,
         storeInventoryBalancesResult,
@@ -3234,10 +3207,6 @@ function App() {
         // getFixedCostsForStoreMonth), so — unlike monthly_targets/monthly_closings above — this
         // can't be windowed to a few recent months; fetch every fixed_costs row for the company.
         timeHydrateQuery("fixedCosts", loadFixedCostsForCompany({ companyId })),
-        // monthly_reviews(月次レビューの自由記述4項目)。fixed_costsと同じ理由で月ウィンドウを
-        // 設けず会社全体を丸ごと取得する — 対象月を過去へ切り替えても保存済みの文章が正しく
-        // 復元される必要があるため(要件6)。
-        timeHydrateQuery("monthlyReviews", loadMonthlyReviewsForCompany({ companyId })),
         // store_status_audit_log(店舗の停止/再開/アーカイブ/復元/削除の履歴)。RLSでcompany_admin/
         // system_admin以外には空配列が返る(store_manager/staffには非公開) — その場合
         // getStoreStatusAsOfDateは常にnullを返し、呼び出し側は現在のstores.statusだけで代替
@@ -3301,9 +3270,6 @@ function App() {
 
       if (!fixedCostsResult.ok) throw fixedCostsResult.error || new Error("固定費データの取得に失敗しました");
       const fixedCostsOverlay = buildFixedCostsStateFromRows(fixedCostsResult.data);
-
-      if (!monthlyReviewsResult.ok) throw monthlyReviewsResult.error || new Error("月次レビューデータの取得に失敗しました");
-      const monthlyReviewsOverlay = buildMonthlyReviewStateFromRows(monthlyReviewsResult.data);
 
       const storeStatusAuditLogRows = (storeStatusAuditLogResult.data || []).map((row) => ({
         storeId: row.store_id,
@@ -3406,19 +3372,11 @@ function App() {
           Object.keys(mergedCostMonthlyAmounts || {}).filter((key) => costItemIds.has(key.split("__")[0]))
         );
       };
-      // monthly_reviewsも同じ理由(fixed_costsと同じく無制限取得)でwindowedExpectedKeysを
-      // 使えない——ただしcostMonthlyAmountsと違い費用項目のような親子関係を経由する必要は無く、
-      // 単純に「この会社の店舗キー、またはこの会社自身の全店舗キーに一致するローカルの既存
-      // キー」がそのまま期待キーになる(companyStoreIdPrefixesは上のfixedCosts処理で既に
-      // 定義済みのものを再利用する)。
-      const monthlyReviewsExpectedKeysFor = (mergedMonthlyReviews) => new Set(
-        Object.keys(mergedMonthlyReviews || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)) || key.startsWith(`${companyId}__`))
-      );
-      // store_monthly_cost_overridesもcost_monthly_amounts/monthly_reviewsと同じく会社全体を
-      // 無制限取得している(過去月の確定額を月ウィンドウの外でも正しく復元する必要があるため)。
-      // キー形状は`${storeId}__${targetMonth}`(storeInventoryBalancesと同じ)だが、windowed
-      // ExpectedKeysは対象月ウィンドウ限定のため使えない — monthlyReviewsExpectedKeysForと
-      // 同じ考え方で、この会社の店舗プレフィックスに一致する既存キーを丸ごと期待キーとする。
+      // store_monthly_cost_overridesもcost_monthly_amountsと同じく会社全体を無制限取得している
+      // (過去月の確定額を月ウィンドウの外でも正しく復元する必要があるため)。キー形状は
+      // `${storeId}__${targetMonth}`(storeInventoryBalancesと同じ)だが、windowedExpectedKeys
+      // は対象月ウィンドウ限定のため使えない——この会社の店舗プレフィックスに一致する既存
+      // キーを丸ごと期待キーとする。
       const storeMonthlyCostOverridesExpectedKeysFor = (mergedStoreMonthlyCostOverrides) => new Set(
         Object.keys(mergedStoreMonthlyCostOverrides || {}).filter((key) => companyStoreIdPrefixes.some((prefix) => key.startsWith(prefix)))
       );
@@ -3446,7 +3404,6 @@ function App() {
           // (mergeRemoteAppStateの `...remoteState` 展開により自動的に「remote優先」になる)。
           storeStatusAuditLog: storeStatusAuditLogRows,
           fixedCosts: fixedCostsOverlay.fixedCosts,
-          monthlyReviews: monthlyReviewsOverlay.monthlyReviews,
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
           storeMonthlyCostOverrides: storeMonthlyCostOverridesOverlay.storeMonthlyCostOverrides,
@@ -3548,7 +3505,6 @@ function App() {
           // expected set from this company's own cost item ids (just resolved via the fixedCosts
           // merge above), unbounded across every month (see costMonthlyAmountsExpectedKeysFor).
           costMonthlyAmounts: pruneStaleKeys(merged.costMonthlyAmounts, costMonthlyAmountsExpectedKeysFor(merged.fixedCosts, merged.costMonthlyAmounts), costMonthlyAmountsOverlay.costMonthlyAmounts),
-          monthlyReviews: pruneStaleKeys(merged.monthlyReviews, monthlyReviewsExpectedKeysFor(merged.monthlyReviews), monthlyReviewsOverlay.monthlyReviews),
           // storeInventoryBalances keys are `${storeId}__${targetMonth}` — the same shape
           // windowedExpectedKeys already uses, so it can be reused directly (unlike costMonthlyAmounts).
           storeInventoryBalances: pruneStaleKeys(merged.storeInventoryBalances, windowedExpectedKeys, storeInventoryBalancesOverlay.storeInventoryBalances),
@@ -4792,7 +4748,7 @@ function App() {
   // 権限を持つため対象外(既存挙動そのまま)。実際のセキュリティ境界はRLS(加盟店データへの
   // INSERT/UPDATE/DELETEポリシーは一切追加していない)であり、これはUX目的の早期returnに
   // すぎない — 保存ハンドラの先頭で呼び、trueが返れば以降の処理を中断する。判定式自体は
-  // permissions.jsのisFranchiseReadOnlyへ集約済み(canEditMonthlyReviewと同じ実装を共有)。
+  // permissions.jsのisFranchiseReadOnlyへ集約済み。
   const isFranchiseReadOnlyForCurrentUser = () => isFranchiseReadOnly(appState.isViewingFranchise, currentRole);
   const guardFranchiseReadOnly = () => {
     if (!isFranchiseReadOnlyForCurrentUser()) return false;
@@ -8619,6 +8575,7 @@ function App() {
                   <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
                 </div>
               </div>
+              <DailyInsightsCard insights={dailyInsightsResult.insights} />
               <div className="kpi-sales-section">
               <div className="panel-heading">
                 <div>
@@ -11209,17 +11166,10 @@ function App() {
         {activePage === "monthlyReview" && (
           <MonthlyReviewPage
             summary={monthlyReviewSummary}
-            text={monthlyReviewText}
+            analysis={monthlyReviewAnalysisResult}
             monthValue={selectedMonth}
             isAllStoresView={isAllStoresView}
             storeName={isAllStoresView ? "全店舗" : (selectedStoreEntity?.name || selectedStore)}
-            canEdit={canEditMonthlyReview}
-            saveStatus={monthlyReviewSaveStatus}
-            onSaveFields={saveMonthlyReviewFields}
-            onFlushFields={flushMonthlyReviewSave}
-            // storeName(表示名)ではなくid基準のキー——同名店舗が別会社(加盟店等)に存在
-            // しても下書きのリセット判定が正しく別物として扱われるようにする。
-            reviewContextKey={`${appState.currentCompanyId}::${isAllStoresView ? "all" : selectedStoreId}::${selectedMonth}`}
           />
         )}
         {activePage === "faq" && (

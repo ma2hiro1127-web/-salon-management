@@ -275,6 +275,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .business-progress-grid div { display: flex; flex-direction: column; gap: 4px; }
 .business-progress-grid span { color: var(--muted); font-size: 0.78rem; line-height: 1.3; }
 .business-progress-grid strong { font-size: 1rem; font-weight: 700; line-height: 1.3; }
+/* 日次「要確認ポイント」カード(2026-09追加)。営業進捗カードの直下に横幅100%の
+   独立カードとして配置する(要件: 営業進捗カードの隣に置かない)。 */
+.daily-insights-card { padding: 16px; border-radius: 18px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 14px; width: 100%; max-width: 100%; box-sizing: border-box; }
+.daily-insights-header { margin-bottom: 10px; }
+.daily-insights-header h3 { margin: 2px 0 0; }
+.daily-insights-empty { margin: 0; color: var(--muted); font-size: 0.9rem; }
+.daily-insights-list { display: flex; flex-direction: column; gap: 10px; }
+.daily-insight-item { padding: 10px 12px; border-radius: 12px; background: rgba(100, 116, 139, 0.08); border-left: 3px solid var(--muted); }
+.daily-insight-item.warning { background: rgba(245, 158, 11, 0.1); border-left-color: var(--warning); }
+.daily-insight-item.danger { background: rgba(220, 38, 38, 0.1); border-left-color: var(--danger); }
+.daily-insight-title { display: block; font-size: 0.92rem; margin-bottom: 2px; }
+.daily-insight-detail { margin: 0; font-size: 0.84rem; color: var(--muted); line-height: 1.4; }
 .status-chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 999px; font-size: 0.82rem; font-weight: 700; }
 .status-chip.good { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .status-chip.warning { background: rgba(245, 158, 11, 0.16); color: var(--warning); }
@@ -1023,6 +1035,7 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      表示スペースだけ圧縮する)。要件9: カード自体の上下margin/paddingもスマホだけ少し縮小。 */
   .business-progress-card { padding: 12px; margin-bottom: 10px; }
   .business-progress-header { margin-bottom: 6px; }
+  .daily-insights-card { padding: 12px; margin-bottom: 10px; }
   /* スマホUI改善(要件2): 進捗率チップとプログレスバーが視覚的な主役になるよう、少しだけ
      強める。.status-chipは日次入力画面の帯(daily-progress-compact)とも共有クラスのため、
      影響が売上ダッシュボードのこのカードだけに閉じるよう.business-progress-headerを親に
@@ -1271,13 +1284,6 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    独自の色トークンは作らない — 幹部MT・店舗MT共有でそのまま画面を見せられるデザインという
    要件を、既存の見慣れたパネルの並びの延長として実現するため。 */
 .monthly-review-context-strip { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
-.monthly-review-save-chip { font-size: 0.8rem; font-weight: 700; padding: 4px 10px; border-radius: 999px; background: rgba(100, 116, 139, 0.12); color: var(--muted); white-space: nowrap; }
-.monthly-review-save-chip.saving { background: var(--accent-soft); color: var(--accent); }
-.monthly-review-save-chip.saved { background: rgba(22, 163, 74, 0.16); color: var(--success); }
-.monthly-review-save-chip.error { background: rgba(227, 87, 87, 0.12); color: var(--danger); }
-/* 文字入力時の画面ガクつき対策: displayのon/offではなくvisibilityで隠す(要素自体は常に
-   マウントされたまま、DOM挿入・削除による高さの変動を起こさない)。 */
-.monthly-review-save-chip.is-empty { visibility: hidden; }
 
 .monthly-review-metric-list { display: flex; flex-direction: column; gap: 10px; }
 /* 「今月」「前月」「前月比」が一目で並ぶ1行(要件4)。狭い画面ではラベル→3つの値、を
@@ -1294,23 +1300,22 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .monthly-review-metric-diff.positive { color: var(--success); }
 .monthly-review-metric-diff.negative { color: var(--danger); }
 
-.monthly-review-textarea {
-  /* 文字入力時の画面ガクつき対策: 固定高さ+内部スクロールをやめ、内容に応じて高さ自体を
-     伸ばす(AutoResizeTextarea、MonthlyReviewPage.jsx参照)。resize:noneにするのは、
-     手動リサイズを許すとJS側の自動調整と競合し、次の入力で意図せずサイズが戻ってしまう
-     ため。overflow:hiddenは内部スクロールバー・スクロールを発生させないため
-     (高さは常にscrollHeight分だけ確保されるので、切り取られる心配はない)。 */
-  width: 100%; box-sizing: border-box; min-height: 110px; border: 1px solid var(--border); border-radius: 14px;
-  padding: 12px; background: var(--surface-strong); color: var(--text); font: inherit; line-height: 1.6; resize: none; overflow: hidden;
-}
-.monthly-review-readonly-text { white-space: pre-wrap; line-height: 1.7; color: var(--text); min-height: 44px; }
+/* 月次レビュー自動分析(2026-09追加、自由記述4項目を廃止して置き換え)。日次の
+   要確認ポイントカードと同じトーン方針(重要度が高いものだけ色を付ける)を踏襲する。 */
+.monthly-review-summary-text { margin: 0; line-height: 1.7; color: var(--text); }
+.monthly-review-analysis-list { display: flex; flex-direction: column; gap: 10px; }
+.monthly-review-analysis-point { padding: 10px 12px; border-radius: 12px; background: rgba(100, 116, 139, 0.08); border-left: 3px solid var(--muted); }
+.monthly-review-analysis-point.good { background: rgba(22, 163, 74, 0.1); border-left-color: var(--success); }
+.monthly-review-analysis-point.warning { background: rgba(245, 158, 11, 0.1); border-left-color: var(--warning); }
+.monthly-review-analysis-point.danger { background: rgba(220, 38, 38, 0.1); border-left-color: var(--danger); }
+.monthly-review-analysis-title { display: block; font-size: 0.92rem; margin-bottom: 2px; }
+.monthly-review-analysis-detail { margin: 0; font-size: 0.84rem; color: var(--muted); line-height: 1.4; }
 
 @media (max-width: 640px) {
   .monthly-review-metric-row { flex-direction: column; align-items: flex-start; }
   .monthly-review-metric-values { width: 100%; justify-content: space-between; gap: 8px; }
   .monthly-review-metric-value-block { align-items: flex-start; min-width: 0; }
   .monthly-review-metric-diff { text-align: left; }
-  .monthly-review-textarea { min-height: 90px; font-size: 16px; }
 }
 
 /* AI広告自動運用システム(V1、system_admin専用)。常設の注意書きバナー・広告一覧の

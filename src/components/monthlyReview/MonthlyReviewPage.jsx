@@ -1,41 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, formatMonthLabel } from "../../utils/storage.js";
-
-// 文字入力時の画面ガクつき再調査(3回目)で実ブラウザ計測(Playwright/WebKit、iPhone13
-// viewport、requestAnimationFrameで毎フレームwindow.scrollY等を継続記録)により特定した
-// 真因: この欄はrows={4}の固定高さ(min-height 110px/モバイル90px)で内部スクロールする
-// textareaだったため、既存の記入済み文章がその高さを超えている状態で入力を続けると、
-// キャレット(カーソル)がtextarea内の可視範囲より下に出た瞬間、ブラウザ標準の
-// 「キャレットを画面内に保つ」機能がページ全体を自動スクロールしていた(実測:
-// 最大63px、改行時は42pxの一括ジャンプ)。日次入力側で調査したReactの再レンダリング・
-// 保存タイミングの問題とは全く別種の原因——固定高さtextareaの内部スクロールという、
-// textarea自体の構造的な問題だった。
-// 対策: 入力内容に応じて高さそのものを自然に伸ばし、内部スクロールが起こらないように
-// する(=キャレットが可視範囲外に出ることが無くなり、ブラウザの自動スクロールも発生
-// しなくなる)。要求されている「height=auto→scrollHeightを毎入力で行うと一瞬縮んでから
-// 伸びるフラッシュが起きる」問題を避けるため、useLayoutEffect(DOM更新後・ブラウザが
-// 実際に描画する前に同期実行される)内で測定・適用する——ユーザーには常に1回の
-// 更新にしか見えず、縮小→拡大のちらつきは発生しない。
-function AutoResizeTextarea({ value, onChange, onBlur, placeholder, className }) {
-  const textareaRef = useRef(null);
-  useLayoutEffect(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [value]);
-  return (
-    <textarea
-      ref={textareaRef}
-      className={className}
-      value={value}
-      onChange={onChange}
-      onBlur={onBlur}
-      placeholder={placeholder}
-      rows={4}
-    />
-  );
-}
 
 // 数字・前月比の1行(要件2・4): 「今月」「前月」「前月比」が一目で並ぶ。前月データが無い/
 // 比較不能な場合はformatDiffOrDash自身がダッシュ("－")を返す(0/NaN/Infinityを表示しない
@@ -68,51 +31,19 @@ const yen = (value) => `${Math.round(Number(value) || 0).toLocaleString("ja-JP")
 const people = (value) => `${Math.round(Number(value) || 0).toLocaleString("ja-JP")}人`;
 const count = (value) => `${Math.round(Number(value) || 0).toLocaleString("ja-JP")}件`;
 
-const TEXT_FIELD_DEFS = [
-  { key: "reflection", label: "今月の振り返り", placeholder: "例: 新規のご紹介が増え、技術売上が前月より伸びた。スタッフの接客研修の成果が出てきている。" },
-  { key: "challenges", label: "今月の課題", placeholder: "例: 再来率が下がった。店販の提案がまだ弱い。" },
-  { key: "improvements", label: "改善したこと", placeholder: "例: カウンセリングシートを見直した。店販の陳列を変更した。" },
-  { key: "next_actions", label: "来月の改善アクション", placeholder: "例: 再来案内のタイミングを見直す。店販の声かけを全スタッフで徹底する。" },
-];
-
-// 自動保存のstatusチップ(要件7: 保存中/保存済み/保存失敗を安全に管理・表示する)。
-// 文字入力時の画面ガクつき調査で発見した実際の原因: 以前はsaveStatus.status==="idle"の
-// 間はnullを返しDOMに一切存在しなかったため、入力開始から400ms後(デバウンス保存が初めて
-// 発火した瞬間)にこの要素が新規挿入され、.panel-heading.compact(ページ最上部)の高さが
-// 変わり、下にある入力中のtextarea自体の画面上の位置がずれる(実測: 約39px)原因になって
-// いた。挿入・削除ではなく常時マウントしvisibilityで切り替える方式にし、この高さの変動を
-// 無くす(表示ロジック・文言は無変更)。
-function SaveStatusChip({ saveStatus }) {
-  const tone = saveStatus.status === "error" ? "error" : saveStatus.status === "saving" ? "saving" : saveStatus.status === "saved" ? "saved" : "";
-  const isIdle = saveStatus.status === "idle";
-  return <span className={`monthly-review-save-chip ${tone}${isIdle ? " is-empty" : ""}`}>{saveStatus.message || " "}</span>;
+// 自動生成された要確認ポイント・3か月連続トレンドの重要度表示(要件: 赤・黄などの警告色は
+// 使いすぎず重要項目だけに限定する)。toneが"danger"のものだけ強めの色を付け、それ以外は
+// 中立の見た目にする(日次の要確認ポイントカードと同じトーン方針)。
+function AnalysisPoint({ point }) {
+  return (
+    <div className={`monthly-review-analysis-point ${point.tone || "neutral"}`}>
+      <strong className="monthly-review-analysis-title">{point.title}</strong>
+      <p className="monthly-review-analysis-detail">{point.detail}</p>
+    </div>
+  );
 }
 
-export default function MonthlyReviewPage({ summary, text, monthValue, isAllStoresView, storeName, canEdit, saveStatus, onSaveFields, onFlushFields, reviewContextKey }) {
-  // 対象月・店舗(=このレビューの「宛先」)が変わった時だけ、下書きをtext(保存済みの内容)で
-  // 作り直す。text自体は自分の保存が反映されるたびにも変わるため、textを直接依存配列に
-  // 入れると「入力中に自動保存が走ってtextが更新される→下書きが上書きされて入力が消える」
-  // 不具合になる——reviewContextKey(company_id::store_id::month、呼び出し元がid基準で
-  // 組み立てたもの)という「宛先」だけの変化を見ることでこれを避ける。表示名(storeName)は
-  // 同名店舗が別会社に存在する場合に区別できないため、キーには使わない。
-  const contextKey = reviewContextKey;
-  const [draft, setDraft] = useState(() => ({
-    reflection: text.reflection, challenges: text.challenges, improvements: text.improvements, next_actions: text.next_actions,
-  }));
-  const lastContextKeyRef = useRef(contextKey);
-  useEffect(() => {
-    if (lastContextKeyRef.current === contextKey) return;
-    lastContextKeyRef.current = contextKey;
-    setDraft({ reflection: text.reflection, challenges: text.challenges, improvements: text.improvements, next_actions: text.next_actions });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contextKey]);
-
-  const handleFieldChange = (key, value) => {
-    const nextDraft = { ...draft, [key]: value };
-    setDraft(nextDraft);
-    onSaveFields(nextDraft);
-  };
-
+export default function MonthlyReviewPage({ summary, analysis, monthValue, isAllStoresView, storeName }) {
   const hasSalesTarget = summary.hasSalesTarget;
 
   return (
@@ -123,7 +54,6 @@ export default function MonthlyReviewPage({ summary, text, monthValue, isAllStor
             <p className="eyebrow">MONTHLY REVIEW</p>
             <h2>月次レビュー</h2>
           </div>
-          <SaveStatusChip saveStatus={saveStatus} />
         </div>
         <div className="monthly-review-context-strip">
           <span className="value-pill">対象月: {formatMonthLabel(monthValue)}</span>
@@ -131,7 +61,6 @@ export default function MonthlyReviewPage({ summary, text, monthValue, isAllStor
         </div>
         <p className="helper-text">
           幹部MT・店舗MT・全体共有でそのまま画面を見せられる、シンプルな月次の振り返りページです。対象月・店舗はヘッダーの選択と連動します。
-          {!canEdit ? "（現在は閲覧のみです）" : ""}
         </p>
       </section>
 
@@ -200,24 +129,54 @@ export default function MonthlyReviewPage({ summary, text, monthValue, isAllStor
         </section>
       ) : null}
 
-      {TEXT_FIELD_DEFS.map((field) => (
-        <section className="panel" key={field.key}>
-          <div className="panel-heading compact"><h3>{field.label}</h3></div>
-          {canEdit ? (
-            <AutoResizeTextarea
-              className="monthly-review-textarea"
-              value={draft[field.key]}
-              onChange={(event) => handleFieldChange(field.key, event.target.value)}
-              // フォーカスが外れる=画面遷移・タブ切替の直前に必ず起こるタイミングなので、
-              // debounceを待たず即座に保存する(要件7: 保存漏れ防止)。
-              onBlur={() => onFlushFields(draft)}
-              placeholder={field.placeholder}
-            />
-          ) : (
-            <div className="monthly-review-readonly-text">{draft[field.key] || "（未記入）"}</div>
-          )}
+      {!analysis?.isClosed ? (
+        <section className="panel">
+          <div className="panel-heading compact"><h3>月次分析</h3></div>
+          <p className="helper-text">この月はまだ月締めされていません。確定後に月次分析が表示されます。</p>
         </section>
-      ))}
+      ) : (
+        <>
+          <section className="panel">
+            <div className="panel-heading compact"><h3>今月のまとめ</h3></div>
+            <p className="monthly-review-summary-text">{analysis.summaryText}</p>
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading compact"><h3>良かった点</h3></div>
+            {analysis.goodPoints.length === 0 ? (
+              <p className="helper-text">今月は大きく改善した項目はありません。</p>
+            ) : (
+              <div className="monthly-review-analysis-list">
+                {analysis.goodPoints.map((point) => (
+                  <AnalysisPoint key={point.id} point={{ ...point, tone: "good" }} />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading compact"><h3>要確認ポイント</h3></div>
+            {analysis.checkPoints.length === 0 ? (
+              <p className="helper-text">現在、特に確認が必要な項目はありません。</p>
+            ) : (
+              <div className="monthly-review-analysis-list">
+                {analysis.checkPoints.map((point) => (
+                  <AnalysisPoint key={point.id} point={point} />
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-heading compact"><h3>来月の注目項目</h3></div>
+            <div className="monthly-review-analysis-list">
+              {analysis.nextFocus.map((line, index) => (
+                <p key={index} className="monthly-review-summary-text">{line}</p>
+              ))}
+            </div>
+          </section>
+        </>
+      )}
     </div>
   );
 }
