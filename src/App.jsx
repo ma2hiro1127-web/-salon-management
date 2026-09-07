@@ -7752,7 +7752,7 @@ function App() {
       setNotice("店休日数は0〜31の整数で入力してください");
       return;
     }
-    if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数設定を変更しますか？")) {
+    if (monthClosingStatus.closed && !window.confirm("確定済みの月の営業日数設定を変更しますか？")) {
       return;
     }
     const key = buildMonthKey(selectedStoreId, selectedMonth);
@@ -7795,7 +7795,7 @@ function App() {
       setNotice("営業日数は1〜31の整数で入力してください");
       return;
     }
-    if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数を変更しますか？")) {
+    if (monthClosingStatus.closed && !window.confirm("確定済みの月の営業日数を変更しますか？")) {
       return;
     }
     const key = buildMonthKey(selectedStoreId, selectedMonth);
@@ -7825,7 +7825,7 @@ function App() {
       setNotice("店舗を選択してください");
       return;
     }
-    if (monthClosingStatus.closed && !window.confirm("月締め済みの月の営業日数を自動計算に戻しますか？")) {
+    if (monthClosingStatus.closed && !window.confirm("確定済みの月の営業日数を自動計算に戻しますか？")) {
       return;
     }
     const key = buildMonthKey(selectedStoreId, selectedMonth);
@@ -7956,8 +7956,8 @@ function App() {
     if (!remoteResult?.ok && !remoteResult?.skipped) {
       logSupabaseError({ operation: "toggleMonthClosing", table: "monthly_closings", userId: appState.currentUserId, companyId: appState.currentCompanyId, storeId: store?.id, targetMonth: selectedMonth, error: remoteResult?.error });
       const reason = getSupabaseErrorMessage(remoteResult?.error);
-      persistSaveStatus("error", `月締めの保存に失敗しました: ${reason}`, true);
-      setNotice(`月締めの保存に失敗しました: ${reason}`);
+      persistSaveStatus("error", `確定状態の保存に失敗しました: ${reason}`, true);
+      setNotice(`確定状態の保存に失敗しました: ${reason}`);
       return;
     }
 
@@ -7990,7 +7990,7 @@ function App() {
         await handleSaveCostOverride("purchase", summary.purchaseCostAutoEstimate);
       }
     }
-    persistSaveStatus("saved", nextClosed ? "月締めを確定しました" : "月締めを解除しました");
+    persistSaveStatus("saved", nextClosed ? "この月を確定しました" : "確定を解除しました");
   };
 
   const toggleDayClosing = async () => {
@@ -9870,13 +9870,17 @@ function App() {
                     ) : null}
                     <div className="toggle-panel">
                       <div>
-                        <strong>{monthClosingStatus.closed ? "月締め済み" : "未締め"}</strong>
-                        <small>{monthClosingStatus.lockedAt ? `最終確定: ${new Date(monthClosingStatus.lockedAt).toLocaleString("ja-JP")}` : "締め状態はまだ未設定です"}</small>
+                        <strong>{monthClosingStatus.closed ? "確定済み" : "未確定"}</strong>
+                        <small>{monthClosingStatus.lockedAt ? `最終確定: ${new Date(monthClosingStatus.lockedAt).toLocaleString("ja-JP")}` : "この月はまだ確定されていません"}</small>
                       </div>
                       <button className={monthClosingStatus.closed ? "secondary-button" : "primary-button"} type="button" onClick={toggleMonthClosing}>
-                        {monthClosingStatus.closed ? "締めを解除" : monthNeedsReconfirmation ? "再確定する" : "この月を確定する"}
+                        {monthClosingStatus.closed ? "確定を解除" : monthNeedsReconfirmation ? "再確定する" : "この月を確定する"}
                       </button>
                     </div>
+                    {/* 押し忘れ対策(2026-09追加): 「確定」は任意操作であり、確定しなくても
+                        データの保存・集計・表示は通常どおり行われることを、ボタンのすぐ近くで
+                        簡潔に伝える(要件: 確定を必須操作だと誤解させない)。 */}
+                    <p className="helper-text">確定しなくてもデータは保存されます。確定すると、この月の実績を固定し、後から設定変更しても数値が変わらなくなります。</p>
                     {useInventoryTracking ? (
                       <div className="setup-card">
                         <div className="panel-heading compact">

@@ -4618,6 +4618,112 @@ test("calculateMonthSummary(要件26の月またぎ): 前月に人件費率40%�
   assert.equal(currentSummary.purchaseCostAutoEstimate, 480000);
 });
 
+// 「この月を確定する」押し忘れ対策(2026-09追加)の回帰テスト群。確定(monthClosingStatus.
+// closed)は「その月の売上連動費用を将来の設定変更から守るためのスナップショット操作」
+// でしかなく、確定していない月でも損益計算・データ保持は通常どおり行われることを、
+// calculateMonthSummary自体がmonthClosingStatusを一切参照しない(=引数にも取らない)
+// という構造で直接検証する。
+test("確定状態(monthClosingStatus)は損益計算に一切影響しない — 未確定でも確定済みでも同じ入力データなら同じ結果になる", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.stores = [store];
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000, technicalSales: 500000, customers: 10 }];
+  state.monthClosing[key] = [
+    { id: "close-1", name: "人件費", amount: 190000, category: "人件費", categoryKey: "labor" },
+    { id: "close-2", name: "材料費", amount: 50000, category: "材料費", categoryKey: "materials" },
+  ];
+
+  // 未確定(monthClosingStatus自体が無い)の状態で計算。
+  const unconfirmedSummary = calculateMonthSummary(state, store, month);
+
+  // 同じ入力データのまま「確定済み」フラグだけを立てても、損益表の数値には一切影響しない
+  // (calculateMonthSummaryはstate.monthClosingStatusを参照する引数を持たない=構造的に
+  // 参照できない)。
+  state.monthClosingStatus = { [key]: { closed: true, lockedAt: "2026-08-31T00:00:00Z", note: "確定済み" } };
+  const confirmedSummary = calculateMonthSummary(state, store, month);
+
+  assert.equal(confirmedSummary.sales, unconfirmedSummary.sales);
+  assert.equal(confirmedSummary.laborCost, unconfirmedSummary.laborCost);
+  assert.equal(confirmedSummary.costOfGoodsSold, unconfirmedSummary.costOfGoodsSold);
+  assert.equal(confirmedSummary.operatingProfit, unconfirmedSummary.operatingProfit);
+  assert.equal(confirmedSummary.operatingMargin, unconfirmedSummary.operatingMargin);
+  assert.equal(confirmedSummary.laborRate, unconfirmedSummary.laborRate);
+});
+
+test("未確定月でも日次データ・費用データはstate上にそのまま残り、確定状態の有無で消えたり0になったりしない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.stores = [store];
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 300000, technicalSales: 300000, customers: 20 },
+    { date: "2026-08-02", totalSales: 250000, technicalSales: 250000, customers: 15 },
+  ];
+  state.monthClosing[key] = [{ id: "close-1", name: "人件費", amount: 100000, category: "人件費", categoryKey: "labor" }];
+
+  // 未確定のまま(monthClosingStatusが無い/closed:falseの)状態でも、入力済みの生データは
+  // 一切変更・削除されない——calculateMonthSummaryは読み取るだけで、確定操作を経由しない
+  // 限りstate自体を書き換えるロジックはどこにも無い。
+  assert.equal(state.dailyResults[key].length, 2);
+  assert.equal(state.monthClosing[key].length, 1);
+  const summary = calculateMonthSummary(state, store, month);
+  assert.equal(summary.sales, 550000);
+  assert.equal(summary.laborCost, 100000);
+  assert.equal(summary.entries.length, 2);
+});
+
+test("確定(月締め)後に翌月以降の売上連動率を変更しても、確定済みの過去月の金額は変わらない(store_monthly_cost_overridesによる固定)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const closedMonth = "2026-07";
+  const nextMonth = "2026-08";
+  state.stores = [store];
+  state.dailyResults[`${store}__${closedMonth}`] = [{ date: "2026-07-01", totalSales: 3000000 }];
+  state.dailyResults[`${store}__${nextMonth}`] = [{ date: "2026-08-01", totalSales: 3000000 }];
+
+  // 「この月を確定する」を押した時点の実際の処理(App.jsx toggleMonthClosing)が行うのと
+  // 同じこと——その時点の自動推定額(売上×当時の設定率30%)を確定額としてスナップショット
+  // 保存する。
+  state.storeMonthlyCostOverrides = {
+    [`${store}__${closedMonth}`]: { laborCostOverride: 900000 }, // 300万円×30%(確定時点の率)
+  };
+
+  // 確定後、店舗の人件費率設定を30%→50%へ変更(要件のシナリオ: 翌月以降の設定変更)。
+  const updatedOptions = { laborCostMode: "sales_linked", laborCostRate: 50 };
+
+  const closedSummary = calculateMonthSummary(state, store, closedMonth, updatedOptions);
+  assert.equal(closedSummary.laborCost, 900000, "確定済みの過去月は設定変更後も金額が変わってはいけない");
+  assert.equal(closedSummary.laborCostSource, "manual");
+
+  // 一方、確定していない当月(nextMonth)は新しい率(50%)で自動計算される——確定していない
+  // 月まで凍結されるわけではない、という区別も同時に確認する。
+  const openSummary = calculateMonthSummary(state, store, nextMonth, updatedOptions);
+  assert.equal(openSummary.laborCost, 1500000); // 300万円×50%
+  assert.equal(openSummary.laborCostSource, "auto");
+});
+
+test("確定状態に関わらず、全店舗で同じロジックが適用される(店舗ごとの特別扱いは無い)", () => {
+  const state = createInitialAppState();
+  const storeA = "A店";
+  const storeB = "B店";
+  const month = "2026-08";
+  state.stores = [storeA, storeB];
+  state.dailyResults[`${storeA}__${month}`] = [{ date: "2026-08-01", totalSales: 1000000 }];
+  state.dailyResults[`${storeB}__${month}`] = [{ date: "2026-08-01", totalSales: 2000000 }];
+  // A店だけ確定済み、B店は未確定——それでも両店とも同じcalculateMonthSummaryで同じ計算式
+  // (売上連動30%)が適用される。
+  state.monthClosingStatus = { [`${storeA}__${month}`]: { closed: true, lockedAt: "2026-08-31T00:00:00Z", note: "" } };
+  const options = { laborCostMode: "sales_linked", laborCostRate: 30 };
+  const summaryA = calculateMonthSummary(state, storeA, month, options);
+  const summaryB = calculateMonthSummary(state, storeB, month, options);
+  assert.equal(summaryA.laborCost, 300000);
+  assert.equal(summaryB.laborCost, 600000);
+  assert.equal(summaryA.laborRate, summaryB.laborRate); // 同じ30%
+});
+
 test("calculateMonthSummary: 売上連動モードでは、費用項目を1件も登録していなくてもisProvisionalProfitがfalseになる(要件1の目的: 月途中でも自動推定額で概算損益を確認できる)", () => {
   const state = createInitialAppState();
   const store = "横浜店";

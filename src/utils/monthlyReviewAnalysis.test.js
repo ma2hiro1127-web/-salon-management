@@ -194,6 +194,22 @@ test("月締めしていない当月でも、データさえあればレビュ�
   assert.ok(result.summaryText.length > 0);
 });
 
+test("getMonthlyReviewMetrics: monthClosingStatus(確定状態)の有無に関わらず、同じ入力データなら全く同じ値を返す", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.stores = [store];
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 400000, technicalSales: 400000, customers: 20 }];
+  state.monthClosing[key] = [{ id: "close-1", name: "人件費", amount: 150000, category: "人件費", categoryKey: "labor" }];
+
+  const unconfirmed = getMonthlyReviewMetrics(state, { storeId: store, isAllStoresView: false, storeEntity: { settings: {} } }, month);
+  state.monthClosingStatus = { [key]: { closed: true, lockedAt: "2026-08-31T00:00:00Z", note: "" } };
+  const confirmed = getMonthlyReviewMetrics(state, { storeId: store, isAllStoresView: false, storeEntity: { settings: {} } }, month);
+
+  assert.deepEqual(unconfirmed, confirmed);
+});
+
 // ============================================================
 // 要件4: 前月比較(pt/%の混同防止)・エッジケース
 // ============================================================
