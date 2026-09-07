@@ -1,44 +1,244 @@
-// 月次レビュー自動分析(2026-09追加)。生成AI APIは一切使わず、既存の月次損益計算
-// (calculateMonthSummary/calculateAllStoresMonthSummary/getCompanyDashboardSummary)の
-// 戻り値を読むだけで、①今月のまとめ ②良かった点 ③要確認ポイント ④来月の注目項目、の
-// 4ブロックをテンプレート+数値判定で自動生成する。月締め後の確定データにのみ使う
-// (月途中の値をこの関数へ渡さないことは呼び出し元の責務——isClosed:falseの場合は
-// この関数自身も即座に空の結果を返す)。
+// 月次レビュー自動分析(2026-09追加、2026-09再修正)。生成AI APIは一切使わず、既存の月次
+// 損益計算(calculateMonthSummary/calculateAllStoresMonthSummary/getCompanyDashboardSummary)
+// の戻り値を読むだけで、①今月のまとめ ②良かった点 ③改善ポイント、の3ブロックを
+// テンプレート+数値判定で自動生成する。月締め後の確定データにのみ使う(月途中の値を
+// この関数へ渡さないことは呼び出し元の責務——isClosed:falseの場合はこの関数自身も
+// 即座に空の結果を返す)。
 //
-// 設計方針: 判定・閾値・優先順位はこのファイル1箇所(MONTHLY_INSIGHT_THRESHOLDS/
-// CHECK_POINT_RULES)に集約し、後から数値だけ調整できるようにする。既存の集計ロジック
-// (calculateMonthSummary等)は一切変更せず、戻り値を読むだけ。
+// 再修正の経緯: 「営業利益率が前月より60.1pt改善」のように、実際には悪化しているのに
+// 「改善」と表示される不具合が報告された。原因の作り込みを二度と起こさないため、
+// 「計算」と「文章化」を構造的に分離する——このファイルは必ず以下の順で処理する。
+//   1. compareMonthlyMetric()で当月値・前月値・差分(当月-前月)・前月比%・改善/悪化判定を
+//      確定させる(この関数だけが計算を行う、他のどこにも同じ計算を重複実装しない)。
+//   2. 確定した比較結果(MetricComparison)だけを文章テンプレートへ渡す。テンプレート側は
+//      値を読んで日本語に整形するだけで、差分や改善/悪化を再計算・再判定しない。
+//   3. 表示直前にvalidateMetricComparison()で「差分 = 当月 - 前月」等の整合性を再検証し、
+//      異常があれば「前月比較なし」として扱う(NaN/Infinity/矛盾した符号を画面に出さない)。
 import {
   parseNumber,
-  pickVariant,
-  diffPercent,
   calculateMonthSummary,
   calculateAllStoresMonthSummary,
   getCompanyDashboardSummary,
 } from "./storage.js";
 
 export const MONTHLY_INSIGHT_THRESHOLDS = {
-  goodPercentThreshold: 7, // 良かった点: 売上・客数等 前月比+7%以上
-  goodMarginPointThreshold: 1.0, // 良かった点: 人件費率改善・営業利益率改善 の最低pt差
-  costRateWarnPoint: 3.0, // 要確認: 人件費率/材料費率 +3.0pt以上で警告
-  combinationMinPercent: 3, // 要確認: 組み合わせルールで「増加/減少している」とみなす最低%
-  monthlyRepeatDropPercent: 5, // 要確認: 新規増+再来減の組み合わせで使う再来客数の最低低下%
-  salesFlatBandPercent: 3, // 要確認: 「売上は前月並み」とみなす許容幅(±%)
   maxGoodPoints: 3,
-  maxCheckPoints: 4,
-  threeMonthPercentStep: 3, // 3か月連続判定: 各月ごとの最低変化%(客単価・再来客数)
-  threeMonthPointStep: 0.5, // 3か月連続判定: 各月ごとの最低変化pt(人件費率)
+  // 改善ポイントは「売上」「営業利益」のような結果指標と、「営業利益率」「人件費率」
+  // 「材料・仕入原価率」のような構造指標が同時に悪化することが多い(利益率悪化の内訳が
+  // 人件費率・材料費率の両方の上昇である、等)。件数の上限を良かった点より少し広めに取り、
+  // 単位の違う指標(%とpt)を同じ大きさ順で並べても、構造指標が結果指標に押し出されて
+  // 消えないようにする。
+  maxImprovementPoints: 5,
 };
 
-const money = (value) => `${Math.round(parseNumber(value)).toLocaleString("ja-JP")}円`;
-const pct = (value, digits = 1) => `${Math.abs(parseNumber(value)).toFixed(digits)}%`;
-const pt = (value, digits = 1) => `${Math.abs(parseNumber(value)).toFixed(digits)}pt`;
+// 指標カタログ。「率」(pt差、金額換算しない)と「金額・件数」(前月比%)で計算方法が違う。
+// directionは「高いほど良い」か「低いほど良い」かで改善/悪化の符号を決める、この1箇所だけ。
+const METRIC_DEFS = {
+  sales: { kind: "amount", direction: "higherIsBetter", label: "総売上", format: "yen" },
+  operatingProfit: { kind: "amount", direction: "higherIsBetter", label: "営業利益", format: "yen" },
+  technicalSales: { kind: "amount", direction: "higherIsBetter", label: "技術売上", format: "yen" },
+  retailSales: { kind: "amount", direction: "higherIsBetter", label: "店販売上", format: "yen" },
+  customers: { kind: "amount", direction: "higherIsBetter", label: "客数", format: "people" },
+  newCustomers: { kind: "amount", direction: "higherIsBetter", label: "新規客数", format: "people" },
+  repeatCustomers: { kind: "amount", direction: "higherIsBetter", label: "再来客数", format: "people" },
+  averageSpend: { kind: "amount", direction: "higherIsBetter", label: "客単価", format: "yen", verb: "rise" },
+  reviewCount: { kind: "amount", direction: "higherIsBetter", label: "口コミ数", format: "count" },
+  operatingMargin: { kind: "rate", direction: "higherIsBetter", label: "営業利益率", format: "percent" },
+  laborRate: { kind: "rate", direction: "lowerIsBetter", label: "人件費率", format: "percent" },
+  materialRate: { kind: "rate", direction: "lowerIsBetter", label: "材料・仕入原価率", format: "percent" },
+};
 
-// calculateMonthSummary(単一店舗)/calculateAllStoresMonthSummary+getCompanyDashboardSummary
-// (全店舗)のどちらから来たかを問わず、この分析関数が必要とする値だけをまとめた共通の形へ
-// 正規化する。全店舗ビューの人件費率・材料費率・営業利益率は、既存の「各店舗ごとに
-// calculateMonthSummaryを呼んでから合算し、率は合算後に再計算する」規約
-// (getCompanyDashboardSummary)をそのまま使う——店舗ごとの率を平均しない。
+const formatValue = (value, format) => {
+  if (format === "yen") return `${Math.round(parseNumber(value)).toLocaleString("ja-JP")}円`;
+  if (format === "people") return `${Math.round(parseNumber(value)).toLocaleString("ja-JP")}人`;
+  if (format === "count") return `${Math.round(parseNumber(value)).toLocaleString("ja-JP")}件`;
+  if (format === "percent") return `${parseNumber(value).toFixed(1)}%`;
+  return String(value);
+};
+const pct1 = (value) => `${Math.abs(parseNumber(value)).toFixed(1)}%`;
+const pt1 = (value) => `${Math.abs(parseNumber(value)).toFixed(1)}pt`;
+
+// ここが唯一の「計算」箇所(要件: AIに計算自体をさせない/共通関数に集約する)。
+// kind:"rate" → 差分は必ず「当月率 - 前月率」(pt)。前月値が0でも計算できる(除算しない)ため
+// 判定可能。kind:"amount" → 前月比%は (当月-前月)/前月*100。前月値が0だと0除算になり
+// 前月比%の意味自体が壊れるため、その場合は判定自体を「前月比較なし」にする(要件4)。
+export function compareMonthlyMetric({ current, previous, hasPreviousData, kind, direction }) {
+  const currentValue = Number.isFinite(current) ? current : null;
+  const previousValue = Number.isFinite(previous) ? previous : null;
+  const base = { current: currentValue, previous: null, diff: null, percentChange: null, judgment: "no_comparison" };
+  if (!hasPreviousData || currentValue === null || previousValue === null) return base;
+  if (kind === "amount" && previousValue === 0) return { ...base, current: currentValue };
+
+  const diff = currentValue - previousValue; // 常に「当月 - 前月」。これ以外の式を使わない。
+  if (!Number.isFinite(diff)) return { ...base, current: currentValue };
+
+  let percentChange = null;
+  if (kind === "amount") {
+    percentChange = (diff / previousValue) * 100;
+    if (!Number.isFinite(percentChange)) percentChange = null;
+  }
+
+  let judgment = "unchanged";
+  if (diff !== 0) {
+    const increased = diff > 0;
+    const isGood = direction === "higherIsBetter" ? increased : !increased;
+    judgment = isGood ? "improved" : "worsened";
+  }
+  return { current: currentValue, previous: previousValue, diff, percentChange, judgment };
+}
+
+// 表示直前の整合性チェック(要件4)。ここを通らない比較結果は画面に一切出さない
+// (呼び出し側はこの関数の戻り値がfalseなら「前月比較なし」として扱う)。
+export function validateMetricComparison(comparison) {
+  if (!comparison) return false;
+  if (comparison.judgment === "no_comparison") return true; // 「比較なし」自体は正常な状態
+  const { current, previous, diff } = comparison;
+  if (!Number.isFinite(current) || !Number.isFinite(previous) || !Number.isFinite(diff)) return false;
+  // 差分 = 当月 - 前月、になっているかを直接再検証する(要件4の核心)。
+  if (Math.abs(diff - (current - previous)) > 1e-6) return false;
+  if (comparison.percentChange !== null && !Number.isFinite(comparison.percentChange)) return false;
+  return true;
+}
+
+// 全指標の比較結果を一括で作る。fieldsEnabledでOFFの指標(新規/再来/店販/口コミ)は
+// 比較対象から除外する(入力設定でOFFの項目を勝手に分析しないという既存要件を踏襲)。
+// 検証に落ちた比較は"no_comparison"へフォールバックし、絶対に画面へ異常値を出さない。
+export function buildMetricComparisons(current, previous, fieldsEnabled = {}) {
+  const hasPreviousData = Boolean(previous?.hasData);
+  const comparisons = {};
+  for (const [key, def] of Object.entries(METRIC_DEFS)) {
+    if (key === "newCustomers" && fieldsEnabled.newCustomers === false) continue;
+    if (key === "repeatCustomers" && fieldsEnabled.repeatCustomers === false) continue;
+    if (key === "retailSales" && fieldsEnabled.retailSales === false) continue;
+    if (key === "reviewCount" && fieldsEnabled.reviewCount === false) continue;
+    if ((key === "laborRate") && !(current?.hasLaborData && previous?.hasLaborData)) continue;
+    if ((key === "materialRate") && !(current?.hasMaterialData && previous?.hasMaterialData)) continue;
+    if (key === "operatingMargin" && (current?.isProvisionalProfit || previous?.isProvisionalProfit)) continue;
+    if (key === "operatingProfit" && (current?.isProvisionalProfit || previous?.isProvisionalProfit)) continue;
+    const comparison = compareMonthlyMetric({
+      current: current?.[key],
+      previous: previous?.[key],
+      hasPreviousData,
+      kind: def.kind,
+      direction: def.direction,
+    });
+    comparisons[key] = validateMetricComparison(comparison) ? comparison : { ...comparison, judgment: "no_comparison" };
+  }
+  return comparisons;
+}
+
+// ②良かった点・③改善ポイント共通のテンプレート(要件3: 数値→差→意味の順、抽象論は書かない)。
+function describeComparison(key, comparison) {
+  const def = METRIC_DEFS[key];
+  const currentText = formatValue(comparison.current, def.format);
+  const previousText = formatValue(comparison.previous, def.format);
+  if (def.kind === "rate") {
+    const verb = comparison.diff > 0 ? "上昇" : "低下";
+    return `${def.label}が${previousText}から${currentText}へ${pt1(comparison.diff)}${verb}しました。`;
+  }
+  const verb = def.verb === "rise" ? (comparison.diff > 0 ? "上昇" : "低下") : (comparison.diff > 0 ? "増加" : "減少");
+  const percentText = comparison.percentChange !== null ? `${pct1(comparison.percentChange)}` : null;
+  return percentText
+    ? `${def.label}が${previousText}から${currentText}へ${percentText}${verb}しました。`
+    : `${def.label}が${previousText}から${currentText}へ${verb}しました。`;
+}
+
+// 良かった点: 実際に改善した指標だけ。無ければ空配列を返す(要件: 無理に褒めない)。
+function buildGoodPoints(comparisons, thresholds) {
+  const improved = Object.entries(comparisons).filter(([, c]) => c.judgment === "improved");
+  const magnitude = ([, c]) => (c.percentChange !== null ? Math.abs(c.percentChange) : Math.abs(c.diff));
+  return improved
+    .sort((a, b) => magnitude(b) - magnitude(a))
+    .slice(0, thresholds.maxGoodPoints)
+    .map(([key, c]) => ({ id: key, title: `${METRIC_DEFS[key].label}が改善しました`, detail: describeComparison(key, c) }));
+}
+
+// 改善ポイント: 実際に悪化した指標だけ。数字から直接言える範囲でのみ、他の確定済み比較
+// (売上・営業利益率)を根拠にした補足文を1文だけ足す(要件3: 根拠のない文章を書かない)。
+function buildImprovementPoints(comparisons, thresholds) {
+  const worsened = Object.entries(comparisons).filter(([, c]) => c.judgment === "worsened");
+  const magnitude = ([, c]) => (c.percentChange !== null ? Math.abs(c.percentChange) : Math.abs(c.diff));
+  const salesWorsened = comparisons.sales?.judgment === "worsened";
+  const marginWorsened = comparisons.operatingMargin?.judgment === "worsened";
+  return worsened
+    .sort((a, b) => magnitude(b) - magnitude(a))
+    .slice(0, thresholds.maxImprovementPoints)
+    .map(([key, c]) => {
+      let detail = describeComparison(key, c);
+      if (key === "laborRate" && salesWorsened) {
+        detail += "売上減少に対して人件費負担が大きくなっています。";
+      } else if (key === "materialRate" && marginWorsened) {
+        detail += "原価負担の上昇も営業利益率低下の一因です。";
+      }
+      return { id: key, title: `${METRIC_DEFS[key].label}が悪化しました`, detail };
+    });
+}
+
+// ①今月のまとめ。実データ→差分→経営上の意味、の順で2〜4文にまとめる。抽象論・励まし文は
+// 一切含めない(要件3)。前月データが無い場合は当月の実績だけを事実として述べる。
+function buildSummaryText(comparisons, current) {
+  const sales = comparisons.sales;
+  const sentences = [];
+  if (sales.judgment === "no_comparison") {
+    sentences.push(`今月の総売上は${formatValue(current.sales, "yen")}でした。比較できる前月データが無いため、今月の実績のみを表示しています。`);
+    return sentences.join("");
+  }
+  const salesVerb = sales.diff >= 0 ? "増加" : "減少";
+  sentences.push(`売上は前月比${pct1(sales.percentChange)}${salesVerb}しました。`);
+
+  const profit = comparisons.operatingProfit;
+  const margin = comparisons.operatingMargin;
+  if (profit.judgment !== "no_comparison" && margin.judgment !== "no_comparison") {
+    const profitVerb = profit.diff >= 0 ? "増加" : "減少";
+    const marginVerb = margin.diff >= 0 ? "上昇" : "低下";
+    sentences.push(
+      `営業利益は${formatValue(profit.previous, "yen")}から${formatValue(profit.current, "yen")}へ${profitVerb}し、営業利益率も${margin.previous.toFixed(1)}%から${margin.current.toFixed(1)}%へ${pt1(margin.diff)}${marginVerb}しました。`
+    );
+  }
+
+  const laborWorsened = comparisons.laborRate?.judgment === "worsened";
+  const laborImproved = comparisons.laborRate?.judgment === "improved";
+  const materialWorsened = comparisons.materialRate?.judgment === "worsened";
+  const materialImproved = comparisons.materialRate?.judgment === "improved";
+  if (laborWorsened && materialWorsened) {
+    sentences.push(`人件費率・材料仕入原価率もともに上昇しており、${sales.diff < 0 ? "売上減少に対して費用負担が大きくなった" : "費用負担が重くなった"}月です。`);
+  } else if (laborImproved && materialImproved) {
+    sentences.push("人件費率・材料仕入原価率はともに改善しました。");
+  } else if (laborWorsened) {
+    sentences.push(`人件費率が${comparisons.laborRate.previous.toFixed(1)}%から${comparisons.laborRate.current.toFixed(1)}%へ${pt1(comparisons.laborRate.diff)}上昇しています。`);
+  } else if (materialWorsened) {
+    sentences.push(`材料・仕入原価率が${comparisons.materialRate.previous.toFixed(1)}%から${comparisons.materialRate.current.toFixed(1)}%へ${pt1(comparisons.materialRate.diff)}上昇しています。`);
+  }
+
+  return sentences.join("");
+}
+
+// isClosed:false の場合は他の計算を一切行わず即座に返す(要件: 月途中の誤解を招く表示防止)。
+export function analyzeMonthlyReview({
+  current,
+  previous,
+  isClosed,
+  fieldsEnabled = { customers: true, newCustomers: true, repeatCustomers: true, retailSales: true, reviewCount: true },
+  thresholds = MONTHLY_INSIGHT_THRESHOLDS,
+} = {}) {
+  if (!isClosed) {
+    return { isClosed: false, summaryText: "", goodPoints: [], improvementPoints: [], comparisons: {} };
+  }
+  const comparisons = buildMetricComparisons(current, previous, fieldsEnabled);
+  return {
+    isClosed: true,
+    summaryText: buildSummaryText(comparisons, current),
+    goodPoints: buildGoodPoints(comparisons, thresholds),
+    improvementPoints: buildImprovementPoints(comparisons, thresholds),
+    comparisons,
+  };
+}
+
+// getMonthlyReviewMetrics: calculateMonthSummary(単一店舗)/calculateAllStoresMonthSummary+
+// getCompanyDashboardSummary(全店舗)のどちらから来たかを問わず、この分析関数が必要とする
+// 値だけをまとめた共通の形へ正規化する。全店舗ビューの人件費率・材料費率・営業利益率は、
+// 既存の「各店舗ごとにcalculateMonthSummaryを呼んでから合算し、率は合算後に再計算する」
+// 規約(getCompanyDashboardSummary)をそのまま使う——店舗ごとの率を平均しない。
 export function getMonthlyReviewMetrics(state, { storeId, isAllStoresView, company, storeEntity, companyStores } = {}, monthValue) {
   if (isAllStoresView) {
     const salesSummary = calculateAllStoresMonthSummary(state, company, monthValue);
@@ -103,273 +303,4 @@ export function getMonthlyReviewMetrics(state, { storeId, isAllStoresView, compa
     targetOperatingMargin: targetOperatingMargin > 0 ? targetOperatingMargin : null,
     hasData: summary.entries.length > 0 || summary.batchEntries.length > 0,
   };
-}
-
-const safeDiffPercent = (currentValue, previousValue, hasPrevious) => diffPercent(currentValue, previousValue, hasPrevious);
-const pointDiff = (currentValue, previousValue) =>
-  Number.isFinite(currentValue) && Number.isFinite(previousValue) ? currentValue - previousValue : null;
-
-function isThreeMonthTrendPercent(v2, v1, v0, direction, minStepPercent) {
-  if (![v2, v1, v0].every((value) => Number.isFinite(value) && value !== 0)) return false;
-  const step1 = ((v1 - v2) / Math.abs(v2)) * 100;
-  const step2 = ((v0 - v1) / Math.abs(v1)) * 100;
-  return direction === "decline" ? step1 <= -minStepPercent && step2 <= -minStepPercent : step1 >= minStepPercent && step2 >= minStepPercent;
-}
-
-function isThreeMonthTrendPoint(v2, v1, v0, direction, minStepPoint) {
-  if (![v2, v1, v0].every(Number.isFinite)) return false;
-  const step1 = v1 - v2;
-  const step2 = v0 - v1;
-  return direction === "decline" ? step1 <= -minStepPoint && step2 <= -minStepPoint : step1 >= minStepPoint && step2 >= minStepPoint;
-}
-
-// ③要確認ポイントの各ルール。優先順位はこの配列の並び順そのもの
-// (3か月連続トレンドは呼び出し元で別途先頭に挿入するため、ここには含めない)。
-function buildCheckPointRules(thresholds) {
-  return [
-    // 例3: 新規増+再来減(日次側のDルールの月次版)。
-    {
-      id: "newUpRepeatDown",
-      focusLabel: "再来客数",
-      evaluate: (ctx) => {
-        if (!ctx.fieldsEnabled.newCustomers || !ctx.fieldsEnabled.repeatCustomers) return null;
-        const newDiff = safeDiffPercent(ctx.current.newCustomers, ctx.previous.newCustomers, ctx.previous.hasData);
-        const repeatDiff = safeDiffPercent(ctx.current.repeatCustomers, ctx.previous.repeatCustomers, ctx.previous.hasData);
-        if (newDiff === null || repeatDiff === null) return null;
-        if (newDiff < thresholds.combinationMinPercent || repeatDiff > -thresholds.monthlyRepeatDropPercent) return null;
-        return {
-          id: "newUpRepeatDown",
-          tone: "warning",
-          title: "新規は増加、再来が低下しています",
-          detail: `新規客数が前月比${pct(newDiff)}増加していますが、再来客数が前月比${pct(repeatDiff)}減少しています。`,
-        };
-      },
-    },
-    // 例1: 売上増+客単価減(客数増で補っている)。
-    {
-      id: "salesUpSpendDown",
-      focusLabel: "客単価",
-      evaluate: (ctx) => {
-        const salesDiff = safeDiffPercent(ctx.current.sales, ctx.previous.sales, ctx.previous.hasData);
-        const spendDiff = safeDiffPercent(ctx.current.averageSpend, ctx.previous.averageSpend, ctx.previous.hasData);
-        if (salesDiff === null || spendDiff === null) return null;
-        if (salesDiff < thresholds.combinationMinPercent || spendDiff > -thresholds.combinationMinPercent) return null;
-        return {
-          id: "salesUpSpendDown",
-          tone: "neutral",
-          title: "客単価が低下しています",
-          detail: `売上は前月比${pct(salesDiff)}増加していますが、客単価は前月比${pct(spendDiff)}低下しています。客数増によって売上を補っています。`,
-        };
-      },
-    },
-    // 例4: 売上増+材料費率上昇。
-    {
-      id: "salesUpMaterialRateUp",
-      focusLabel: "材料費率",
-      evaluate: (ctx) => {
-        if (!ctx.current.hasMaterialData || !ctx.previous.hasMaterialData) return null;
-        const salesDiff = safeDiffPercent(ctx.current.sales, ctx.previous.sales, ctx.previous.hasData);
-        const materialPointDiff = pointDiff(ctx.current.materialRate, ctx.previous.materialRate);
-        if (salesDiff === null || materialPointDiff === null) return null;
-        if (salesDiff < thresholds.combinationMinPercent || materialPointDiff < thresholds.costRateWarnPoint) return null;
-        return {
-          id: "salesUpMaterialRateUp",
-          tone: "warning",
-          title: "材料費率が上昇しています",
-          detail: `売上は前月比${pct(salesDiff)}伸びていますが、材料費率も${pt(materialPointDiff)}上昇しています。`,
-        };
-      },
-    },
-    // 例2: 売上横ばい+人件費率上昇。
-    {
-      id: "salesFlatLaborRateUp",
-      focusLabel: "人件費率",
-      evaluate: (ctx) => {
-        if (!ctx.current.hasLaborData || !ctx.previous.hasLaborData) return null;
-        const salesDiff = safeDiffPercent(ctx.current.sales, ctx.previous.sales, ctx.previous.hasData);
-        const laborPointDiff = pointDiff(ctx.current.laborRate, ctx.previous.laborRate);
-        if (salesDiff === null || laborPointDiff === null) return null;
-        if (Math.abs(salesDiff) > thresholds.salesFlatBandPercent || laborPointDiff < thresholds.costRateWarnPoint) return null;
-        return {
-          id: "salesFlatLaborRateUp",
-          tone: "warning",
-          title: "人件費率が上昇しています",
-          detail: `売上は前月並みですが、人件費率が${pt(laborPointDiff)}上昇し、利益が残りにくい構造になっています。`,
-        };
-      },
-    },
-    // 例5: 売上目標達成+営業利益率目標未達(targetOperatingMarginが設定されている会社のみ)。
-    {
-      id: "salesAchievedMarginMissed",
-      focusLabel: "営業利益率",
-      evaluate: (ctx) => {
-        if (ctx.current.isProvisionalProfit) return null;
-        if (!ctx.current.hasSalesTarget || ctx.current.targetAchievement === null || ctx.current.targetAchievement < 100) return null;
-        if (!ctx.current.targetOperatingMargin || ctx.current.targetOperatingMargin <= 0) return null;
-        if (ctx.current.operatingMargin >= ctx.current.targetOperatingMargin) return null;
-        return {
-          id: "salesAchievedMarginMissed",
-          tone: "warning",
-          title: "営業利益率が目標を下回っています",
-          detail: `売上目標は達成しましたが、営業利益率が目標(${ctx.current.targetOperatingMargin.toFixed(1)}%)を下回りました(実績${ctx.current.operatingMargin.toFixed(1)}%)。`,
-        };
-      },
-    },
-  ];
-}
-
-function buildThreeMonthTrendPoint(ctx, thresholds) {
-  const candidates = [];
-  if (ctx.fieldsEnabled.customers && ctx.twoMonthsAgo.hasData && ctx.previous.hasData && ctx.current.hasData) {
-    if (isThreeMonthTrendPercent(ctx.twoMonthsAgo.averageSpend, ctx.previous.averageSpend, ctx.current.averageSpend, "decline", thresholds.threeMonthPercentStep)) {
-      candidates.push({ id: "threeMonthSpendDecline", tone: "danger", title: "客単価が3か月連続で低下しています", detail: "客単価が3か月連続で低下しています。継続的な要因が無いか確認してください。", focusLabel: "客単価" });
-    }
-  }
-  if (ctx.fieldsEnabled.repeatCustomers && ctx.twoMonthsAgo.hasData && ctx.previous.hasData && ctx.current.hasData) {
-    if (isThreeMonthTrendPercent(ctx.twoMonthsAgo.repeatCustomers, ctx.previous.repeatCustomers, ctx.current.repeatCustomers, "decline", thresholds.threeMonthPercentStep)) {
-      candidates.push({ id: "threeMonthRepeatDecline", tone: "danger", title: "再来客数が3か月連続で低下しています", detail: "再来客数が3か月連続で低下しています。継続的な要因が無いか確認してください。", focusLabel: "再来客数" });
-    }
-  }
-  if (ctx.twoMonthsAgo.hasLaborData && ctx.previous.hasLaborData && ctx.current.hasLaborData) {
-    if (isThreeMonthTrendPoint(ctx.twoMonthsAgo.laborRate, ctx.previous.laborRate, ctx.current.laborRate, "rise", thresholds.threeMonthPointStep)) {
-      candidates.push({ id: "threeMonthLaborRateRise", tone: "danger", title: "人件費率が3か月連続で上昇しています", detail: "人件費率が3か月連続で上昇しています。継続的な要因が無いか確認してください。", focusLabel: "人件費率" });
-    }
-  }
-  return candidates;
-}
-
-// ①今月のまとめ。売上前月比を軸に、客数/客単価のどちらが売上変化の主要因かを機械的に
-// 選び(絶対値が大きい方)、人件費率が大きく上昇していれば追加で1文触れる——すべて
-// テンプレートへの数値差し込みで、自由生成はしない。
-function buildSummaryText(current, previous, thresholds, seed) {
-  if (!previous.hasData) {
-    return `今月の総売上は${money(current.sales)}でした。比較できる前月データが無いため、今月の実績のみを表示しています。`;
-  }
-  const salesDiff = safeDiffPercent(current.sales, previous.sales, previous.hasData);
-  const sentences = [];
-  if (salesDiff !== null) {
-    sentences.push(`総売上は前月比${salesDiff >= 0 ? "+" : "-"}${pct(salesDiff)}${salesDiff >= 0 ? "増加" : "減少"}しました。`);
-  } else {
-    sentences.push(`今月の総売上は${money(current.sales)}でした。`);
-  }
-
-  const customersDiff = safeDiffPercent(current.customers, previous.customers, previous.hasData);
-  const spendDiff = safeDiffPercent(current.averageSpend, previous.averageSpend, previous.hasData);
-  if (customersDiff !== null && spendDiff !== null && salesDiff !== null) {
-    const dominant = Math.abs(customersDiff) >= Math.abs(spendDiff) ? "customers" : "spend";
-    const driverLabel = dominant === "customers" ? "客数増" : "客単価上昇";
-    const driverLabelNeg = dominant === "customers" ? "客数減" : "客単価低下";
-    const resultLabel = salesDiff >= 0 ? "伸ばした" : "落とした";
-    const usedDriver = (dominant === "customers" ? customersDiff : spendDiff) >= 0 ? driverLabel : driverLabelNeg;
-    sentences.push(
-      `客数は前月比${pct(customersDiff)}${customersDiff >= 0 ? "増加" : "減少"}した一方、客単価は前月比${pct(spendDiff)}${spendDiff >= 0 ? "上昇" : "低下"}しており、${usedDriver}によって売上を${resultLabel}月となりました。`
-    );
-  }
-
-  if (current.hasLaborData && previous.hasLaborData) {
-    const laborPointDiff = pointDiff(current.laborRate, previous.laborRate);
-    if (laborPointDiff !== null && Math.abs(laborPointDiff) >= thresholds.costRateWarnPoint && !current.isProvisionalProfit && !previous.isProvisionalProfit) {
-      const marginDirectionWord = current.operatingMargin < previous.operatingMargin ? "低下" : "上昇";
-      sentences.push(`人件費率は前月より${pt(laborPointDiff)}${laborPointDiff >= 0 ? "上昇" : "低下"}したため、営業利益率は${marginDirectionWord}しています。`);
-    }
-  }
-
-  return pickVariant([sentences.join("")], seed);
-}
-
-// ②良かった点。閾値を超えた候補を集め、変化の大きさ(単位はpercent/pointが混在するが、
-// 数値の絶対値で単純比較する簡易的な優先順位付けにとどめる)で上位3件だけ返す。
-function buildGoodPoints(current, previous, fieldsEnabled, thresholds) {
-  if (!previous.hasData) return [];
-  const candidates = [];
-  const push = (id, title, detailFn, diffValue) => {
-    if (diffValue === null || !Number.isFinite(diffValue)) return;
-    candidates.push({ id, title, detail: detailFn(diffValue), magnitude: Math.abs(diffValue) });
-  };
-
-  const salesDiff = safeDiffPercent(current.sales, previous.sales, true);
-  if (salesDiff !== null && salesDiff >= thresholds.goodPercentThreshold) {
-    push("sales", "総売上が増加しました", (d) => `総売上が前月比${pct(d)}増加しました。`, salesDiff);
-  }
-  if (fieldsEnabled.newCustomers) {
-    const newDiff = safeDiffPercent(current.newCustomers, previous.newCustomers, true);
-    if (newDiff !== null && newDiff >= thresholds.goodPercentThreshold) {
-      push("newCustomers", "新規客数が増加しました", (d) => `新規客数が前月比${pct(d)}増加しました。`, newDiff);
-    }
-  }
-  if (fieldsEnabled.retailSales) {
-    const retailDiff = safeDiffPercent(current.retailSales, previous.retailSales, true);
-    if (retailDiff !== null && retailDiff >= thresholds.goodPercentThreshold) {
-      push("retailSales", "店販売上が増加しました", (d) => `店販売上が前月比${pct(d)}増加しました。`, retailDiff);
-    }
-  }
-  if (fieldsEnabled.repeatCustomers) {
-    const repeatDiff = safeDiffPercent(current.repeatCustomers, previous.repeatCustomers, true);
-    if (repeatDiff !== null && repeatDiff >= thresholds.goodPercentThreshold) {
-      push("repeatCustomers", "再来客数が増加しました", (d) => `再来客数が前月比${pct(d)}増加しました。`, repeatDiff);
-    }
-  }
-  const spendDiff = safeDiffPercent(current.averageSpend, previous.averageSpend, true);
-  if (spendDiff !== null && spendDiff >= thresholds.goodPercentThreshold) {
-    push("averageSpend", "客単価が上昇しました", (d) => `客単価が前月比${pct(d)}上昇しました。`, spendDiff);
-  }
-  if (current.hasLaborData && previous.hasLaborData) {
-    const laborPointDiff = pointDiff(current.laborRate, previous.laborRate);
-    if (laborPointDiff !== null && laborPointDiff <= -thresholds.goodMarginPointThreshold) {
-      push("laborRate", "人件費率が改善しました", (d) => `人件費率が前月より${pt(d)}改善しました。`, laborPointDiff);
-    }
-  }
-  if (!current.isProvisionalProfit && !previous.isProvisionalProfit) {
-    const marginPointDiff = pointDiff(current.operatingMargin, previous.operatingMargin);
-    if (marginPointDiff !== null && marginPointDiff >= thresholds.goodMarginPointThreshold) {
-      push("operatingMargin", "営業利益率が改善しました", (d) => `営業利益率が前月より${pt(d)}改善しました。`, marginPointDiff);
-    }
-  }
-
-  return candidates
-    .sort((a, b) => b.magnitude - a.magnitude)
-    .slice(0, thresholds.maxGoodPoints)
-    .map(({ id, title, detail }) => ({ id, title, detail }));
-}
-
-function buildNextFocus(checkPoints, goodPoints, seed) {
-  if (checkPoints.length > 0) {
-    const labels = [...new Set(checkPoints.map((point) => point.focusLabel).filter(Boolean))].slice(0, 2);
-    if (labels.length === 2) return [`来月は${labels[0]}と${labels[1]}を重点的に確認してください。`];
-    if (labels.length === 1) return [`来月は${labels[0]}を重点的に確認してください。`];
-  }
-  if (goodPoints.length > 0) {
-    return [pickVariant(["好調な項目が多い月でした。この調子を維持しつつ、来月も引き続き数字を確認していきましょう。"], seed)];
-  }
-  return [pickVariant(["来月も引き続き、売上・客数・客単価の推移を確認していきましょう。"], seed)];
-}
-
-// isClosed:false の場合は他の計算を一切行わず即座に返す(要件: 月途中の誤解を招く表示防止)。
-export function analyzeMonthlyReview({
-  current,
-  previous,
-  twoMonthsAgo,
-  isClosed,
-  fieldsEnabled = { customers: true, newCustomers: true, repeatCustomers: true, retailSales: true },
-  thresholds = MONTHLY_INSIGHT_THRESHOLDS,
-  seed = "",
-} = {}) {
-  if (!isClosed) {
-    return { isClosed: false, summaryText: "", goodPoints: [], checkPoints: [], nextFocus: [] };
-  }
-
-  const ctx = { current, previous, twoMonthsAgo, fieldsEnabled };
-  const checkPointHits = [];
-  buildThreeMonthTrendPoint(ctx, thresholds).forEach((hit) => checkPointHits.push(hit));
-  buildCheckPointRules(thresholds).forEach((rule) => {
-    const hit = rule.evaluate(ctx);
-    if (hit) checkPointHits.push({ ...hit, focusLabel: rule.focusLabel });
-  });
-  const checkPoints = checkPointHits.slice(0, thresholds.maxCheckPoints);
-
-  const goodPoints = buildGoodPoints(current, previous, fieldsEnabled, thresholds);
-  const summaryText = buildSummaryText(current, previous, thresholds, seed);
-  const nextFocus = buildNextFocus(checkPoints, goodPoints, seed);
-
-  return { isClosed: true, summaryText, goodPoints, checkPoints, nextFocus };
 }

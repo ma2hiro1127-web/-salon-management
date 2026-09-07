@@ -155,25 +155,16 @@ export default function MonthlyReviewPage({ summary, analysis, monthValue, isAll
           </section>
 
           <section className="panel">
-            <div className="panel-heading compact"><h3>要確認ポイント</h3></div>
-            {analysis.checkPoints.length === 0 ? (
-              <p className="helper-text">現在、特に確認が必要な項目はありません。</p>
+            <div className="panel-heading compact"><h3>改善ポイント</h3></div>
+            {analysis.improvementPoints.length === 0 ? (
+              <p className="helper-text">前月より悪化した項目はありません。</p>
             ) : (
               <div className="monthly-review-analysis-list">
-                {analysis.checkPoints.map((point) => (
-                  <AnalysisPoint key={point.id} point={point} />
+                {analysis.improvementPoints.map((point) => (
+                  <AnalysisPoint key={point.id} point={{ ...point, tone: "warning" }} />
                 ))}
               </div>
             )}
-          </section>
-
-          <section className="panel">
-            <div className="panel-heading compact"><h3>来月の注目項目</h3></div>
-            <div className="monthly-review-analysis-list">
-              {analysis.nextFocus.map((line, index) => (
-                <p key={index} className="monthly-review-summary-text">{line}</p>
-              ))}
-            </div>
           </section>
         </>
       )}
