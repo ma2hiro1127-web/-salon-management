@@ -1989,6 +1989,24 @@ export const calculatePurchaseCost = (args) => resolveCostAmountAndSource(args);
 // 分離という要件22の趣旨を満たすための切り出し(既存2フィールドの計算式自体は変更しない)。
 export const calculateActualCostRate = (amount, sales) => (sales ? (Number(amount) || 0) / sales * 100 : 0);
 
+// calculateMonthSummaryへ渡す費用計算オプションを店舗エンティティ(company.stores[i]相当、
+// settingsを含む)から組み立てる唯一の場所(2026-09バグ修正: フィーネ横浜の月次レビュー
+// 総評で営業利益・営業利益率が損益表と一致しない不具合の再発防止)。損益表(App.jsx)・
+// 店舗比較/全店舗集計(getStoreDashboardRows)・月次レビュー(monthlyReviewAnalysis.js)など、
+// 営業利益・営業利益率を表示する全ての画面がこの関数だけを経由してcalculateMonthSummaryへ
+// オプションを渡すことで、laborCostMode/laborCostRate/purchaseCostMode/purchaseCostRateの
+// どれか1つでも渡し忘れると人件費・原価が0円扱いになり営業利益が過大表示される、という
+// クラスの不具合を構造的に防ぐ(要件: 損益表と月次レビューで同じ指標を別々の式から計算
+// しない)。
+export const buildStoreCostOptions = (storeEntity) => ({
+  useInventoryTracking: Boolean(storeEntity?.settings?.useInventoryTracking),
+  hiddenCategories: storeEntity?.settings?.hiddenClosingCategories || [],
+  laborCostMode: storeEntity?.settings?.laborCostMode,
+  laborCostRate: storeEntity?.settings?.laborCostRate,
+  purchaseCostMode: storeEntity?.settings?.purchaseCostMode,
+  purchaseCostRate: storeEntity?.settings?.purchaseCostRate,
+});
+
 export const calculateMonthSummary = (state, storeId, monthValue, options = {}) => {
   const target = getTargetForStoreMonth(state, storeId, monthValue);
   const entries = getDailyResultsForStoreMonth(state, storeId, monthValue);
@@ -2683,19 +2701,10 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
   const previousMonthValue = getMonthOffset(monthValue, -1);
 
   return stores.map((store) => {
-    const useInventoryTracking = Boolean(store.settings?.useInventoryTracking);
-    // 店舗ごとの「対象外」設定(store.settings.hiddenClosingCategories)を渡す — 対象外カテゴリは
-    // 「未入力」として扱われず、営業利益等の計算(isProvisionalProfit)が対象外設定のせいで
-    // ブロックされ続けることがない(月締めの対象外機能と同じ規約、店舗比較表が壊れないため)。
-    const hiddenCategories = store.settings?.hiddenClosingCategories || [];
-    // 人件費・仕入の計算方法・率も店舗ごとの設定(要件17: 全店舗ビューは各店舗ごとに
-    // calculateMonthSummaryを呼んでから合算する既存の設計そのままで、平均率×全社売上のような
-    // 近似計算はしない)。
-    const costOptions = {
-      useInventoryTracking, hiddenCategories,
-      laborCostMode: store.settings?.laborCostMode, laborCostRate: store.settings?.laborCostRate,
-      purchaseCostMode: store.settings?.purchaseCostMode, purchaseCostRate: store.settings?.purchaseCostRate,
-    };
+    // 人件費・仕入の計算方法・率・対象外カテゴリ・棚卸管理は共通のbuildStoreCostOptionsで
+    // 組み立てる(要件17: 全店舗ビューは各店舗ごとにcalculateMonthSummaryを呼んでから合算する
+    // 既存の設計そのままで、平均率×全社売上のような近似計算はしない)。
+    const costOptions = buildStoreCostOptions(store);
     const summary = calculateMonthSummary(state, store.id, monthValue, costOptions);
     const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, costOptions);
     const productivity = getStaffProductivitySummary({
@@ -2940,10 +2949,12 @@ export const getMonthlyReviewSummary = (state, { storeId, isAllStoresView, compa
     };
   }
 
-  const hiddenCategories = storeEntity?.settings?.hiddenClosingCategories || [];
-  const useInventoryTracking = Boolean(storeEntity?.settings?.useInventoryTracking);
-  const current = calculateMonthSummary(state, storeId, monthValue, { useInventoryTracking, hiddenCategories });
-  const previous = calculateMonthSummary(state, storeId, previousMonthValue, { useInventoryTracking, hiddenCategories });
+  // このsummary自体は利益系フィールドを返さない(要件13、上部コメント参照)ため挙動には
+  // 影響しないが、他の全画面と同じbuildStoreCostOptionsを使うことでcalculateMonthSummary
+  // オプションの組み立て方を1箇所に統一する。
+  const costOptions = buildStoreCostOptions(storeEntity);
+  const current = calculateMonthSummary(state, storeId, monthValue, costOptions);
+  const previous = calculateMonthSummary(state, storeId, previousMonthValue, costOptions);
   // 単一店舗版のhasPrevious: getStoreDashboardRowsと全く同じ基準(前月の日次入力または、
   // まとめて入力の実績が1件でもあるか)。不具合修正: 以前はentries.length(daily_sales由来)
   // だけを見ており、まとめ入力オンリーの前月(例: フィーネ横浜2026年7月、1件のまとめ入力

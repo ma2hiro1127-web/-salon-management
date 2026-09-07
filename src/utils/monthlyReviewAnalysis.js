@@ -42,6 +42,7 @@ import {
   calculateMonthSummary,
   calculateAllStoresMonthSummary,
   getCompanyDashboardSummary,
+  buildStoreCostOptions,
 } from "./storage.js";
 
 export const MONTHLY_INSIGHT_THRESHOLDS = {
@@ -384,9 +385,13 @@ export function getMonthlyReviewMetrics(state, { storeId, isAllStoresView, compa
     };
   }
 
-  const hiddenCategories = storeEntity?.settings?.hiddenClosingCategories || [];
-  const useInventoryTracking = Boolean(storeEntity?.settings?.useInventoryTracking);
-  const summary = calculateMonthSummary(state, storeId, monthValue, { useInventoryTracking, hiddenCategories });
+  // 損益表(App.jsx)・店舗比較(getStoreDashboardRows)と完全に同じcalculateMonthSummary
+  // オプション(buildStoreCostOptions、人件費・原価の計算方法/率を含む)を使う——ここが
+  // 独自に{useInventoryTracking, hiddenCategories}だけを渡していたため、laborCostMode/
+  // laborCostRate/purchaseCostMode/purchaseCostRateが渡らず、売上連動モードの店舗
+  // (実額の登録が無い店舗)で人件費・材料費が0円扱いになり、営業利益・営業利益率が
+  // 損益表より大幅に過大表示される不具合があった(2026-09修正、フィーネ横浜の実例)。
+  const summary = calculateMonthSummary(state, storeId, monthValue, buildStoreCostOptions(storeEntity));
   const targetSales = parseNumber(summary.target?.targetSales);
   const targetOperatingMargin = parseNumber(summary.target?.targetOperatingMargin);
   return {

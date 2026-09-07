@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createInitialAppState } from "./storage.js";
+import { createInitialAppState, calculateMonthSummary, buildStoreCostOptions } from "./storage.js";
 import {
   analyzeMonthlyReview,
   getMonthlyReviewMetrics,
@@ -410,6 +410,31 @@ test("getMonthlyReviewMetrics: company_idが異なれば会社ごとに独立し
   const metricsY = getMonthlyReviewMetrics(state, { isAllStoresView: true, company: companyY, companyStores: [storeY] }, month);
   assert.equal(metricsX.sales, 500000);
   assert.equal(metricsY.sales, 300000);
+});
+
+test("getMonthlyReviewMetrics(単一店舗・売上連動モード): フィーネ横浜の再発防止テスト(2026-09) — 人件費・原価を実額登録せず売上連動(sales_linked)で運用している店舗でも、営業利益・営業利益率が損益表(calculateMonthSummary+buildStoreCostOptions)と完全に一致する。以前はlaborCostMode/laborCostRate/purchaseCostMode/purchaseCostRateが渡っておらず、費用が0円扱いになり営業利益が過大表示されていた(4,163,299円→10,449,531円のような不具合)。", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.stores = [store];
+  // 実額の登録は一切無い(monthClosing/costMonthlyAmountsが空) — 人件費40%・原価8%の
+  // 売上連動モードだけで運用している店舗を再現する。
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 5000000, technicalSales: 4000000, retailSales: 1000000, customers: 200, newCustomers: 60, repeatCustomers: 140 },
+  ];
+  const storeEntity = { id: store, settings: { laborCostMode: "sales_linked", laborCostRate: 40, purchaseCostMode: "sales_linked", purchaseCostRate: 8 } };
+
+  const metrics = getMonthlyReviewMetrics(state, { storeId: store, isAllStoresView: false, storeEntity }, month);
+  const screenSummary = calculateMonthSummary(state, store, month, buildStoreCostOptions(storeEntity));
+
+  assert.equal(metrics.operatingProfit, screenSummary.operatingProfit);
+  assert.equal(metrics.operatingMargin, screenSummary.operatingMargin);
+  assert.equal(metrics.laborCost, screenSummary.laborCost);
+  assert.equal(metrics.materialCost, screenSummary.costOfGoodsSold);
+  // 人件費40%・原価8%が正しく効いていれば、費用ゼロ扱いのバグがあった場合の
+  // 「ほぼ売上=利益」という異常値(営業利益率88%相当)にはならない。
+  assert.ok(screenSummary.operatingMargin < 60, `売上連動の費用が反映されず営業利益率が過大になっている疑いがあります: ${screenSummary.operatingMargin}`);
 });
 
 test("getMonthlyReviewMetrics: 年をまたぐ前月(1月の前月=前年12月)でも例外を投げず計算できる", () => {

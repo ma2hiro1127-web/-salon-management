@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -4530,6 +4530,38 @@ test("calculateActualCostRate: 確定額÷実売上×100(要件15の実績率)�
 
 test("calculateActualCostRate: 売上0円ならゼロ除算せず0を返す", () => {
   assert.equal(calculateActualCostRate(100000, 0), 0);
+});
+
+test("buildStoreCostOptions: 店舗settingsからcalculateMonthSummaryオプションを組み立てる唯一の関数(2026-09バグ修正の再発防止) — 損益表・店舗比較・月次レビューが同じ店舗設定を渡し忘れないよう、この関数だけを経由させる", () => {
+  const storeEntity = {
+    settings: {
+      useInventoryTracking: true,
+      hiddenClosingCategories: ["advertising"],
+      laborCostMode: "sales_linked",
+      laborCostRate: 40,
+      purchaseCostMode: "sales_linked",
+      purchaseCostRate: 8,
+    },
+  };
+  assert.deepEqual(buildStoreCostOptions(storeEntity), {
+    useInventoryTracking: true,
+    hiddenCategories: ["advertising"],
+    laborCostMode: "sales_linked",
+    laborCostRate: 40,
+    purchaseCostMode: "sales_linked",
+    purchaseCostRate: 8,
+  });
+});
+
+test("buildStoreCostOptions: storeEntity/settingsが無くても例外を投げず安全なデフォルトを返す", () => {
+  assert.deepEqual(buildStoreCostOptions(undefined), {
+    useInventoryTracking: false,
+    hiddenCategories: [],
+    laborCostMode: undefined,
+    laborCostRate: undefined,
+    purchaseCostMode: undefined,
+    purchaseCostRate: undefined,
+  });
 });
 
 test("getStoreMonthlyCostOverride: 行が無い月はundefined(未確定=自動推定・固定額側へフォールバック)、行があればその値を返す", () => {

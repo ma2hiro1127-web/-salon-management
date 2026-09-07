@@ -42,6 +42,7 @@ import {
   pruneDeletedItemsFromItemArrayMap,
   buildMonthKey,
   calculateMonthSummary,
+  buildStoreCostOptions,
   getStoreMonthSalesTotal,
   deduplicateDailyEntries,
   getBusinessDaySettings,
@@ -2083,15 +2084,8 @@ function App() {
   const summary = useMemo(
     () => (isAllStoresView
       ? calculateAllStoresMonthSummary(appState, currentCompany, selectedMonth)
-      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, {
-          useInventoryTracking,
-          hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [],
-          laborCostMode: selectedStoreEntity?.settings?.laborCostMode,
-          laborCostRate: selectedStoreEntity?.settings?.laborCostRate,
-          purchaseCostMode: selectedStoreEntity?.settings?.purchaseCostMode,
-          purchaseCostRate: selectedStoreEntity?.settings?.purchaseCostRate,
-        })),
-    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth, useInventoryTracking, selectedStoreEntity]
+      : calculateMonthSummary(appState, selectedStoreId, selectedMonth, buildStoreCostOptions(selectedStoreEntity))),
+    [appState, currentCompany, isAllStoresView, selectedStoreId, selectedMonth, selectedStoreEntity]
   );
   const businessDaySummary = useMemo(
     () => (isAllStoresView
@@ -2219,15 +2213,8 @@ function App() {
     return appState.monthClosingStatus?.[key] || { closed: false, lockedAt: "", note: "" };
   }, [appState.monthClosingStatus, selectedStoreId, selectedMonth]);
   const monthClosingChecklist = useMemo(
-    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, {
-      useInventoryTracking,
-      hiddenCategories: selectedStoreEntity?.settings?.hiddenClosingCategories || [],
-      laborCostMode: selectedStoreEntity?.settings?.laborCostMode,
-      laborCostRate: selectedStoreEntity?.settings?.laborCostRate,
-      purchaseCostMode: selectedStoreEntity?.settings?.purchaseCostMode,
-      purchaseCostRate: selectedStoreEntity?.settings?.purchaseCostRate,
-    }),
-    [appState, selectedStoreId, selectedMonth, useInventoryTracking, selectedStoreEntity]
+    () => getMonthClosingChecklist(appState, selectedStoreId, selectedMonth, buildStoreCostOptions(selectedStoreEntity)),
+    [appState, selectedStoreId, selectedMonth, selectedStoreEntity]
   );
   const monthNeedsReconfirmation = useMemo(
     () => needsMonthReconfirmation(appState, selectedStoreId, selectedMonth),
