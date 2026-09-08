@@ -13,27 +13,33 @@
      既存のログイン・認証・DB処理には一切触れません。
      vercel.json の "/lp" → "/lp.html" のrewriteでこのファイルが配信されます。
 
-     2026-09 最終ブラッシュアップ(訴求力・視認性・コンバージョン改善): メインコピーを
-     「今月あといくら売れば、利益が残るか。」へ、悩み提示を3項目に絞り込み・拡大表示、
-     「サロン経営に必要な数字をひとつに」に売上→費用→利益→目標差→残り必要売上→着地予測
-     の価値フロー・POS比較セクション・権限セクションのペインファースト構成を追加。
-     料金は月額1,480円(税込)にLP全体で統一。
+     2026-09 全面改善(訴求の軸を「多機能な管理ツール」から「利益・月末着地・毎月の
+     変化がひと目で分かる経営管理ツール」へ再構成): 3本柱(①損益表で利益が見える
+     ②目標管理で月末着地が見える ③月次レビューでAIが毎月の数字を自動整理する)を
+     LPの中核に据え、構成順を「悩み→解決→実画面→価値」へ並べ替えた。損益表専用
+     セクション(#pnl)・AI月次レビュー専用セクション(#review、新規のreview-card
+     コンポーネント)を新設し、主要機能一覧は3本柱の後段の補足位置へ移動。権限管理・
+     複数店舗管理は購入理由の主役ではなく拡張性として後半で扱う。料金は年額
+     ¥12,800(税込)に統一(月額¥1,480表記は削除、実際のStripe価格
+     STRIPE_PRICE_BASE_YEARLYと一致)。AIは「経営相談に乗るAIコンサル」ではなく
+     「入力済みの実データを毎月自動で整理・分析する」ものとして表現し、万能さを
+     強調しない。
      ============================================================================ -->
 
-<title>サロンマネージャー｜美容サロンの売上・損益・目標達成率をまとめて管理</title>
-<meta name="description" content="美容サロン経営に必要な売上・目標・人件費・材料費・固定費・利益をまとめて管理。目標達成率、月末着地予想、残り必要売上まで確認できる経営管理ツール。月額1,480円。" />
+<title>サロンマネージャー｜美容室の利益・目標達成率・月末着地がひと目で分かる経営管理ツール</title>
+<meta name="description" content="美容室の売上・人件費・材料費・固定費をまとめて管理し、営業利益・目標達成率・残り必要売上・月末着地・毎月の数字の変化までひと目で確認できる経営管理ツール。入力するだけで、月次レビューをAIが自動で整理します。" />
 
 <!-- OGP: 画像は後から差し替え可能にするため、まずは既存アプリのアイコンを暫定で指定
      しています。専用のOGP画像(1200x630px推奨)ができ次第、content値だけを差し替えてください。 -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="サロンマネージャー" />
-<meta property="og:title" content="サロンマネージャー｜美容サロンの売上・損益・目標達成率をまとめて管理" />
-<meta property="og:description" content="美容サロン経営に必要な売上・目標・人件費・材料費・固定費・利益をまとめて管理。目標達成率、月末着地予想、残り必要売上まで確認できる経営管理ツール。月額1,480円。" />
+<meta property="og:title" content="サロンマネージャー｜美容室の利益・目標達成率・月末着地がひと目で分かる経営管理ツール" />
+<meta property="og:description" content="売上だけでなく、人件費・材料費・固定費まで含めた営業利益、目標達成率、月末着地、毎月の数字の変化までひと目で確認。月次レビューはAIが自動で整理します。" />
 <meta property="og:image" content="https://salon-manager.net/icon-512.png" /><!-- TODO: 専用OGP画像に差し替え -->
 <meta property="og:url" content="https://salon-manager.net/lp" />
 <meta name="twitter:card" content="summary_large_image" />
-<meta name="twitter:title" content="サロンマネージャー｜美容サロンの売上・損益・目標達成率をまとめて管理" />
-<meta name="twitter:description" content="目標達成率・月末着地予想・残り必要売上までひと目で確認できる、美容サロン向け経営管理ツール。" />
+<meta name="twitter:title" content="サロンマネージャー｜美容室の利益・目標達成率・月末着地がひと目で分かる経営管理ツール" />
+<meta name="twitter:description" content="営業利益・目標達成率・月末着地・毎月の数字の変化までひと目で確認できる、美容室向け経営管理ツール。" />
 <meta name="twitter:image" content="https://salon-manager.net/icon-512.png" /><!-- TODO: 専用OGP画像に差し替え -->
 
 <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -86,8 +92,8 @@
   .header-inner { max-width: var(--maxw); margin: 0 auto; padding: 12px 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; text-decoration: none; white-space: nowrap; }
   .brand img { width: 28px; height: 28px; border-radius: 7px; flex: none; }
-  nav.primary-nav { display: flex; align-items: center; gap: 24px; }
-  nav.primary-nav a.nav-link { font-size: 14px; font-weight: 500; text-decoration: none; color: var(--text); }
+  nav.primary-nav { display: flex; align-items: center; gap: 20px; }
+  nav.primary-nav a.nav-link { font-size: 14px; font-weight: 500; text-decoration: none; color: var(--text); white-space: nowrap; }
   .header-cta { display: flex; align-items: center; gap: 10px; }
 
   .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font-weight: 700; font-size: 15px; border-radius: 999px; padding: 13px 26px; text-decoration: none; border: 1px solid transparent; cursor: pointer; transition: transform 0.15s ease, box-shadow 0.15s ease, background 0.15s ease; white-space: nowrap; }
@@ -128,12 +134,18 @@
   .shot-frame img { width: 100%; height: auto; }
   .shot-caption { text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; }
 
-  /* ---------- 月次損益サマリー(ファーストビュー用の独自UI、実画面のスクショではない) ---------- */
+  /* ---------- 月次損益サマリー(LP用の独自UI、実画面のスクショではない) ---------- */
   .pnl-summary-card {
-    margin: 40px auto 0; max-width: 720px; text-align: left;
+    margin: 40px auto 0; max-width: 760px; text-align: left;
     background: var(--surface); border: 1px solid var(--border); border-radius: 22px;
     box-shadow: var(--shadow); padding: 26px 24px;
   }
+  /* section#pnl(損益表セクション)で使う大きめの表示バリエーション。Heroの版より
+     ひと回り大きく見せることで「ここが本題」であることを視覚的にも伝える。 */
+  .pnl-summary-card-lg { max-width: 860px; padding: 32px 30px; }
+  .pnl-summary-card-lg .pnl-value strong { font-size: 20px; }
+  .pnl-summary-card-lg .pnl-value-emphasis strong { font-size: 33px; }
+  .pnl-summary-card-lg .pnl-summary-head h3 { font-size: 19px; }
   .pnl-summary-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
   .pnl-summary-head h3 { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; }
   .pnl-summary-badge { flex: none; font-size: 12px; font-weight: 700; color: var(--accent-dark); background: var(--accent-soft); padding: 5px 12px; border-radius: 999px; }
@@ -142,22 +154,33 @@
   .pnl-row-label { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 700; color: var(--muted); letter-spacing: 0.02em; margin-bottom: 10px; }
   .pnl-row-label .ico { flex: none; width: 24px; height: 24px; border-radius: 7px; background: var(--accent-soft); color: var(--accent-dark); display: flex; align-items: center; justify-content: center; font-size: 12px; }
   .pnl-row-values { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 14px 16px; }
+  .pnl-value { min-width: 0; }
   .pnl-value span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .pnl-value strong { display: block; font-size: 18px; font-weight: 800; color: var(--text); letter-spacing: -0.01em; }
   .pnl-row-profit { background: var(--accent-soft); border-radius: 14px; padding: 16px 16px; margin: 6px 0; border-top: none; }
   .pnl-row-profit .pnl-row-label { color: var(--accent-dark); }
   .pnl-value-emphasis span { color: var(--accent-dark); font-weight: 700; }
   .pnl-value-emphasis strong { color: var(--accent-dark); font-size: 27px; font-weight: 800; }
+  @media (max-width: 560px) {
+    .pnl-row-values { grid-template-columns: repeat(2, 1fr); }
+  }
   @media (max-width: 480px) {
     .pnl-summary-card { padding: 20px 16px; border-radius: 18px; }
     .pnl-value strong { font-size: 16px; }
     .pnl-value-emphasis strong { font-size: 23px; }
+    .pnl-summary-card-lg .pnl-value-emphasis strong { font-size: 25px; }
+    .pnl-row-values { grid-template-columns: 1fr; }
   }
 
-  .pnl-stat-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 18px auto 0; max-width: 720px; }
+  .pnl-stat-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 18px auto 0; max-width: 760px; }
   .pnl-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; text-align: center; }
   .pnl-chip span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
   .pnl-chip strong { display: block; font-size: 14px; font-weight: 700; color: var(--text); }
+
+  /* ---------- Hero用AI月次レビュー予告(小さな一言プレビュー) ---------- */
+  .hero-ai-preview { margin: 14px auto 0; max-width: 760px; background: var(--accent-soft); border-radius: 14px; padding: 14px 18px; text-align: left; display: flex; gap: 10px; align-items: flex-start; }
+  .hero-ai-preview .tag { flex: none; font-size: 11px; font-weight: 800; color: #fff; background: var(--accent); border-radius: 999px; padding: 4px 10px; margin-top: 1px; white-space: nowrap; }
+  .hero-ai-preview p { font-size: 13px; color: var(--text); line-height: 1.6; }
 
   /* ---------- カード共通 ---------- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); }
@@ -184,8 +207,8 @@
   .pull-quote { font-size: clamp(18px, 3vw, 24px); font-weight: 800; color: var(--text); margin: 10px 0 0; letter-spacing: -0.01em; }
   .pull-quote.center { text-align: center; margin: 30px auto 0; max-width: 640px; }
 
-  /* ---------- 価値の流れ(売上→費用→利益→目標→残り必要売上→着地予測) ---------- */
-  .value-flow { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 6px; margin: 30px auto 0; max-width: 900px; }
+  /* ---------- 価値の流れ(売上→費用→利益→目標→残り必要売上→着地予測→AI振り返り) ---------- */
+  .value-flow { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 10px 6px; margin: 30px auto 0; max-width: 960px; }
   .value-step { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 10px 16px; font-size: 13.5px; font-weight: 700; color: var(--text); white-space: nowrap; }
   .value-step-final { background: var(--accent); border-color: var(--accent); color: #fff; }
   .value-arrow { color: var(--muted); font-weight: 700; }
@@ -195,9 +218,8 @@
 
   /* ---------- 損益表セクション(主役表示) ---------- */
   .pnl-hero { text-align: center; }
-  .pnl-hero .shot-frame { max-width: 760px; }
 
-  /* ---------- 機能カード(コンパクト5枚) ---------- */
+  /* ---------- 機能カード(コンパクト) ---------- */
   .feature-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 22px; display: flex; flex-direction: column; gap: 8px; }
   .feature-card .icon { width: 40px; height: 40px; border-radius: 10px; background: var(--accent-soft); color: var(--accent); display: flex; align-items: center; justify-content: center; font-size: 18px; }
   .feature-card h3 { font-size: 16px; font-weight: 700; }
@@ -254,6 +276,33 @@
     .gm-progress-stats { grid-template-columns: repeat(2, 1fr); gap: 12px 10px; }
     .gm-kpi-grid { grid-template-columns: 1fr; }
     .gm-kpi-main { font-size: 24px; }
+  }
+
+  /* ---------- 月次レビュー/AI分析カード(LP用に独自実装したUI・実画面のスクショではない)
+     実際のMonthlyReviewPage.jsx(総評/変化が大きかった項目の2ブロック構成)に合わせた
+     項目構成。総評の文章は、実装しているbuildSummaryText()の生成パターン(売上と営業利益
+     が逆方向に動いた場合「〜が、」で1文につなげる/主要因を「〜により、」で示す)をそのまま
+     踏襲したテキストにしており、実際に出力され得る文と乖離しないようにしている。 ---------- */
+  .review-card { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; box-shadow: var(--shadow); padding: 26px 24px; text-align: left; }
+  .review-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .review-head h3 { font-size: 18px; font-weight: 800; color: var(--text); margin-top: 2px; }
+  .review-summary { margin-top: 16px; background: var(--accent-soft); border-radius: 14px; padding: 16px 18px; }
+  .review-summary-label { font-size: 12px; font-weight: 800; color: var(--accent-dark); letter-spacing: 0.04em; margin-bottom: 6px; }
+  .review-summary-text { font-size: 14px; line-height: 1.75; color: var(--text); }
+  .review-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap: 10px 12px; margin-top: 18px; }
+  .review-metric { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; min-width: 0; }
+  .review-metric span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 3px; white-space: nowrap; }
+  .review-metric strong { display: block; font-size: 15px; font-weight: 800; color: var(--text); white-space: nowrap; }
+  .review-metric small { display: block; font-size: 10.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; }
+  .review-metric-emphasis { background: var(--accent-soft); border-color: rgba(47,125,246,0.16); }
+  .review-metric-emphasis strong { color: var(--accent-dark); font-size: 16px; }
+  .review-concerns { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); }
+  .review-concern-item { padding: 9px 0; }
+  .review-concern-item strong { display: block; font-size: 13.5px; font-weight: 700; color: var(--text); margin-bottom: 3px; }
+  .review-concern-item p { font-size: 12.5px; color: var(--muted); }
+  @media (max-width: 480px) {
+    .review-card { padding: 20px 16px; }
+    .review-metric-grid { grid-template-columns: repeat(2, 1fr); }
   }
 
   /* ---------- 権限図解 ---------- */
@@ -330,9 +379,10 @@
 
   /* ---------- 料金 ---------- */
   .pricing-card { max-width: 460px; margin: 0 auto; text-align: center; padding: 40px 32px; }
-  .price-amount { font-size: 44px; font-weight: 800; margin: 6px 0 2px; }
+  .price-amount { font-size: 40px; font-weight: 800; margin: 6px 0 2px; }
   .price-amount small { font-size: 15px; font-weight: 600; color: var(--muted); }
-  .price-note { font-size: 12.5px; color: var(--muted); margin-bottom: 20px; }
+  .price-permonth { display: block; font-size: 14.5px; font-weight: 700; color: var(--accent-dark); margin-top: 8px; }
+  .price-note { font-size: 12.5px; color: var(--muted); margin: 6px 0 20px; }
   .pricing-card ul { list-style: none; padding: 0; margin: 22px 0; display: flex; flex-direction: column; gap: 10px; text-align: left; }
   .pricing-card li { font-size: 14.5px; display: flex; gap: 8px; }
   .pricing-card li::before { content: "✓"; color: var(--success); font-weight: 800; }
@@ -350,8 +400,9 @@
   .final-cta { text-align: center; background: linear-gradient(160deg, var(--accent-dark), var(--accent)); color: #fff; border-radius: 24px; padding: 54px 24px; max-width: var(--maxw); margin: 0 auto; }
   .final-cta h2 { font-size: clamp(22px, 4vw, 30px); font-weight: 800; margin-bottom: 10px; }
   .final-cta p { color: rgba(255,255,255,0.9); font-size: 15px; margin-bottom: 4px; }
-  .final-cta .final-price { font-size: 28px; font-weight: 800; margin: 18px 0 4px; }
+  .final-cta .final-price { font-size: 26px; font-weight: 800; margin: 18px 0 4px; }
   .final-cta .final-price small { font-size: 14px; font-weight: 600; opacity: 0.85; }
+  .final-cta .final-permonth { font-size: 13.5px; font-weight: 600; opacity: 0.85; margin-bottom: 4px; }
   .final-cta .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
   .final-cta .btn-primary { background: #fff; color: var(--accent-dark); box-shadow: none; }
   .final-cta .btn-primary:hover { background: #eaf4ff; }
@@ -396,7 +447,7 @@
 <body>
 
 <!-- ============================================================
-     16. ヘッダー
+     ヘッダー
      ============================================================ -->
 <header class="site-header">
   <div class="header-inner">
@@ -405,8 +456,9 @@
       <span>サロンマネージャー</span>
     </a>
     <nav class="primary-nav">
-      <a class="nav-link" href="#features">機能</a>
+      <a class="nav-link" href="#pnl">損益表</a>
       <a class="nav-link" href="#goal">目標管理</a>
+      <a class="nav-link" href="#review">AI分析</a>
       <a class="nav-link" href="#pricing">料金</a>
       <a class="nav-link" href="#faq">FAQ</a>
     </nav>
@@ -420,8 +472,9 @@
     </button>
   </div>
   <div id="mobile-menu">
-    <a href="#features">機能</a>
+    <a href="#pnl">損益表</a>
     <a href="#goal">目標管理</a>
+    <a href="#review">AI分析</a>
     <a href="#pricing">料金</a>
     <a href="#faq">FAQ</a>
     <a href="#" id="mobile-login" data-track="login_click">ログイン</a>
@@ -438,32 +491,124 @@
     <div class="wrap hero-inner">
       <p class="eyebrow">SALON MANAGEMENT</p>
       <p class="hero-kicker">感覚経営から、数字経営へ。</p>
-      <h1>今月あといくら売れば、<br class="hero-h1-break" />利益が残るか。</h1>
+      <h1>今月あといくら売れば、<br class="hero-h1-break" />ちゃんと利益が残るか。</h1>
       <p class="hero-subhead">売上だけでなく、<span class="accent-text">利益までひと目で。</span></p>
-      <p class="hero-sub">売上・人件費・材料費・固定費をまとめて管理。
-目標利益から逆算して、必要売上・達成率・月末の着地予想までひと目で確認できます。</p>
+      <p class="hero-sub">サロンマネージャーは、売上・人件費・材料費・固定費をまとめて管理し、
+今月の利益、目標との差、残り必要売上、月末着地、毎月の変化まで
+ひと目で確認できる美容室向け経営管理ツールです。</p>
       <div class="hero-cta">
         <a class="btn btn-primary" href="#" id="hero-cta-main" data-track="cta_click" data-cta-location="hero">無料で試す</a>
-        <a class="btn btn-secondary" href="#features" data-track="secondary_cta_click">機能を見る</a>
+        <a class="btn btn-secondary" href="#pnl" data-track="secondary_cta_click">画面を見る</a>
       </div>
       <div class="hero-points">
-        <span>1店舗から使いやすい</span>
-        <span>毎日の入力もシンプル</span>
+        <span>POSや予約システムはそのままでOK</span>
         <span>スマホ・PC対応</span>
-        <span>美容サロン経営の現場から生まれた</span>
+        <span>1店舗から利用可能</span>
+        <span>毎月の数字をAIが自動整理</span>
       </div>
     </div>
 
     <!-- ============================================================
-         2. 月次損益サマリー(LP用に独自実装したUI・実画面のスクリーンショットではない)
+         月次損益サマリー(LP用に独自実装したUI・実画面のスクリーンショットではない)
          既存の損益表機能(売上/原価/費用/利益/税)と実際の数字構成に基づき、視認性優先で
          再構成したもの。存在しない項目・機能は追加していない(税セクションの「消費税考慮」
-         も実際に管理画面の損益表タブに存在するトグル機能)。
+         も実際に管理画面の損益表タブに存在するトグル機能)。目標達成率・スタッフ生産性の
+         チップと、AI月次レビューの一言プレビューを添えて、ファーストビューだけで
+         「損益表・目標管理・AI分析」の3本柱が一目で伝わるようにしている。
          ============================================================ -->
     <div class="wrap">
       <div class="pnl-summary-card reveal">
         <div class="pnl-summary-head">
           <h3>月次損益サマリー</h3>
+          <span class="pnl-summary-badge">今月の実績</span>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">📊</span>売上</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>総売上（税込）</span><strong>¥3,095,643</strong></div>
+            <div class="pnl-value"><span>技術売上（税込）</span><strong>¥2,891,881</strong></div>
+            <div class="pnl-value"><span>店販売上（税込）</span><strong>¥203,762</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">🧾</span>原価</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>材料・仕入原価</span><strong>¥139,500</strong></div>
+            <div class="pnl-value"><span>材料・仕入原価率</span><strong>4.5%</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row">
+          <div class="pnl-row-label"><span class="ico">👥</span>費用</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>人件費</span><strong>¥1,249,410</strong></div>
+            <div class="pnl-value"><span>人件費率</span><strong>40.4%</strong></div>
+            <div class="pnl-value"><span>経費合計</span><strong>¥1,048,878</strong></div>
+          </div>
+        </div>
+
+        <div class="pnl-row pnl-row-profit">
+          <div class="pnl-row-label"><span class="ico">¥</span>利益</div>
+          <div class="pnl-row-values">
+            <div class="pnl-value"><span>粗利益</span><strong>¥2,956,143</strong></div>
+            <div class="pnl-value pnl-value-emphasis"><span>営業利益</span><strong>¥657,855</strong></div>
+            <div class="pnl-value pnl-value-emphasis"><span>営業利益率</span><strong>21.3%</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="pnl-stat-chips">
+        <div class="pnl-chip"><span>目標達成率</span><strong>33.3%</strong></div>
+        <div class="pnl-chip"><span>残り必要売上</span><strong>¥2,000,000</strong></div>
+        <div class="pnl-chip"><span>月末着地予測</span><strong>¥3,000,000</strong></div>
+        <div class="pnl-chip"><span>スタッフ生産性</span><strong>¥619,000 / 人</strong></div>
+      </div>
+
+      <div class="hero-ai-preview">
+        <span class="tag">AI月次レビュー</span>
+        <p>「売上は前月比2.1%減少しましたが、人件費率の改善により、営業利益は¥523,000から¥657,855へ増加しました。」</p>
+      </div>
+
+      <p class="shot-caption" style="margin-top:16px;">※画面はイメージです。数値はデモデータです。</p>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       2. こんな状態になっていませんか？(3項目)
+       ============================================================ -->
+  <section>
+    <div class="wrap">
+      <div class="section-head center">
+        <h2 class="section-title">こんな状態になっていませんか？</h2>
+      </div>
+      <div class="grid grid-3">
+        <div class="pain-card pain-card-lg"><span class="mark">01</span><p>今月あといくら売れば
+利益が残るのか分からない</p></div>
+        <div class="pain-card pain-card-lg"><span class="mark">02</span><p>人件費や材料費を含めた
+利益を、感覚でしか把握できていない</p></div>
+        <div class="pain-card pain-card-lg"><span class="mark">03</span><p>目標に対して、今どこまで
+進んでいるのか分からない</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       3. 損益表 / 利益が見える(LPの中核セクション)
+       ============================================================ -->
+  <section id="pnl" class="pnl-hero" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+    <div class="wrap">
+      <div class="section-head center">
+        <p class="eyebrow">PROFIT &amp; LOSS</p>
+        <h2 class="section-title">売上だけでなく、<br class="hero-h1-break" />利益まで見える。</h2>
+        <p class="section-lead">人件費・材料費・固定費まで含めて整理。営業利益と営業利益率まで、ひと目で確認できます。</p>
+      </div>
+      <p class="pull-quote center" style="font-size:19px;margin-bottom:6px;">利益が残っているかを、<br />感覚ではなく数字で確認。</p>
+
+      <div class="pnl-summary-card pnl-summary-card-lg reveal" style="margin-top:34px;">
+        <div class="pnl-summary-head">
+          <h3>月次損益表</h3>
           <span class="pnl-summary-badge">今月の実績</span>
         </div>
 
@@ -512,55 +657,12 @@
       </div>
 
       <p class="shot-caption" style="margin-top:16px;">※画面はイメージです。数値はデモデータです。</p>
+      <p class="shot-caption" style="margin-top:4px;">※店舗経営管理用の概算損益です。税務申告上の利益・納税額とは異なる場合があります。</p>
     </div>
   </section>
 
   <!-- ============================================================
-       3. こんな状態になっていませんか？(3項目)
-       ============================================================ -->
-  <section>
-    <div class="wrap">
-      <div class="section-head center">
-        <h2 class="section-title">こんな状態になっていませんか？</h2>
-      </div>
-      <div class="grid grid-3">
-        <div class="pain-card pain-card-lg"><span class="mark">01</span><p>今月あといくら売れば
-利益が残るのか分からない</p></div>
-        <div class="pain-card pain-card-lg"><span class="mark">02</span><p>人件費や材料費を含めた
-損益分岐点を把握できていない</p></div>
-        <div class="pain-card pain-card-lg"><span class="mark">03</span><p>目標に対して、今どこまで
-達成しているのかすぐ分からない</p></div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       4. サロン経営に必要な数字を、ひとつに。
-       ============================================================ -->
-  <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
-    <div class="wrap">
-      <div class="section-head center">
-        <p class="eyebrow">HOW IT CHANGES</p>
-        <h2 class="section-title">サロン経営に必要な数字を、ひとつに。</h2>
-        <p class="section-lead">売上・人件費・材料費・固定費をまとめて管理。目標利益から逆算して、「今月あといくら売ればいいか」まですぐに確認できます。</p>
-      </div>
-
-      <div class="value-flow">
-        <span class="value-step">売上を見る</span><span class="value-arrow">→</span>
-        <span class="value-step">費用を見る</span><span class="value-arrow">→</span>
-        <span class="value-step">利益を確認する</span><span class="value-arrow">→</span>
-        <span class="value-step">目標との差を見る</span><span class="value-arrow">→</span>
-        <span class="value-step">残り必要売上を確認する</span><span class="value-arrow">→</span>
-        <span class="value-step value-step-final">月末着地を予測する</span>
-      </div>
-
-      <p class="pull-quote center">「今月あといくら売れば、<br />ちゃんと利益が残るか。」</p>
-      <div class="callout center">オーナーだけでなく、権限に応じてスタッフにも必要な数字だけを共有できます。</div>
-    </div>
-  </section>
-
-  <!-- ============================================================
-       5. 目標管理・利益逆算(強調セクション)
+       4. 目標管理・着地予測セクション
        1枚目(ファーストビューの月次損益サマリー)とは別の価値 —「目標から逆算して
        今月あと何が必要か」を見せる。
        2026-09-01改訂: 元は実際の「売上」ページの営業進捗・KPIカードのスクリーンショット
@@ -575,10 +677,10 @@
     <div class="wrap emphasis-grid">
       <div>
         <p class="eyebrow">GOAL MANAGEMENT</p>
-        <h2 class="section-title">目標を立てて終わりにしない。</h2>
+        <h2 class="section-title">目標を立てて、<br class="hero-h1-break" />終わりにしない。</h2>
         <p class="section-lead" style="margin-bottom:16px;">今日の時点で、目標の何％まで来ているか。</p>
-        <p style="color:var(--muted);font-size:15px;">月間目標を設定すると、現在の売上から達成率を自動で確認できます。さらに、残り必要売上・残り営業日・1日あたり必要な売上・月末着地予想まで確認できるため、「月末になってから未達に気づく」状態を減らします。</p>
-        <p class="pull-quote" style="font-size:19px;margin-top:18px;">売上を見るだけの経営から、<br />利益を逆算する経営へ。</p>
+        <p style="color:var(--muted);font-size:15px;">月間目標を設定すると、現在の売上から達成率を自動で確認できます。残り必要売上・残り営業日・1日あたり必要売上・月末着地まで、ひと目で確認できます。</p>
+        <p class="pull-quote" style="font-size:19px;margin-top:18px;">月末になってから未達に気づく経営から、<br />途中で修正できる経営へ。</p>
         <div class="kpi-strip">
           <span class="kpi-pill">目標達成率</span>
           <span class="kpi-pill">残り必要売上</span>
@@ -651,73 +753,168 @@
   </section>
 
   <!-- ============================================================
-       6. 主要機能(5項目)
+       5. 月次レビュー / AI分析セクション
+       実際のMonthlyReviewPage.jsx(総評 + 変化が大きかった項目)の構成に合わせた
+       review-cardを表示する。「AIコンサルが相談に乗る」という見せ方は避け、
+       「入力済みの実データを毎月自動で整理する」ことが価値であることを明示する。
        ============================================================ -->
-  <section id="features" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+  <section id="review">
+    <div class="wrap emphasis-grid">
+      <div>
+        <p class="eyebrow">AI MONTHLY REVIEW</p>
+        <h2 class="section-title">毎月の数字を、<br class="hero-h1-break" />自分で読み解かなくていい。</h2>
+        <p class="section-lead" style="margin-bottom:16px;">入力された数字をもとに、前月との変化をAIが自動で整理。</p>
+        <p style="color:var(--muted);font-size:15px;">営業利益、人件費率、材料費率、客数、客単価など、見るべき変化がすぐ分かります。毎月の数字を自分で見比べる手間はかかりません。</p>
+        <p class="pull-quote" style="font-size:19px;margin-top:18px;">数字を見るだけでなく、<br />変化まで分かる。</p>
+        <div class="kpi-strip">
+          <span class="kpi-pill">総評</span>
+          <span class="kpi-pill">前月比較</span>
+          <span class="kpi-pill">変化が大きかった項目</span>
+          <span class="kpi-pill">スタッフ生産性</span>
+        </div>
+      </div>
+      <div>
+        <div class="review-card reveal">
+          <div class="review-head">
+            <div>
+              <p class="gm-eyebrow">MONTHLY REVIEW</p>
+              <h3>月次レビュー</h3>
+            </div>
+            <span class="pnl-summary-badge">8月 / 前月比較</span>
+          </div>
+
+          <div class="review-summary">
+            <p class="review-summary-label">総評</p>
+            <p class="review-summary-text">売上は前月比2.1%減少しましたが、人件費率の改善により、営業利益は¥523,000から¥657,855へ増加し、営業利益率も16.5%から21.3%へ4.8pt改善しました。</p>
+          </div>
+
+          <div class="review-metric-grid">
+            <div class="review-metric"><span>客数</span><strong>305名</strong><small>前月 328名</small></div>
+            <div class="review-metric"><span>客単価</span><strong>¥10,150</strong><small>前月 ¥9,638</small></div>
+            <div class="review-metric"><span>人件費率</span><strong>40.4%</strong><small>前月 42.6%</small></div>
+            <div class="review-metric"><span>材料・仕入原価率</span><strong>4.5%</strong><small>前月 3.9%</small></div>
+            <div class="review-metric review-metric-emphasis"><span>営業利益</span><strong>¥657,855</strong><small>前月 ¥523,000</small></div>
+            <div class="review-metric review-metric-emphasis"><span>営業利益率</span><strong>21.3%</strong><small>前月 16.5%</small></div>
+            <div class="review-metric"><span>スタッフ生産性</span><strong>¥619,000 / 人</strong><small>前月 ¥632,000 / 人</small></div>
+          </div>
+
+          <div class="review-concerns">
+            <p class="review-summary-label">変化が大きかった項目</p>
+            <div class="review-concern-item">
+              <strong>客数が前月を下回っています</strong>
+              <p>客数が328名から305名へ7.0%減少しました。</p>
+            </div>
+            <div class="review-concern-item">
+              <strong>材料・仕入原価率が上昇しています</strong>
+              <p>材料・仕入原価率が3.9%から4.5%へ0.6pt上昇しました。原価負担の上昇も営業利益率の変化の一因です。</p>
+            </div>
+          </div>
+        </div>
+        <p class="shot-caption">※画面はイメージです。数値はデモデータです。入力済みの実データをもとに自動生成される文章のイメージで、AIが経営相談に回答するものではありません。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       6. サロン経営に必要な数字を、ひとつに。
+       ============================================================ -->
+  <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+    <div class="wrap">
+      <div class="section-head center">
+        <p class="eyebrow">HOW IT CHANGES</p>
+        <h2 class="section-title">サロン経営に必要なのは、<br class="hero-h1-break" />数字を見ることではなく、次の一手が分かること。</h2>
+        <p class="section-lead">売上・人件費・材料費・固定費をまとめて管理。目標利益から逆算して、「今月あといくら売ればいいか」、そして月末の着地までひと目で確認できます。</p>
+      </div>
+
+      <div class="value-flow">
+        <span class="value-step">売上を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">費用を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">利益を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">目標との差を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">残り必要売上を見る</span><span class="value-arrow">→</span>
+        <span class="value-step">月末着地を予測する</span><span class="value-arrow">→</span>
+        <span class="value-step value-step-final">月次AI分析で振り返る</span>
+      </div>
+
+      <p class="pull-quote center">「今月あといくら売れば、<br />ちゃんと利益が残るか。」</p>
+      <div class="callout center">オーナーだけでなく、権限に応じてスタッフにも必要な数字だけを共有できます。</div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       7. 主要機能一覧(3本柱の補足として後段に配置)
+       ============================================================ -->
+  <section id="features">
     <div class="wrap">
       <div class="section-head center">
         <p class="eyebrow">FEATURES</p>
-        <h2 class="section-title">主要機能</h2>
-        <p class="section-lead">サロン経営に必要な数字を、ひとつの画面で。数字を見るだけで終わらせず、次の一手につなげます。</p>
+        <h2 class="section-title">サロン経営に必要な機能を、ひとつの画面で。</h2>
+        <p class="section-lead">損益表・目標管理・AI分析を中心に、経営に必要な数字をまとめて管理できます。</p>
       </div>
       <div class="grid grid-3">
         <div class="feature-card">
-          <div class="icon">📊</div>
-          <h3>① 月次ダッシュボード</h3>
-          <p>売上・目標達成率・月末着地予想など、今月の経営状況をひと目で確認。</p>
-          <ul>
-            <li>売上</li><li>目標達成率</li><li>残り営業日</li><li>月末着地予想</li><li>必要売上</li>
-          </ul>
-        </div>
-        <div class="feature-card">
           <div class="icon">💰</div>
-          <h3>② 月次損益表</h3>
-          <p>売上だけでなく、人件費・材料費・固定費まで含めて利益を確認。</p>
+          <h3>① 月次損益表</h3>
+          <p>売上だけでなく、人件費・材料費・固定費まで含めて営業利益を確認。</p>
           <ul>
             <li>売上</li><li>原価</li><li>人件費</li><li>固定費</li><li>営業利益</li><li>営業利益率</li>
           </ul>
         </div>
         <div class="feature-card">
           <div class="icon">🎯</div>
-          <h3>③ 目標管理</h3>
-          <p>月間目標を設定し、現在の達成率を自動で確認。</p>
+          <h3>② 目標管理・営業進捗</h3>
+          <p>月間目標を設定し、達成率・残り必要売上・月末着地まで自動で確認。</p>
           <ul>
-            <li>目標売上</li><li>技術売上</li><li>店販売上</li><li>客数</li><li>客単価</li><li>新規</li><li>再来</li>
+            <li>目標達成率</li><li>残り必要売上</li><li>残り営業日</li><li>月末着地予測</li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <div class="icon">🧠</div>
+          <h3>③ 月次レビュー・AI分析</h3>
+          <p>入力された数字をもとに、前月との変化をAIが自動で整理。</p>
+          <ul>
+            <li>総評</li><li>前月比較</li><li>変化が大きかった項目</li><li>営業利益率の変化</li>
+          </ul>
+        </div>
+        <div class="feature-card">
+          <div class="icon">📊</div>
+          <h3>④ 月次ダッシュボード</h3>
+          <p>売上・目標達成率・月末着地予想など、今月の経営状況をひと目で確認。</p>
+          <ul>
+            <li>売上</li><li>目標達成率</li><li>残り営業日</li><li>月末着地予想</li>
           </ul>
         </div>
         <div class="feature-card">
           <div class="icon">🔐</div>
-          <h3>④ 権限管理</h3>
+          <h3>⑤ 権限管理</h3>
           <p>オーナー・店長・スタッフなど、役割に応じて見せる数字を分けて管理。</p>
         </div>
         <div class="feature-card">
           <div class="icon">🏬</div>
-          <h3>⑤ 複数店舗管理</h3>
-          <p>店舗ごとの数字と全店舗の状況をまとめて確認。</p>
+          <h3>⑥ 複数店舗管理</h3>
+          <p>店舗ごとの数字と全店舗の状況をまとめて確認。1店舗から利用できます。</p>
         </div>
       </div>
 
-      <!-- 元はファーストビューで使用していた月次ダッシュボード実画面。「①月次ダッシュ
-           ボード」の説明用としてこちらへ移動。目標設定画面は「③目標管理」の説明用。 -->
       <div class="grid grid-2" style="margin-top:36px;">
         <div>
           <div class="shot-frame reveal">
             <img src="/lp-assets/dashboard.jpg" alt="サロンマネージャーの月次ダッシュボード画面。総売上・月間目標売上・目標達成率・営業利益・営業利益率・発注費率・スタッフ生産性が一覧できる" loading="lazy" width="2000" height="1289" />
           </div>
-          <p class="shot-caption">① 月次ダッシュボードの実際の画面(店舗名・数値はデモデータです)</p>
+          <p class="shot-caption">④ 月次ダッシュボードの実際の画面(店舗名・数値はデモデータです)</p>
         </div>
         <div>
           <div class="shot-frame reveal">
             <img src="/lp-assets/target.jpg" alt="サロンマネージャーの目標設定画面。月間目標売上・技術売上目標・店販売上目標・客数目標・客単価目標・新規客数目標・再来客数目標を設定できる" loading="lazy" width="2000" height="942" />
           </div>
-          <p class="shot-caption">③ 目標設定の実際の画面(店舗名・数値はデモデータです)</p>
+          <p class="shot-caption">② 目標設定の実際の画面(店舗名・数値はデモデータです)</p>
         </div>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       7. POSとの違い(短い比較セクション)
+       8. POSとの違い(短い比較セクション)
        POS自動連携は実装していないため、連携を示唆する表現は使わない。あくまで
        「役割が違う・併用できる」という位置づけのみを伝える。
        ============================================================ -->
@@ -726,33 +923,33 @@
       <div class="section-head center">
         <p class="eyebrow">VS POS</p>
         <h2 class="section-title">POSとは、役割が違います。</h2>
-        <p class="section-lead">POSは、日々の売上や会計を管理するもの。サロンマネージャーは、その数字に人件費・材料費・固定費・目標を加えて、経営判断につなげるためのツールです。</p>
+        <p class="section-lead">POS：日々の会計・予約・顧客管理。サロンマネージャー：利益・目標・月末着地・毎月の変化を確認する経営管理。</p>
         <p class="pull-quote center" style="font-size:17px;margin-top:20px;">売上を記録するだけでなく、<br />「このままで利益が残るか」を確認する。</p>
+        <p class="section-lead" style="margin:18px auto 0;">POSや予約システムを入れ替える必要はありません。<br />今使っているシステムはそのままで、経営数字だけをサロンマネージャーで管理できます。</p>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       8. 権限管理・スタッフ共有
+       9. 権限管理
        ============================================================ -->
   <section>
     <div class="wrap">
       <div class="section-head center">
         <p class="eyebrow">ROLE-BASED ACCESS</p>
-        <h2 class="section-title">オーナーだけの数字管理で終わらせない。</h2>
-        <p class="pull-quote center" style="font-size:18px;margin-top:0;">「スタッフにも数字を共有したい。<br />でも経費や利益まですべて見せる必要はない。」</p>
-        <p class="section-lead" style="margin-top:16px;">役割に応じて、必要な数字だけ共有できます。オーナー・管理者・店長・スタッフなど、必要な人に必要な数字だけを見せる設計です。</p>
+        <h2 class="section-title">必要な人に、必要な数字だけ。</h2>
+        <p class="section-lead" style="margin-top:6px;">オーナー・店長・スタッフなど、役割に応じて見せる数字を分けて管理できます。</p>
       </div>
       <div class="role-flow">
-        <div class="role-row"><span class="dot"></span><span class="role-name">経営者・会社管理者</span><span class="role-desc">自社の全店舗の数字を横断して確認できます</span></div>
-        <div class="role-row"><span class="dot"></span><span class="role-name">店長(店舗管理者)</span><span class="role-desc">担当する自店舗の数字を確認・管理できます</span></div>
-        <div class="role-row"><span class="dot"></span><span class="role-name">スタッフ</span><span class="role-desc">許可された範囲の日々の数字を確認・入力できます</span></div>
+        <div class="role-row"><span class="dot"></span><span class="role-name">オーナー</span><span class="role-desc">全店舗・経営数字を確認できます</span></div>
+        <div class="role-row"><span class="dot"></span><span class="role-name">店長</span><span class="role-desc">担当店舗の数字を確認・管理できます</span></div>
+        <div class="role-row"><span class="dot"></span><span class="role-name">スタッフ</span><span class="role-desc">許可された範囲の数字を確認・入力できます</span></div>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       9. 複数店舗管理
+       10. 複数店舗管理
        ============================================================ -->
   <section style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap multistore-grid">
@@ -858,15 +1055,15 @@
       </div>
       <div style="order:1;">
         <p class="eyebrow">MULTI-STORE</p>
-        <h2 class="section-title">複数店舗の数字を、まとめて確認。</h2>
-        <p style="color:var(--muted);font-size:15px;">複数店舗になると、それぞれの状況確認に時間がかかりませんか。サロンマネージャーなら、店舗ごとの進捗や売上を比較し、全店舗の状況を1つの画面から把握できます。個人サロンや小規模サロンから、複数店舗を経営するサロングループまで対応。店舗が増えても、同じ管理方法で数字を確認できます。</p>
-        <p style="margin-top:16px;"><span class="kpi-pill" style="display:inline-block;">1店舗から利用できます</span></p>
+        <h2 class="section-title">1店舗から、<br class="hero-h1-break" />複数店舗まで。</h2>
+        <p style="color:var(--muted);font-size:15px;">店舗ごとの売上・営業利益・営業利益率・スタッフ生産性などを比較しながら、全店舗の状況をまとめて確認できます。個人サロンや小規模サロンから、複数店舗を経営するサロングループまで、店舗が増えても同じ管理方法で数字を確認できます。</p>
+        <p style="margin-top:16px;"><span class="kpi-pill" style="display:inline-block;">まずは1店舗から利用できます</span></p>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       10. 料金(月額1,480円)
+       11. 料金(年額¥12,800・税込)
        ============================================================ -->
   <section id="pricing">
     <div class="wrap">
@@ -877,14 +1074,15 @@
       </div>
       <div class="card pricing-card">
         <!-- 料金を変更する場合はページ末尾のCONFIG.price(amountHtml/note)を編集してください。 -->
-        <div class="price-amount" id="price-amount">月額 ¥1,480<small>（税込）</small></div>
-        <p class="price-note" id="price-note">シンプルな料金体系。複雑なプラン比較は不要です。</p>
+        <div class="price-amount" id="price-amount">年額 ¥12,800<small>（税込）</small><span class="price-permonth">1ヶ月あたり 約¥1,067</span></div>
+        <p class="price-note" id="price-note">※12,800円 ÷ 12ヶ月の概算です。複雑なプラン比較は不要です。</p>
         <ul>
           <li>1店舗から利用可能</li>
-          <li>スマホ・PC対応</li>
-          <li>経営数字をひとつの画面で管理</li>
-          <li>目標達成率・着地予想を確認</li>
-          <li>損益管理</li>
+          <li>スマホ / PC対応</li>
+          <li>月次損益表</li>
+          <li>目標管理</li>
+          <li>月末着地予測</li>
+          <li>月次AI分析</li>
           <li>スタッフ権限管理</li>
         </ul>
         <a class="btn btn-primary btn-block" href="#" id="pricing-cta" data-track="cta_click" data-cta-location="pricing">無料で試す</a>
@@ -893,7 +1091,7 @@
   </section>
 
   <!-- ============================================================
-       11. FAQ
+       12. FAQ
        ============================================================ -->
   <section id="faq" style="background:var(--surface);border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
     <div class="wrap" style="max-width:760px;">
@@ -915,8 +1113,8 @@
           <div class="faq-a"><p>毎日入力する方法だけでなく、まとめて入力する運用にも対応しています。</p></div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" type="button">複数店舗でも利用できますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>はい。権限に応じて、複数店舗の数字をまとめて確認できます。</p></div>
+          <button class="faq-q" type="button">複数店舗でも使えますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。権限に応じて、複数店舗の数字をまとめて確認できます。まずは1店舗から始めて、店舗が増えても同じ管理方法で利用できます。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">スタッフにも数字を共有できますか？<span class="plus">＋</span></button>
@@ -928,56 +1126,60 @@
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">POSとの違いは何ですか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>サロンマネージャーはPOSを置き換えるサービスではありません。POSなどで確認した売上をもとに、損益・利益・目標進捗・着地予想などを管理するためのツールです。</p></div>
+          <div class="faq-a"><p>POSは、日々の売上・会計・予約・顧客管理を行うもの。サロンマネージャーは、その数字に人件費・材料費・固定費・目標を加えて、利益・月末着地・毎月の変化を確認するための経営管理ツールです。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">POSとの連携は必要ですか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>いいえ、POSとの自動連携は行っておりません。POSなどで確認した売上・客数を、サロンマネージャーへ入力していただくことで、損益・目標達成率・着地予想などの経営管理にご利用いただけます。</p></div>
+          <div class="faq-a"><p>いいえ、POSとの自動連携は行っておりません。POSや予約システムはそのままで、確認した売上・客数をサロンマネージャーへ入力していただくことで、損益・目標達成率・着地予想などの経営管理にご利用いただけます。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">入力した経営データは他のサロンから見えませんか？<span class="plus">＋</span></button>
           <div class="faq-a"><p>見えません。会社・店舗ごとにアクセスできる範囲が分かれており、他のサロン(他社)のデータを閲覧することはできません。同じ会社内でも、権限に応じて見える範囲を分けて管理できます。</p></div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" type="button">損益は確認できますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>はい。人件費・材料費・固定費を含めた月次損益表で、営業利益まで確認できます。</p></div>
+          <button class="faq-q" type="button">利益は確認できますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>はい。人件費・材料費・固定費を含めた月次損益表で、営業利益・営業利益率まで確認できます。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">目標に対する達成率は確認できますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>はい。設定した目標に対して、現在どの程度まで達成しているかを確認できます。</p></div>
+          <div class="faq-a"><p>はい。設定した目標に対して、現在どの程度まで達成しているかを自動で確認できます。</p></div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" type="button">月末の着地予想は確認できますか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p>はい。現在のペースをもとに、月末時点の売上着地予想を確認できます。</p></div>
+          <button class="faq-q" type="button">月末着地予測とは何ですか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>現在のペースをもとに、このまま推移した場合の月末時点の売上着地を予測して表示する機能です。月の途中でも、目標に届きそうかどうかを早めに把握できます。</p></div>
+        </div>
+        <div class="faq-item">
+          <button class="faq-q" type="button">AI分析では何が分かりますか？<span class="plus">＋</span></button>
+          <div class="faq-a"><p>入力された数字をもとに、前月との比較や、営業利益率・人件費率・材料費率・客数・客単価などの変化を自動で整理します。毎月の数字を自分で読み解かなくても、どこが変化したか把握しやすくなります。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">料金はいくらですか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p id="faq-price-answer">月額1,480円(税込)です。1店舗から利用でき、追加の専用機器は不要です。</p></div>
+          <div class="faq-a"><p id="faq-price-answer">年額12,800円(税込)です。1ヶ月あたり約¥1,067(概算)。1店舗から利用でき、追加の専用機器は不要です。</p></div>
         </div>
       </div>
     </div>
   </section>
 
   <!-- ============================================================
-       12. 最終CTA
+       13. 最終CTA
        ============================================================ -->
   <section>
     <div class="wrap">
       <div class="final-cta">
-        <h2>まずは1店舗から、<br />数字で経営を見える化。</h2>
-        <p>毎日の入力はシンプル。</p>
-        <p>スマホ・PCから、売上だけでなく<br />人件費・材料費・固定費・利益まで確認できます。</p>
-        <p>感覚だけに頼らず、数字を見ながら経営判断できる環境を<br />すぐに始められます。</p>
-        <div class="final-price" id="final-price">月額 ¥1,480<small>（税込）</small></div>
+        <h2>売上を見るだけの経営から、<br />利益が分かる経営へ。</h2>
+        <p>利益・目標・月末着地・毎月の変化を、<br />ひとつの画面で確認できます。</p>
+        <p style="margin-top:6px;">POSや予約システムはそのままで始められます。</p>
+        <div class="final-permonth" id="final-permonth">1ヶ月あたり 約¥1,067</div>
+        <div class="final-price" id="final-price">年額 ¥12,800<small>（税込）</small></div>
         <div class="cta-row">
           <a class="btn btn-primary" href="#" id="final-cta" data-track="cta_click" data-cta-location="final">無料で試す</a>
-          <a class="btn btn-secondary" href="#features" data-track="secondary_cta_click">機能を見る</a>
+          <a class="btn btn-secondary" href="#pnl" data-track="secondary_cta_click">画面を見る</a>
         </div>
         <div class="hero-points">
-          <span>1店舗から使える</span>
-          <span>毎日の入力もシンプル</span>
+          <span>POSや予約システムはそのままでOK</span>
           <span>スマホ・PC対応</span>
-          <span>美容サロン向け</span>
+          <span>1店舗から利用可能</span>
+          <span>毎月の数字をAIが自動整理</span>
         </div>
       </div>
     </div>
@@ -986,7 +1188,7 @@
 </main>
 
 <!-- ============================================================
-     17. フッター
+     フッター
      ============================================================ -->
 <footer class="site-footer">
   <div class="wrap footer-inner">
@@ -1020,12 +1222,15 @@
     // 「ログイン」の遷移先。既存アプリのログイン画面(ルート)にそのまま接続。
     loginUrl: "/",
 
-    // 料金(月額1,480円・税込に統一)。金額を変更する場合はこの3箇所をまとめて書き換えてください。
+    // 料金(年額¥12,800・税込に統一。実際のStripe基本プラン年額price
+    // (STRIPE_PRICE_BASE_YEARLY)と一致させています)。金額を変更する場合は
+    // この4箇所をまとめて書き換えてください。
     price: {
-      amountHtml: "月額 ¥1,480<small>（税込）</small>",
-      note: "シンプルな料金体系。複雑なプラン比較は不要です。",
-      finalAmountHtml: "月額 ¥1,480<small>（税込）</small>",
-      faqAnswer: "月額1,480円(税込)です。1店舗から利用でき、追加の専用機器は不要です。"
+      amountHtml: "年額 ¥12,800<small>（税込）</small><span class=\"price-permonth\">1ヶ月あたり 約¥1,067</span>",
+      note: "※12,800円 ÷ 12ヶ月の概算です。複雑なプラン比較は不要です。",
+      finalAmountHtml: "年額 ¥12,800<small>（税込）</small>",
+      finalPermonth: "1ヶ月あたり 約¥1,067",
+      faqAnswer: "年額12,800円(税込)です。1ヶ月あたり約¥1,067(概算)。1店舗から利用でき、追加の専用機器は不要です。"
     },
 
     // フッターのリンク先(未設定URLはひとまず "#" のまま。用意でき次第書き換えてください)。
@@ -1053,6 +1258,8 @@
   if (priceNoteEl) priceNoteEl.textContent = CONFIG.price.note;
   var finalPriceEl = document.getElementById("final-price");
   if (finalPriceEl) finalPriceEl.innerHTML = CONFIG.price.finalAmountHtml;
+  var finalPermonthEl = document.getElementById("final-permonth");
+  if (finalPermonthEl) finalPermonthEl.textContent = CONFIG.price.finalPermonth;
   var faqPriceEl = document.getElementById("faq-price-answer");
   if (faqPriceEl) faqPriceEl.textContent = CONFIG.price.faqAnswer;
 
@@ -1144,7 +1351,9 @@
   });
 
   var sectionTrackTargets = [
+    { id: "pnl", event: "pnl_section_view" },
     { id: "goal", event: "goal_section_view" },
+    { id: "review", event: "review_section_view" },
     { id: "pricing", event: "pricing_section_view" },
     { id: "faq", event: "faq_section_view" }
   ];
