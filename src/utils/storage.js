@@ -1630,31 +1630,6 @@ export const roundCurrency = (value, roundingMode = "half-up") => {
   return Math.round(amount);
 };
 
-export const calculateTaxSummary = (input = {}) => {
-  const salesInclusive = parseNumber(input.sales);
-  const expensesInclusive = parseNumber(input.totalExpenses);
-  const taxRate = Number(input.taxRate ?? 0.1);
-  const rate = Number.isFinite(taxRate) && taxRate >= 0 ? taxRate : 0.1;
-  const roundingMode = input.roundingMode || "half-up";
-  const taxExclusiveSales = salesInclusive / (1 + rate);
-  const taxAmount = salesInclusive - taxExclusiveSales;
-  const taxExclusiveExpenses = expensesInclusive / (1 + rate);
-  const taxAmountOnExpenses = expensesInclusive - taxExclusiveExpenses;
-  const estimatedTax = roundCurrency(taxAmount, roundingMode);
-  const estimatedTaxOnExpenses = roundCurrency(taxAmountOnExpenses, roundingMode);
-
-  return {
-    grossSales: roundCurrency(salesInclusive, roundingMode),
-    taxExclusiveSales: roundCurrency(taxExclusiveSales, roundingMode),
-    taxAmount: roundCurrency(taxAmount, roundingMode),
-    taxExclusiveExpenses: roundCurrency(taxExclusiveExpenses, roundingMode),
-    taxAmountOnExpenses: roundCurrency(estimatedTaxOnExpenses, roundingMode),
-    rate,
-    estimatedTax: roundCurrency(estimatedTax + estimatedTaxOnExpenses, roundingMode),
-    roundingMode,
-  };
-};
-
 export const getTargetForStoreMonth = (state, storeId, monthValue) => ({
   ...defaultTarget,
   ...(state.targets?.[buildMonthKey(storeId, monthValue)] || {}),
@@ -2153,9 +2128,20 @@ export const calculateMonthSummary = (state, storeId, monthValue, options = {}) 
   const costOfGoodsSold = useInventoryTracking ? (openingInventory + purchaseAmount - closingInventory) : purchaseAmount;
 
   const expenseTotal = costOfGoodsSold + laborCost + expenseCost;
+  // 損益表全計算ロジック総点検(2026-09)で確認済み: grossProfit(粗利益)は総売上から
+  // 材料・仕入原価だけを差し引いた値(人件費・経費はまだ引かない)、operatingProfit(営業利益)は
+  // そこから人件費・経費合計をさらに差し引いた値、という2段階の構造をこの1箇所だけで計算する。
+  // ダッシュボード・月次レビュー・全店舗集計(getStoreDashboardRows/getCompanyDashboardSummary)・
+  // CSV出力(dashboardExport.js)は、いずれもこの関数の戻り値(grossProfit/operatingProfit/
+  // operatingMargin/laborRate/costOfGoodsSoldRate等)をそのまま参照するだけで、独自に
+  // 再計算する箇所は無いことを確認済み(この関数が唯一の計算箇所)。
   const grossProfit = sales - costOfGoodsSold;
   const operatingProfit = grossProfit - laborCost - expenseCost;
-  // 消費税引当額(概算): 「消費税を考慮する」がONの場合のみ計算する(OFFの場合は計算対象外=0)。
+  // 消費税引当額(概算): この計算式(税込売上 × 税率 ÷ (100+税率))がアプリ内で唯一の
+  // 消費税引当ロジック。かつて別に存在した calculateTaxSummary()(小数税率・税抜売上からの
+  // 逆算という異なる入力規約を持つ、どこからも呼ばれていなかった未使用関数)は、今回の
+  // 総点検で「使われていないのに解釈違いを招きかねない」ことを確認し削除した。
+  // 「消費税を考慮する」がONの場合のみ計算する(OFFの場合は計算対象外=0)。
   // 正式な納税額の自動計算ではなく、資金確保用の概算引当(不具合修正: 権限体系整理の報告後に
   // 発覚した別件)。売上に占める消費税相当額を概算する式は「対象売上 × 税率 ÷ (100 + 税率)」
   // (税込売上から逆算する式。誤って「売上 × 税率 ÷ 100」を使うと税抜売上に課税した額になり、
@@ -3165,98 +3151,6 @@ export const getSalesStatusComment = (input = {}) => {
     customerState,
     customerAchievementRate,
     spendState,
-  };
-};
-
-class AiSummary extends Array {
-  includes(searchElement) {
-    return super.some((item) => String(item).includes(String(searchElement)));
-  }
-}
-
-export const getAiAnalysis = (input = {}) => {
-  const summary = new AiSummary();
-  const priorities = [];
-  const notes = [];
-
-  const targetAchievement = Number(input.targetAchievement ?? 0);
-  const customerAchievement = Number(input.customerAchievement ?? 0);
-  const averageSpend = Number(input.averageSpend ?? 0);
-  const targetAverageSpend = Number(input.targetAverageSpend ?? 0);
-  const operatingMargin = Number(input.operatingMargin ?? 0);
-  const targetOperatingMargin = Number(input.targetOperatingMargin ?? 0);
-  const fixedCost = Number(input.fixedCost ?? 0);
-  const variableCost = Number(input.variableCost ?? 0);
-  const adjustedOperatingProfit = Number(input.adjustedOperatingProfit ?? 0);
-  const remainingBusinessDays = Number(input.remainingBusinessDays ?? 0);
-  const remainingSalesTarget = Number(input.remainingSalesTarget ?? 0);
-  const remainingCustomersTarget = Number(input.remainingCustomersTarget ?? 0);
-  const taxExclusiveSales = Number(input.taxExclusiveSales ?? 0);
-  const taxAmount = Number(input.taxAmount ?? 0);
-  const customers = Number(input.customers ?? 0);
-  const targetCustomers = Number(input.customerTarget ?? input.targetCustomers ?? 0);
-
-  if (Number.isFinite(targetAchievement)) {
-    summary.push(`売上目標の達成状況: ${targetAchievement.toFixed(1)}%`);
-  }
-  if (Number.isFinite(customerAchievement)) {
-    summary.push(`客数目標の達成状況: ${customerAchievement.toFixed(1)}%`);
-  }
-  if (Number.isFinite(targetAverageSpend)) {
-    summary.push(`客単価目標の達成状況: ${averageSpend >= targetAverageSpend ? "達成" : "未達"}`);
-  }
-  if (Number.isFinite(targetOperatingMargin)) {
-    summary.push(`利益目標の達成状況: ${operatingMargin >= targetOperatingMargin ? "達成" : "未達"}`);
-  }
-
-  if (customerAchievement < 100) {
-    priorities.push("客数不足が売上未達の主因です");
-    summary.push("未達の主因: 客数不足が主因です");
-  } else {
-    summary.push("未達の主因: 客数は目標達成しています");
-  }
-
-  if (averageSpend > targetAverageSpend) {
-    notes.push(`客単価は目標を上回っており、${averageSpend - targetAverageSpend}円高です`);
-  } else {
-    notes.push("客単価は目標未達です");
-  }
-
-  if (fixedCost > 0 || variableCost > 0) {
-    priorities.push("固定費と販管費の増減を確認してください");
-  }
-
-  if (adjustedOperatingProfit >= 0) {
-    notes.push("設備投資を除いた調整後利益は改善傾向です");
-  } else {
-    notes.push("設備投資を除いた調整後利益は悪化しています");
-  }
-
-  if (remainingBusinessDays > 0) {
-    notes.push(`残り営業日で必要な客数: ${Math.max(remainingCustomersTarget / remainingBusinessDays, 0).toFixed(1)}名`);
-    notes.push(`残り営業日で必要な売上: ${Math.max(remainingSalesTarget / remainingBusinessDays, 0).toFixed(0)}円`);
-  } else {
-    notes.push("残り営業日数はありません");
-  }
-
-  if (taxExclusiveSales > 0) {
-    notes.push(`税抜売上は${taxExclusiveSales.toFixed(0)}円、消費税相当額は${taxAmount.toFixed(0)}円です`);
-  } else {
-    notes.push("税抜売上のデータ不足");
-  }
-
-  if (customers <= 0 || targetCustomers <= 0) {
-    notes.push("客数データ不足");
-  }
-
-  return {
-    summary,
-    priorities,
-    notes,
-    assumptions: [
-      "消費税額は簡易計算による参考値です",
-      "実際の申告額は課税区分や控除により異なる場合があります",
-    ],
   };
 };
 

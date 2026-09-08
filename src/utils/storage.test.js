@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, calculateTaxSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -273,14 +273,6 @@ test("ongoing (継続) fixed costs appear in later months without a fresh monthl
   assert.equal(costs[0].name, "システム利用料");
 });
 
-test("tax summary derives net sales and tax from gross sales", () => {
-  const summary = calculateTaxSummary({ sales: 110000, totalExpenses: 50000, taxRate: 0.1, roundingMode: "half-up" });
-
-  assert.equal(summary.taxExclusiveSales, 100000);
-  assert.equal(summary.taxAmount, 10000);
-  assert.equal(summary.taxExclusiveExpenses, 45455);
-});
-
 test("month summary separates fixed and variable costs from closing items", () => {
   const state = createInitialAppState();
   const store = "横浜店";
@@ -382,6 +374,213 @@ test("costOfGoodsSold: 在庫管理ONで前月末在庫が未登録(初回利用
   const summary = calculateMonthSummary(state, store, month, { useInventoryTracking: true });
 
   assert.equal(summary.costOfGoodsSold, 20000); // 0(前月末在庫未登録) + 80000 - 60000
+});
+
+// ============================================================
+// 損益表全計算ロジック総点検(2026-09)
+// ケースA〜G。粗利益=総売上-材料原価、営業利益=粗利益-人件費-経費合計、各種比率の
+// 分母は総売上、消費税引当=総売上×税率÷(100+税率)、という単一の計算(calculateMonthSummary
+// 内の1箇所だけ)が、実例・0円・赤字・過去月再オープン・全店舗集計のいずれでも一貫して
+// 成り立つことを確認する。
+// ============================================================
+
+test("損益表ケースA: 実例(総売上3,095,643円)で粗利益・人件費率・営業利益・営業利益率・消費税引当・消費税考慮後利益がすべて仕様通りになる", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 3095643, technicalSales: 2891881, retailSales: 203762, customers: 300 },
+  ];
+  state.monthClosing[key] = [
+    { id: "c-materials", name: "材料・仕入原価", amount: 139500, category: "材料・仕入原価", categoryKey: "materials" },
+    { id: "c-labor", name: "人件費", amount: 1249410, category: "人件費", categoryKey: "labor" },
+    { id: "c-rent", name: "家賃", amount: 500000, category: "家賃", categoryKey: "rent" },
+    { id: "c-utilities", name: "光熱費", amount: 150000, category: "光熱費", categoryKey: "utilities" },
+    { id: "c-communication", name: "通信費", amount: 50000, category: "通信費", categoryKey: "communication" },
+    { id: "c-cleaning", name: "清掃・環境費", amount: 30000, category: "清掃・環境費", categoryKey: "cleaning" },
+    { id: "c-tax-insurance", name: "税金・保険", amount: 100000, category: "税金・保険", categoryKey: "tax_insurance" },
+    { id: "c-other", name: "その他費用", amount: 218878, category: "その他費用", categoryKey: "other" },
+  ];
+  state.taxSettings = { ...state.taxSettings, considerConsumptionTax: true, consumptionTaxReserveRate: 10 };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.sales, 3095643);
+  assert.equal(summary.technicalSales, 2891881);
+  assert.equal(summary.retailSales, 203762);
+  assert.equal(summary.costOfGoodsSold, 139500);
+  assert.equal(summary.costOfGoodsSoldRate.toFixed(1), "4.5");
+  assert.equal(summary.laborCost, 1249410);
+  assert.equal(summary.laborRate.toFixed(1), "40.4");
+  assert.equal(summary.expenseCost, 1048878);
+  assert.equal(summary.grossProfit, 2956143); // 3,095,643 - 139,500 (人件費・経費はまだ引かない)
+  assert.equal(summary.operatingProfit, 657855); // 粗利益 - 人件費 - 経費合計
+  assert.equal(summary.operatingMargin.toFixed(1), "21.3");
+  assert.equal(summary.consumptionTaxReserveAmount, 281422); // 3,095,643 × 10 ÷ 110(四捨五入)
+  assert.equal(summary.profitAfterConsumptionTaxReserve, 376433); // 657,855 - 281,422
+});
+
+test("損益表ケースB: 総売上0円でも各種比率がNaN/Infinityにならず0%になる", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  // 日次入力・費用登録とも一切無い(=総売上0円)の月。
+  state.taxSettings = { ...state.taxSettings, considerConsumptionTax: true, consumptionTaxReserveRate: 10 };
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.sales, 0);
+  [
+    summary.costOfGoodsSoldRate, summary.laborRate, summary.operatingMargin, summary.adRate,
+  ].forEach((rate) => {
+    assert.ok(Number.isFinite(rate), `rate must be finite, got ${rate}`);
+    assert.equal(rate, 0);
+  });
+  assert.equal(summary.consumptionTaxReserveAmount, 0); // 売上0円なら引当も0円(0÷11=0、NaNにならない)
+  assert.equal(formatPercentOrDash(summary.operatingMargin), "0.0%"); // 表示側もNaN/Infinity文字列を出さない
+});
+
+test("損益表ケースC: 材料原価0円のとき粗利益=総売上になる", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
+  state.monthClosing[key] = [
+    { id: "c-labor", name: "人件費", amount: 300000, category: "人件費", categoryKey: "labor" },
+  ];
+  // 材料・仕入原価は一切登録しない(手動確定額も無い・売上連動モードでもない) → 0円。
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.costOfGoodsSold, 0);
+  assert.equal(summary.grossProfit, summary.sales);
+  assert.equal(summary.grossProfit, 1000000);
+});
+
+test("損益表ケースD: 人件費・経費が0円のとき営業利益=粗利益になる", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 1000000 }];
+  state.monthClosing[key] = [
+    { id: "c-materials", name: "材料・仕入原価", amount: 100000, category: "材料・仕入原価", categoryKey: "materials" },
+  ];
+  // 人件費・経費(9カテゴリ)は一切登録しない → 0円。
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  assert.equal(summary.laborCost, 0);
+  assert.equal(summary.expenseCost, 0);
+  assert.equal(summary.operatingProfit, summary.grossProfit);
+  assert.equal(summary.operatingProfit, 900000); // 1,000,000 - 100,000
+});
+
+test("損益表ケースE: 赤字店舗でも営業利益・営業利益率が正しいマイナス値になる(絶対値化や表示崩れが無い)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+
+  state.dailyResults[key] = [{ date: "2026-08-01", totalSales: 500000 }];
+  state.monthClosing[key] = [
+    { id: "c-materials", name: "材料・仕入原価", amount: 100000, category: "材料・仕入原価", categoryKey: "materials" },
+    { id: "c-labor", name: "人件費", amount: 400000, category: "人件費", categoryKey: "labor" },
+    { id: "c-other", name: "その他費用", amount: 200000, category: "その他費用", categoryKey: "other" },
+  ];
+
+  const summary = calculateMonthSummary(state, store, month);
+
+  // 粗利益400,000 - 人件費400,000 - 経費200,000 = -200,000(赤字)
+  assert.equal(summary.grossProfit, 400000);
+  assert.equal(summary.operatingProfit, -200000);
+  assert.ok(summary.operatingProfit < 0);
+  assert.equal(summary.operatingMargin.toFixed(1), "-40.0"); // -200,000 / 500,000 × 100
+  assert.ok(summary.operatingMargin < 0);
+  assert.equal(formatMoneyOrDash(summary.operatingProfit), "¥-200,000");
+  assert.equal(formatPercentOrDash(summary.operatingMargin), "-40.0%");
+});
+
+test("損益表ケースF: 過去月を開き直しても、保存済みの人件費・材料費・経費が現在の設定(売上連動率の変更等)で書き換わらない", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const julyMonth = "2026-07";
+  const augustMonth = "2026-08";
+  const julyKey = `${store}__${julyMonth}`;
+  const augustKey = `${store}__${augustMonth}`;
+
+  state.dailyResults[julyKey] = [{ date: "2026-07-01", totalSales: 2000000 }];
+  state.dailyResults[augustKey] = [{ date: "2026-08-01", totalSales: 2000000 }];
+  // 7月は人件費・材料費とも実額を登録済み(月締め等で確定した実額という想定)。
+  state.monthClosing[julyKey] = [
+    { id: "c-labor-jul", name: "人件費", amount: 700000, category: "人件費", categoryKey: "labor" },
+    { id: "c-materials-jul", name: "材料・仕入原価", amount: 150000, category: "材料・仕入原価", categoryKey: "materials" },
+  ];
+  // 8月は実額登録が無く、売上連動モードの自動推定に任せている月。
+  const optionsRateA = { laborCostMode: "sales_linked", laborCostRate: 40, purchaseCostMode: "sales_linked", purchaseCostRate: 8 };
+
+  const julyBefore = calculateMonthSummary(state, store, julyMonth, optionsRateA);
+  const augustBefore = calculateMonthSummary(state, store, augustMonth, optionsRateA);
+  assert.equal(julyBefore.laborCost, 700000); // 実額をそのまま使用(売上連動の自動推定は無視)
+  assert.equal(julyBefore.costOfGoodsSold, 150000);
+  assert.equal(augustBefore.laborCost, 800000); // 2,000,000 × 40%(自動推定)
+  assert.equal(augustBefore.costOfGoodsSold, 160000); // 2,000,000 × 8%
+
+  // 現在(9月時点)に人件費率・原価率の設定を変更したという想定で、同じ店舗・同じ過去月を
+  // 開き直す(=同じcalculateMonthSummaryをrateだけ変えて再度呼ぶ)。
+  const optionsRateB = { laborCostMode: "sales_linked", laborCostRate: 55, purchaseCostMode: "sales_linked", purchaseCostRate: 15 };
+  const julyAfter = calculateMonthSummary(state, store, julyMonth, optionsRateB);
+  const augustAfter = calculateMonthSummary(state, store, augustMonth, optionsRateB);
+
+  // 7月(実額登録済み)は率の変更を一切受けない。
+  assert.equal(julyAfter.laborCost, 700000);
+  assert.equal(julyAfter.costOfGoodsSold, 150000);
+  assert.equal(julyAfter.operatingProfit, julyBefore.operatingProfit);
+  // 8月(実額未登録・売上連動のみ)は、現在の設定変更どおりに自動推定が変わる
+  // (=これは「過去の確定データが書き換わった」のではなく、まだ確定していない月が
+  // 最新の設定を反映しているだけなので仕様通り)。
+  assert.equal(augustAfter.laborCost, 1100000); // 2,000,000 × 55%
+  assert.equal(augustAfter.costOfGoodsSold, 300000); // 2,000,000 × 15%
+});
+
+test("損益表ケースG: 全店舗表示(合算)と店舗別表示(個別)から算出した営業利益・総売上が完全に一致する", () => {
+  const state = createInitialAppState();
+  const storeA = { id: "store-a", name: "A店", status: "active", settings: {} };
+  const storeB = { id: "store-b", name: "B店", status: "active", settings: {} };
+  const month = "2026-08";
+
+  state.dailyResults[`${storeA.id}__${month}`] = [{ date: "2026-08-01", totalSales: 3095643, customers: 300 }];
+  state.monthClosing[`${storeA.id}__${month}`] = [
+    { id: "a-materials", name: "材料・仕入原価", amount: 139500, category: "材料・仕入原価", categoryKey: "materials" },
+    { id: "a-labor", name: "人件費", amount: 1249410, category: "人件費", categoryKey: "labor" },
+    { id: "a-other", name: "その他費用", amount: 1048878, category: "その他費用", categoryKey: "other" },
+  ];
+  state.dailyResults[`${storeB.id}__${month}`] = [{ date: "2026-08-01", totalSales: 1500000, customers: 150 }];
+  state.monthClosing[`${storeB.id}__${month}`] = [
+    { id: "b-materials", name: "材料・仕入原価", amount: 60000, category: "材料・仕入原価", categoryKey: "materials" },
+    { id: "b-labor", name: "人件費", amount: 620000, category: "人件費", categoryKey: "labor" },
+    { id: "b-other", name: "その他費用", amount: 400000, category: "その他費用", categoryKey: "other" },
+  ];
+  const company = { id: "company-1", stores: [storeA, storeB] };
+
+  const summaryA = calculateMonthSummary(state, storeA.id, month);
+  const summaryB = calculateMonthSummary(state, storeB.id, month);
+  const companySummary = getCompanyDashboardSummary(state, company, month);
+
+  const expectedTotalSales = summaryA.sales + summaryB.sales;
+  const expectedTotalOperatingProfit = summaryA.operatingProfit + summaryB.operatingProfit;
+  assert.equal(companySummary.totalSales, expectedTotalSales);
+  assert.equal(companySummary.totalOperatingProfit, expectedTotalOperatingProfit);
+  // 全店舗の営業利益率は「店舗ごとの利益率の平均」ではなく「合算した利益 ÷ 合算した売上」。
+  assert.equal(
+    companySummary.operatingMargin.toFixed(1),
+    ((expectedTotalOperatingProfit / expectedTotalSales) * 100).toFixed(1)
+  );
 });
 
 test("sumByCategoryKey: totalsは金額合計、hasEntryは1件でも登録があるかを別々に返す(0円登録済みと未登録0件を区別)", () => {
