@@ -24,6 +24,18 @@
      STRIPE_PRICE_BASE_YEARLYと一致)。AIは「経営相談に乗るAIコンサル」ではなく
      「入力済みの実データを毎月自動で整理・分析する」ものとして表現し、万能さを
      強調しない。
+
+     2026-09 重複解消・料金表示改善: ファーストビューにあった「月次損益サマリー」
+     (独自UIカード+目標達成率等のチップ+AI月次レビューの一言プレビュー)を削除。
+     section#pnlの「月次損益表」および各専用セクション(#goal/#review)と内容が
+     重複していたため。損益機能の紹介はsection#pnlの「月次損益表」1つに一本化した。
+     料金表示は、料金セクション(#pricing)を「年額¥12,800(税込)」→「月額換算
+     約¥1,067」の優先順位付き2段構成に変更し、月額換算の金額には契約形態の誤認を
+     防ぐため必ず「月額換算」という接頭辞を付ける(単体で「月額 ¥1,067」とは表示
+     しない)。最終CTA(青背景ブロック)も同じ理由で表記を「1ヶ月あたり」→
+     「月額換算」に統一し、年額からの換算である旨の注記を追加した。年額¥12,800と
+     いう正式料金・Stripe決済・契約ロジック・アプリ本体の計算ロジックには一切
+     変更を加えていない。
      ============================================================================ -->
 
 <title>サロンマネージャー｜美容室の利益・目標達成率・月末着地がひと目で分かる経営管理ツール</title>
@@ -134,7 +146,10 @@
   .shot-frame img { width: 100%; height: auto; }
   .shot-caption { text-align: center; font-size: 13px; color: var(--muted); margin-top: 10px; }
 
-  /* ---------- 月次損益サマリー(LP用の独自UI、実画面のスクショではない) ---------- */
+  /* ---------- 月次損益表カード(LP用の独自UI、実画面のスクショではない)
+     2026-09改訂: 以前はファーストビュー用の「月次損益サマリー」とsection#pnl用の
+     「月次損益表」で同じ内容をほぼ2回表示していた(重複)。ファーストビュー側は削除し、
+     このクラスはsection#pnl(月次損益表)専用として残す。 ---------- */
   .pnl-summary-card {
     margin: 40px auto 0; max-width: 760px; text-align: left;
     background: var(--surface); border: 1px solid var(--border); border-radius: 22px;
@@ -171,16 +186,6 @@
     .pnl-summary-card-lg .pnl-value-emphasis strong { font-size: 25px; }
     .pnl-row-values { grid-template-columns: 1fr; }
   }
-
-  .pnl-stat-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin: 18px auto 0; max-width: 760px; }
-  .pnl-chip { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; text-align: center; }
-  .pnl-chip span { display: block; font-size: 11px; color: var(--muted); margin-bottom: 2px; }
-  .pnl-chip strong { display: block; font-size: 14px; font-weight: 700; color: var(--text); }
-
-  /* ---------- Hero用AI月次レビュー予告(小さな一言プレビュー) ---------- */
-  .hero-ai-preview { margin: 14px auto 0; max-width: 760px; background: var(--accent-soft); border-radius: 14px; padding: 14px 18px; text-align: left; display: flex; gap: 10px; align-items: flex-start; }
-  .hero-ai-preview .tag { flex: none; font-size: 11px; font-weight: 800; color: #fff; background: var(--accent); border-radius: 999px; padding: 4px 10px; margin-top: 1px; white-space: nowrap; }
-  .hero-ai-preview p { font-size: 13px; color: var(--text); line-height: 1.6; }
 
   /* ---------- カード共通 ---------- */
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; box-shadow: var(--shadow); }
@@ -377,12 +382,17 @@
     .ms-pl-grid { grid-template-columns: 1fr; }
   }
 
-  /* ---------- 料金 ---------- */
+  /* ---------- 料金 ----------
+     2026-09改訂: 「年額¥12,800(税込)」を優先順位1、「月額換算 約¥1,067」を優先順位2として
+     明確に2段構成にする(要件: 月額契約が存在すると誤認されないよう、金額の前に必ず
+     「月額換算」を付けた独立した行として見せる — 年額の内訳を表す小さな注記ではなく、
+     それ自体が一瞬で読み取れるバッジとして扱う)。 */
   .pricing-card { max-width: 460px; margin: 0 auto; text-align: center; padding: 40px 32px; }
-  .price-amount { font-size: 40px; font-weight: 800; margin: 6px 0 2px; }
+  .price-annual-label { font-size: 13px; font-weight: 700; color: var(--muted); letter-spacing: 0.06em; margin: 4px 0 0; }
+  .price-amount { font-size: 40px; font-weight: 800; margin: 4px 0 16px; }
   .price-amount small { font-size: 15px; font-weight: 600; color: var(--muted); }
-  .price-permonth { display: block; font-size: 14.5px; font-weight: 700; color: var(--accent-dark); margin-top: 8px; }
-  .price-note { font-size: 12.5px; color: var(--muted); margin: 6px 0 20px; }
+  .price-permonth-badge { display: inline-block; font-size: 15px; font-weight: 800; color: var(--accent-dark); background: var(--accent-soft); padding: 8px 20px; border-radius: 999px; }
+  .price-note { font-size: 12px; color: var(--muted); margin: 10px 0 20px; }
   .pricing-card ul { list-style: none; padding: 0; margin: 22px 0; display: flex; flex-direction: column; gap: 10px; text-align: left; }
   .pricing-card li { font-size: 14.5px; display: flex; gap: 8px; }
   .pricing-card li::before { content: "✓"; color: var(--success); font-weight: 800; }
@@ -403,6 +413,7 @@
   .final-cta .final-price { font-size: 26px; font-weight: 800; margin: 18px 0 4px; }
   .final-cta .final-price small { font-size: 14px; font-weight: 600; opacity: 0.85; }
   .final-cta .final-permonth { font-size: 13.5px; font-weight: 600; opacity: 0.85; margin-bottom: 4px; }
+  .final-cta .final-price-note { font-size: 11.5px; opacity: 0.75; margin-top: 10px; }
   .final-cta .cta-row { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
   .final-cta .btn-primary { background: #fff; color: var(--accent-dark); box-shadow: none; }
   .final-cta .btn-primary:hover { background: #eaf4ff; }
@@ -507,72 +518,6 @@
         <span>毎月の数字をAIが自動整理</span>
       </div>
     </div>
-
-    <!-- ============================================================
-         月次損益サマリー(LP用に独自実装したUI・実画面のスクリーンショットではない)
-         既存の損益表機能(売上/原価/費用/利益/税)と実際の数字構成に基づき、視認性優先で
-         再構成したもの。存在しない項目・機能は追加していない(税セクションの「消費税考慮」
-         も実際に管理画面の損益表タブに存在するトグル機能)。目標達成率・スタッフ生産性の
-         チップと、AI月次レビューの一言プレビューを添えて、ファーストビューだけで
-         「損益表・目標管理・AI分析」の3本柱が一目で伝わるようにしている。
-         ============================================================ -->
-    <div class="wrap">
-      <div class="pnl-summary-card reveal">
-        <div class="pnl-summary-head">
-          <h3>月次損益サマリー</h3>
-          <span class="pnl-summary-badge">今月の実績</span>
-        </div>
-
-        <div class="pnl-row">
-          <div class="pnl-row-label"><span class="ico">📊</span>売上</div>
-          <div class="pnl-row-values">
-            <div class="pnl-value"><span>総売上（税込）</span><strong>¥3,095,643</strong></div>
-            <div class="pnl-value"><span>技術売上（税込）</span><strong>¥2,891,881</strong></div>
-            <div class="pnl-value"><span>店販売上（税込）</span><strong>¥203,762</strong></div>
-          </div>
-        </div>
-
-        <div class="pnl-row">
-          <div class="pnl-row-label"><span class="ico">🧾</span>原価</div>
-          <div class="pnl-row-values">
-            <div class="pnl-value"><span>材料・仕入原価</span><strong>¥139,500</strong></div>
-            <div class="pnl-value"><span>材料・仕入原価率</span><strong>4.5%</strong></div>
-          </div>
-        </div>
-
-        <div class="pnl-row">
-          <div class="pnl-row-label"><span class="ico">👥</span>費用</div>
-          <div class="pnl-row-values">
-            <div class="pnl-value"><span>人件費</span><strong>¥1,249,410</strong></div>
-            <div class="pnl-value"><span>人件費率</span><strong>40.4%</strong></div>
-            <div class="pnl-value"><span>経費合計</span><strong>¥1,048,878</strong></div>
-          </div>
-        </div>
-
-        <div class="pnl-row pnl-row-profit">
-          <div class="pnl-row-label"><span class="ico">¥</span>利益</div>
-          <div class="pnl-row-values">
-            <div class="pnl-value"><span>粗利益</span><strong>¥2,956,143</strong></div>
-            <div class="pnl-value pnl-value-emphasis"><span>営業利益</span><strong>¥657,855</strong></div>
-            <div class="pnl-value pnl-value-emphasis"><span>営業利益率</span><strong>21.3%</strong></div>
-          </div>
-        </div>
-      </div>
-
-      <div class="pnl-stat-chips">
-        <div class="pnl-chip"><span>目標達成率</span><strong>33.3%</strong></div>
-        <div class="pnl-chip"><span>残り必要売上</span><strong>¥2,000,000</strong></div>
-        <div class="pnl-chip"><span>月末着地予測</span><strong>¥3,000,000</strong></div>
-        <div class="pnl-chip"><span>スタッフ生産性</span><strong>¥619,000 / 人</strong></div>
-      </div>
-
-      <div class="hero-ai-preview">
-        <span class="tag">AI月次レビュー</span>
-        <p>「売上は前月比2.1%減少しましたが、人件費率の改善により、営業利益は¥523,000から¥657,855へ増加しました。」</p>
-      </div>
-
-      <p class="shot-caption" style="margin-top:16px;">※画面はイメージです。数値はデモデータです。</p>
-    </div>
   </section>
 
   <!-- ============================================================
@@ -602,7 +547,7 @@
       <div class="section-head center">
         <p class="eyebrow">PROFIT &amp; LOSS</p>
         <h2 class="section-title">売上だけでなく、<br class="hero-h1-break" />利益まで見える。</h2>
-        <p class="section-lead">人件費・材料費・固定費まで含めて整理。営業利益と営業利益率まで、ひと目で確認できます。</p>
+        <p class="section-lead">売上・人件費・材料費・経費をまとめて管理。今月いくら利益が残っているのかを、月次損益表ですぐに確認できます。</p>
       </div>
       <p class="pull-quote center" style="font-size:19px;margin-bottom:6px;">利益が残っているかを、<br />感覚ではなく数字で確認。</p>
 
@@ -663,8 +608,7 @@
 
   <!-- ============================================================
        4. 目標管理・着地予測セクション
-       1枚目(ファーストビューの月次損益サマリー)とは別の価値 —「目標から逆算して
-       今月あと何が必要か」を見せる。
+       損益表(#pnl)とは別の価値 —「目標から逆算して今月あと何が必要か」を見せる。
        2026-09-01改訂: 元は実際の「売上」ページの営業進捗・KPIカードのスクリーンショット
        (progress.jpg)だったが、「営業日1/30日なのに達成率40%」等、月初のデモデータとして
        不自然な数値になっていた。multistore-card(店舗比較)と同じ方針で、LP用に手打ちの
@@ -1073,9 +1017,14 @@
         <p class="section-lead">数字管理をもっとシンプルにしたい、美容室・美容サロンオーナーへ。1店舗の個人サロンから、複数店舗のサロングループまで利用できます。</p>
       </div>
       <div class="card pricing-card">
-        <!-- 料金を変更する場合はページ末尾のCONFIG.price(amountHtml/note)を編集してください。 -->
-        <div class="price-amount" id="price-amount">年額 ¥12,800<small>（税込）</small><span class="price-permonth">1ヶ月あたり 約¥1,067</span></div>
-        <p class="price-note" id="price-note">※12,800円 ÷ 12ヶ月の概算です。複雑なプラン比較は不要です。</p>
+        <!-- 料金を変更する場合はページ末尾のCONFIG.price(annualLabel/annualAmountHtml/
+             permonthText/note)を編集してください。優先順位1(年額)→2(月額換算)の2段構成
+             (要件: 月額換算はあくまで年額の目安であり、月額契約が存在するわけではない
+             ことが一目で分かるよう、金額の前に必ず「月額換算」を付けたバッジとして表示)。 -->
+        <p class="price-annual-label" id="price-annual-label">年額</p>
+        <div class="price-amount" id="price-amount">¥12,800<small>（税込）</small></div>
+        <div class="price-permonth-badge" id="price-permonth-badge">月額換算 約¥1,067</div>
+        <p class="price-note" id="price-note">※年額12,800円を12ヶ月で換算</p>
         <ul>
           <li>1店舗から利用可能</li>
           <li>スマホ / PC対応</li>
@@ -1154,7 +1103,7 @@
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">料金はいくらですか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p id="faq-price-answer">年額12,800円(税込)です。1ヶ月あたり約¥1,067(概算)。1店舗から利用でき、追加の専用機器は不要です。</p></div>
+          <div class="faq-a"><p id="faq-price-answer">年額12,800円(税込)です。月額換算で約¥1,067(概算)。1店舗から利用でき、追加の専用機器は不要です。</p></div>
         </div>
       </div>
     </div>
@@ -1169,12 +1118,13 @@
         <h2>売上を見るだけの経営から、<br />利益が分かる経営へ。</h2>
         <p>利益・目標・月末着地・毎月の変化を、<br />ひとつの画面で確認できます。</p>
         <p style="margin-top:6px;">POSや予約システムはそのままで始められます。</p>
-        <div class="final-permonth" id="final-permonth">1ヶ月あたり 約¥1,067</div>
+        <div class="final-permonth" id="final-permonth">月額換算 約¥1,067</div>
         <div class="final-price" id="final-price">年額 ¥12,800<small>（税込）</small></div>
         <div class="cta-row">
           <a class="btn btn-primary" href="#" id="final-cta" data-track="cta_click" data-cta-location="final">無料で試す</a>
           <a class="btn btn-secondary" href="#pnl" data-track="secondary_cta_click">画面を見る</a>
         </div>
+        <p class="final-price-note" id="final-price-note">※年額12,800円を12ヶ月で換算</p>
         <div class="hero-points">
           <span>POSや予約システムはそのままでOK</span>
           <span>スマホ・PC対応</span>
@@ -1224,13 +1174,19 @@
 
     // 料金(年額¥12,800・税込に統一。実際のStripe基本プラン年額price
     // (STRIPE_PRICE_BASE_YEARLY)と一致させています)。金額を変更する場合は
-    // この4箇所をまとめて書き換えてください。
+    // このオブジェクトをまとめて書き換えてください。
+    // 2026-09改訂: 「年額(優先順位1)→月額換算(優先順位2)」の2段構成に統一。月額の
+    // 契約が存在するように誤認されないよう、月額換算の金額には必ず「月額換算」という
+    // 接頭辞を付ける(単に「月額 ¥1,067」としない)。
     price: {
-      amountHtml: "年額 ¥12,800<small>（税込）</small><span class=\"price-permonth\">1ヶ月あたり 約¥1,067</span>",
-      note: "※12,800円 ÷ 12ヶ月の概算です。複雑なプラン比較は不要です。",
+      annualLabel: "年額",
+      annualAmountHtml: "¥12,800<small>（税込）</small>",
+      permonthText: "月額換算 約¥1,067",
+      note: "※年額12,800円を12ヶ月で換算",
       finalAmountHtml: "年額 ¥12,800<small>（税込）</small>",
-      finalPermonth: "1ヶ月あたり 約¥1,067",
-      faqAnswer: "年額12,800円(税込)です。1ヶ月あたり約¥1,067(概算)。1店舗から利用でき、追加の専用機器は不要です。"
+      finalPermonth: "月額換算 約¥1,067",
+      finalNote: "※年額12,800円を12ヶ月で換算",
+      faqAnswer: "年額12,800円(税込)です。月額換算で約¥1,067(概算)。1店舗から利用でき、追加の専用機器は不要です。"
     },
 
     // フッターのリンク先(未設定URLはひとまず "#" のまま。用意でき次第書き換えてください)。
@@ -1252,14 +1208,20 @@
     if (el) el.setAttribute("href", CONFIG.loginUrl);
   });
 
+  var priceAnnualLabelEl = document.getElementById("price-annual-label");
+  if (priceAnnualLabelEl) priceAnnualLabelEl.textContent = CONFIG.price.annualLabel;
   var priceAmountEl = document.getElementById("price-amount");
-  if (priceAmountEl) priceAmountEl.innerHTML = CONFIG.price.amountHtml;
+  if (priceAmountEl) priceAmountEl.innerHTML = CONFIG.price.annualAmountHtml;
+  var pricePermonthBadgeEl = document.getElementById("price-permonth-badge");
+  if (pricePermonthBadgeEl) pricePermonthBadgeEl.textContent = CONFIG.price.permonthText;
   var priceNoteEl = document.getElementById("price-note");
   if (priceNoteEl) priceNoteEl.textContent = CONFIG.price.note;
   var finalPriceEl = document.getElementById("final-price");
   if (finalPriceEl) finalPriceEl.innerHTML = CONFIG.price.finalAmountHtml;
   var finalPermonthEl = document.getElementById("final-permonth");
   if (finalPermonthEl) finalPermonthEl.textContent = CONFIG.price.finalPermonth;
+  var finalPriceNoteEl = document.getElementById("final-price-note");
+  if (finalPriceNoteEl) finalPriceNoteEl.textContent = CONFIG.price.finalNote;
   var faqPriceEl = document.getElementById("faq-price-answer");
   if (faqPriceEl) faqPriceEl.textContent = CONFIG.price.faqAnswer;
 
