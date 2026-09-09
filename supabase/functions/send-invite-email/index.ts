@@ -125,6 +125,21 @@ Deno.serve(async (req) => {
       }
     }
 
+    // 契約終了(利用停止)中の会社では、閲覧(SELECT)以外の書き込み操作を一切許可しない
+    // (要件17)。このEdge FunctionはSERVICE ROLEで実行されるためRLSの制限を受けず、ここで
+    // 明示的に止めないと契約終了会社でも招待メール送信が通ってしまう。system_adminは対象外。
+    if (callerProfile.role !== "system_admin") {
+      const { data: billingCompany, error: billingCompanyError } = await admin
+        .from("companies")
+        .select("contract_status, deleted_at")
+        .eq("id", target.company_id)
+        .maybeSingle();
+      if (billingCompanyError) throw billingCompanyError;
+      if (!billingCompany || billingCompany.contract_status === "suspended" || billingCompany.deleted_at) {
+        return json({ error: "契約が終了しているため、この操作は行えません。過去のデータの閲覧は引き続き可能です。" }, 403);
+      }
+    }
+
     const redirectTo = `${redirectOrigin}/signup?invite=${encodeURIComponent(token)}`;
 
     // If a previous send already created an auth user for this email (first send, an earlier

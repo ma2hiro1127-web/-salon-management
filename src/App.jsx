@@ -3859,7 +3859,7 @@ function App() {
   };
 
   const handleSaveStore = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     const companyId = appState.currentCompanyId;
     const existingStore = currentCompany?.stores?.find((store) => store.id === storeEditId) || null;
     // Creating/deleting/archiving stores stays company_admin/system_admin-only
@@ -4060,7 +4060,7 @@ function App() {
   // 両方に流用しない。ここで登録するのは店舗名のみ(要件: 最低限、店舗名を登録)。在籍
   // スタッフ数等は店舗作成後に「店舗基本設定」から設定する。
   const handleCreateNewStore = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!canManageStore(currentRole)) {
       setNotice("店舗作成はシステム管理者または会社管理者が実行できます");
       return;
@@ -4201,6 +4201,7 @@ function App() {
   const handleSaveUser = () => runWithSaveGuard(savingUserInviteRef, handleSaveUserInner);
 
   const handleSaveUserInner = async () => {
+    if (guardReadOnlyAccess()) return;
     if (!canManageUsers(currentRole)) {
       setNotice("ユーザー招待はシステム管理者・会社管理者・店長が実行できます");
       return;
@@ -4694,10 +4695,23 @@ function App() {
   // すぎない — 保存ハンドラの先頭で呼び、trueが返れば以降の処理を中断する。判定式自体は
   // permissions.jsのisFranchiseReadOnlyへ集約済み。
   const isFranchiseReadOnlyForCurrentUser = () => isFranchiseReadOnly(appState.isViewingFranchise, currentRole);
-  const guardFranchiseReadOnly = () => {
-    if (!isFranchiseReadOnlyForCurrentUser()) return false;
-    setNotice("加盟店データは閲覧のみです（編集・保存はできません）");
-    return true;
+  // 契約終了(利用停止)中は、閲覧は引き続き許可しつつ書き込みだけを禁止する(要件15-17)。
+  // 実際の強制力はDB側のRLS(is_company_writable、20260916000000で追加)とEdge Function側の
+  // チェックにあり、ここでのチェックは「送信前に分かりやすいメッセージを出す」ためのUX目的の
+  // 早期リターンに過ぎない——このチェックを通過してもRLSが最終的に書き込みを拒否するため、
+  // ここで全ての保存箇所を網羅できていなくてもデータの安全性そのものは損なわれない。
+  // system_adminは対象外(利用停止ゲート自体が既にsystem_adminを対象外にしている)。
+  const isContractReadOnlyForCurrentUser = () => currentCompany?.contractStatus === "suspended" && normalizeRole(currentRole) !== "system_admin";
+  const guardReadOnlyAccess = () => {
+    if (isFranchiseReadOnlyForCurrentUser()) {
+      setNotice("加盟店データは閲覧のみです（編集・保存はできません）");
+      return true;
+    }
+    if (isContractReadOnlyForCurrentUser()) {
+      setNotice("現在ご契約は終了しているため、新しい入力・編集はできません。過去のデータは引き続き閲覧できます。再契約すると入力・編集を再開できます。");
+      return true;
+    }
+    return false;
   };
 
   const handleStoreSwitch = (storeName) => {
@@ -4782,6 +4796,7 @@ function App() {
   // assignments had their own working save paths); editing here always writes straight to the
   // profiles row so a reload always reflects what was actually saved, not a local-only copy.
   const handleSaveUserEdit = async () => {
+    if (guardReadOnlyAccess()) return;
     const targetUser = (appState.users || []).find((user) => user.id === editUserTargetId);
     if (!targetUser) return;
     const normalizedEmail = editUserDraft.email.trim().toLowerCase();
@@ -4882,6 +4897,7 @@ function App() {
   // 一度もログインしていない行が、以前の「system_adminは一律削除不可」ガードのせいで
   // 永久に片付けられなかった実際の不具合の修正。
   const handleConfirmDeleteUser = async () => {
+    if (guardReadOnlyAccess()) return;
     const targetUser = (appState.users || []).find((user) => user.id === deleteUserTargetId);
     if (!targetUser) return;
     if (targetUser.id === currentUser?.profileId) {
@@ -5231,6 +5247,7 @@ function App() {
   };
 
   const handleStoreLifecycleAction = async (store, action) => {
+    if (guardReadOnlyAccess()) return;
     const meta = STORE_LIFECYCLE_ACTIONS[action];
     if (!meta) return;
     // 課金対象の店舗(status==='active')を停止/アーカイブする場合、返金は発生せず、
@@ -5285,7 +5302,7 @@ function App() {
     // 作成を実行しない)。RLS(stores_insert_company_scoped)側でも閲覧者の会社idでは
     // 通らないため実データは絶対に作られないが、それに任せると分かりにくい汎用エラーに
     // なるだけなので、他の書き込みハンドラと同じ明示的な通知に揃える。
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     // 販売前総合チェックで発見: 他の店舗作成系ハンドラ(handleSaveStore/handleCreateNewStore)は
     // savingStoreRefで連打を防いでいたが、この複製ボタンだけガードが無く、連打すると
     // 「{店舗名} コピー」という同名の店舗が複数作られ得た(DB側のユニーク制約が2件目以降を
@@ -5367,6 +5384,7 @@ function App() {
   };
 
   const handleToggleUserStatus = async (user) => {
+    if (guardReadOnlyAccess()) return;
     if (!window.confirm(`${user.name} を${user.isActive ? "利用停止" : "再開"}しますか？`)) return;
     if (togglingStatusUserId === user.id) return;
     const nextActive = !user.isActive;
@@ -5524,7 +5542,7 @@ function App() {
   };
 
   const handleSaveMonthlyTargetFieldSettings = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!selectedStore) {
       setNotice("店舗を先に追加してください");
       return;
@@ -5576,7 +5594,7 @@ function App() {
   // するため、他の列(材料費率等)には影響しない)。保存に失敗した場合は成功したように見せず、
   // dirtyフラグも維持して再試行できるようにする。
   const handleSaveInputSettings = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!selectedStore) {
       setNotice("店舗を先に追加してください");
       return;
@@ -5684,7 +5702,7 @@ function App() {
       setNotice("人件費・仕入の設定を変更できるのは会社管理者・店舗管理者以上です。");
       return false;
     }
-    if (guardFranchiseReadOnly()) return false;
+    if (guardReadOnlyAccess()) return false;
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
       setNotice("店舗情報を確認できませんでした");
@@ -5722,7 +5740,7 @@ function App() {
       setNotice("人件費・仕入の確定額を変更できるのは会社管理者・店舗管理者以上です。");
       return false;
     }
-    if (guardFranchiseReadOnly()) return false;
+    if (guardReadOnlyAccess()) return false;
     const { store } = resolveTargetCompanyAndStore();
     if (!store?.id) {
       setNotice("店舗情報を確認できませんでした");
@@ -5759,7 +5777,7 @@ function App() {
       setNotice("人件費・仕入の金額を変更できるのは会社管理者・店舗管理者以上です。");
       return false;
     }
-    if (guardFranchiseReadOnly()) return false;
+    if (guardReadOnlyAccess()) return false;
     const categoryKey = costType === "labor" ? "labor" : "materials";
     const items = getFixedCostsForStoreMonth(appState, selectedStoreId, selectedMonth).filter((item) => item.categoryKey === categoryKey);
     if (items.length > 1) return false;
@@ -5804,6 +5822,7 @@ function App() {
   };
 
   const handleInviteEmail = async (user) => {
+    if (guardReadOnlyAccess()) return;
     if (user.authUserId) {
       setNotice(`${user.name} はすでに登録済みです`);
       return;
@@ -5869,6 +5888,7 @@ function App() {
   // 行わない。生成したリンクはクリップボードへコピーするだけで、DBへの追加保存はしない
   // (要件4: 招待URLの安全性 — 平文で永続保存しない)。
   const handleCopyInviteLink = async (user) => {
+    if (guardReadOnlyAccess()) return;
     if (user.authUserId) {
       setNotice(`${user.name} はすでに登録済みです`);
       return;
@@ -6579,7 +6599,7 @@ function App() {
       setNotice("まとめて入力を利用できるのは会社管理者・店舗管理者以上です。");
       return;
     }
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!selectedStore) {
       setNotice("店舗を先に追加してください");
       return;
@@ -6679,7 +6699,7 @@ function App() {
       setNotice("まとめて入力を利用できるのは会社管理者・店舗管理者以上です。");
       return;
     }
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!window.confirm(`${entry.startDate}〜${entry.endDate}のまとめて入力を削除しますか？この操作は取り消せません。`)) return;
     try {
       const result = await deleteDailyBatchEntry({ id: entry.id });
@@ -7166,7 +7186,7 @@ function App() {
   // そのまま使い、終了月は常に空にする。期間限定の場合だけ開始月・終了月を必須にする。
   const submitFixedCost = async (event) => {
     event.preventDefault();
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (savingFixedCostRef.current) return;
     savingFixedCostRef.current = true;
     setFixedCostFormBusy(true);
@@ -7289,7 +7309,7 @@ function App() {
   };
 
   const removeFixedCost = async (itemId) => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     // 不具合防止(要件15): cost_monthly_amountsはcost_item_idにON DELETE CASCADEが
     // 設定されているため、この項目を削除すると紐づく月別の反映実績(cost_monthly_amounts)も
     // まとめて削除される。単月・期間限定費用は同じidのまま複数月にわたって「今月も反映」
@@ -7344,7 +7364,7 @@ function App() {
   // 対象月ごとの費用金額(cost_monthly_amounts)を1件upsertする。新規登録時の初回金額保存と、
   // 月次一覧のインライン保存(saveCostAmountFor)の両方から共通で呼ぶ。
   const persistCostMonthlyAmount = async ({ costItemId, targetMonth, amount }) => {
-    if (guardFranchiseReadOnly()) return false;
+    if (guardReadOnlyAccess()) return false;
     const { company, store } = resolveTargetCompanyAndStore();
     if (isSupabaseConfigured) {
       if (!company?.id || !store?.id) {
@@ -7449,7 +7469,7 @@ function App() {
       setNotice("費用の金額を変更できるのは会社管理者・店舗管理者以上です。");
       return;
     }
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!window.confirm(`「${item.name}」の今月の反映を解除しますか？\n(費用項目自体や他の月の反映は削除されません)`)) return;
     if (isSupabaseConfigured) {
       const result = await deleteCostMonthlyAmountFromSupabase({ costItemId: item.id, targetMonth: selectedMonth });
@@ -7479,7 +7499,7 @@ function App() {
     [displayedFixedCosts, appState, selectedMonth],
   );
   const reflectAllUnreflectedCostsForMonth = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (unreflectedLimitedCostItems.length === 0) return;
     if (!window.confirm("前月以前の単月・期間限定項目を、直近の金額のまま今月へ反映しますか？")) return;
     setBulkReflectBusy(true);
@@ -7511,7 +7531,7 @@ function App() {
   const fixedCostDragActiveRef = useRef(false);
 
   const reorderFixedCostItem = async (draggedId, overId) => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     const currentOrder = fixedCosts.map((item) => item.id);
     const fromIndex = currentOrder.indexOf(draggedId);
     const toIndex = currentOrder.indexOf(overId);
@@ -7576,7 +7596,7 @@ function App() {
   // upsertする共通ヘルパー — 「期首在庫」は選択月の前月分として、「当月末在庫」は選択月
   // そのものとして同じテーブルに保存する(getPreviousMonthInventoryBalanceが前者を読む)。
   const persistInventoryBalance = async (targetMonth, amount) => {
-    if (guardFranchiseReadOnly()) return false;
+    if (guardReadOnlyAccess()) return false;
     const { company, store } = resolveTargetCompanyAndStore();
     if (!company?.id || !store?.id) {
       setNotice("店舗情報を確認できませんでした");
@@ -7835,7 +7855,7 @@ function App() {
   };
 
   const toggleMonthClosing = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (!selectedStore) {
       setNotice("店舗を選択してください");
       return;
@@ -7911,7 +7931,7 @@ function App() {
   };
 
   const toggleDayClosing = async () => {
-    if (guardFranchiseReadOnly()) return;
+    if (guardReadOnlyAccess()) return;
     if (isDailyDateBatchLocked) {
       setNotice("この日はまとめて入力で反映されています。日締めは通常の日次入力のみが対象です。");
       return;
@@ -8070,45 +8090,31 @@ function App() {
     return <LoginScreen mode={authMode} onModeChange={handleModeChange} onSubmit={handleLogin} onSignUp={handleSignUp} onOwnerSignUp={handleOwnerSignUp} onResetPassword={handleResetPassword} onSetNewPassword={handleSetNewPassword} loading={authLoading} error={authError} success={authSuccess} inviteEmail={inviteToken ? inviteEmail : ""} hasInviteToken={Boolean(inviteToken)} ownerSignupVisible={selfSignupEnabled} initialOwnerSignupEmail={ownerSignupSuggested.email} initialOwnerSignupCompanyName={ownerSignupSuggested.companyName} />;
   }
 
-  // 停止中、または削除(論理削除)済みの会社は、データを保持したまま通常ユーザー
-  // (system_admin以外)の利用だけを止める(要件4・6)。system_adminはどちらの状態でも
-  // 会社管理画面から会社情報・データを引き続き確認できる必要があるため、この画面は
-  // system_admin以外にのみ表示する。
-  if ((currentCompany?.contractStatus === "suspended" || currentCompany?.deletedAt) && normalizeRole(currentRole) !== "system_admin") {
-    // 再契約(停止中→契約中)は、company_adminであっても必ずStripe Checkoutを経由させる
-    // (2026-09-02、Stripe決済導入時に修正)。以前はupdate-company-status Edge Function
-    // 経由でcompany_adminが自社を直接「契約中」へセルフ変更できる抜け道があったが、これは
-    // 実際の支払いを一切伴わずに済んでしまい、「Stripe/Webhookを正とする」という要件に
-    // 反するため廃止した。論理削除済みの会社は対象外(先にsystem_adminが復元する必要がある)。
-    const canReContract = normalizeRole(currentRole) === "company_admin" && currentCompany?.contractStatus === "suspended" && !currentCompany?.deletedAt;
+  // 論理削除(会社データ削除)済みの会社のみ、引き続き完全ブロックする——これは今回の
+  // 「契約終了後の閲覧専用モード」とは別の、より重い状態(先にsystem_adminが復元する必要が
+  // ある)。system_adminはこの画面自体の対象外(会社管理画面から引き続き確認できる)。
+  if (currentCompany?.deletedAt && normalizeRole(currentRole) !== "system_admin") {
     return (
       <div className="auth-shell">
         <div className="auth-card">
           <div className="auth-title-block">
-            <p className="eyebrow">SUSPENDED</p>
-            <h2>現在この会社は利用停止中です</h2>
-            <p>会社・店舗・ユーザー・売上等のデータは保持されています。契約を再開すると、これまでのデータはそのまま引き続きご利用いただけます。</p>
+            <p className="eyebrow">DELETED</p>
+            <h2>この会社のデータは削除手続き中です</h2>
+            <p>会社・店舗・ユーザー・売上等のデータは一定期間保持されています。復元をご希望の場合は管理者へお問い合わせください。</p>
           </div>
-          {canReContract ? (
-            <>
-              {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
-              <p className="helper-text">月払い・年払いを選んで契約を再開できます。カード情報はStripeの決済ページで安全に入力され、サロンマネージャー側には保存されません。</p>
-              <div className="button-row">
-                <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
-                  {checkoutBusyInterval === "month" ? "処理中…" : "月払いで契約を再開する"}
-                </button>
-                <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
-                  {checkoutBusyInterval === "year" ? "処理中…" : "年払いで契約を再開する"}
-                </button>
-              </div>
-            </>
-          ) : (
-            <p>管理者へお問い合わせください。</p>
-          )}
+          <p>管理者へお問い合わせください。</p>
         </div>
       </div>
     );
   }
+
+  // 契約終了(利用停止)は、以前は上のDELETED画面と同様に全機能を完全ブロックしていたが、
+  // 「契約終了後もログイン・過去データ閲覧は可能、新規入力・編集だけ不可」という閲覧専用
+  // モードへ変更した(要件15-17)。ここでは早期returnせず、通常のアプリ画面をそのまま
+  // 描画し続ける——書き込み系の実処理はguardReadOnlyAccess()(各保存ハンドラの先頭)と
+  // DB側のRLS(is_company_writable、20260916000000で追加)の両方で拒否される。
+  // 画面には下のContractReadOnlyBannerで常時バナー表示する(§16)。
+  const isContractReadOnlyMode = isContractReadOnlyForCurrentUser();
 
   if (needsFirstStoreSetup) {
     return (
@@ -8394,6 +8400,27 @@ function App() {
             </button>
           </div>
         ) : null}
+
+        {/* 契約終了(利用停止)中の閲覧専用モードを常時分かりやすく表示する(要件16)。
+            過去データの閲覧を妨げないよう、他の画面と同じ位置に控えめなバナーとして出す
+            だけで、遷移や操作自体はブロックしない——実際の書き込み禁止はguardReadOnlyAccess
+            (各保存ハンドラ)とDB側のRLSが担う。 */}
+        {isContractReadOnlyMode ? (
+          <div className="notice-box error contract-readonly-banner">
+            <span>現在ご契約は終了しています。過去のデータは引き続き閲覧できますが、新しい入力・編集はできません。</span>
+            {normalizeRole(currentRole) === "company_admin" ? (
+              <div className="button-row">
+                <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
+                  {checkoutBusyInterval === "month" ? "処理中…" : "月払いで再契約する"}
+                </button>
+                <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
+                  {checkoutBusyInterval === "year" ? "処理中…" : "年払いで再契約する"}
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {isContractReadOnlyMode && checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
 
         {/* 運営専用の検証会社(テストサロン)を閲覧中であることを常時表示する(要件:
             本番会社だと誤認して操作しないための事故防止)。system_admin(owner含む)が
@@ -10448,6 +10475,26 @@ function App() {
                 <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
                   {portalBusy ? "処理中…" : "お支払い方法の変更はこちら"}
                 </button>
+              </>
+            ) : currentCompany.contractStatus === "suspended" ? (
+              <>
+                {/* 再契約(要件19): 既存のcompany_idをそのまま使い、新しい会社・店舗は作らない
+                    ——create-checkout-sessionは既存のstripe_customer_idを再利用し、
+                    contract_started_atが既に設定済みのため無料トライアルは再付与されない
+                    (要件24「解約して再登録すればまた1か月無料」の防止と同じ仕組み)。
+                    そのため文言も「無料で始める」ではなく「再契約する」にする。 */}
+                <p className="helper-text">
+                  現在ご契約が終了しています。再契約すると、これまでの店舗・スタッフ・売上・損益データはそのまま引き続きご利用いただけます。
+                </p>
+                {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
+                <div className="button-row">
+                  <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
+                    {checkoutBusyInterval === "month" ? "処理中…" : "月払いで再契約する"}
+                  </button>
+                  <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
+                    {checkoutBusyInterval === "year" ? "処理中…" : "年払いで再契約する"}
+                  </button>
+                </div>
               </>
             ) : (
               <>

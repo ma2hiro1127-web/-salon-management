@@ -103,6 +103,22 @@ Deno.serve(async (req) => {
       return json({ error: "他社の店舗の状態は変更できません" }, 403);
     }
 
+    // 契約終了(利用停止)中の会社では、閲覧(SELECT)以外の書き込み操作を一切許可しない
+    // (要件17)。このEdge FunctionはSERVICE ROLEで実行されるためRLSの制限を受けず、ここで
+    // 明示的に止めないと契約終了会社でも書き込みが通ってしまう。system_adminは復旧作業の
+    // ため対象外(App.jsxの利用停止ゲート自体も既にsystem_adminを対象外にしている)。
+    if (callerProfile.role !== "system_admin") {
+      const { data: billingCompany, error: billingCompanyError } = await admin
+        .from("companies")
+        .select("contract_status, deleted_at")
+        .eq("id", store.company_id)
+        .maybeSingle();
+      if (billingCompanyError) throw billingCompanyError;
+      if (!billingCompany || billingCompany.contract_status === "suspended" || billingCompany.deleted_at) {
+        return json({ error: "契約が終了しているため、この操作は行えません。過去のデータの閲覧は引き続き可能です。" }, 403);
+      }
+    }
+
     if (!transition.fromStatuses.includes(store.status)) {
       return json({ error: `この店舗は現在「${store.status}」のため、この操作は行えません` }, 409);
     }
