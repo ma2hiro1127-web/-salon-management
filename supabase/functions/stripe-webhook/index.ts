@@ -15,10 +15,14 @@
 //
 // 重要な設計方針(要件どおり):
 //   - 1回の支払い失敗(invoice.payment_failed)だけではcontract_statusをsuspendedにしない。
-//     payment_status='error' という補助表示だけを更新する。Stripeの再試行がすべて尽きて
-//     サブスクリプション自体が失効した(customer.subscription.deleted、または
-//     customer.subscription.updatedでstatusがcanceled/unpaidになった)場合にのみ
-//     contract_status='suspended'へ変更する。
+//     payment_status='past_due' という補助表示だけを更新する(2026-09-17、以前は
+//     invoice.payment_failed/customer.subscription.updated(past_due)で異なる値'error'/
+//     'processing'を使っており、どちらが後に届くかで意味の無い上書きが起きていたため統一)。
+//     Stripeの再試行がすべて尽きてサブスクリプション自体が失効した
+//     (customer.subscription.deleted、またはcustomer.subscription.updatedでstatusが
+//     canceled/unpaidになった)場合にのみcontract_status='suspended'へ変更する。
+//   - イベントの到着順が前後しても、古いイベントで最新状態を上書きしない(2026-09-17追加、
+//     companies.last_billing_event_atとevent.createdを比較——詳細は下の該当コメント参照)。
 //   - 「無料利用」はStripeのSubscriptionを前提にしない当社独自の状態のため、このWebhookは
 //     free状態の会社には一切影響しない(stripe_customer_idが無ければ対象会社を特定できず
 //     何もしない)。
@@ -159,7 +163,7 @@ Deno.serve(async (req) => {
     return json({ error: "署名の検証に失敗しました" }, 400);
   }
 
-  let event: { id?: string; type?: string; data?: { object?: Record<string, unknown> } };
+  let event: { id?: string; type?: string; created?: number; data?: { object?: Record<string, unknown> } };
   try {
     event = JSON.parse(rawBody);
   } catch {
@@ -168,6 +172,7 @@ Deno.serve(async (req) => {
 
   const eventId = event.id || "";
   const eventType = event.type || "";
+  const eventCreated = typeof event.created === "number" ? event.created : null;
   const object = event.data?.object || {};
   logStage("event_received", { eventId, eventType });
 
@@ -186,7 +191,7 @@ Deno.serve(async (req) => {
   try {
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, contract_status")
+      .select("id, contract_status, last_billing_event_at")
       .eq("stripe_customer_id", stripeCustomerId || "__none__")
       .maybeSingle();
     if (companyError) throw companyError;
@@ -232,8 +237,37 @@ Deno.serve(async (req) => {
       return json({ error: "会社IDの整合性チェックに失敗しました" }, 409);
     }
 
+    // イベントの到着順が前後しても、古いイベントで最新の契約状態を上書きしない(要件)。
+    // Stripeは配信順を保証していない(再送・並列配信により、実際に発生した順序と違う順で
+    // 届くことがあり得る)。contract_status/subscription_status/payment_statusという
+    // 「状態機械」的なフィールドを書き込むイベント種別についてのみ、そのイベント自体が
+    // Stripe側で発行された時刻(event.created)を、直近に反映した値(companies.
+    // last_billing_event_at)と比較する——今回のイベントの方が古ければ適用せず、
+    // 冪等性テーブルには既に記録済みのまま(=再送されても毎回この判定に来る)正常終了する。
+    // checkout.session.completedはstripe_subscription_idの紐付けだけで状態を退行させ得ない
+    // ため対象外。customer.subscription.trial_will_endはこの分岐へ来る前に既にreturn済み。
+    const ORDER_SENSITIVE_EVENT_TYPES = new Set([
+      "invoice.paid",
+      "invoice.payment_failed",
+      "customer.subscription.created",
+      "customer.subscription.updated",
+      "customer.subscription.deleted",
+    ]);
+    if (
+      ORDER_SENSITIVE_EVENT_TYPES.has(eventType) &&
+      eventCreated !== null &&
+      company.last_billing_event_at &&
+      eventCreated * 1000 < new Date(company.last_billing_event_at).getTime()
+    ) {
+      logStage("stale_event_skipped", { eventId, eventType, eventCreated, lastBillingEventAt: company.last_billing_event_at });
+      return json({ ok: true, skipped: "stale_event" });
+    }
+
     const nowIso = new Date().toISOString();
     const patch: Record<string, unknown> = { updated_at: nowIso };
+    if (ORDER_SENSITIVE_EVENT_TYPES.has(eventType) && eventCreated !== null) {
+      patch.last_billing_event_at = new Date(eventCreated * 1000).toISOString();
+    }
 
     if (eventType === "checkout.session.completed") {
       // 決済完了の瞬間。実際の状態(status/期間/金額)はsubscription.created/updatedの方が
@@ -253,7 +287,10 @@ Deno.serve(async (req) => {
       }
     } else if (eventType === "invoice.payment_failed") {
       // 要件: 1回の失敗だけではcontract_statusを変更しない。補助表示のみ更新する。
-      patch.payment_status = "error";
+      // 値はStripe自身の用語(past_due)に統一する(20260917000000参照——以前は'error'を
+      // 使っており、ほぼ同時に届くcustomer.subscription.updated(status=past_due)側の
+      // 'processing'と値が食い違い、どちらが後から届くかで意味の無い上書きが起きていた)。
+      patch.payment_status = "past_due";
     } else if (eventType === "customer.subscription.created" || eventType === "customer.subscription.updated") {
       const subscriptionStatus = typeof object.status === "string" ? object.status : null;
       patch.subscription_status = subscriptionStatus;
@@ -303,7 +340,8 @@ Deno.serve(async (req) => {
 
       if (subscriptionStatus === "past_due") {
         // Stripeの再試行期間中(要件: 支払い確認中の補助表示)。まだ失効ではない。
-        patch.payment_status = "processing";
+        // invoice.payment_failedと同じ値('past_due')を使う(20260917000000参照)。
+        patch.payment_status = "past_due";
       } else if (subscriptionStatus === "active" || subscriptionStatus === "trialing") {
         patch.payment_status = null;
         // free/trial/suspended中の会社がStripe側で実際に課金開始(active)になったら、
@@ -351,15 +389,19 @@ Deno.serve(async (req) => {
         }
       } else if (subscriptionStatus === "canceled" || subscriptionStatus === "unpaid") {
         // Stripeの再試行がすべて尽きて最終的に失効した状態。ここで初めて停止中にする。
+        // payment_statusは「まだ有効だが支払いに問題がある」ことを示す補助表示のため、
+        // 完全に停止した後はnullへ戻す——停止中バナー(contract_status=suspended)が
+        // 別途表示されるため、二重に古い警告を残さない。
         patch.contract_status = "suspended";
         patch.stopped_at = nowIso;
-        patch.payment_status = "error";
+        patch.payment_status = null;
       }
     } else if (eventType === "customer.subscription.deleted") {
       patch.subscription_status = "canceled";
       patch.contract_status = "suspended";
       patch.stopped_at = nowIso;
       patch.cancel_at_period_end = false;
+      patch.payment_status = null;
     } else if (eventType === "customer.subscription.trial_will_end") {
       // トライアル終了の3日前(Stripe既定)に届く通知イベント。現状サロンマネージャーには
       // メール送信基盤が無く、契約状態を書き換える必要も無いため(実際の状態遷移は

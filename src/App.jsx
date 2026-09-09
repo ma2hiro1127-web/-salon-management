@@ -1452,7 +1452,12 @@ function App() {
             let confirmed = false;
             for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
               const result = await confirmCheckoutSession({ sessionId: checkoutSessionId });
-              if (result.ok && result.company?.contractStatus === "active") {
+              // 1か月無料トライアル導入後、初回契約はStripe側でtrialing(=当社側contract_status
+              // は"trial")になるのが正常ルートで、"active"には即時ならない(要件4)。以前は
+              // "active"のみを成功条件にしていたため、初回のトライアル契約では常にここが
+              // タイムアウトし、Webhook反映後の再hydrateが行われず、契約画面が決済前の
+              // 古い状態(「1か月無料で始める」ボタン等)のまま取り残される不具合があった。
+              if (result.ok && (result.company?.contractStatus === "active" || result.company?.contractStatus === "trial")) {
                 confirmed = true;
                 break;
               }
@@ -8422,6 +8427,32 @@ function App() {
         ) : null}
         {isContractReadOnlyMode && checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
 
+        {/* 継続課金の失敗(要件2)。1回失敗しただけではcontract_statusをsuspendedにせず、
+            payment_status='past_due'という補助表示だけを立てる(stripe-webhook側)。
+            利用は継続できるが、支払い方法の確認を促す常時バナーを表示する。契約終了
+            (isContractReadOnlyMode)の方がより深刻な状態のため、そちらが立っている間は
+            二重表示しない(stripe-webhook側でもsuspended化と同時にpayment_statusをnullへ
+            戻しているため通常は自然に排他的になる)。加盟店を閲覧中は表示しない(自社の
+            支払い状況ではないため)。 */}
+        {currentCompany?.paymentStatus === "past_due" && !isContractReadOnlyMode && !appState.isViewingFranchise ? (
+          <div className="notice-box error payment-past-due-banner">
+            {normalizeRole(currentRole) === "company_admin" ? (
+              <>
+                <span>お支払いを確認できませんでした。登録されているお支払い方法をご確認のうえ、支払い情報を更新してください。</span>
+                <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
+                  {portalBusy ? "処理中…" : "支払い情報を確認する"}
+                </button>
+              </>
+            ) : (
+              // store_manager/staffにはカード情報・請求情報を一切見せない(要件2)。
+              <span>お支払いの確認が必要です。契約状況を管理者へご確認ください。</span>
+            )}
+          </div>
+        ) : null}
+        {currentCompany?.paymentStatus === "past_due" && normalizeRole(currentRole) === "company_admin" && portalError ? (
+          <div className="notice-box error">{portalError}</div>
+        ) : null}
+
         {/* 運営専用の検証会社(テストサロン)を閲覧中であることを常時表示する(要件:
             本番会社だと誤認して操作しないための事故防止)。system_admin(owner含む)が
             company.isTestCompanyの会社を開いている間だけ表示する——通常の契約会社を
@@ -10236,8 +10267,7 @@ function App() {
                             <span className="text-muted-cell">データ保持中</span>
                           </>
                         )}
-                        {company.paymentStatus === "processing" && <span className="status-pill warning">支払い確認中</span>}
-                        {company.paymentStatus === "error" && <span className="status-pill error">支払いエラー</span>}
+                        {company.paymentStatus === "past_due" && <span className="status-pill warning">支払い確認中</span>}
                       </div>
                       {canManageCompanies(currentRole) && company.contractStatus === "free" && (
                         <div className="row-actions">
@@ -10425,11 +10455,23 @@ function App() {
                     <span>追加店舗 {addonStoreCount}店舗 × {currentCompany.billingInterval === "year" ? "¥4,800/年" : "¥480/月"}</span>
                   )}
                   {currentCompany.currentPriceAmount !== null && <span>次回更新料金 {formatYenOrEmpty(currentCompany.currentPriceAmount)}</span>}
-                  {currentCompany.nextBillingAt && <span>次回更新日 {formatDateLabel(currentCompany.nextBillingAt)}</span>}
-                  {currentCompany.cancelAtPeriodEnd && <span className="status-pill error">解約予約中(次回更新日で終了)</span>}
-                  {currentCompany.paymentStatus === "processing" && <span className="status-pill warning">支払い確認中</span>}
-                  {currentCompany.paymentStatus === "error" && <span className="status-pill error">支払いエラー</span>}
+                  {currentCompany.nextBillingAt && !currentCompany.cancelAtPeriodEnd && <span>次回更新日 {formatDateLabel(currentCompany.nextBillingAt)}</span>}
+                  {currentCompany.cancelAtPeriodEnd && (
+                    <span className="status-pill error">
+                      {currentCompany.nextBillingAt ? `${formatDateLabel(currentCompany.nextBillingAt)}に契約終了予定` : "解約予約中(次回更新日で終了)"}
+                    </span>
+                  )}
+                  {currentCompany.paymentStatus === "past_due" && <span className="status-pill warning">支払い確認中</span>}
                 </div>
+                {/* 解約予約中(要件5): cancel_at_period_end=trueだけでは即時停止せず、期間終了日
+                    (=customer.subscription.deletedを受信するまで)は通常どおり利用できることを
+                    明示する。実際の利用停止はcontract_status='suspended'(deleted受信時)の
+                    別のバナー/ゲートが担う——ここは案内のみ。 */}
+                {currentCompany.cancelAtPeriodEnd && (
+                  <p className="helper-text" style={{ marginTop: 6 }}>
+                    解約予約中です。{currentCompany.nextBillingAt ? formatDateLabel(currentCompany.nextBillingAt) : "契約終了日"}までは、これまでどおりすべての機能をご利用いただけます。解約を取り消したい場合は、Stripeの管理画面から再度ご契約を継続できます。
+                  </p>
+                )}
                 {currentCompany.billingInterval === "year" && (
                   <p className="helper-text" style={{ marginTop: 6 }}>
                     年額プランは12か月分をまとめて1回でお支払いいただく契約です(「月額換算」ではなく、上記の次回更新料金が実際にご請求される金額です)。
