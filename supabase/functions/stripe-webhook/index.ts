@@ -324,6 +324,30 @@ Deno.serve(async (req) => {
           // 固定で'basic'とする。将来プランが複数になった場合はPrice IDから逆引きする形に
           // 拡張する)。
           patch.plan = "basic";
+        } else if (subscriptionStatus === "trialing" && (company.contract_status === "free" || company.contract_status === "suspended")) {
+          // 1か月無料トライアル開始(2026-09、要件4)。Checkout完了時点ではまだ課金
+          // されていないため、contract_statusはactiveではなく「trial」に揃える
+          // (アプリ側のアクセス制御はsuspended以外を等しく許可するため、trialのままで
+          // 全機能が使える——要件どおり0円で全機能利用可能な状態になる)。既に
+          // contract_status='trial'(自己サインアップ由来のカード登録不要トライアル)の
+          // 会社がそのままCheckoutへ進んだ場合は、この分岐に来ないが実質的に同じ状態
+          // なので変更不要。
+          patch.contract_status = "trial";
+          patch.stopped_at = null;
+        }
+        // Stripe側の実際のトライアル期間(trial_start/trial_end)をtrial_started_at/
+        // trial_ends_atへ同期する(要件17: Stripeを正として同期する)。自己サインアップ時に
+        // DB側だけで仮計算していた値(1か月・JST基準)を、実際にCheckoutで確定した
+        // Stripeの値で上書きする——両者は同じ「1か月」ルールのため通常ほぼ一致するが、
+        // Checkoutを開始したタイミングが会社作成日より後にずれる分だけStripeの値の方が
+        // 正確になる。
+        if (subscriptionStatus === "trialing") {
+          if (typeof object.trial_end === "number") {
+            patch.trial_ends_at = new Date(object.trial_end * 1000).toISOString();
+          }
+          if (typeof object.trial_start === "number") {
+            patch.trial_started_at = new Date(object.trial_start * 1000).toISOString();
+          }
         }
       } else if (subscriptionStatus === "canceled" || subscriptionStatus === "unpaid") {
         // Stripeの再試行がすべて尽きて最終的に失効した状態。ここで初めて停止中にする。
@@ -336,6 +360,14 @@ Deno.serve(async (req) => {
       patch.contract_status = "suspended";
       patch.stopped_at = nowIso;
       patch.cancel_at_period_end = false;
+    } else if (eventType === "customer.subscription.trial_will_end") {
+      // トライアル終了の3日前(Stripe既定)に届く通知イベント。現状サロンマネージャーには
+      // メール送信基盤が無く、契約状態を書き換える必要も無いため(実際の状態遷移は
+      // trial_end到達後にcustomer.subscription.updatedとして届く)、冪等性テーブルへの
+      // 記録(=同一イベントの重複受信防止)だけを目的にここで正常受理する。DBは更新しない
+      // ——companies.updateへ空のpatch(updated_atのみ)を送るのは無駄なため早期return。
+      logStage("trial_will_end_received", { companyId: company.id });
+      return json({ ok: true, acknowledged: "trial_will_end" });
     } else {
       logStage("unhandled_event_type", { eventType });
       return json({ ok: true, skipped: "unhandled_event_type" });

@@ -57,15 +57,24 @@ async function stripeRequest(
   method: "GET" | "POST",
   path: string,
   secretKey: string,
-  params?: Record<string, unknown>
+  params?: Record<string, unknown>,
+  idempotencyKey?: string
 ) {
   const body = params ? toFormPairs(params).join("&") : undefined;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${secretKey}`,
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  // 冪等性キー(要件27): ネットワーク瞬断でレスポンスだけ失われた場合の再試行で、
+  // Stripe側に同じCustomer/Checkout Sessionを二重作成させない。Stripeは同じキーに対する
+  // 応答を24時間キャッシュして返すため、値は「何を・誰に対して行う操作か」で安定させる
+  // (呼び出しごとにランダムな値を使うと再試行時の重複排除にならないため意味が無い)。
+  if (method === "POST" && idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method,
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers,
     body: method === "GET" ? undefined : body,
   });
   const responseJson = await res.json();
@@ -157,7 +166,7 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, name, contract_status, stripe_customer_id, deleted_at, is_test_contract_run")
+      .select("id, name, contract_status, stripe_customer_id, deleted_at, is_test_contract_run, contract_started_at")
       .eq("id", callerProfile.company_id)
       .maybeSingle();
     if (companyError) throw companyError;
@@ -206,11 +215,17 @@ Deno.serve(async (req) => {
       }
     }
     if (!stripeCustomerId) {
-      const customer = await stripeRequest("POST", "customers", effectiveSecretKey, {
-        name: company.name,
-        email: callerProfile.email || undefined,
-        metadata: { company_id: company.id },
-      });
+      const customer = await stripeRequest(
+        "POST",
+        "customers",
+        effectiveSecretKey,
+        {
+          name: company.name,
+          email: callerProfile.email || undefined,
+          metadata: { company_id: company.id },
+        },
+        `customer-create-${company.id}`
+      );
       stripeCustomerId = customer.id;
       const { error: saveCustomerError } = await admin
         .from("companies")
@@ -243,6 +258,33 @@ Deno.serve(async (req) => {
       lineItems.push({ price: addonPriceId, quantity: addonQuantity });
     }
 
+    // 1か月無料トライアル(要件4)。「これまで一度も課金開始(contract_started_at)したことが
+    // 無い会社」だけに適用する——停止中(suspended)の会社がCustomer Portal解約後に
+    // 再度ここへ来た場合は既にcontract_started_atが入っているため対象外にする
+    // (「解約して再登録すればまた1か月無料」という悪用を構造的に防ぐ、要件24の
+    // 「絶対に防ぐ不具合」の精神に沿った防御)。トライアル期間は日数の固定値ではなく、
+    // 既存のcompute_trial_end_date DB関数(1か月・JST基準、self-signup/update-company-status
+    // と共有している唯一のルール)で計算した具体的な終了日時をtrial_endとして渡す
+    // ——Stripeのtrial_period_days(単純な日数)ではなく、アプリ全体で1箇所だけの
+    // 「トライアル期間」ルールと必ず一致させるため。
+    let trialEndUnixSeconds: number | null = null;
+    if (!company.contract_started_at) {
+      const nowIso = new Date().toISOString();
+      const { data: trialEndDate, error: trialEndError } = await admin.rpc("compute_trial_end_date", {
+        start_at: nowIso,
+      });
+      if (trialEndError) throw trialEndError;
+      if (trialEndDate) {
+        // DB関数はdate型(例: "2026-10-09")を返す。Stripeのtrial_endはunixタイムスタンプ
+        // (秒)が必須のため、その日のJST 00:00を採用する(compute_trial_end_date自体が
+        // JST基準の暦日で計算しているため、時刻情報は暦日の境界を表すだけで良い)。
+        const trialEndDateObj = new Date(`${trialEndDate}T00:00:00+09:00`);
+        if (!Number.isNaN(trialEndDateObj.getTime())) {
+          trialEndUnixSeconds = Math.floor(trialEndDateObj.getTime() / 1000);
+        }
+      }
+    }
+
     // 決済完了後の状態確認は、ブラウザのsessionStorage/localStorageに一切依存せず、
     // StripeのCheckout Session ID自体を基準に行う(2026-09、再修正)。以前は復帰用の
     // 目印(tcr=1)をURLへ埋め込む方式だったが、それでも「隔離storageKeyへ保存していた
@@ -258,23 +300,36 @@ Deno.serve(async (req) => {
     const successUrl = `${appUrl}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${appUrl}/?checkout=cancelled&session_id={CHECKOUT_SESSION_ID}`;
 
-    const session = await stripeRequest("POST", "checkout/sessions", effectiveSecretKey, {
-      mode: "subscription",
-      customer: stripeCustomerId,
-      client_reference_id: company.id,
-      line_items: lineItems,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-      metadata: { company_id: company.id },
-      subscription_data: { metadata: { company_id: company.id } },
-      allow_promotion_codes: true,
-      // Stripeアカウント側でManaged Payments(税務コード必須)がデフォルト有効な場合があり、
-      // その状態だとProductにtax_codeが無いと決済ページ作成自体が失敗する。サロンマネージャー
-      // 側では税務処理をStripeに委任しない(通常のSubscription課金のみ)ため明示的に無効化する。
-      managed_payments: { enabled: false },
-    });
+    const session = await stripeRequest(
+      "POST",
+      "checkout/sessions",
+      effectiveSecretKey,
+      {
+        mode: "subscription",
+        customer: stripeCustomerId,
+        client_reference_id: company.id,
+        line_items: lineItems,
+        success_url: successUrl,
+        cancel_url: cancelUrl,
+        metadata: { company_id: company.id },
+        subscription_data: {
+          metadata: { company_id: company.id },
+          ...(trialEndUnixSeconds ? { trial_end: trialEndUnixSeconds } : {}),
+        },
+        allow_promotion_codes: true,
+        // Stripeアカウント側でManaged Payments(税務コード必須)がデフォルト有効な場合があり、
+        // その状態だとProductにtax_codeが無いと決済ページ作成自体が失敗する。サロンマネージャー
+        // 側では税務処理をStripeに委任しない(通常のSubscription課金のみ)ため明示的に無効化する。
+        managed_payments: { enabled: false },
+      },
+      // 同じ会社・同じプラン内容(周期・追加店舗数)でのCheckout Session作成は、Stripeの
+      // 冪等性キャッシュ(24時間)内では同一リクエストとして扱わせる(要件27: 連打・
+      // 二重送信でCheckout Sessionが複数作られない)。billingIntervalやaddonQuantityが
+      // 変われば別キーになるため、ユーザーが意図的にプランを変えて再度実行することは妨げない。
+      `checkout-${company.id}-${billingInterval}-${addonQuantity}`
+    );
 
-    logStage("checkout_session_created", { companyId: company.id, billingInterval, addonQuantity, isTestContractRun });
+    logStage("checkout_session_created", { companyId: company.id, billingInterval, addonQuantity, isTestContractRun, hasTrial: Boolean(trialEndUnixSeconds) });
     return json({ ok: true, url: session.url });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Checkout Sessionの作成に失敗しました";

@@ -2,12 +2,23 @@
 // (2026-09-02、Stripe決済導入)。店舗の新規追加・アーカイブ・復元の直後にフロントから
 // 呼ぶことを想定した小さな関数。
 //
-// 対象は contract_status='active' かつ stripe_subscription_id が設定済みの会社のみ
-// (無料利用・トライアル・停止中の会社には実際のStripeサブスクリプションが無いため何もしない)。
+// 対象は stripe_subscription_id が設定済みで、かつStripe側の実サブスクリプション状態
+// (subscription_status)が active/trialing/past_due のいずれかの会社のみ(無料利用・
+// 停止中・解約済みの会社には実際のStripeサブスクリプションが無い/課金対象外のため
+// 何もしない)。trialingを含めているのは、無料期間中の店舗追加でもStripeの数量は
+// リアルタイムで正しく保つ必要があるため(要件5: 「無料期間だから追加店舗数を
+// 記録しない」という実装は禁止)——trialing中はStripe側の請求額こそ0円だが、
+// 数量そのものは常に最新の契約店舗数と一致させておく。
 // 店舗数は毎回このDBから直接数え、company_id側に「現在の店舗数」を別途保持する列は
 // 作らない(数え違い・ズレのリスクを避けるため常にライブ計算)。
 //
-// 日割り計算はStripe標準のproration機能にそのまま任せる(自前実装しない)。
+// 日割り計算はStripe標準のproration機能にそのまま任せる(自前実装しない)。ただし
+// 増量(店舗追加)と減量(店舗削減)でproration_behaviorを使い分ける(要件7/9):
+// 増量は即座に日割り請求(create_prorations)、減量は返金・クレジットを一切発生させず
+// 次回更新時に反映するだけ(none)。
+//
+// テスト契約会社(is_test_contract_run)はSTRIPE_TEST_*のキー・Price IDのみを使う
+// (create-checkout-session/create-portal-sessionと同じTEST/LIVE分離方針)。
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -53,15 +64,25 @@ async function stripeRequest(
   method: "GET" | "POST",
   path: string,
   secretKey: string,
-  params?: Record<string, unknown>
+  params?: Record<string, unknown>,
+  idempotencyKey?: string
 ) {
   const body = params ? toFormPairs(params).join("&") : undefined;
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${secretKey}`,
+    "Content-Type": "application/x-www-form-urlencoded",
+  };
+  // Stripeは同一Idempotency-Keyに対する応答を24時間キャッシュする。店舗追加連打や
+  // ネットワーク再試行で同じ「目的の数量への更新」が複数回送られても、Stripe側の
+  // 数量が二重に増減しないようにするため(要件24「店舗追加を連打するとStripe数量だけ
+  // 増える」「Webhook再送で追加店舗数量が増える」の防止)。呼び出し側で
+  // 「会社+操作+最終的な目的の状態」から決まる安定したキーを渡す(ランダム生成しない)。
+  if (method === "POST" && idempotencyKey) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
   const res = await fetch(`https://api.stripe.com/v1/${path}`, {
     method,
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
+    headers,
     body: method === "GET" ? undefined : body,
   });
   const responseJson = await res.json();
@@ -94,6 +115,9 @@ Deno.serve(async (req) => {
   const stripeSecretKey = Deno.env.get("STRIPE_SECRET_KEY");
   const priceAddonMonthly = Deno.env.get("STRIPE_PRICE_STORE_ADDON_MONTHLY");
   const priceAddonYearly = Deno.env.get("STRIPE_PRICE_STORE_ADDON_YEARLY");
+  const stripeTestSecretKey = Deno.env.get("STRIPE_TEST_SECRET_KEY");
+  const priceAddonMonthlyTest = Deno.env.get("STRIPE_TEST_PRICE_STORE_ADDON_MONTHLY");
+  const priceAddonYearlyTest = Deno.env.get("STRIPE_TEST_PRICE_STORE_ADDON_YEARLY");
   if (!supabaseUrl || !anonKey || !serviceRoleKey || !stripeSecretKey || !priceAddonMonthly || !priceAddonYearly) {
     logStage("missing_server_config", {});
     return json({ error: "サーバー設定が不足しています" }, 500);
@@ -138,17 +162,36 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, contract_status, stripe_subscription_id, billing_interval")
+      .select("id, contract_status, subscription_status, stripe_subscription_id, billing_interval, is_test_contract_run")
       .eq("id", companyId)
       .maybeSingle();
     if (companyError) throw companyError;
     if (!company) return json({ error: "対象の会社が見つかりません" }, 404);
 
-    // 無料利用/トライアル/停止中の会社には実際のStripeサブスクリプションが無いため、
-    // 何もせず正常終了する(要件: 無料利用中はStripe Subscriptionを必須にしない)。
-    if (company.contract_status !== "active" || !company.stripe_subscription_id) {
-      logStage("skip_not_active_subscription", { companyId, contractStatus: company.contract_status });
-      return json({ ok: true, skipped: "not_active_subscription" });
+    // 実際にStripe上で数量同期が意味を持つのは、Stripeサブスクリプションが存在し、
+    // かつその状態がactive/trialing/past_dueのいずれかの場合だけ(要件17: 判定は
+    // Stripeの実状態=subscription_statusを正とする。contract_statusは「free」でも
+    // 実はtrialing中、ということがあり得るため、ここではcontract_statusではなく
+    // subscription_statusを見る)。canceled/unpaid/未契約の会社には何もしない。
+    const syncableStatuses = new Set(["active", "trialing", "past_due"]);
+    if (!company.stripe_subscription_id || !syncableStatuses.has(company.subscription_status || "")) {
+      logStage("skip_not_syncable_subscription", {
+        companyId,
+        contractStatus: company.contract_status,
+        subscriptionStatus: company.subscription_status,
+      });
+      return json({ ok: true, skipped: "not_syncable_subscription" });
+    }
+
+    const isTestContractRun = Boolean(company.is_test_contract_run);
+    const effectiveSecretKey = isTestContractRun ? stripeTestSecretKey : stripeSecretKey;
+    const effectivePriceAddonMonthly = isTestContractRun ? priceAddonMonthlyTest : priceAddonMonthly;
+    const effectivePriceAddonYearly = isTestContractRun ? priceAddonYearlyTest : priceAddonYearly;
+    if (!effectiveSecretKey || !effectivePriceAddonMonthly || !effectivePriceAddonYearly) {
+      // テスト契約会社なのにSTRIPE_TEST_*が未設定 = 本番Priceへ誤って同期する事故を
+      // 防ぐため、ここでは絶対にLIVE設定へフォールバックせず失敗させる。
+      logStage("missing_test_mode_config", { companyId, isTestContractRun });
+      return json({ error: "テストモード用のStripe設定が不足しています" }, 500);
     }
 
     const { count: storeCount, error: storeCountError } = await admin
@@ -159,40 +202,72 @@ Deno.serve(async (req) => {
     if (storeCountError) throw storeCountError;
     const addonQuantity = Math.max((storeCount ?? 1) - 1, 0);
 
-    const addonPriceId = company.billing_interval === "year" ? priceAddonYearly : priceAddonMonthly;
+    const addonPriceId = company.billing_interval === "year" ? effectivePriceAddonYearly : effectivePriceAddonMonthly;
 
     const subscription = await stripeRequest(
       "GET",
       `subscriptions/${company.stripe_subscription_id}`,
-      stripeSecretKey
+      effectiveSecretKey
     );
-    const items = (subscription.items?.data || []) as Array<{ id: string; price?: { id?: string } }>;
-    const existingAddonItem = items.find((item) => item.price?.id === priceAddonYearly || item.price?.id === priceAddonMonthly);
+    const items = (subscription.items?.data || []) as Array<{ id: string; quantity?: number; price?: { id?: string } }>;
+    const existingAddonItem = items.find(
+      (item) => item.price?.id === effectivePriceAddonYearly || item.price?.id === effectivePriceAddonMonthly
+    );
+    const previousQuantity = existingAddonItem?.quantity ?? 0;
+    // 増量(店舗追加)は即座に日割り請求、減量(店舗削減)は返金・クレジットを一切
+    // 発生させず次回更新時に反映するだけ(要件7/9、要件24「店舗削減で意図しない
+    // 返金が発生する」の防止)。数量が変わらない場合はどちらでも実質無風だが、
+    // 安全側のnoneにしておく。
+    const prorationBehavior = addonQuantity > previousQuantity ? "create_prorations" : "none";
+    // 同一の「会社+この目的の数量」への更新はStripeのIdempotency-Keyで重複排除する
+    // (要件24「店舗追加を連打するとStripe数量だけ増える」「Webhook再送で追加店舗
+    // 数量が増える」対策)。数量が変われば別の正当な操作としてキーも変わる。
+    const idempotencyKey = `sync-store-billing-${companyId}-${addonQuantity}`;
 
     if (addonQuantity === 0) {
       if (existingAddonItem) {
-        await stripeRequest("POST", `subscriptions/${company.stripe_subscription_id}`, stripeSecretKey, {
-          items: [{ id: existingAddonItem.id, deleted: true }],
-          proration_behavior: "create_prorations",
-        });
+        await stripeRequest(
+          "POST",
+          `subscriptions/${company.stripe_subscription_id}`,
+          effectiveSecretKey,
+          {
+            items: [{ id: existingAddonItem.id, deleted: true }],
+            proration_behavior: "none",
+          },
+          idempotencyKey
+        );
         logStage("addon_item_removed", { companyId });
       }
       return json({ ok: true, addonQuantity: 0 });
     }
 
     if (existingAddonItem) {
-      await stripeRequest("POST", `subscriptions/${company.stripe_subscription_id}`, stripeSecretKey, {
-        items: [{ id: existingAddonItem.id, price: addonPriceId, quantity: addonQuantity }],
-        proration_behavior: "create_prorations",
-      });
+      if (existingAddonItem.price?.id !== addonPriceId || previousQuantity !== addonQuantity) {
+        await stripeRequest(
+          "POST",
+          `subscriptions/${company.stripe_subscription_id}`,
+          effectiveSecretKey,
+          {
+            items: [{ id: existingAddonItem.id, price: addonPriceId, quantity: addonQuantity }],
+            proration_behavior: prorationBehavior,
+          },
+          idempotencyKey
+        );
+      }
     } else {
-      await stripeRequest("POST", `subscriptions/${company.stripe_subscription_id}`, stripeSecretKey, {
-        items: [{ price: addonPriceId, quantity: addonQuantity }],
-        proration_behavior: "create_prorations",
-      });
+      await stripeRequest(
+        "POST",
+        `subscriptions/${company.stripe_subscription_id}`,
+        effectiveSecretKey,
+        {
+          items: [{ price: addonPriceId, quantity: addonQuantity }],
+          proration_behavior: "create_prorations",
+        },
+        idempotencyKey
+      );
     }
 
-    logStage("addon_quantity_synced", { companyId, addonQuantity });
+    logStage("addon_quantity_synced", { companyId, addonQuantity, prorationBehavior });
     return json({ ok: true, addonQuantity });
   } catch (error) {
     const message = error instanceof Error ? error.message : "店舗数の同期に失敗しました";

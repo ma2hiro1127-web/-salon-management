@@ -1181,6 +1181,17 @@ function App() {
   // 仕様のため。店舗管理画面(filteredStores)だけは、アーカイブ済み店舗の復元操作が必要な
   // ため意図的にこの変数を経由せず currentCompany.stores を直接参照している。
   const currentCompanyStores = useMemo(() => (currentCompany?.stores || []).filter((store) => store.status !== "archived"), [currentCompany]);
+  // 契約画面(要件19/20/21)の料金内訳計算。課金対象の店舗数は sync-store-billing-quantity
+  // Edge Functionと同じ基準(status==='active')で数える——currentCompanyStoresは停止中
+  // (suspended)の店舗も含むため、そのままでは課金対象数として使えない。基本プラン・
+  // 追加店舗の単価は正式料金(要件1)を画面表示専用の定数として持つ(実際の請求額は
+  // 必ずStripe/Webhook側の値(currentPriceAmount)を正とする——ここでの計算値は
+  // 契約前のシミュレーション表示、または内訳の内訳表示にのみ使う)。
+  const billableStoreCount = useMemo(() => (currentCompany?.stores || []).filter((store) => store.status === "active").length, [currentCompany]);
+  const addonStoreCount = Math.max(billableStoreCount - 1, 0);
+  const BILLING_UNIT_PRICE = { baseMonthly: 1480, baseYearly: 12800, addonMonthly: 480, addonYearly: 4800 };
+  const previewMonthlyTotal = BILLING_UNIT_PRICE.baseMonthly + addonStoreCount * BILLING_UNIT_PRICE.addonMonthly;
+  const previewYearlyTotal = BILLING_UNIT_PRICE.baseYearly + addonStoreCount * BILLING_UNIT_PRICE.addonYearly;
   // Resolve by selectedStoreId first — see the self-healing effect below for why a name-only
   // match can briefly be stale (e.g. right after another device renames the current store).
   // 全店舗ビューでは実店舗にフォールバックせず、意図的にnullのままにする(そうしないと
@@ -4086,6 +4097,17 @@ function App() {
         : `この会社にはすでに店舗が登録されています。新しい店舗を追加しますか？\n\n既存店舗：\n${existingNamesText}\n\n追加する店舗：\n${trimmedName}\n\nOKで新しい別店舗として追加します。キャンセルすると追加は行われません。`;
       if (!window.confirm(message)) return;
     }
+    // 店舗追加の価格影響を、実際の作成前に必ず確認させる(要件6/8)。まだStripe契約が
+    // 無い会社(無料利用・カード登録前のトライアル)には価格変化そのものが無いため表示しない。
+    if (currentCompany?.contractStatus === "active" || currentCompany?.subscriptionStatus === "trialing") {
+      const isYearly = currentCompany.billingInterval === "year";
+      const priceImpactMessage = currentCompany.subscriptionStatus === "trialing"
+        ? `現在無料期間中のため、今回の店舗追加による請求は発生しません。無料期間終了後の請求金額に、この店舗の追加料金(${isYearly ? "年額4,800円" : "月額480円"})が反映されます。`
+        : isYearly
+          ? "店舗を追加すると、年額4,800円が追加されます。今回のお支払いは契約更新日までの残り期間に応じて日割りで計算されます。"
+          : "店舗を追加すると、月額480円が追加されます。次回以降のお支払いに反映されます。";
+      if (!window.confirm(`${priceImpactMessage}\n\nこの内容で店舗を追加しますか？`)) return;
+    }
     if (savingStoreRef.current) return;
     savingStoreRef.current = true;
     setNewStoreFormStatus({ status: "saving", message: "" });
@@ -5211,7 +5233,15 @@ function App() {
   const handleStoreLifecycleAction = async (store, action) => {
     const meta = STORE_LIFECYCLE_ACTIONS[action];
     if (!meta) return;
-    if (!window.confirm(meta.confirmMessage(store.name))) return;
+    // 課金対象の店舗(status==='active')を停止/アーカイブする場合、返金は発生せず、
+    // 料金の減額は次回更新時にのみ反映されることを事前に伝える(要件9)。無料利用中の
+    // 会社や、既に課金対象外の店舗を操作する場合は表示しない。
+    const isBillingReducingAction = (action === "suspend" || action === "archive") && store.status === "active";
+    const hasBilling = currentCompany?.contractStatus === "active" || currentCompany?.subscriptionStatus === "trialing";
+    const billingNote = isBillingReducingAction && hasBilling
+      ? "\n\n※この店舗分の追加料金は日割りで返金されません。料金の減額は次回の更新日から反映されます。"
+      : "";
+    if (!window.confirm(`${meta.confirmMessage(store.name)}${billingNote}`)) return;
     // meta.nextStatus(このアプリが「送ったつもり」の値)をそのまま画面へ反映するのではなく、
     // update-store-status Edge Functionが.select()で読み戻した実際のDB値(result.status)を
     // 使う——保存操作後は「送った値」ではなく「実際に保存された値」でstateを更新し、両者が
@@ -10362,34 +10392,86 @@ function App() {
             {currentCompany.contractStatus === "active" ? (
               <>
                 <div className="info-card-meta">
-                  <span>{currentCompany.billingInterval === "year" ? "年払い" : "月払い"}</span>
-                  {currentCompany.currentPriceAmount !== null && <span>請求金額 {formatYenOrEmpty(currentCompany.currentPriceAmount)}</span>}
-                  {currentCompany.nextBillingAt && <span>次回請求 {formatDateLabel(currentCompany.nextBillingAt)}</span>}
+                  <span>{currentCompany.billingInterval === "year" ? "年払いプラン" : "月払いプラン"}</span>
+                  <span>契約店舗数 {billableStoreCount}店舗</span>
+                  {addonStoreCount > 0 && (
+                    <span>追加店舗 {addonStoreCount}店舗 × {currentCompany.billingInterval === "year" ? "¥4,800/年" : "¥480/月"}</span>
+                  )}
+                  {currentCompany.currentPriceAmount !== null && <span>次回更新料金 {formatYenOrEmpty(currentCompany.currentPriceAmount)}</span>}
+                  {currentCompany.nextBillingAt && <span>次回更新日 {formatDateLabel(currentCompany.nextBillingAt)}</span>}
                   {currentCompany.cancelAtPeriodEnd && <span className="status-pill error">解約予約中(次回更新日で終了)</span>}
                   {currentCompany.paymentStatus === "processing" && <span className="status-pill warning">支払い確認中</span>}
                   {currentCompany.paymentStatus === "error" && <span className="status-pill error">支払いエラー</span>}
                 </div>
+                {currentCompany.billingInterval === "year" && (
+                  <p className="helper-text" style={{ marginTop: 6 }}>
+                    年額プランは12か月分をまとめて1回でお支払いいただく契約です(「月額換算」ではなく、上記の次回更新料金が実際にご請求される金額です)。
+                  </p>
+                )}
                 <p className="helper-text" style={{ marginTop: 10 }}>
                   カードの変更・支払い方法の変更・契約状況の確認・解約予約は、Stripeの安全な管理画面から行えます。
                 </p>
                 {portalError ? <div className="notice-box error">{portalError}</div> : null}
+                <div className="button-row">
+                  <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
+                    {portalBusy ? "処理中…" : "支払い方法を変更"}
+                  </button>
+                  <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
+                    契約内容を確認・解約
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => window.alert("月額⇄年額のプラン変更は、基本プランと追加店舗の請求周期がずれてしまう事故を防ぐため、現在アプリ内からは行えません。プラン変更をご希望の場合はサポートまでご連絡ください。")}
+                  >
+                    プラン変更
+                  </button>
+                </div>
+              </>
+            ) : currentCompany.subscriptionStatus === "trialing" ? (
+              <>
+                <p className="helper-text">
+                  現在1か月の無料お試し期間中です。この期間は0円で全機能をご利用いただけます。お支払い方法は登録済みのため、追加の操作は不要です。
+                </p>
+                <div className="info-card-meta">
+                  <span>{currentCompany.billingInterval === "year" ? "年払いプラン" : "月払いプラン"}</span>
+                  <span>契約店舗数 {billableStoreCount}店舗</span>
+                  {addonStoreCount > 0 && (
+                    <span>追加店舗 {addonStoreCount}店舗 × {currentCompany.billingInterval === "year" ? "¥4,800/年" : "¥480/月"}</span>
+                  )}
+                  {currentCompany.trialEndsAt && <span>無料期間終了 {formatDateLabel(currentCompany.trialEndsAt)}</span>}
+                </div>
+                <p className="helper-text" style={{ marginTop: 10 }}>
+                  無料期間終了後は、{currentCompany.billingInterval === "year" ? `年額¥${previewYearlyTotal.toLocaleString()}` : `月額¥${previewMonthlyTotal.toLocaleString()}`}が自動的に請求されます(店舗数の増減に応じて金額は変わります)。カードの変更は、Stripeの安全な管理画面から行えます。
+                </p>
+                {portalError ? <div className="notice-box error">{portalError}</div> : null}
                 <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
-                  {portalBusy ? "処理中…" : "お支払い方法の変更・解約はこちら"}
+                  {portalBusy ? "処理中…" : "お支払い方法の変更はこちら"}
                 </button>
               </>
             ) : (
               <>
                 <p className="helper-text">
-                  月払い・年払いを選んで契約を開始できます。基本プラン(1店舗目まで含む)は月額¥1,480/年額¥12,800、2店舗目以降は1店舗ごとに+¥480/月が加算されます。カード情報はStripeの決済ページで安全に入力され、サロンマネージャー側には保存されません。
+                  月払い・年払いを選んで契約を開始できます。契約は1か月無料でお試しいただけ、その間はカードへの請求は発生しません(お試し開始時にカード登録が必要です)。カード情報はStripeの決済ページで安全に入力され、サロンマネージャー側には保存されません。現在の契約店舗数は{billableStoreCount}店舗です。
                 </p>
                 {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
                 <div className="button-row">
-                  <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
-                    {checkoutBusyInterval === "month" ? "処理中…" : "月払いで契約する(¥1,480〜/月)"}
-                  </button>
-                  <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
-                    {checkoutBusyInterval === "year" ? "処理中…" : "年払いで契約する(¥12,800〜/年)"}
-                  </button>
+                  <div>
+                    <p className="helper-text" style={{ margin: "0 0 6px" }}>
+                      月額プラン: 基本料金¥1,480/月{addonStoreCount > 0 ? ` + 追加店舗¥480/月×${addonStoreCount}店舗` : ""} → 無料期間終了後は月額¥{previewMonthlyTotal.toLocaleString()}
+                    </p>
+                    <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
+                      {checkoutBusyInterval === "month" ? "処理中…" : "1か月無料で始める(月払い)"}
+                    </button>
+                  </div>
+                  <div>
+                    <p className="helper-text" style={{ margin: "0 0 6px" }}>
+                      年額プラン: 基本料金¥12,800/年{addonStoreCount > 0 ? ` + 追加店舗¥4,800/年×${addonStoreCount}店舗` : ""} → 無料期間終了後は年額¥{previewYearlyTotal.toLocaleString()}(12か月分を1回でお支払い)
+                    </p>
+                    <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
+                      {checkoutBusyInterval === "year" ? "処理中…" : "1か月無料で始める(年払い)"}
+                    </button>
+                  </div>
                 </div>
               </>
             )}
