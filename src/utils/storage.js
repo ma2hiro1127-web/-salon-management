@@ -1350,15 +1350,25 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storesInput, mo
   };
 };
 
-// 売上ページ「現在の売上ペース」1文表示用(2026-09追加)。「今日までの売上目安
-// (月間売上目標×経過営業日数/月間営業日数)」と「実際の総売上」の差を金額で示す——
-// %やptではなく「あといくら/どれだけ多い」を直感的に示すための表示に使う。
+// 売上ページ「現在の売上ペース」1文表示用(2026-09追加、同月時点で2度目の仕様修正)。
+// 「入力済みの日までの売上目安(月間売上目標×経過営業日数/月間営業日数)」と「実際の
+// 総売上」の差を金額で示す——%やptではなく「あといくら/どれだけ多い」を直感的に示す
+// ための表示に使う。
+//
+// 重要: 基準日は「今日」ではなく「最後に売上を入力した営業日」にする(2026-09、当初
+// 「今日」基準だった実装が「対象月の売上を1件も入力していない店舗」でも当日分の目安
+// (目標×1/月間営業日数)が発生し、「約45万円遅れています」のような実態と無関係な警告に
+// なっていた不具合の修正)。売上未入力(レコード自体が無い)は0円入力(明示的に0円で
+// 保存された行)とは区別し、未入力の営業日は「まだ判定できない」として遅れの計算対象に
+// 含めない——hasEntries(その月にレコードが1件でもあるか)がfalseならカード自体を
+// 非表示にする(呼び出し側はnullを見て描画しない)。
 //
 // 経過営業日数は、businessDaySummary(getBusinessDaySummary/getAllStoresBusinessDaySummary
-// の戻り値、いずれも店舗ごとの営業日設定・店休日を既に考慮済み)の completedDays/
-// closedDates/holidayDates だけを使い、ここで暦日ベースの新しい判定は一切行わない:
-//   - 今月を見ている場合: 日締め済みの営業日数(completedDays)に、当日がまだ日締め前でも
-//     営業日(店休日ではない)なら+1する(要件: 当日が営業日なら経過営業日数に含める)。
+// の戻り値、いずれも店舗ごとの営業日設定・店休日を既に考慮済み)の businessDayCount/
+// holidayDates と、月初から lastEntryDate までの暦日を突き合わせて数える(店休日は
+// 経過営業日数に含めない)。当日を強制的に含める調整はもう行わない——「入力済みの日
+// まで」という基準そのものが、日締め前の当日を勝手に含めない自然な境界になる。
+//   - 今月を見ている場合: 月初〜lastEntryDateの間で店休日ではない日を数える。
 //   - 過去月を見ている場合: その月は既に終わっているため、月間営業日数(businessDayCount)
 //     そのものを経過営業日数として扱う(要件: 過去月はその月の最終営業日時点で判定する)。
 //   - 未来月は呼び出し側でnullが返るため描画しない(要件)。
@@ -1367,11 +1377,14 @@ export const calculateSalesPaceGap = ({
   monthValue,
   totalSales,
   monthlyTargetSales,
+  hasEntries,
+  lastEntryDate,
   todayIso = formatLocalDate(new Date()),
   roundingThresholdYen = 10000,
 } = {}) => {
   if (!businessDaySummary || !monthValue) return null;
-  const { businessDayCount, completedDays, closedDates, holidayDates } = businessDaySummary;
+  if (!hasEntries) return null; // 対象月に売上入力が1件も無い場合は非表示にする(要件1)
+  const { businessDayCount, holidayDates } = businessDaySummary;
   if (!Number.isFinite(businessDayCount) || businessDayCount <= 0) return null;
   if (!Number.isFinite(monthlyTargetSales) || monthlyTargetSales <= 0) return null;
   if (!Number.isFinite(totalSales)) return null;
@@ -1383,11 +1396,16 @@ export const calculateSalesPaceGap = ({
   if (monthValue < currentMonthValue) {
     elapsedBusinessDays = businessDayCount;
   } else {
-    const closedSet = new Set(closedDates || []);
+    if (!lastEntryDate) return null;
+    const { daysInMonth } = getMonthInfo(monthValue);
     const holidaySet = new Set(holidayDates || []);
-    const todayAlreadyCounted = closedSet.has(todayIso);
-    const todayIsHoliday = holidaySet.has(todayIso);
-    elapsedBusinessDays = (Number.isFinite(completedDays) ? completedDays : 0) + (!todayAlreadyCounted && !todayIsHoliday ? 1 : 0);
+    let count = 0;
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const dateIso = `${monthValue}-${String(day).padStart(2, "0")}`;
+      if (dateIso > lastEntryDate) break;
+      if (!holidaySet.has(dateIso)) count += 1;
+    }
+    elapsedBusinessDays = count;
   }
   elapsedBusinessDays = Math.min(Math.max(elapsedBusinessDays, 0), businessDayCount);
   if (elapsedBusinessDays <= 0) return null;

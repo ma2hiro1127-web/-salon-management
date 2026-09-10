@@ -2128,19 +2128,30 @@ function App() {
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ), [isAllStoresView, currentCompanyStores, showCustomersField, showNewCustomersField, showRepeatCustomersField, showRetailSalesField]);
-  // 売上ページ「現在の売上ペース」(2026-09、旧「要確認ポイント」から全面変更)。
-  // 売上ページ(dashboard)を見ている時だけ計算する(monthlyReviewSummaryと同じ「表示して
-  // いないページのために重い計算をしない」設計)。全店舗/単一店舗どちらもtarget/summary/
-  // businessDaySummaryが既に正しく分岐済みのため、ここでは値を渡すだけでよい。
+  // 売上ページ「現在の売上ペース」(2026-09、旧「要確認ポイント」から全面変更、同月内で
+  // 2度目の仕様修正)。売上ページ(dashboard)を見ている時だけ計算する(monthlyReviewSummary
+  // と同じ「表示していないページのために重い計算をしない」設計)。
+  //
+  // hasEntries/lastEntryDateは「レコードが実際に存在するか」だけを見る——未入力(レコード
+  // 自体が無い)を0円入力と混同しない(要件2)。全店舗ビューでは、いずれかの店舗に1件でも
+  // 入力があればhasEntries=true、最新の入力日を店舗横断で見る(要件: 全店舗で同じ仕様)。
   const salesPaceGap = useMemo(() => {
     if (activePage !== "dashboard") return null;
+    const entryDates = (isAllStoresView
+      ? currentCompanyStores.flatMap((store) => getDailyResultsForStoreMonth(appState, store.id, selectedMonth))
+      : dailyEntries
+    ).map((entry) => entry.date).filter(Boolean);
+    const hasEntries = entryDates.length > 0;
+    const lastEntryDate = hasEntries ? entryDates.reduce((max, date) => (date > max ? date : max)) : "";
     return calculateSalesPaceGap({
       businessDaySummary,
       monthValue: selectedMonth,
       totalSales: parseNumber(summary.sales),
       monthlyTargetSales: parseNumber(target.targetSales),
+      hasEntries,
+      lastEntryDate,
     });
-  }, [activePage, businessDaySummary, selectedMonth, summary, target]);
+  }, [activePage, businessDaySummary, selectedMonth, summary, target, isAllStoresView, currentCompanyStores, appState, dailyEntries]);
   // 月次レビュー(利益管理ではない、店舗・会社全体で共有するための数字サマリー+自由記述)。
   // 数字はgetMonthlyReviewSummary(既存のcalculateMonthSummary/calculateAllStoresMonthSummaryを
   // そのまま再利用、重複計算ロジックを作らない)、対象は「今表示中の店舗/全店舗ビュー」——

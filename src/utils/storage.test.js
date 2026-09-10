@@ -5042,18 +5042,49 @@ test("getStoreDashboardRows(要件17): 全店舗ビューは各店舗ごとにmo
   assert.equal(yokohama.laborCost + kichijoji.laborCost, 3050000);
 });
 
-// 売上ページ「現在の売上ペース」(2026-09追加)。businessDaySummaryはgetBusinessDaySummary/
-// getAllStoresBusinessDaySummaryの戻り値そのものの形(completedDays/businessDayCount/
-// closedDates/holidayDates)を手組みして渡す——純粋関数なので状態全体のセットアップは不要。
-test("calculateSalesPaceGap: 今日までの目安より遅れている場合、正しい不足金額(万円単位)を返す", () => {
-  // 月間目標100万円・月20営業日・今日までの経過10営業日(当日は日締め済み) → 目安50万円。
+// 売上ページ「現在の売上ペース」(2026-09追加、同月内で2度目の仕様修正)。
+// businessDaySummaryはgetBusinessDaySummary/getAllStoresBusinessDaySummaryの戻り値の形
+// (businessDayCount/holidayDates)を手組みして渡す——純粋関数なので状態全体のセットアップ
+// は不要。基準日は「今日」ではなく「最後に入力した営業日」(lastEntryDate)。
+test("calculateSalesPaceGap: 対象月の売上入力が1件も無い場合はnullを返す(カード非表示、要件1)", () => {
+  // 修正前の不具合の再現条件そのもの: 営業日0/28・総売上0円・入力0件。
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 28, holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 0,
+    monthlyTargetSales: 12600000,
+    hasEntries: false,
+    lastEntryDate: "",
+  });
+  assert.equal(result, null, "入力0件を0円実績として扱い「遅れています」を出してはいけない");
+});
+
+test("calculateSalesPaceGap: 0円で明示的に入力した日はhasEntries=trueとして扱われ、未入力とは区別される(要件2)", () => {
+  // 経過2営業日(lastEntryDate=2日目)・目標100万円 → 目安10万円。実績0円(明示的な0円入力)
+  // → 不足10万円として通常どおり判定される(nullにはならない=「未入力」とは別扱い)。
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 0,
+    monthlyTargetSales: 1000000,
+    hasEntries: true,
+    lastEntryDate: "2026-09-02",
+  });
+  assert.notEqual(result, null);
+  assert.equal(result.status, "behind");
+  assert.equal(result.roundedManYen, 10);
+});
+
+test("calculateSalesPaceGap: 最後に入力した営業日までの目安より遅れている場合、正しい不足金額を返す", () => {
+  // 月間目標100万円・月20営業日・最後の入力が10日目(店休日なし) → 目安50万円。
   // 実売上16万円 → 不足34万円。
   const result = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-09",
     totalSales: 160000,
     monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
+    hasEntries: true,
+    lastEntryDate: "2026-09-10",
   });
   assert.equal(result.status, "behind");
   assert.equal(result.roundedManYen, 34);
@@ -5062,11 +5093,12 @@ test("calculateSalesPaceGap: 今日までの目安より遅れている場合、
 
 test("calculateSalesPaceGap: 目安を上回っている場合、正しい超過金額を返す", () => {
   const result = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-09",
     totalSales: 620000, // 目安50万円との差+12万円
     monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
+    hasEntries: true,
+    lastEntryDate: "2026-09-10",
   });
   assert.equal(result.status, "ahead");
   assert.equal(result.roundedManYen, 12);
@@ -5075,66 +5107,63 @@ test("calculateSalesPaceGap: 目安を上回っている場合、正しい超過
 
 test("calculateSalesPaceGap: 差額が1万円未満(プラス・マイナス問わず)ならonPace扱いになる", () => {
   const behindButTiny = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-09",
     totalSales: 500000 - 9999,
     monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
+    hasEntries: true,
+    lastEntryDate: "2026-09-10",
   });
   assert.equal(behindButTiny.status, "onPace");
 
   const aheadButTiny = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-09",
     totalSales: 500000 + 9999,
     monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
+    hasEntries: true,
+    lastEntryDate: "2026-09-10",
   });
   assert.equal(aheadButTiny.status, "onPace");
 
   // 境界値: ちょうど1万円は「未満」に含まれない(behind/aheadのまま)。
   const exactlyTenThousand = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-09",
     totalSales: 500000 - 10000,
     monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
+    hasEntries: true,
+    lastEntryDate: "2026-09-10",
   });
   assert.equal(exactlyTenThousand.status, "behind");
   assert.equal(exactlyTenThousand.roundedManYen, 1);
 });
 
-test("calculateSalesPaceGap: 当日が営業日でまだ日締め前でも、経過営業日数に当日を含める", () => {
-  // completedDaysは9日(当日はまだ未日締め)、当日は店休日ではない → 経過10日として計算する。
-  const withToday = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 9, closedDates: [], holidayDates: [] },
+test("calculateSalesPaceGap: 店休日は経過営業日数に含めない", () => {
+  // 9/1〜9/10のうち9/5,9/6が店休日 → 実質の経過営業日数は8日。目標100万・月20営業日
+  // → 目安40万円。実売上40万円ちょうど → onPace。
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, holidayDates: ["2026-09-05", "2026-09-06"] },
     monthValue: "2026-09",
-    totalSales: 500000,
+    totalSales: 400000,
     monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
+    hasEntries: true,
+    lastEntryDate: "2026-09-10",
   });
-  assert.equal(withToday.elapsedBusinessDays, 10);
-  assert.equal(withToday.status, "onPace"); // 目安50万円ちょうど
-
-  // 当日が店休日の場合は+1しない(経過9日のまま)。
-  const todayIsHoliday = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 9, closedDates: [], holidayDates: ["2026-09-10"] },
-    monthValue: "2026-09",
-    totalSales: 500000,
-    monthlyTargetSales: 1000000,
-    todayIso: "2026-09-10",
-  });
-  assert.equal(todayIsHoliday.elapsedBusinessDays, 9);
+  assert.equal(result.elapsedBusinessDays, 8);
+  assert.equal(result.status, "onPace");
 });
 
 test("calculateSalesPaceGap: 過去月はその月の営業日数全体を経過営業日数として判定する", () => {
-  // 過去月(今日は2026-09-10だが対象は2026-08)。8月の途中までしか日締めしていなくても、
-  // 経過営業日数は月間営業日数(20日)全体を使う。
+  // 過去月(今日は2026-09-10だが対象は2026-08)。月の途中までしか入力していなくても、
+  // 経過営業日数は月間営業日数(20日)全体を使う(その月は既に終わっているため)。
   const result = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 12, closedDates: [], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-08",
     totalSales: 1000000, // ちょうど目標どおり
     monthlyTargetSales: 1000000,
+    hasEntries: true,
+    lastEntryDate: "2026-08-12",
     todayIso: "2026-09-10",
   });
   assert.equal(result.elapsedBusinessDays, 20);
@@ -5143,17 +5172,19 @@ test("calculateSalesPaceGap: 過去月はその月の営業日数全体を経過
 
 test("calculateSalesPaceGap: 未来月は表示しない(null)", () => {
   const result = calculateSalesPaceGap({
-    businessDaySummary: { businessDayCount: 20, completedDays: 0, closedDates: [], holidayDates: [] },
+    businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-10",
     totalSales: 0,
     monthlyTargetSales: 1000000,
+    hasEntries: false,
+    lastEntryDate: "",
     todayIso: "2026-09-10",
   });
   assert.equal(result, null);
 });
 
 test("calculateSalesPaceGap: 月間売上目標が未設定・0円・営業日数0・データ不正の場合はnullを返す(表示しない)", () => {
-  const base = { businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: [], holidayDates: [] }, monthValue: "2026-09", totalSales: 500000, monthlyTargetSales: 1000000, todayIso: "2026-09-10" };
+  const base = { businessDaySummary: { businessDayCount: 20, holidayDates: [] }, monthValue: "2026-09", totalSales: 500000, monthlyTargetSales: 1000000, hasEntries: true, lastEntryDate: "2026-09-10" };
   assert.equal(calculateSalesPaceGap({ ...base, monthlyTargetSales: 0 }), null);
   assert.equal(calculateSalesPaceGap({ ...base, monthlyTargetSales: undefined }), null);
   assert.equal(calculateSalesPaceGap({ ...base, monthlyTargetSales: null }), null);
@@ -5162,5 +5193,6 @@ test("calculateSalesPaceGap: 月間売上目標が未設定・0円・営業日�
   assert.equal(calculateSalesPaceGap({ ...base, totalSales: NaN }), null);
   assert.equal(calculateSalesPaceGap({ ...base, totalSales: Infinity }), null);
   assert.equal(calculateSalesPaceGap({ ...base, monthValue: "" }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, hasEntries: false, lastEntryDate: "" }), null);
   assert.equal(calculateSalesPaceGap(), null);
 });
