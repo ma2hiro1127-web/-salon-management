@@ -277,16 +277,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .business-progress-grid strong { font-size: 1rem; font-weight: 700; line-height: 1.3; }
 /* 日次「要確認ポイント」カード(2026-09追加)。営業進捗カードの直下に横幅100%の
    独立カードとして配置する(要件: 営業進捗カードの隣に置かない)。 */
-.daily-insights-card { padding: 16px; border-radius: 18px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 14px; width: 100%; max-width: 100%; box-sizing: border-box; }
-.daily-insights-header { margin-bottom: 10px; }
-.daily-insights-header h3 { margin: 2px 0 0; }
-.daily-insights-empty { margin: 0; color: var(--muted); font-size: 0.9rem; }
-.daily-insights-list { display: flex; flex-direction: column; gap: 10px; }
-.daily-insight-item { padding: 10px 12px; border-radius: 12px; background: rgba(100, 116, 139, 0.08); border-left: 3px solid var(--muted); }
-.daily-insight-item.warning { background: rgba(245, 158, 11, 0.1); border-left-color: var(--warning); }
-.daily-insight-item.danger { background: rgba(220, 38, 38, 0.1); border-left-color: var(--danger); }
-.daily-insight-title { display: block; font-size: 0.92rem; margin-bottom: 2px; }
-.daily-insight-detail { margin: 0; font-size: 0.84rem; color: var(--muted); line-height: 1.4; }
+/* 「現在の売上ペース」カード(2026-09、旧「要確認ポイント」から全面変更)。1文だけを
+   表示するシンプルなカード——遅れ=オレンジ系(warning)、順調超過=グリーン系(success)、
+   目標ペースどおり=ブルー系(accent)。強い赤色・警告アイコンは使わない(要件)。 */
+.sales-pace-card { padding: 16px; border-radius: 18px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 14px; width: 100%; max-width: 100%; box-sizing: border-box; border-left: 4px solid var(--muted); }
+.sales-pace-card--warning { border-left-color: var(--warning); background: rgba(180, 83, 9, 0.06); }
+.sales-pace-card--good { border-left-color: var(--success); background: rgba(46, 163, 97, 0.08); }
+.sales-pace-card--neutral { border-left-color: var(--accent); background: var(--accent-soft); }
+.sales-pace-header { margin-bottom: 6px; }
+.sales-pace-header h3 { margin: 2px 0 0; }
+.sales-pace-sentence { margin: 0; font-size: 0.95rem; line-height: 1.5; }
+.sales-pace-card--warning .sales-pace-sentence { color: var(--warning); }
+.sales-pace-card--good .sales-pace-sentence { color: var(--success); }
 .status-chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 999px; font-size: 0.82rem; font-weight: 700; }
 .status-chip.good { background: rgba(22, 163, 74, 0.16); color: var(--success); }
 .status-chip.warning { background: rgba(245, 158, 11, 0.16); color: var(--warning); }
@@ -976,7 +978,8 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
      表示スペースだけ圧縮する)。要件9: カード自体の上下margin/paddingもスマホだけ少し縮小。 */
   .business-progress-card { padding: 12px; margin-bottom: 10px; }
   .business-progress-header { margin-bottom: 6px; }
-  .daily-insights-card { padding: 12px; margin-bottom: 10px; }
+  .sales-pace-card { padding: 12px; margin-bottom: 10px; }
+  .sales-pace-sentence { font-size: 0.9rem; }
   /* スマホUI改善(要件2): 進捗率チップとプログレスバーが視覚的な主役になるよう、少しだけ
      強める。.status-chipは日次入力画面の帯(daily-progress-compact)とも共有クラスのため、
      影響が売上ダッシュボードのこのカードだけに閉じるよう.business-progress-headerを親に

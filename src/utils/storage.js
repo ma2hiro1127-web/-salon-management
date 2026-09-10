@@ -1350,6 +1350,67 @@ export const getAllStoresBusinessDaySummary = (state, companyId, storesInput, mo
   };
 };
 
+// 売上ページ「現在の売上ペース」1文表示用(2026-09追加)。「今日までの売上目安
+// (月間売上目標×経過営業日数/月間営業日数)」と「実際の総売上」の差を金額で示す——
+// %やptではなく「あといくら/どれだけ多い」を直感的に示すための表示に使う。
+//
+// 経過営業日数は、businessDaySummary(getBusinessDaySummary/getAllStoresBusinessDaySummary
+// の戻り値、いずれも店舗ごとの営業日設定・店休日を既に考慮済み)の completedDays/
+// closedDates/holidayDates だけを使い、ここで暦日ベースの新しい判定は一切行わない:
+//   - 今月を見ている場合: 日締め済みの営業日数(completedDays)に、当日がまだ日締め前でも
+//     営業日(店休日ではない)なら+1する(要件: 当日が営業日なら経過営業日数に含める)。
+//   - 過去月を見ている場合: その月は既に終わっているため、月間営業日数(businessDayCount)
+//     そのものを経過営業日数として扱う(要件: 過去月はその月の最終営業日時点で判定する)。
+//   - 未来月は呼び出し側でnullが返るため描画しない(要件)。
+export const calculateSalesPaceGap = ({
+  businessDaySummary,
+  monthValue,
+  totalSales,
+  monthlyTargetSales,
+  todayIso = formatLocalDate(new Date()),
+  roundingThresholdYen = 10000,
+} = {}) => {
+  if (!businessDaySummary || !monthValue) return null;
+  const { businessDayCount, completedDays, closedDates, holidayDates } = businessDaySummary;
+  if (!Number.isFinite(businessDayCount) || businessDayCount <= 0) return null;
+  if (!Number.isFinite(monthlyTargetSales) || monthlyTargetSales <= 0) return null;
+  if (!Number.isFinite(totalSales)) return null;
+
+  const currentMonthValue = String(todayIso).slice(0, 7);
+  if (monthValue > currentMonthValue) return null; // 未来月は表示しない
+
+  let elapsedBusinessDays;
+  if (monthValue < currentMonthValue) {
+    elapsedBusinessDays = businessDayCount;
+  } else {
+    const closedSet = new Set(closedDates || []);
+    const holidaySet = new Set(holidayDates || []);
+    const todayAlreadyCounted = closedSet.has(todayIso);
+    const todayIsHoliday = holidaySet.has(todayIso);
+    elapsedBusinessDays = (Number.isFinite(completedDays) ? completedDays : 0) + (!todayAlreadyCounted && !todayIsHoliday ? 1 : 0);
+  }
+  elapsedBusinessDays = Math.min(Math.max(elapsedBusinessDays, 0), businessDayCount);
+  if (elapsedBusinessDays <= 0) return null;
+
+  const expectedSalesSoFar = monthlyTargetSales * (elapsedBusinessDays / businessDayCount);
+  if (!Number.isFinite(expectedSalesSoFar)) return null;
+
+  const diffYen = totalSales - expectedSalesSoFar;
+  if (!Number.isFinite(diffYen)) return null;
+
+  if (Math.abs(diffYen) < roundingThresholdYen) {
+    return { status: "onPace", diffYen, roundedManYen: 0, elapsedBusinessDays, businessDayCount, expectedSalesSoFar };
+  }
+  return {
+    status: diffYen >= 0 ? "ahead" : "behind",
+    diffYen,
+    roundedManYen: Math.round(Math.abs(diffYen) / 10000),
+    elapsedBusinessDays,
+    businessDayCount,
+    expectedSalesSoFar,
+  };
+};
+
 // ある1日について、営業対象なのにまだ日締めが完了していない店舗名を返す(要件13:
 // 「全店舗締めたと思っていたが、実際には1店舗だけ未締めだった」を即座に特定できるように
 // する管理性改善)。判定基準はgetAllStoresBusinessDaySummaryと完全に同じ

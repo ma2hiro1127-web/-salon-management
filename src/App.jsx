@@ -49,6 +49,7 @@ import {
   formatMonthLabel,
   formatDailyDateLabel,
   getBusinessDaySummary,
+  calculateSalesPaceGap,
   getMonthClosingChecklist,
   needsMonthReconfirmation,
   formatMoneyOrDash,
@@ -103,7 +104,6 @@ import {
   normalizeAppState,
   writeAppState,
 } from "./utils/storage.js";
-import { analyzeDailyInsights, aggregateDailyEntriesAcrossStores } from "./utils/dailyInsights.js";
 import { analyzeMonthlyReview, getMonthlyReviewMetrics } from "./utils/monthlyReviewAnalysis.js";
 import { getAllowedStoreIdsForRole, getVisibleNavItems, resolveDefaultPage, canAccessPage, canManageCompanies, canManageStores, canEditStoreName, canEditMonthlyData, canManageUsers as canManageUsersByRole, canViewUserManagement, canViewAllStores, getInvitableRoles, getRoleLabel, normalizeRole, isAdminRole, canManageFranchisePartnerships, canCreateFranchiseRequest, isFranchiseReadOnly, getUserRowPermissions, canManageAdOps } from "./utils/permissions.js";
 import { createInitialAppState } from "./data/defaults.js";
@@ -225,7 +225,7 @@ import {
   formatYenOrEmpty,
 } from "./utils/contractBilling.js";
 import MonthlyDashboardPage from "./components/dashboard/MonthlyDashboardPage.jsx";
-import DailyInsightsCard from "./components/dashboard/DailyInsightsCard.jsx";
+import SalesPaceCard from "./components/dashboard/SalesPaceCard.jsx";
 import MonthlyCashBreakdownModal from "./components/cashBreakdown/MonthlyCashBreakdownModal.jsx";
 import FaqPage from "./components/faq/FaqPage.jsx";
 import MonthlyReviewPage from "./components/monthlyReview/MonthlyReviewPage.jsx";
@@ -2128,22 +2128,19 @@ function App() {
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ), [isAllStoresView, currentCompanyStores, showCustomersField, showNewCustomersField, showRepeatCustomersField, showRetailSalesField]);
-  // 日次「要確認ポイント」(2026-09追加)。売上ページ(dashboard)を見ている時だけ計算する
-  // (monthlyReviewSummaryと同じ「表示していないページのために重い計算をしない」設計)。
-  // 全店舗ビューは店舗ごとに判定して複数件出すのではなく、日付単位で店舗横断合算した
-  // 日次配列を1回だけ判定にかける(「大量表示しない」要件に沿う、既存のgetStoreDashboardRows
-  // とは異なりここでは率を扱わないため合算のみで問題ない)。
-  const dailyInsightsResult = useMemo(() => {
-    if (activePage !== "dashboard") return { insights: [], hasAnomaly: false };
-    const previousMonthValue = getMonthOffset(selectedMonth, -1);
-    const currentMonthDaily = isAllStoresView
-      ? aggregateDailyEntriesAcrossStores(currentCompanyStores.map((store) => getDailyResultsForStoreMonth(appState, store.id, selectedMonth)))
-      : dailyEntries;
-    const previousMonthDaily = isAllStoresView
-      ? aggregateDailyEntriesAcrossStores(currentCompanyStores.map((store) => getDailyResultsForStoreMonth(appState, store.id, previousMonthValue)))
-      : getDailyResultsForStoreMonth(appState, selectedStoreId, previousMonthValue);
-    return analyzeDailyInsights({ currentMonthDaily, previousMonthDaily, fieldsEnabled: analysisFieldsEnabled, seed: `${selectedStoreId}-${selectedMonth}` });
-  }, [activePage, appState, isAllStoresView, currentCompanyStores, selectedStoreId, selectedMonth, dailyEntries, analysisFieldsEnabled]);
+  // 売上ページ「現在の売上ペース」(2026-09、旧「要確認ポイント」から全面変更)。
+  // 売上ページ(dashboard)を見ている時だけ計算する(monthlyReviewSummaryと同じ「表示して
+  // いないページのために重い計算をしない」設計)。全店舗/単一店舗どちらもtarget/summary/
+  // businessDaySummaryが既に正しく分岐済みのため、ここでは値を渡すだけでよい。
+  const salesPaceGap = useMemo(() => {
+    if (activePage !== "dashboard") return null;
+    return calculateSalesPaceGap({
+      businessDaySummary,
+      monthValue: selectedMonth,
+      totalSales: parseNumber(summary.sales),
+      monthlyTargetSales: parseNumber(target.targetSales),
+    });
+  }, [activePage, businessDaySummary, selectedMonth, summary, target]);
   // 月次レビュー(利益管理ではない、店舗・会社全体で共有するための数字サマリー+自由記述)。
   // 数字はgetMonthlyReviewSummary(既存のcalculateMonthSummary/calculateAllStoresMonthSummaryを
   // そのまま再利用、重複計算ロジックを作らない)、対象は「今表示中の店舗/全店舗ビュー」——
@@ -8547,7 +8544,7 @@ function App() {
                   <div><span>顧客数</span><strong>{isInitialDataReady ? `${number(summary.customers)}名` : "—"}</strong></div>
                 </div>
               </div>
-              <DailyInsightsCard insights={dailyInsightsResult.insights} />
+              {isInitialDataReady ? <SalesPaceCard paceGap={salesPaceGap} /> : null}
               <div className="kpi-sales-section">
               <div className="panel-heading">
                 <div>

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions, calculateSalesPaceGap } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -5040,4 +5040,127 @@ test("getStoreDashboardRows(要件17): 全店舗ビューは各店舗ごとにmo
   const naiveApproximation = (5000000 + 3000000) * ((40 + 35) / 2 / 100);
   assert.notEqual(yokohama.laborCost + kichijoji.laborCost, naiveApproximation);
   assert.equal(yokohama.laborCost + kichijoji.laborCost, 3050000);
+});
+
+// 売上ページ「現在の売上ペース」(2026-09追加)。businessDaySummaryはgetBusinessDaySummary/
+// getAllStoresBusinessDaySummaryの戻り値そのものの形(completedDays/businessDayCount/
+// closedDates/holidayDates)を手組みして渡す——純粋関数なので状態全体のセットアップは不要。
+test("calculateSalesPaceGap: 今日までの目安より遅れている場合、正しい不足金額(万円単位)を返す", () => {
+  // 月間目標100万円・月20営業日・今日までの経過10営業日(当日は日締め済み) → 目安50万円。
+  // 実売上16万円 → 不足34万円。
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 160000,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(result.status, "behind");
+  assert.equal(result.roundedManYen, 34);
+  assert.ok(result.diffYen < 0);
+});
+
+test("calculateSalesPaceGap: 目安を上回っている場合、正しい超過金額を返す", () => {
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 620000, // 目安50万円との差+12万円
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(result.status, "ahead");
+  assert.equal(result.roundedManYen, 12);
+  assert.ok(result.diffYen > 0);
+});
+
+test("calculateSalesPaceGap: 差額が1万円未満(プラス・マイナス問わず)ならonPace扱いになる", () => {
+  const behindButTiny = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 500000 - 9999,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(behindButTiny.status, "onPace");
+
+  const aheadButTiny = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 500000 + 9999,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(aheadButTiny.status, "onPace");
+
+  // 境界値: ちょうど1万円は「未満」に含まれない(behind/aheadのまま)。
+  const exactlyTenThousand = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: ["2026-09-10"], holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 500000 - 10000,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(exactlyTenThousand.status, "behind");
+  assert.equal(exactlyTenThousand.roundedManYen, 1);
+});
+
+test("calculateSalesPaceGap: 当日が営業日でまだ日締め前でも、経過営業日数に当日を含める", () => {
+  // completedDaysは9日(当日はまだ未日締め)、当日は店休日ではない → 経過10日として計算する。
+  const withToday = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 9, closedDates: [], holidayDates: [] },
+    monthValue: "2026-09",
+    totalSales: 500000,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(withToday.elapsedBusinessDays, 10);
+  assert.equal(withToday.status, "onPace"); // 目安50万円ちょうど
+
+  // 当日が店休日の場合は+1しない(経過9日のまま)。
+  const todayIsHoliday = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 9, closedDates: [], holidayDates: ["2026-09-10"] },
+    monthValue: "2026-09",
+    totalSales: 500000,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(todayIsHoliday.elapsedBusinessDays, 9);
+});
+
+test("calculateSalesPaceGap: 過去月はその月の営業日数全体を経過営業日数として判定する", () => {
+  // 過去月(今日は2026-09-10だが対象は2026-08)。8月の途中までしか日締めしていなくても、
+  // 経過営業日数は月間営業日数(20日)全体を使う。
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 12, closedDates: [], holidayDates: [] },
+    monthValue: "2026-08",
+    totalSales: 1000000, // ちょうど目標どおり
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(result.elapsedBusinessDays, 20);
+  assert.equal(result.status, "onPace");
+});
+
+test("calculateSalesPaceGap: 未来月は表示しない(null)", () => {
+  const result = calculateSalesPaceGap({
+    businessDaySummary: { businessDayCount: 20, completedDays: 0, closedDates: [], holidayDates: [] },
+    monthValue: "2026-10",
+    totalSales: 0,
+    monthlyTargetSales: 1000000,
+    todayIso: "2026-09-10",
+  });
+  assert.equal(result, null);
+});
+
+test("calculateSalesPaceGap: 月間売上目標が未設定・0円・営業日数0・データ不正の場合はnullを返す(表示しない)", () => {
+  const base = { businessDaySummary: { businessDayCount: 20, completedDays: 10, closedDates: [], holidayDates: [] }, monthValue: "2026-09", totalSales: 500000, monthlyTargetSales: 1000000, todayIso: "2026-09-10" };
+  assert.equal(calculateSalesPaceGap({ ...base, monthlyTargetSales: 0 }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, monthlyTargetSales: undefined }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, monthlyTargetSales: null }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, businessDaySummary: { ...base.businessDaySummary, businessDayCount: 0 } }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, businessDaySummary: null }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, totalSales: NaN }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, totalSales: Infinity }), null);
+  assert.equal(calculateSalesPaceGap({ ...base, monthValue: "" }), null);
+  assert.equal(calculateSalesPaceGap(), null);
 });
