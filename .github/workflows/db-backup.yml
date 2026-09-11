@@ -10,10 +10,20 @@ on:
 # このワークフローは既存アプリ(Vercelデプロイ・Supabase本体)から完全に独立しており、
 # 失敗してもサロンマネージャー本体の動作には一切影響しない(スケジュール実行の別ジョブとして
 # 動くだけで、デプロイパイプラインの一部ではない)。
+#
+# 同時実行防止(2026-09-11追加、要件): 手動実行(workflow_dispatch)と定期実行(schedule)が
+# 重なった場合や、手動実行を連打した場合に、同じ本番DBへ同時に複数のpg_dumpが走ったり、
+# backup-repoへの同時pushでgit pushが競合したりしないようにする。cancel-in-progressは
+# 意図的にfalse——後発のバックアップ取得中に先発を打ち切ると「取得中断で不完全なバックアップ」
+# を作りかねないため、先発を最後まで完了させてから後発を待たせる(キューイング)方式にする。
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
 jobs:
   backup:
     runs-on: ubuntu-latest
-    # データ取得(pg_dump相当)のみで、リポジトリへの書き込みはbackupリポジトリ側のみ。
+    # データ取得(pg_dump相当)のみで、リポジトリへの書き込みはbackupリポジトリ側とArtifactのみ。
     permissions:
       contents: read
     steps:
@@ -66,6 +76,35 @@ jobs:
         run: |
           chmod +x scripts/backup/*.sh
           ./scripts/backup/run_backup.sh "$RUNNER_TEMP/dump"
+
+      # 2026-09-11追加(要件: GitHub Actions Artifactとしても保存する)。長期保存・世代管理は
+      # 引き続き下のbackup-repo(daily 7日/weekly 4週/monthly 3か月のローテーション)が主体だが、
+      # backup-repoへのpushが何らかの理由で失敗した場合でも、この時点までに取得済みのダンプが
+      # Artifactとして必ず残るようにする(2つの独立した保存先による冗長化)。接続情報等の
+      # 機密は一切含まれない(dump本体はDBの中身のみ、パスワード等はどこにも書き出していない)。
+      - name: Compress dump files for Artifact
+        run: |
+          set -euo pipefail
+          DATE_TAG="$(date -u +%Y-%m-%d)"
+          echo "DATE_TAG=$DATE_TAG" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/artifact"
+          for f in roles.sql schema.sql data.sql; do
+            gzip -9 -c "$RUNNER_TEMP/dump/$f" > "$RUNNER_TEMP/artifact/$f.gz"
+          done
+          ls -la "$RUNNER_TEMP/artifact"
+
+      - name: Upload backup as GitHub Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # ファイル名(Artifact名)に実行日時(UTC日付)を含める(要件)。同日に手動実行を
+          # 複数回行っても、run_idが異なるため名前が衝突することはない。
+          name: db-backup-${{ env.DATE_TAG }}-run${{ github.run_number }}
+          path: ${{ runner.temp }}/artifact/*.gz
+          # 保存期間を明示する(要件)。backup-repo側がdaily 7日/weekly 4週/monthly 3か月の
+          # 長期保存を担うため、Artifact側は「直近の障害対応にすぐ使える」ことを目的とした
+          # 35日(約5週間、backup-repoのweekly世代と同程度の期間)に設定する。
+          retention-days: 35
+          if-no-files-found: error
 
       - name: Checkout private backup repository
         uses: actions/checkout@v4

@@ -12,8 +12,17 @@
 の検証は、テーブルの存在自体は毎回のダンプが作った`schema.sql`を基準に確認し、`data.sql`は
 「行があるテーブルの一覧」としてのみ扱うため、空テーブルがあってもバックアップ失敗にはならない。
 
-**守らないもの**: Supabaseプロジェクト自体の消失、およびSupabase Auth(`auth`スキーマ、
-ログイン用のユーザー・パスワードハッシュ・セッション)。理由と対処は「Authとの整合性」の章を参照。
+**守らないもの**: Supabaseプロジェクト自体の消失、Supabase Auth(`auth`スキーマ、
+ログイン用のユーザー・パスワードハッシュ・セッション)、Supabase Storageのファイル本体、
+Edge Functionsの実行環境、Supabase Secrets(環境変数)の値そのもの。詳細は
+「4. DBバックアップに含まれないもの」を参照。
+
+**保存先が2つある理由**: このバックアップは(a)プライベートリポジトリ`BACKUP_REPO`への
+git push(daily 7日/weekly 4週/monthly 3か月のローテーション、主たる長期保存先)と、
+(b)GitHub Actions Artifact(直近35日、同じrunがどちらも同じダンプから作る)の
+2か所へ独立して保存される。(a)へのpushが何らかの理由(トークン期限切れ等)で失敗しても、
+(b)はそのrunの中で先に完了しているため取りこぼさない、という冗長化が目的。日常的な復元は
+どちらから行っても内容は同じ。
 
 **循環外部キー(companies ⇔ profiles)について**: `companies`と`profiles`の間には循環する
 外部キー制約がある(`profiles.company_id → companies.id`、`companies`側の一部カラムが
@@ -156,7 +165,59 @@ Actions タブ → 「Database Backup」ワークフロー → 「Run workflow�
 
 ---
 
-## 3. Authとの整合性(要件3への回答)
+## 3. GitHub Actions Artifactの取得方法
+
+主たる復元手順(上記「2. 復元手順」)は`BACKUP_REPO`のgit clone/pullを前提にしているが、
+同じ内容がGitHub Actions Artifactとしても直近35日分保存されている。`BACKUP_REPO`への
+アクセスに問題がある場合や、特定の1回の実行結果だけをすぐ確認したい場合はこちらを使う。
+
+### Web UIから
+
+1. `ma2hiro1127-web/-salon-management`リポジトリ → **Actions** タブ → **Database Backup** を開く
+2. 取得したい実行日の run をクリックする
+3. その run のページ下部 **Artifacts** に `db-backup-YYYY-MM-DD-runNNN` が表示されるのでクリックしてダウンロードする(zip 1つに `roles.sql.gz` / `schema.sql.gz` / `data.sql.gz` がまとまっている)
+
+### GitHub CLI(`gh`)から
+
+```bash
+# 直近の実行一覧を見て run ID を確認する
+gh run list --workflow="Database Backup" --limit 10
+
+# 該当run IDのArtifactを、カレントディレクトリ配下へダウンロードする
+gh run download <run-id> --repo ma2hiro1127-web/-salon-management
+```
+
+### 展開する
+
+```bash
+gunzip -k schema.sql.gz
+gunzip -k data.sql.gz
+gunzip -k roles.sql.gz
+```
+
+以降は「2. 復元手順」の手順4以降と同じ。
+
+**保存期間**: 35日。それより古いものは`BACKUP_REPO`側(daily 7日はArtifactより短いが、
+weekly 4週・monthly 3か月はより長く残る)を使う。
+
+---
+
+## 4. DBバックアップに含まれないもの
+
+`public`スキーマのpg_dumpだけでは復旧できないものを整理する。「販売前」に必ず認識しておくこと。
+
+| 対象 | このバックアップに含まれる? | 実際の保存場所・対処 |
+|---|---|---|
+| `public`スキーマのテーブル定義・データ・RLSポリシー・DB関数・Trigger・Enum・View | ✅ 含まれる | `schema.sql`(定義一式、RLSポリシー・関数・Trigger・Enum・Viewも`public`スキーマに属するものはすべて`pg_dump --schema public`の対象)、`data.sql`(実データ) |
+| Supabase Auth(`auth.users`、パスワードハッシュ、セッション) | ❌ 含まれない | 意図的に対象外(理由は次章「5. Authとの整合性」)。同一プロジェクトへの`public`復元では実害なし。プロジェクト自体を作り直す場合はAuthユーザーの復元手段が無く、招待メールの再送が必要 |
+| Supabase Storageのファイル本体(`support-attachments`等) | ❌ 含まれない | `storage.buckets`/`storage.objects`は`storage`スキーマに属し、かつファイルの実体(バイナリ)はPostgresの外(S3互換オブジェクトストレージ)にあるため、`pg_dump --schema public`には一切現れない。バケット定義(`support-attachments`がprivateであること等)自体は`supabase/migrations/20260911000000_support_inquiries.sql`にコードとして存在するため`supabase db push`で再作成できるが、**過去にアップロードされた添付ファイルの実体は今回のバックアップ対象外**。現状、問い合わせ添付ファイルは業務継続に必須のデータではないため今回のスコープ外としたが、重要度が上がった場合は別途`supabase storage`のダウンロードバックアップを検討すること |
+| Edge Functionsのコード | ✅(このリポジトリ自体がバックアップ) | `supabase/functions/`配下としてこのGitリポジトリにすべてコミットされている。DBバックアップとは別に、**リポジトリ自体の復旧(GitHub上に存在する限り消えない、ローカルcloneでも可)がEdge Functionsのバックアップを兼ねる** |
+| Supabase Secrets(環境変数の値) | ❌ 含まれない(意図的) | 値自体をバックアップへ含めることは禁止事項(漏洩リスク)。**名前の一覧**は「6. Secretsの再設定」を参照。値は各サービス(Stripeダッシュボード等)の管理画面、またはパスワードマネージャー等、このリポジトリの外で別途安全に管理すること |
+| Supabaseプロジェクト自体(project ref、リージョン等のプロジェクト設定) | ❌ 含まれない | プロジェクトが消失した場合は新規作成が必要。`supabase/migrations/`を`supabase db push`で新プロジェクトへ適用すればスキーマ相当は再現できるが、project ref自体は変わるため、フロントエンド(`.env`相当の`VITE_SUPABASE_URL`等)・Edge Functionsの環境変数・GitHub ActionsのSecretsをすべて新project ref向けに更新し直す必要がある(このシナリオは今回のスコープ外の大規模障害対応) |
+
+---
+
+## 5. Authとの整合性(要件3への回答)
 
 - 今回のバックアップは`public`スキーマのみを対象にしており、Supabase Auth本体(`auth`スキーマ
   — ログインID・パスワードハッシュ・セッション)は**意図的に対象外**にしている。
@@ -176,7 +237,71 @@ Actions タブ → 「Database Backup」ワークフロー → 「Run workflow�
 
 ---
 
-## 4. 世代管理
+## 6. Secretsの再設定・Edge Functionsの再デプロイ(プロジェクト新規作成等の大規模復旧時)
+
+**通常の復旧(同一Supabaseプロジェクトへ`public`スキーマだけ戻す)ではこの章は不要。**
+プロジェクト自体を作り直す場合や、Edge Functionsの環境変数が失われた場合にのみ必要。
+
+### 6-1. Supabase Secrets(Edge Functionsの環境変数)
+
+値は**このリポジトリにもバックアップにも一切保存していない**(要件どおり)。名前の一覧だけ
+ここに残す — 実際の値は各サービスのダッシュボード、またはチーム内で別途安全に管理している
+記録(パスワードマネージャー等)から再取得すること。`supabase secrets list --project-ref <ref>`
+で現在設定されている**名前の一覧**は確認できる(値は表示されない)。
+
+| Secret名 | 再取得元 |
+|---|---|
+| `STRIPE_SECRET_KEY` | Stripeダッシュボード(本番/LIVEモード)→ 開発者 → APIキー |
+| `STRIPE_WEBHOOK_SECRET` | Stripeダッシュボード → 開発者 → Webhook → 対象エンドポイント → 署名シークレット |
+| `STRIPE_TEST_SECRET_KEY` / `STRIPE_TEST_WEBHOOK_SECRET` | Stripeダッシュボード(テストモード)の同じ画面 |
+| `STRIPE_PRICE_BASE_MONTHLY` / `_YEARLY` / `STRIPE_PRICE_STORE_ADDON_MONTHLY` / `_YEARLY` | Stripeダッシュボード(LIVEモード)→ 商品カタログ → 対象Priceの ID |
+| `STRIPE_TEST_PRICE_*`(4種、上と同じ組み合わせ) | Stripeダッシュボード(テストモード)の商品カタログ |
+| `RESEND_API_KEY` | Resendダッシュボード → API Keys |
+| `SUPPORT_FROM_EMAIL` | 運用ルールに従って設定する送信元アドレス(値そのものは機密ではない) |
+| `SELF_SIGNUP_TEST_KEY` | 新規に安全なランダム文字列を生成して設定し直してよい(検証用バイパスキー、実質パスワード相当なので使い回さない) |
+| `ANTHROPIC_API_KEY` | Anthropic Consoleダッシュボード → API Keys |
+| `APP_URL` | 値そのものは機密ではない(例: `https://salon-manager.net`)。**末尾に改行を含めないこと**(過去に改行混入でCheckout URLが壊れた実例あり) |
+| `SUPABASE_URL` / `SUPABASE_ANON_KEY` / `SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_JWKS` / `SUPABASE_PUBLISHABLE_KEYS` / `SUPABASE_SECRET_KEYS` / `SUPABASE_DB_URL` | Supabaseが自動管理するプロジェクト固有の値(Project Settings → API / Database)。プロジェクトを作り直した場合はすべて新しい値になる |
+
+設定場所: `supabase secrets set <NAME>=<VALUE> --project-ref <ref>`、またはSupabase
+Dashboard → Edge Functions → Secrets。
+
+### 6-2. Edge Functionsの再デプロイ
+
+コードは本リポジトリの`supabase/functions/`配下にすべて存在する(Gitでバックアップ済み)。
+プロジェクトを作り直した場合、または特定の関数だけロールバックしたい場合:
+
+```bash
+# 個別に1つデプロイ
+supabase functions deploy <function-name> --project-ref <ref>
+
+# supabase/functions/配下の全関数をまとめてデプロイ
+for d in supabase/functions/*/; do
+  fn="$(basename "$d")"
+  supabase functions deploy "$fn" --project-ref <ref>
+done
+```
+
+デプロイ後、Secrets(6-1)が正しく設定されていないと関数が500エラーになるため、Secrets設定 →
+Edge Functions再デプロイの順で行う。
+
+### 6-3. 復旧後の確認項目(まとめ)
+
+このリポジトリを使った復旧作業がすべて終わったら、以下を順に確認する(「2. 復元手順」
+9〜11と重複する項目も含め、最終チェックリストとして1か所にまとめたもの):
+
+- [ ] `select count(*) from public.companies;` 等、主要テーブルの件数が復元前の把握値と一致する
+- [ ] RLSが全テーブルで有効(`relrowsecurity = true`)
+- [ ] `supabase migration list --linked` でmigration適用状況が`supabase/migrations/`と一致する
+- [ ] ログインできる(既存ユーザーで実際に1件テストログイン)
+- [ ] system_admin画面で会社一覧・店舗一覧が正しく表示される
+- [ ] Stripe関連: Webhookエンドポイントの疎通(Stripeダッシュボード → Webhook → 最近のイベント配信が200を返しているか)
+- [ ] Edge Functionsが最新コードでデプロイされている(`supabase functions list --project-ref <ref>`のバージョン番号を確認)
+- [ ] 本番URLへ実際にアクセスし、トップページ・ログイン画面が正常に表示される
+
+---
+
+## 7. 世代管理
 
 | 世代 | 保存期間 | 保存タイミング |
 |---|---|---|
@@ -188,13 +313,13 @@ Actions タブ → 「Database Backup」ワークフロー → 「Run workflow�
 
 ---
 
-## 5. 運用ルール(再発防止、2026-09-05の障害を受けて追記)
+## 8. 運用ルール(再発防止、2026-09-05の障害を受けて追記)
 
 ### 5-1. SupabaseのDatabase passwordを変更・リセットした場合
 
 - **GitHub Actionsの`SUPABASE_DB_URL`も必ず同時に更新すること。** Supabase側でパスワードだけを
   変更しても、GitHub Secrets側は自動的には追従しない——放置すると次回のバックアップから
-  `password authentication failed`で失敗し続ける(下記「6. 過去の障害事例」参照)。
+  `password authentication failed`で失敗し続ける(下記「9. 過去の障害事例」参照)。
 - **パスワード単体ではなく、正しい接続URL全体を保存すること。** `postgresql://postgres.<project-ref>:<パスワード>@aws-0-<region>.pooler.supabase.com:5432/postgres`
   のような完全な接続文字列(Session pooler、port 5432)をそのまま`SUPABASE_DB_URL`へ設定する
   — パスワード部分だけを差し替えた断片を保存しない。
@@ -244,13 +369,13 @@ Settings
 - Supabase CLIのバージョンは動作確認済みバージョンに固定する(現在: 2.111.0。`latest`には
   戻さない — 詳細は`.github/workflows/db-backup.yml`のコメント参照)
 - 失敗時はGitHubの標準通知(ワークフロー失敗メール)がそのまま届く仕様を維持する
-- daily 7日 / weekly 4週 / monthly 3か月の世代管理・古い世代の自動削除(上記「4. 世代管理」)は
+- daily 7日 / weekly 4週 / monthly 3か月の世代管理・古い世代の自動削除(上記「7. 世代管理」)は
   継続する
 - 上記以外の、現在正常稼働している既存のバックアップ処理・スクリプトには変更を加えない
 
 ---
 
-## 6. 過去の障害事例
+## 9. 過去の障害事例
 
 ### 事例1: 2026-09-03〜09-05, `password authentication failed`によるバックアップ全滅
 
@@ -274,5 +399,5 @@ Settings
   5. `gh workflow run "Database Backup" --ref main`で手動実行し、全ステップSuccessを確認
   6. バックアップ用リポジトリに`roles.sql.gz` / `schema.sql.gz` / `data.sql.gz`(37テーブル、
      約4.5MB)が実際に生成されていることを確認して完了
-- **再発防止**: 本節「5. 運用ルール」を新設。あわせてCLIバージョンの固定と、パスワードを
+- **再発防止**: 本節「8. 運用ルール」を新設。あわせてCLIバージョンの固定と、パスワードを
   含まない接続情報の診断ログをワークフローに追加した。
