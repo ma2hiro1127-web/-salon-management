@@ -218,6 +218,7 @@ import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta,
 import { sortStoresForManagement } from "./utils/storeManagement.js";
 import {
   CONTRACT_STATUS_LABELS,
+  deriveContractDisplayStatus,
   previewBillingStart,
   formatUsageDuration,
   formatRemainingLabel,
@@ -815,6 +816,11 @@ function App() {
   const [checkoutError, setCheckoutError] = useState("");
   const [portalBusy, setPortalBusy] = useState(false);
   const [portalError, setPortalError] = useState("");
+  // 店舗追加・状態変更に伴うStripe請求同期(syncStoreBillingQuantity)が失敗した場合の
+  // 手動リトライ用(2026-09、要件: 課金の同期漏れを無条件で成功扱いにしない)。この関数は
+  // 常にDBの実店舗数から数量を再計算するため、いつ押しても現在の正しい状態へ収束する。
+  const [billingResyncBusy, setBillingResyncBusy] = useState(false);
+  const [billingResyncMessage, setBillingResyncMessage] = useState("");
   // Inline feedback rendered right next to the 店舗基本設定 save button (StoreManagementPage) —
   // the shared top-of-page `notice` could be scrolled out of view, making a real success/failure
   // result look like nothing happened. This always renders in the same spot the user is looking at.
@@ -4183,12 +4189,23 @@ function App() {
       persistTenantState(nextState);
       setNewStoreName("");
       setNewStoreFormStatus({ status: "saved", message: `${nextStore.name} を新しい店舗として追加しました` });
-      setNotice(`${nextStore.name} を新しい店舗として追加しました`);
-      // 契約中の会社であれば、追加店舗料金(Stripe)をベストエフォートで同期する
-      // (2026-09-02)。失敗しても店舗作成自体は既に完了しているため、ここではエラーを
-      // ユーザーへ表示しない——料金は次回の同期呼び出しやWebhookで最終的に揃う。
+      // 契約中の会社であれば、追加店舗料金(Stripe)を同期する(2026-09-02)。店舗作成
+      // 自体はこの時点で既に完了しており、company_adminにはRLS(stores_delete_
+      // system_admin_only)上そもそも店舗を削除する手段が無いため、失敗時に店舗作成
+      // 自体を自動で取り消すことはできない——代わりに、以前のように結果を待たず握り
+      // つぶす(fire-and-forget)のをやめ、必ず結果を待って失敗を明確にユーザーへ伝える
+      // (要件: 「店舗だけ作成されてStripe課金が失敗した」状態を無条件で成功扱いに
+      // しない)。この関数は常にDBの実店舗数から数量を再計算する設計のため、失敗時は
+      // 「ご契約・お支払い」画面の「請求情報を再同期する」ボタンで自己修復できる。
       if (isSupabaseConfigured) {
-        void syncStoreBillingQuantity({ companyId }).catch(() => {});
+        const syncResult = await syncStoreBillingQuantity({ companyId }).catch((error) => ({ ok: false, error }));
+        if (!syncResult.ok) {
+          setNotice(`${nextStore.name} を追加しましたが、追加店舗料金の同期に失敗しました: ${getSupabaseErrorMessage(syncResult.error)}(「ご契約・お支払い」画面の「請求情報を再同期する」から再試行してください)`);
+        } else {
+          setNotice(`${nextStore.name} を新しい店舗として追加しました`);
+        }
+      } else {
+        setNotice(`${nextStore.name} を新しい店舗として追加しました`);
       }
     } catch (error) {
       console.error("handleCreateNewStore failed", error);
@@ -5058,6 +5075,22 @@ function App() {
     }
   };
 
+  // 店舗追加・状態変更時のベストエフォート同期が失敗した場合の手動リトライ導線
+  // (2026-09)。syncStoreBillingQuantityは常にDBの実店舗数(status='active')から
+  // 数量を再計算するため、何度呼んでも(=何度失敗していても)現在の正しい数量へ
+  // 収束する——単純に押すだけの自己修復ボタンとして機能する。
+  const handleResyncStoreBilling = async () => {
+    if (billingResyncBusy || !currentCompany?.id) return;
+    setBillingResyncBusy(true);
+    setBillingResyncMessage("");
+    try {
+      const result = await syncStoreBillingQuantity({ companyId: currentCompany.id });
+      setBillingResyncMessage(result.ok ? "請求情報を最新の店舗数に同期しました。" : `同期に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+    } finally {
+      setBillingResyncBusy(false);
+    }
+  };
+
   // 会社の削除は3段階(要件6): ①停止(既存の契約状態遷移、データは一切触れない) →
   // ②削除(論理削除、company_idに紐づくデータには一切触れずcompanies.deleted_at等を
   // 立てるだけ、30日間は復元可能) → ③完全削除(物理削除、②を経ていない会社には
@@ -5286,11 +5319,17 @@ function App() {
       confirmedStatus = result.status || meta.nextStatus;
     }
     applyStoreStatusLocally(store.id, confirmedStatus);
-    // 運営中の店舗数が変わり得るため、追加店舗料金(Stripe)をベストエフォートで同期する
-    // (2026-09-02)。失敗しても状態変更自体は既に完了しているため、ここではエラーを
-    // ユーザーへ表示しない。
+    // 運営中の店舗数が変わり得るため、追加店舗料金(Stripe)を同期する(2026-09-02)。
+    // 店舗の状態変更自体はこの時点で既に完了しており取り消さないが、結果を待たず
+    // 握りつぶす(fire-and-forget)のはやめ、失敗時は明確にユーザーへ伝える(要件:
+    // 課金の同期漏れを無条件で成功扱いにしない)。この関数は常にDBの実店舗数から
+    // 数量を再計算する設計のため、失敗時は「ご契約・お支払い」画面の「請求情報を
+    // 再同期する」ボタンで自己修復できる。
     if (isSupabaseConfigured && currentCompany?.id) {
-      void syncStoreBillingQuantity({ companyId: currentCompany.id }).catch(() => {});
+      const syncResult = await syncStoreBillingQuantity({ companyId: currentCompany.id }).catch((error) => ({ ok: false, error }));
+      if (!syncResult.ok) {
+        setNotice(`${store.name} の状態は変更されましたが、追加店舗料金の同期に失敗しました: ${getSupabaseErrorMessage(syncResult.error)}(「ご契約・お支払い」画面の「請求情報を再同期する」から再試行してください)`);
+      }
     }
   };
 
@@ -10080,8 +10119,8 @@ function App() {
                     <div key={company.id} className="info-card">
                       <div className="info-card-head">
                         <strong>{company.name}</strong>
-                        <span className={`status-pill ${company.contractStatus === "active" ? "good" : "warning"}`}>
-                          契約：{CONTRACT_STATUS_LABELS[company.contractStatus] || company.contractStatus}
+                        <span className={`status-pill ${deriveContractDisplayStatus(company).tone}`}>
+                          契約：{deriveContractDisplayStatus(company).label}
                         </span>
                       </div>
                       <div className="info-card-meta">
@@ -10218,8 +10257,8 @@ function App() {
                         {/* 会社カードのメイン状態表示は契約状態のみ(要件: 「有効」のような
                             利用状態と契約状態を重複表示しない)。停止中は一目で利用不可と
                             分かるよう赤系(error)にする。 */}
-                        <span className={`status-pill ${{ free: "saving", trial: "warning", active: "saved", suspended: "error" }[company.contractStatus || "trial"]}`}>
-                          契約：{CONTRACT_STATUS_LABELS[company.contractStatus || "trial"]}
+                        <span className={`status-pill ${deriveContractDisplayStatus(company).tone}`}>
+                          契約：{deriveContractDisplayStatus(company).label}
                         </span>
                       </div>
                       <div className="info-card-meta">
@@ -10266,7 +10305,9 @@ function App() {
                             ) : company.billingStartsAt ? (
                               <span>課金開始予定 {formatDateLabel(company.billingStartsAt)}</span>
                             ) : null}
-                            {company.cancelAtPeriodEnd && <span className="status-pill error">解約予約中</span>}
+                            {/* 状態そのもの(解約予約中)は上のメインピル(deriveContractDisplayStatus)
+                                が既に示すため、ここでは重複させず実際の終了予定日だけを示す。 */}
+                            {company.cancelAtPeriodEnd && company.nextBillingAt && <span>契約終了予定 {formatDateLabel(company.nextBillingAt)}</span>}
                           </>
                         )}
                         {company.contractStatus === "suspended" && (
@@ -10275,7 +10316,8 @@ function App() {
                             <span className="text-muted-cell">データ保持中</span>
                           </>
                         )}
-                        {company.paymentStatus === "past_due" && <span className="status-pill warning">支払い確認中</span>}
+                        {/* 支払いエラー自体は上のメインピル(deriveContractDisplayStatus)が
+                            既に示すため、ここでは重複させない。 */}
                       </div>
                       {canManageCompanies(currentRole) && company.contractStatus === "free" && (
                         <div className="row-actions">
@@ -10449,8 +10491,8 @@ function App() {
                 <p className="eyebrow">BILLING</p>
                 <h2>ご契約・お支払い</h2>
               </div>
-              <span className={`status-pill ${{ free: "saving", trial: "warning", active: "saved", suspended: "error" }[currentCompany.contractStatus || "trial"]}`}>
-                契約：{CONTRACT_STATUS_LABELS[currentCompany.contractStatus || "trial"]}
+              <span className={`status-pill ${deriveContractDisplayStatus(currentCompany).tone}`}>
+                契約：{deriveContractDisplayStatus(currentCompany).label}
               </span>
             </div>
 
@@ -10464,12 +10506,11 @@ function App() {
                   )}
                   {currentCompany.currentPriceAmount !== null && <span>次回更新料金 {formatYenOrEmpty(currentCompany.currentPriceAmount)}</span>}
                   {currentCompany.nextBillingAt && !currentCompany.cancelAtPeriodEnd && <span>次回更新日 {formatDateLabel(currentCompany.nextBillingAt)}</span>}
-                  {currentCompany.cancelAtPeriodEnd && (
-                    <span className="status-pill error">
-                      {currentCompany.nextBillingAt ? `${formatDateLabel(currentCompany.nextBillingAt)}に契約終了予定` : "解約予約中(次回更新日で終了)"}
-                    </span>
+                  {/* 状態の言葉(解約予約中・支払いエラー)は上のメインピルが既に示すため、
+                      ここでは重複させず実際の終了予定日だけを追加情報として示す。 */}
+                  {currentCompany.cancelAtPeriodEnd && currentCompany.nextBillingAt && (
+                    <span>契約終了予定 {formatDateLabel(currentCompany.nextBillingAt)}</span>
                   )}
-                  {currentCompany.paymentStatus === "past_due" && <span className="status-pill warning">支払い確認中</span>}
                 </div>
                 {/* 解約予約中(要件5): cancel_at_period_end=trueだけでは即時停止せず、期間終了日
                     (=customer.subscription.deletedを受信するまで)は通常どおり利用できることを
@@ -10504,6 +10545,16 @@ function App() {
                     プラン変更
                   </button>
                 </div>
+                {/* 店舗追加・状態変更時のStripe請求同期が何らかの理由で失敗した場合の
+                    自己修復導線(要件: 課金の同期漏れを放置しない)。常にDBの実店舗数から
+                    再計算するため、いつ押しても現在の正しい数量へ収束する。 */}
+                <p className="helper-text" style={{ marginTop: 10 }}>
+                  店舗追加・削除の直後に表示された金額と、実際のご請求内容が異なる場合は、下のボタンから請求情報を再同期できます。
+                </p>
+                {billingResyncMessage ? <div className="notice-box">{billingResyncMessage}</div> : null}
+                <button className="secondary-button" type="button" disabled={billingResyncBusy} onClick={handleResyncStoreBilling}>
+                  {billingResyncBusy ? "同期中…" : "請求情報を再同期する"}
+                </button>
               </>
             ) : currentCompany.subscriptionStatus === "trialing" ? (
               <>
@@ -10522,9 +10573,15 @@ function App() {
                   無料期間終了後は、{currentCompany.billingInterval === "year" ? `年額¥${previewYearlyTotal.toLocaleString()}` : `月額¥${previewMonthlyTotal.toLocaleString()}`}が自動的に請求されます(店舗数の増減に応じて金額は変わります)。カードの変更は、Stripeの安全な管理画面から行えます。
                 </p>
                 {portalError ? <div className="notice-box error">{portalError}</div> : null}
-                <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
-                  {portalBusy ? "処理中…" : "お支払い方法の変更はこちら"}
-                </button>
+                <div className="button-row">
+                  <button className="secondary-button" type="button" disabled={portalBusy} onClick={handleOpenPortal}>
+                    {portalBusy ? "処理中…" : "お支払い方法の変更はこちら"}
+                  </button>
+                  <button className="secondary-button" type="button" disabled={billingResyncBusy} onClick={handleResyncStoreBilling}>
+                    {billingResyncBusy ? "同期中…" : "請求情報を再同期する"}
+                  </button>
+                </div>
+                {billingResyncMessage ? <div className="notice-box">{billingResyncMessage}</div> : null}
               </>
             ) : currentCompany.contractStatus === "suspended" ? (
               <>

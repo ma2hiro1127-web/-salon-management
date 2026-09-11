@@ -51,14 +51,14 @@
      ============================================================================ -->
 
 <title>サロンマネージャー｜美容室の利益・目標達成率・月末着地がひと目で分かる経営管理ツール</title>
-<meta name="description" content="美容室の売上・人件費・材料費・固定費をまとめて管理し、営業利益・目標達成率・残り必要売上・月末着地・毎月の数字の変化までひと目で確認できる経営管理ツール。入力するだけで、月次レビューをAIが自動で整理します。" />
+<meta name="description" content="美容室の売上・人件費・材料費・固定費をまとめて管理し、営業利益・目標達成率・残り必要売上・月末着地・毎月の数字の変化までひと目で確認できる経営管理ツール。入力するだけで、月次レビューを自動で整理します。" />
 
 <!-- OGP: 画像は後から差し替え可能にするため、まずは既存アプリのアイコンを暫定で指定
      しています。専用のOGP画像(1200x630px推奨)ができ次第、content値だけを差し替えてください。 -->
 <meta property="og:type" content="website" />
 <meta property="og:site_name" content="サロンマネージャー" />
 <meta property="og:title" content="サロンマネージャー｜美容室の利益・目標達成率・月末着地がひと目で分かる経営管理ツール" />
-<meta property="og:description" content="売上だけでなく、人件費・材料費・固定費まで含めた営業利益、目標達成率、月末着地、毎月の数字の変化までひと目で確認。月次レビューはAIが自動で整理します。" />
+<meta property="og:description" content="売上だけでなく、人件費・材料費・固定費まで含めた営業利益、目標達成率、月末着地、毎月の数字の変化までひと目で確認。月次レビューは自動で整理します。" />
 <meta property="og:image" content="https://salon-manager.net/icon-512.png" /><!-- TODO: 専用OGP画像に差し替え -->
 <meta property="og:url" content="https://salon-manager.net/lp" />
 <meta name="twitter:card" content="summary_large_image" />
@@ -295,7 +295,7 @@
     .gm-kpi-main { font-size: 24px; }
   }
 
-  /* ---------- 月次レビュー/AI分析カード(LP用に独自実装したUI・実画面のスクショではない)
+  /* ---------- 月次レビュー/自動分析カード(LP用に独自実装したUI・実画面のスクショではない)
      実際のMonthlyReviewPage.jsx(総評/変化が大きかった項目の2ブロック構成)に合わせた
      項目構成。総評の文章は、実装しているbuildSummaryText()の生成パターン(売上と営業利益
      が逆方向に動いた場合「〜が、」で1文につなげる/主要因を「〜により、」で示す)をそのまま
@@ -495,7 +495,7 @@
     <nav class="primary-nav">
       <a class="nav-link" href="#pnl">損益表</a>
       <a class="nav-link" href="#goal">目標管理</a>
-      <a class="nav-link" href="#review">AI分析</a>
+      <a class="nav-link" href="#review">自動分析</a>
       <a class="nav-link" href="#pricing">料金</a>
       <a class="nav-link" href="#faq">FAQ</a>
     </nav>
@@ -511,7 +511,7 @@
   <div id="mobile-menu">
     <a href="#pnl">損益表</a>
     <a href="#goal">目標管理</a>
-    <a href="#review">AI分析</a>
+    <a href="#review">自動分析</a>
     <a href="#pricing">料金</a>
     <a href="#faq">FAQ</a>
     <a href="#" id="mobile-login" data-track="login_click">ログイン</a>
@@ -541,7 +541,7 @@
         <span>POSや予約システムはそのままでOK</span>
         <span>スマホ・PC対応</span>
         <span>1店舗から利用可能</span>
-        <span>毎月の数字をAIが自動整理</span>
+        <span>毎月の数字を自動で整理</span>
       </div>
     </div>
   </section>
@@ -723,7 +723,7 @@
   </section>
 
   <!-- ============================================================
-       5. 月次レビュー / AI分析セクション
+       5. 月次レビュー / 自動分析セクション
        実際のMonthlyReviewPage.jsx(総評 + 変化が大きかった項目)の構成に合わせた
        review-cardを表示する。「AIコンサルが相談に乗る」という見せ方は避け、
        「入力済みの実データを毎月自動で整理する」ことが価値であることを明示する。
@@ -731,9 +731,9 @@
   <section id="review">
     <div class="wrap emphasis-grid">
       <div>
-        <p class="eyebrow">AI MONTHLY REVIEW</p>
+        <p class="eyebrow">MONTHLY REVIEW</p>
         <h2 class="section-title">毎月の数字を、<br class="hero-h1-break" />自分で読み解かなくていい。</h2>
-        <p class="section-lead" style="margin-bottom:16px;">入力された数字をもとに、前月との変化をAIが自動で整理。</p>
+        <p class="section-lead" style="margin-bottom:16px;">入力された数字をもとに、前月との変化を自動で整理。</p>
         <p style="color:var(--muted);font-size:15px;">営業利益、人件費率、材料費率、客数、客単価など、見るべき変化がすぐ分かります。毎月の数字を自分で見比べる手間はかかりません。</p>
         <p class="pull-quote" style="font-size:19px;margin-top:18px;">数字を見るだけでなく、<br />変化まで分かる。</p>
         <div class="kpi-strip">
@@ -780,7 +780,7 @@
             </div>
           </div>
         </div>
-        <p class="shot-caption">※画面はイメージです。数値はデモデータです。入力済みの実データをもとに自動生成される文章のイメージで、AIが経営相談に回答するものではありません。</p>
+        <p class="shot-caption">※画面はイメージです。数値はデモデータです。入力済みの実データをもとに自動生成される文章のイメージで、経営相談に個別に回答するものではありません。</p>
       </div>
     </div>
   </section>
@@ -803,7 +803,7 @@
         <span class="value-step">目標との差を見る</span><span class="value-arrow">→</span>
         <span class="value-step">残り必要売上を見る</span><span class="value-arrow">→</span>
         <span class="value-step">月末着地を予測する</span><span class="value-arrow">→</span>
-        <span class="value-step value-step-final">月次AI分析で振り返る</span>
+        <span class="value-step value-step-final">月次自動分析で振り返る</span>
       </div>
 
       <p class="pull-quote center">「今月あといくら売れば、<br />ちゃんと利益が残るか。」</p>
@@ -819,7 +819,7 @@
       <div class="section-head center">
         <p class="eyebrow">FEATURES</p>
         <h2 class="section-title">サロン経営に必要な機能を、ひとつの画面で。</h2>
-        <p class="section-lead">損益表・目標管理・AI分析を中心に、経営に必要な数字をまとめて管理できます。</p>
+        <p class="section-lead">損益表・目標管理・自動分析を中心に、経営に必要な数字をまとめて管理できます。</p>
       </div>
       <div class="grid grid-3">
         <div class="feature-card">
@@ -840,8 +840,8 @@
         </div>
         <div class="feature-card">
           <div class="icon">🧠</div>
-          <h3>③ 月次レビュー・AI分析</h3>
-          <p>入力された数字をもとに、前月との変化をAIが自動で整理。</p>
+          <h3>③ 月次レビュー・自動分析</h3>
+          <p>入力された数字をもとに、前月との変化を自動で整理。</p>
           <ul>
             <li>総評</li><li>前月比較</li><li>変化が大きかった項目</li><li>営業利益率の変化</li>
           </ul>
@@ -1045,6 +1045,7 @@
         <p class="eyebrow">PRICING</p>
         <h2 class="section-title">シンプルな料金で、<br />サロン経営の数字を見える化。</h2>
         <p class="section-lead">月額でも気軽に始められます。年額ならさらにお得です。1店舗の個人サロンから、複数店舗のサロングループまで利用できます。</p>
+        <p class="section-lead" style="margin-top:6px;"><strong>どちらのプランも、まずは1か月無料でお試しいただけます。</strong></p>
       </div>
 
       <div class="pricing-grid">
@@ -1055,33 +1056,36 @@
           <div class="price-amount" id="price-amount-annual">¥12,800<small>（税込）</small></div>
           <div class="price-permonth-badge" id="price-permonth-badge">月額換算 約¥1,067</div>
           <p class="price-save" id="price-save">年間¥4,960お得</p>
+          <p class="price-note" style="margin-top:10px;">2店舗目以降は1店舗につき年額¥4,800（税込）</p>
           <ul>
+            <li>1か月無料でお試し可能</li>
             <li>1店舗から利用可能</li>
             <li>スマホ / PC対応</li>
             <li>月次損益表</li>
             <li>目標管理</li>
             <li>月末着地予測</li>
-            <li>月次AI分析</li>
+            <li>月次自動分析</li>
             <li>スタッフ権限管理</li>
           </ul>
-          <a class="btn btn-primary btn-block" href="#" id="pricing-cta-annual" data-track="cta_click" data-cta-location="pricing_annual">年額で始める</a>
+          <a class="btn btn-primary btn-block" href="#" id="pricing-cta-annual" data-track="cta_click" data-cta-location="pricing_annual">1か月無料で年額プランを始める</a>
         </div>
 
         <!-- 月額プラン -->
         <div class="card pricing-card">
           <p class="price-annual-label">月額</p>
           <div class="price-amount" id="price-amount-monthly">¥1,480<small>（税込）/ 月</small></div>
-          <p class="price-note" style="margin-top:10px;">いつでも解約できます</p>
+          <p class="price-note" style="margin-top:10px;">2店舗目以降は1店舗につき月額¥480（税込）／いつでも解約できます</p>
           <ul>
+            <li>1か月無料でお試し可能</li>
             <li>1店舗から利用可能</li>
             <li>スマホ / PC対応</li>
             <li>年額プランと同じ機能をすべて利用可能</li>
           </ul>
-          <a class="btn btn-secondary btn-block" href="#" id="pricing-cta-monthly" data-track="cta_click" data-cta-location="pricing_monthly">月額で始める</a>
+          <a class="btn btn-secondary btn-block" href="#" id="pricing-cta-monthly" data-track="cta_click" data-cta-location="pricing_monthly">1か月無料で月額プランを始める</a>
         </div>
       </div>
 
-      <p class="pricing-footnote" id="pricing-footnote">※年額¥12,800は月額換算で約¥1,067。月額¥1,480を12ヶ月利用した場合(¥17,760)と比べて年間¥4,960お得です。</p>
+      <p class="pricing-footnote" id="pricing-footnote">※年額¥12,800は月額換算で約¥1,067。月額¥1,480を12ヶ月利用した場合(¥17,760)と比べて年間¥4,960お得です。追加店舗の料金は基本プランと同じお支払い周期(月額/年額)が適用されます。無料期間中はお支払いは発生せず、期間終了後に自動で選択したプランの請求が始まります。</p>
     </div>
   </section>
 
@@ -1144,12 +1148,12 @@
           <div class="faq-a"><p>現在のペースをもとに、このまま推移した場合の月末時点の売上着地を予測して表示する機能です。月の途中でも、目標に届きそうかどうかを早めに把握できます。</p></div>
         </div>
         <div class="faq-item">
-          <button class="faq-q" type="button">AI分析では何が分かりますか？<span class="plus">＋</span></button>
+          <button class="faq-q" type="button">自動分析では何が分かりますか？<span class="plus">＋</span></button>
           <div class="faq-a"><p>入力された数字をもとに、前月との比較や、営業利益率・人件費率・材料費率・客数・客単価などの変化を自動で整理します。毎月の数字を自分で読み解かなくても、どこが変化したか把握しやすくなります。</p></div>
         </div>
         <div class="faq-item">
           <button class="faq-q" type="button">料金はいくらですか？<span class="plus">＋</span></button>
-          <div class="faq-a"><p id="faq-price-answer">月額¥1,480(税込)と年額¥12,800(税込)の2プランからお選びいただけます。年額なら月額換算で約¥1,067となり、月額プランを12ヶ月利用する場合と比べて年間¥4,960お得です。1店舗から利用でき、追加の専用機器は不要です。</p></div>
+          <div class="faq-a"><p id="faq-price-answer">月額¥1,480(税込)と年額¥12,800(税込)の2プランからお選びいただけ、どちらも1か月無料でお試しいただけます(無料期間中のお支払いは発生しません)。2店舗目以降は1店舗につき月額¥480(税込)/年額¥4,800(税込)が加算されます。1店舗から利用でき、追加の専用機器は不要です。</p></div>
         </div>
       </div>
     </div>
@@ -1180,12 +1184,12 @@
           <a class="btn btn-primary" href="#" id="final-cta" data-track="cta_click" data-cta-location="final">無料で試す</a>
           <a class="btn btn-secondary" href="#pnl" data-track="secondary_cta_click">画面を見る</a>
         </div>
-        <p class="final-price-note" id="final-price-note">※年額12,800円を12ヶ月で換算</p>
+        <p class="final-price-note" id="final-price-note">※年額12,800円を12ヶ月で換算。どちらのプランも1か月無料でお試しいただけます。</p>
         <div class="hero-points">
           <span>POSや予約システムはそのままでOK</span>
           <span>スマホ・PC対応</span>
           <span>1店舗から利用可能</span>
-          <span>毎月の数字をAIが自動整理</span>
+          <span>毎月の数字を自動で整理</span>
         </div>
       </div>
     </div>
@@ -1241,13 +1245,13 @@
       permonthText: "月額換算 約¥1,067",
       saveText: "年間¥4,960お得",
       monthlyAmountHtml: "¥1,480<small>（税込）/ 月</small>",
-      note: "※年額¥12,800は月額換算で約¥1,067。月額¥1,480を12ヶ月利用した場合(¥17,760)と比べて年間¥4,960お得です。",
+      note: "※年額¥12,800は月額換算で約¥1,067。月額¥1,480を12ヶ月利用した場合(¥17,760)と比べて年間¥4,960お得です。追加店舗の料金は基本プランと同じお支払い周期(月額/年額)が適用されます。無料期間中のお支払いは発生しません。",
       finalAnnualAmountHtml: "¥12,800<small>（税込）</small>",
       finalMonthlyAmountHtml: "¥1,480<small>（税込）</small>",
       finalPermonth: "年額なら月額換算 約¥1,067",
       finalSave: "年額なら年間¥4,960お得",
-      finalNote: "※年額12,800円を12ヶ月で換算",
-      faqAnswer: "月額¥1,480(税込)と年額¥12,800(税込)の2プランからお選びいただけます。年額なら月額換算で約¥1,067となり、月額プランを12ヶ月利用する場合と比べて年間¥4,960お得です。1店舗から利用でき、追加の専用機器は不要です。"
+      finalNote: "※年額12,800円を12ヶ月で換算。どちらのプランも1か月無料でお試しいただけます。",
+      faqAnswer: "月額¥1,480(税込)と年額¥12,800(税込)の2プランからお選びいただけ、どちらも1か月無料でお試しいただけます(無料期間中のお支払いは発生しません)。2店舗目以降は1店舗につき月額¥480(税込)/年額¥4,800(税込)が加算されます。1店舗から利用でき、追加の専用機器は不要です。"
     },
 
     // フッターのリンク先(未設定URLはひとまず "#" のまま。用意でき次第書き換えてください)。

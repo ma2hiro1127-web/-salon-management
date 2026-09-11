@@ -8,6 +8,7 @@ import {
   formatRemainingLabel,
   formatDateLabel,
   formatYenOrEmpty,
+  deriveContractDisplayStatus,
 } from "./contractBilling.js";
 
 // previewBillingStartDateFromChange: 「変更した月の翌月1日」(JST基準)。
@@ -148,4 +149,54 @@ test("formatYenOrEmpty: 金額を¥区切り表記にする", () => {
 test("formatYenOrEmpty: null/undefinedは空文字(未設定を¥0と誤表示しない)", () => {
   assert.equal(formatYenOrEmpty(null), "");
   assert.equal(formatYenOrEmpty(undefined), "");
+});
+
+// deriveContractDisplayStatus: 契約状態の一元判定(2026-09、本番公開前の総点検・要件8)。
+// contract_status/subscription_status/payment_status/cancel_at_period_endの組み合わせから
+// 単一の表示状態を導出する対応表そのものをテストする。
+test("deriveContractDisplayStatus: 無料利用・トライアル・契約中はcontract_statusのまま", () => {
+  assert.equal(deriveContractDisplayStatus({ contractStatus: "free" }).key, "free");
+  assert.equal(deriveContractDisplayStatus({ contractStatus: "trial" }).key, "trial");
+  assert.equal(deriveContractDisplayStatus({ contractStatus: "active" }).key, "active");
+});
+
+test("deriveContractDisplayStatus: 未設定・null companyはfree扱い", () => {
+  assert.equal(deriveContractDisplayStatus(null).key, "free");
+  assert.equal(deriveContractDisplayStatus(undefined).key, "free");
+});
+
+test("deriveContractDisplayStatus: 契約中で支払いエラー(past_due)ならpastDue", () => {
+  const result = deriveContractDisplayStatus({ contractStatus: "active", paymentStatus: "past_due" });
+  assert.equal(result.key, "pastDue");
+  assert.equal(result.label, "支払いエラー");
+});
+
+test("deriveContractDisplayStatus: 契約中で解約予約中(cancel_at_period_end)ならcancelPending", () => {
+  const result = deriveContractDisplayStatus({ contractStatus: "active", cancelAtPeriodEnd: true });
+  assert.equal(result.key, "cancelPending");
+});
+
+test("deriveContractDisplayStatus: 解約予約中と支払いエラーが同時に立っていても解約予約中を優先する", () => {
+  // 解約予約(いつ終わるか確定している)の方が、一時的な支払いエラーより重要な情報のため。
+  const result = deriveContractDisplayStatus({ contractStatus: "active", cancelAtPeriodEnd: true, paymentStatus: "past_due" });
+  assert.equal(result.key, "cancelPending");
+});
+
+test("deriveContractDisplayStatus: suspendedかつsubscription_status=canceledはended(契約終了)", () => {
+  const result = deriveContractDisplayStatus({ contractStatus: "suspended", subscriptionStatus: "canceled" });
+  assert.equal(result.key, "ended");
+  assert.equal(result.label, "契約終了");
+});
+
+test("deriveContractDisplayStatus: suspendedでsubscription_statusがunpaid/未設定はstopped(停止中)", () => {
+  assert.equal(deriveContractDisplayStatus({ contractStatus: "suspended", subscriptionStatus: "unpaid" }).key, "stopped");
+  assert.equal(deriveContractDisplayStatus({ contractStatus: "suspended", subscriptionStatus: "" }).key, "stopped");
+  assert.equal(deriveContractDisplayStatus({ contractStatus: "suspended" }).key, "stopped");
+});
+
+test("deriveContractDisplayStatus: suspendedは他のどの条件よりも優先される(最も深刻な状態)", () => {
+  // 停止中の会社に(理論上あり得ない組み合わせだが)cancelAtPeriodEndやpaymentStatusが
+  // 残っていても、suspendedの判定が最優先されることを確認する。
+  const result = deriveContractDisplayStatus({ contractStatus: "suspended", cancelAtPeriodEnd: true, paymentStatus: "past_due" });
+  assert.equal(result.key, "stopped");
 });

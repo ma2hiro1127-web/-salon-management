@@ -17,6 +17,68 @@ export const CONTRACT_STATUS_LABELS = {
   suspended: "停止中",
 };
 
+// 契約状態の表示を1箇所に統一する(2026-09、本番公開前の総点検・要件8)。以前は
+// 「契約中/停止中」等の基本ラベル(CONTRACT_STATUS_LABELS、companies.contract_status
+// 由来)と、「支払い確認中」「解約予約中」等の個別ピル(companies.payment_status/
+// cancel_at_period_end由来)を画面ごとに別々に組み合わせて表示しており、Webhookが
+// 更新するフィールドが増えるたびに表示側のあちこちを直す必要があった。ここでは
+// contract_status/subscription_status/payment_status/cancel_at_period_endという
+// 生データ(いずれもWebhookがStripeの実値をそのまま保存するだけ)から、単一の表示状態を
+// 一元的に導出する——Webhook側は生データを保存するだけで、表示ロジックの分岐は
+// このファイルのこの関数1箇所だけで完結させる。
+// toneは既存の.status-pill CSSクラス(saved=緑/saving=青/warning=橙/error=赤、
+// App.css参照)にそのまま渡せる値にしている——新しい色クラスは追加しない。
+export const CONTRACT_DISPLAY_STATUS = {
+  free: { label: "無料利用", tone: "saving" },
+  trial: { label: "トライアル", tone: "warning" },
+  active: { label: "契約中", tone: "saved" },
+  pastDue: { label: "支払いエラー", tone: "warning" },
+  cancelPending: { label: "解約予約中", tone: "warning" },
+  stopped: { label: "停止中", tone: "error" },
+  ended: { label: "契約終了", tone: "error" },
+};
+
+// 対応表(優先順位順、上から先に一致したものを採用する):
+//   1. contract_status='suspended' かつ subscription_status='canceled'
+//        → 'ended'(契約終了・解約による終了。customer.subscription.deletedの受信、
+//          またはsubscription.updatedでstatus=canceledになった場合)
+//   2. contract_status='suspended'(それ以外。unpaid・system_adminによる手動停止等)
+//        → 'stopped'(停止中・主に支払い不能による利用停止)
+//   3. contract_status='active' かつ cancel_at_period_end=true
+//        → 'cancelPending'(解約予約中・期間終了日までは通常どおり利用できる)
+//   4. contract_status='active' かつ payment_status='past_due'
+//        → 'pastDue'(支払いエラー・Stripeが再試行中、まだ利用制限はしない)
+//   5. contract_status='trial' → 'trial'(トライアル)
+//   6. contract_status='active' → 'active'(契約中)
+//   7. それ以外(free等) → 'free'(無料利用)
+//
+// 「支払い確認中」を独立した状態としては設けていない: Stripeのsubscription.status自体に
+// 「再試行中」と「失敗確定(まだ有効)」を区別する値が存在せず(past_dueの1状態のみ)、
+// 以前はinvoice.payment_failed/customer.subscription.updated(past_due)がそれぞれ別の値
+// ('error'/'processing')を書き込んでいたため、Webhookの到着順によって表示が意味なく
+// 切り替わる不具合があった(20260917000000_payment_failure_hardening.sqlで修正済み)。
+// observableな区別が無い2つの状態を無理に分けず、1つ('pastDue')に統一している。
+export const deriveContractDisplayStatus = (company) => {
+  if (!company) return { key: "free", ...CONTRACT_DISPLAY_STATUS.free };
+  if (company.contractStatus === "suspended") {
+    const key = company.subscriptionStatus === "canceled" ? "ended" : "stopped";
+    return { key, ...CONTRACT_DISPLAY_STATUS[key] };
+  }
+  if (company.contractStatus === "active" && company.cancelAtPeriodEnd) {
+    return { key: "cancelPending", ...CONTRACT_DISPLAY_STATUS.cancelPending };
+  }
+  if (company.contractStatus === "active" && company.paymentStatus === "past_due") {
+    return { key: "pastDue", ...CONTRACT_DISPLAY_STATUS.pastDue };
+  }
+  if (company.contractStatus === "trial") {
+    return { key: "trial", ...CONTRACT_DISPLAY_STATUS.trial };
+  }
+  if (company.contractStatus === "active") {
+    return { key: "active", ...CONTRACT_DISPLAY_STATUS.active };
+  }
+  return { key: "free", ...CONTRACT_DISPLAY_STATUS.free };
+};
+
 export const FREE_REASON_LABELS = {
   self: "自社利用",
   monitor: "モニター企業",
