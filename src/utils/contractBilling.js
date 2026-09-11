@@ -38,19 +38,35 @@ export const CONTRACT_DISPLAY_STATUS = {
   ended: { label: "契約終了", tone: "error" },
 };
 
-// 対応表(優先順位順、上から先に一致したものを採用する):
+// 対応表(優先順位順、上から先に一致したものを採用する。2026-09-11、根本原因の修正で
+// 優先順位を変更——詳細は下のコメント参照):
 //   1. contract_status='suspended' かつ subscription_status='canceled'
 //        → 'ended'(契約終了・解約による終了。customer.subscription.deletedの受信、
 //          またはsubscription.updatedでstatus=canceledになった場合)
 //   2. contract_status='suspended'(それ以外。unpaid・system_adminによる手動停止等)
 //        → 'stopped'(停止中・主に支払い不能による利用停止)
-//   3. contract_status='active' かつ cancel_at_period_end=true
+//   3. subscription_status='trialing'、またはtrial_ends_atが現在より未来
+//        → 'trial'(トライアル。contract_statusの値に関わらず優先する——理由は下記)
+//   4. contract_status='active' かつ cancel_at_period_end=true
 //        → 'cancelPending'(解約予約中・期間終了日までは通常どおり利用できる)
-//   4. contract_status='active' かつ payment_status='past_due'
+//   5. contract_status='active' かつ payment_status='past_due'
 //        → 'pastDue'(支払いエラー・Stripeが再試行中、まだ利用制限はしない)
-//   5. contract_status='trial' → 'trial'(トライアル)
 //   6. contract_status='active' → 'active'(契約中)
-//   7. それ以外(free等) → 'free'(無料利用)
+//   7. contract_status='trial'(実サブスクリプションがまだ無い、自己サインアップ直後の
+//      カード登録不要トライアル) → 'trial'
+//   8. それ以外(free等) → 'free'(無料利用)
+//
+// 根本原因(2026-09-11、本番のテストサロンで実際のStripe契約完了後に発覚): Webhook
+// (stripe-webhook)がcontract_statusを'trial'へ同期する条件は「直前がfree/suspendedの
+// 場合だけ」(要件24の悪用防止と両立させるための設計)。会社によっては(例: 検証用に
+// system_adminが手動でcontract_status='active'にしていた等)この条件に当てはまらない
+// 状態からトライアルが始まることがあり、その場合contract_statusは'active'のまま
+// 取り残される——DB上の値そのものがズレる可能性を完全には消せない。そのため表示側
+// (この関数)でも、Stripeの実状態(subscription_status='trialing')または
+// trial_ends_atが未来であることを、contract_statusより優先する形で直接確認する
+// ——「Stripeを正として同期する」という方針を、書き込み側だけでなく表示側の
+// 判定にも同じ形で適用する(値が万一ズレていても、表示だけは必ず正しくなるように
+// する二重の防御)。
 //
 // 「支払い確認中」を独立した状態としては設けていない: Stripeのsubscription.status自体に
 // 「再試行中」と「失敗確定(まだ有効)」を区別する値が存在せず(past_dueの1状態のみ)、
@@ -58,26 +74,47 @@ export const CONTRACT_DISPLAY_STATUS = {
 // ('error'/'processing')を書き込んでいたため、Webhookの到着順によって表示が意味なく
 // 切り替わる不具合があった(20260917000000_payment_failure_hardening.sqlで修正済み)。
 // observableな区別が無い2つの状態を無理に分けず、1つ('pastDue')に統一している。
-export const deriveContractDisplayStatus = (company) => {
+export const deriveContractDisplayStatus = (company, now = new Date()) => {
   if (!company) return { key: "free", ...CONTRACT_DISPLAY_STATUS.free };
+
+  // 1. 停止中・契約終了(最優先——トライアル中の兆候が残っていても、実際に失効した
+  //    契約より優先されることは無い)。
   if (company.contractStatus === "suspended") {
     const key = company.subscriptionStatus === "canceled" ? "ended" : "stopped";
     return { key, ...CONTRACT_DISPLAY_STATUS[key] };
   }
+
+  // 2. トライアル(Stripeの実状態を直接確認する、根本原因の修正——上のコメント参照)。
+  const trialEndsAtTime = company.trialEndsAt ? new Date(company.trialEndsAt).getTime() : NaN;
+  const trialEndsAtIsFuture = Number.isFinite(trialEndsAtTime) && trialEndsAtTime > now.getTime();
+  if (company.subscriptionStatus === "trialing" || trialEndsAtIsFuture) {
+    return { key: "trial", ...CONTRACT_DISPLAY_STATUS.trial };
+  }
+
+  // 3. 契約中の派生状態(解約予約中・支払いエラー)。
   if (company.contractStatus === "active" && company.cancelAtPeriodEnd) {
     return { key: "cancelPending", ...CONTRACT_DISPLAY_STATUS.cancelPending };
   }
   if (company.contractStatus === "active" && company.paymentStatus === "past_due") {
     return { key: "pastDue", ...CONTRACT_DISPLAY_STATUS.pastDue };
   }
-  if (company.contractStatus === "trial") {
-    return { key: "trial", ...CONTRACT_DISPLAY_STATUS.trial };
-  }
   if (company.contractStatus === "active") {
     return { key: "active", ...CONTRACT_DISPLAY_STATUS.active };
   }
+
+  // 4. contract_status='trial'だが実サブスクリプションがまだ無い(自己サインアップ直後の
+  //    カード登録不要トライアル)場合のフォールバック。
+  if (company.contractStatus === "trial") {
+    return { key: "trial", ...CONTRACT_DISPLAY_STATUS.trial };
+  }
+
   return { key: "free", ...CONTRACT_DISPLAY_STATUS.free };
 };
+
+// 契約中(active)とその派生状態(解約予約中・支払いエラー)をまとめて「実際に請求対象と
+// なっている契約」として扱いたい画面向けのヘルパー(2026-09-11)。個々のkeyをその都度
+// 列挙する重複を避ける。
+export const isActiveLikeContractStatusKey = (key) => key === "active" || key === "cancelPending" || key === "pastDue";
 
 export const FREE_REASON_LABELS = {
   self: "自社利用",

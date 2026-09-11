@@ -9,6 +9,7 @@ import {
   formatDateLabel,
   formatYenOrEmpty,
   deriveContractDisplayStatus,
+  isActiveLikeContractStatusKey,
 } from "./contractBilling.js";
 
 // previewBillingStartDateFromChange: 「変更した月の翌月1日」(JST基準)。
@@ -199,4 +200,52 @@ test("deriveContractDisplayStatus: suspendedは他のどの条件よりも優先
   // 残っていても、suspendedの判定が最優先されることを確認する。
   const result = deriveContractDisplayStatus({ contractStatus: "suspended", cancelAtPeriodEnd: true, paymentStatus: "past_due" });
   assert.equal(result.key, "stopped");
+});
+
+// 2026-09-11、本番のテストサロンで実際に発覚した不具合の再現テスト。Webhookは
+// contract_statusを'trial'へ同期する条件を「直前がfree/suspendedの場合だけ」に
+// 限定しているため(要件24の悪用防止)、それ以外の値(例: system_adminが検証用に
+// 手動でactiveにしていた会社)からトライアルが始まると、contract_statusは'active'の
+// まま取り残される。この場合でも表示はcontract_statusではなくStripeの実状態
+// (subscription_status='trialing')を優先し、正しく'trial'を返さなければならない。
+test("deriveContractDisplayStatus: contract_status='active'のままでもsubscription_status='trialing'ならtrial(根本原因の再現テスト)", () => {
+  const result = deriveContractDisplayStatus({ contractStatus: "active", subscriptionStatus: "trialing", trialEndsAt: "2026-10-11" });
+  assert.equal(result.key, "trial");
+  assert.equal(result.label, "トライアル");
+});
+
+test("deriveContractDisplayStatus: subscription_statusが未同期でも、trial_ends_atが未来ならtrial", () => {
+  const now = new Date("2026-09-11T00:00:00.000Z");
+  const result = deriveContractDisplayStatus({ contractStatus: "active", subscriptionStatus: null, trialEndsAt: "2026-10-11" }, now);
+  assert.equal(result.key, "trial");
+});
+
+test("deriveContractDisplayStatus: trial_ends_atが過去なら(subscription_statusがtrialingでない限り)trialにはならない", () => {
+  const now = new Date("2026-09-11T00:00:00.000Z");
+  const result = deriveContractDisplayStatus({ contractStatus: "active", subscriptionStatus: "active", trialEndsAt: "2026-08-01" }, now);
+  assert.equal(result.key, "active");
+});
+
+test("deriveContractDisplayStatus: 本当に無料期間が終わって契約中になった会社は、古いtrial_ends_atが残っていてもtrialに誤判定しない", () => {
+  // トライアル終了→初回決済成功のシナリオ。trial_ends_atは過去日のまま(webhookは
+  // activeへ遷移した後trial_ends_atを更新しない)なので、以降ずっとactiveと判定され続ける。
+  const now = new Date("2026-12-01T00:00:00.000Z");
+  const result = deriveContractDisplayStatus({ contractStatus: "active", subscriptionStatus: "active", trialEndsAt: "2026-10-11", cancelAtPeriodEnd: false, paymentStatus: null }, now);
+  assert.equal(result.key, "active");
+});
+
+test("deriveContractDisplayStatus: suspendedならtrial_ends_atが未来でも停止中を優先する", () => {
+  const result = deriveContractDisplayStatus({ contractStatus: "suspended", subscriptionStatus: "canceled", trialEndsAt: "2099-01-01" });
+  assert.equal(result.key, "ended");
+});
+
+// isActiveLikeContractStatusKey
+test("isActiveLikeContractStatusKey: active/cancelPending/pastDueはtrue、それ以外はfalse", () => {
+  assert.equal(isActiveLikeContractStatusKey("active"), true);
+  assert.equal(isActiveLikeContractStatusKey("cancelPending"), true);
+  assert.equal(isActiveLikeContractStatusKey("pastDue"), true);
+  assert.equal(isActiveLikeContractStatusKey("trial"), false);
+  assert.equal(isActiveLikeContractStatusKey("free"), false);
+  assert.equal(isActiveLikeContractStatusKey("stopped"), false);
+  assert.equal(isActiveLikeContractStatusKey("ended"), false);
 });

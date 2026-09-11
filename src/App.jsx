@@ -219,6 +219,8 @@ import { sortStoresForManagement } from "./utils/storeManagement.js";
 import {
   CONTRACT_STATUS_LABELS,
   deriveContractDisplayStatus,
+  CONTRACT_DISPLAY_STATUS,
+  isActiveLikeContractStatusKey,
   previewBillingStart,
   formatUsageDuration,
   formatRemainingLabel,
@@ -1194,6 +1196,12 @@ function App() {
   // 必ずStripe/Webhook側の値(currentPriceAmount)を正とする——ここでの計算値は
   // 契約前のシミュレーション表示、または内訳の内訳表示にのみ使う)。
   const billableStoreCount = useMemo(() => (currentCompany?.stores || []).filter((store) => store.status === "active").length, [currentCompany]);
+  // company_adminの「ご契約・お支払い」画面の分岐を、会社管理画面のカード・上部集計と
+  // 完全に同じ1つの判定結果(deriveContractDisplayStatus)だけで行う(2026-09-11修正、
+  // 根本原因——旧実装はcontract_status(DBの生値)を直接見ており、Webhookの同期条件が
+  // 当てはまらずcontract_statusが古いまま取り残された会社で、この画面と会社管理画面の
+  // 表示が食い違っていた。本番のテストサロンで実際に発覚)。
+  const billingStatusKey = useMemo(() => deriveContractDisplayStatus(currentCompany).key, [currentCompany]);
   const addonStoreCount = Math.max(billableStoreCount - 1, 0);
   const BILLING_UNIT_PRICE = { baseMonthly: 1480, baseYearly: 12800, addonMonthly: 480, addonYearly: 4800 };
   const previewMonthlyTotal = BILLING_UNIT_PRICE.baseMonthly + addonStoreCount * BILLING_UNIT_PRICE.addonMonthly;
@@ -10247,11 +10255,22 @@ function App() {
               // (要件4・6②)。将来の有料契約社数・MRR集計は「契約中」のみを対象にできるよう、
               // ここで会社数を契約状態ごとに数えておく(契約中のみが課金対象、という前提の
               // 集計構造)。
+              //
+              // 2026-09-11修正(根本原因): 以前はcompany.contract_status(DBの生値)を
+              // そのまま数えていたため、Webhookの同期条件が当てはまらず契約状態が
+              // 'active'のまま取り残されたトライアル中の会社が「契約中」に誤って
+              // カウントされていた(本番のテストサロンで実際に発覚)。会社カードの
+              // ピル・company_adminの契約画面と完全に同じ判定(deriveContractDisplayStatus)
+              // から集計することで、画面間で表示がずれることを構造的に防ぐ——同じ会社は
+              // 必ずどれか1つの状態にしか加算されない。
               const liveCompanies = (appState.companies || []).filter((company) => !company.deletedAt);
               const statusCounts = { free: 0, trial: 0, active: 0, suspended: 0 };
               liveCompanies.forEach((company) => {
-                const status = company.contractStatus || "trial";
-                if (status in statusCounts) statusCounts[status] += 1;
+                const key = deriveContractDisplayStatus(company).key;
+                if (key === "trial") statusCounts.trial += 1;
+                else if (isActiveLikeContractStatusKey(key)) statusCounts.active += 1;
+                else if (key === "stopped" || key === "ended") statusCounts.suspended += 1;
+                else statusCounts.free += 1;
               });
               return (
                 <>
@@ -10318,6 +10337,9 @@ function App() {
               <div className="card-grid">
                 {(appState.companies || []).filter((company) => !company.deletedAt).filter((company) => normalizeRole(currentRole) === "system_admin" || company.id === currentCompany?.id).map((company) => {
                   const companyUsers = (appState.users || []).filter((user) => user.companyId === company.id);
+                  // このカード内の契約状態表示(ピル・無料利用理由・詳細ブロックの出し分け)は
+                  // すべてこの1回の判定結果だけを使う(要件: 会社カードの中で表示がズレない)。
+                  const derivedStatusKey = deriveContractDisplayStatus(company).key;
                   return (
                     <div key={company.id} className="info-card">
                       <div className="info-card-head">
@@ -10328,8 +10350,8 @@ function App() {
                         {/* 会社カードのメイン状態表示は契約状態のみ(要件: 「有効」のような
                             利用状態と契約状態を重複表示しない)。停止中は一目で利用不可と
                             分かるよう赤系(error)にする。 */}
-                        <span className={`status-pill ${deriveContractDisplayStatus(company).tone}`}>
-                          契約：{deriveContractDisplayStatus(company).label}
+                        <span className={`status-pill ${CONTRACT_DISPLAY_STATUS[derivedStatusKey].tone}`}>
+                          契約：{CONTRACT_DISPLAY_STATUS[derivedStatusKey].label}
                         </span>
                       </div>
                       <div className="info-card-meta">
@@ -10338,7 +10360,7 @@ function App() {
                         <span>ユーザー数 {companyUsers.length}</span>
                         {/* 無料利用理由(要件2) — 無料利用中の会社にのみ表示。今後無料利用の
                             会社が増えても、なぜ無料なのかここで確認できる。 */}
-                        {company.contractStatus === "free" && (
+                        {derivedStatusKey === "free" && (
                           <span>理由 {company.freeReason ? FREE_REASON_LABELS[company.freeReason] || company.freeReason : "未設定"}</span>
                         )}
                       </div>
@@ -10350,7 +10372,12 @@ function App() {
                       <div className="info-card-meta">
                         <span>利用開始 {formatDateLabel(company.startedAt)}</span>
                         <span>利用期間 {formatUsageDuration(company.startedAt)}</span>
-                        {company.contractStatus === "free" && (
+                        {/* 2026-09-11修正: すべてderivedStatusKey(deriveContractDisplayStatus)を
+                            基準に出し分ける——company.contractStatus(DBの生値)をここで
+                            直接見ると、Webhookの同期条件が当てはまらずcontract_statusが
+                            古いまま取り残された会社で、上のメインピルとこの詳細欄の表示が
+                            食い違ってしまう(本番のテストサロンで実際に発覚した不具合)。 */}
+                        {derivedStatusKey === "free" && (
                           company.freeEndsAt ? (
                             <>
                               <span>無料期限 {formatDateLabel(company.freeEndsAt)}</span>
@@ -10358,14 +10385,14 @@ function App() {
                             </>
                           ) : <span>無料期限 期限なし</span>
                         )}
-                        {company.contractStatus === "trial" && company.trialEndsAt && (
+                        {derivedStatusKey === "trial" && company.trialEndsAt && (
                           <>
                             <span>トライアル終了 {formatDateLabel(company.trialEndsAt)}</span>
                             <span>残り {formatRemainingLabel(company.trialEndsAt)}</span>
                             <span>課金開始予定 {formatDateLabel(previewBillingStart("trial", company.trialEndsAt).date)}</span>
                           </>
                         )}
-                        {company.contractStatus === "active" && (
+                        {isActiveLikeContractStatusKey(derivedStatusKey) && (
                           <>
                             {/* 月払い/年払い区分(2026-09-02、Stripe決済導入)。billing_intervalが
                                 未設定(手動でactiveにした等、実際のStripe契約が無い)場合は表示しない。 */}
@@ -10381,7 +10408,7 @@ function App() {
                             {company.cancelAtPeriodEnd && company.nextBillingAt && <span>契約終了予定 {formatDateLabel(company.nextBillingAt)}</span>}
                           </>
                         )}
-                        {company.contractStatus === "suspended" && (
+                        {(derivedStatusKey === "stopped" || derivedStatusKey === "ended") && (
                           <>
                             {company.stoppedAt && <span>停止日 {formatDateLabel(company.stoppedAt)}</span>}
                             <span className="text-muted-cell">データ保持中</span>
@@ -10567,7 +10594,7 @@ function App() {
               </span>
             </div>
 
-            {currentCompany.contractStatus === "active" ? (
+            {isActiveLikeContractStatusKey(billingStatusKey) ? (
               <>
                 <div className="info-card-meta">
                   <span>{currentCompany.billingInterval === "year" ? "年払いプラン" : "月払いプラン"}</span>
@@ -10627,7 +10654,14 @@ function App() {
                   {billingResyncBusy ? "同期中…" : "請求情報を再同期する"}
                 </button>
               </>
-            ) : currentCompany.subscriptionStatus === "trialing" ? (
+            ) : billingStatusKey === "trial" && currentCompany.subscriptionStatus === "trialing" ? (
+              // billingStatusKeyが'trial'になるのはStripeが実際にtrialing中の場合だけでなく、
+              // カード登録不要の旧来の自己サインアップ直後(contract_status='trial'だが
+              // 実サブスクリプションが無い)も含まれる。ここは「カード登録・お支払い設定は
+              // 済んでいる」前提の文言を出す画面のため、subscriptionStatus==='trialing'
+              // (実際にStripeサブスクリプションが存在する)を追加条件にして絞り込む——
+              // 満たさない場合は下のelse(通常の「1か月無料で始める」導線)へ自然に
+              // フォールバックする。
               <>
                 <p className="helper-text">
                   現在1か月の無料お試し期間中です。この期間は0円で全機能をご利用いただけます。お支払い方法は登録済みのため、追加の操作は不要です。
@@ -10654,7 +10688,7 @@ function App() {
                 </div>
                 {billingResyncMessage ? <div className="notice-box">{billingResyncMessage}</div> : null}
               </>
-            ) : currentCompany.contractStatus === "suspended" ? (
+            ) : (billingStatusKey === "stopped" || billingStatusKey === "ended") ? (
               <>
                 {/* 再契約(要件19): 既存のcompany_idをそのまま使い、新しい会社・店舗は作らない
                     ——create-checkout-sessionは既存のstripe_customer_idを再利用し、
