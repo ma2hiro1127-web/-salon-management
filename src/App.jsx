@@ -1198,6 +1198,20 @@ function App() {
   const BILLING_UNIT_PRICE = { baseMonthly: 1480, baseYearly: 12800, addonMonthly: 480, addonYearly: 4800 };
   const previewMonthlyTotal = BILLING_UNIT_PRICE.baseMonthly + addonStoreCount * BILLING_UNIT_PRICE.addonMonthly;
   const previewYearlyTotal = BILLING_UNIT_PRICE.baseYearly + addonStoreCount * BILLING_UNIT_PRICE.addonYearly;
+  // 店舗追加・状態変更後のStripe請求同期が失敗し、現在の実店舗数(billableStoreCount)と
+  // 「最後にStripeへ実際に反映した店舗数」(billingSyncedStoreCount、保存済みの値)が
+  // 食い違ったままになっていないかの判定(2026-09-18)。トーストが消えた後も気づける
+  // よう、この判定結果はページを開くたびに再評価される永続的なバナーとして表示する
+  // (下のJSX参照)——一時的な通知だけで終わらせない。Stripeサブスクリプションが実在する
+  // 状態(active/trialing/past_due)の時だけ意味を持つ判定なので、それ以外(free/suspended
+  // 等)では常にfalseにする。
+  const SYNCABLE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing", "past_due"]);
+  const isBillingOutOfSync = Boolean(
+    currentCompany &&
+    SYNCABLE_SUBSCRIPTION_STATUSES.has(currentCompany.subscriptionStatus) &&
+    currentCompany.billingSyncedStoreCount !== null &&
+    currentCompany.billingSyncedStoreCount !== billableStoreCount
+  );
   // Resolve by selectedStoreId first — see the self-healing effect below for why a name-only
   // match can briefly be stale (e.g. right after another device renames the current store).
   // 全店舗ビューでは実店舗にフォールバックせず、意図的にnullのままにする(そうしないと
@@ -4200,9 +4214,14 @@ function App() {
       if (isSupabaseConfigured) {
         const syncResult = await syncStoreBillingQuantity({ companyId }).catch((error) => ({ ok: false, error }));
         if (!syncResult.ok) {
-          setNotice(`${nextStore.name} を追加しましたが、追加店舗料金の同期に失敗しました: ${getSupabaseErrorMessage(syncResult.error)}(「ご契約・お支払い」画面の「請求情報を再同期する」から再試行してください)`);
+          const message = getSupabaseErrorMessage(syncResult.error);
+          setNotice(`${nextStore.name} を追加しましたが、追加店舗料金の同期に失敗しました: ${message}(「ご契約・お支払い」画面の「請求情報を再同期する」から再試行してください)`);
+          // billingSyncedStoreCountは更新せず(サーバー側も失敗時は更新しない)、不一致を
+          // そのまま残す——永続バナーが同期成功まで消えないようにする(要件)。
+          applyBillingSyncStateLocally(companyId, { billingSyncedStoreCount: getLatestCompanyById(companyId)?.billingSyncedStoreCount ?? null, billingSyncError: message });
         } else {
           setNotice(`${nextStore.name} を新しい店舗として追加しました`);
+          applyBillingSyncStateLocally(companyId, { billingSyncedStoreCount: (syncResult.addonQuantity ?? 0) + 1, billingSyncError: "" });
         }
       } else {
         setNotice(`${nextStore.name} を新しい店舗として追加しました`);
@@ -5079,13 +5098,36 @@ function App() {
   // (2026-09)。syncStoreBillingQuantityは常にDBの実店舗数(status='active')から
   // 数量を再計算するため、何度呼んでも(=何度失敗していても)現在の正しい数量へ
   // 収束する——単純に押すだけの自己修復ボタンとして機能する。
+  // syncStoreBillingQuantity呼び出し後、companies.billing_synced_store_count/
+  // billing_sync_error(サーバー側で更新済み)をローカルのappStateにも反映する
+  // (2026-09-18)。これにより、次のフルhydrateを待たずにisBillingOutOfSyncの判定
+  // ・永続バナーの表示/非表示が即座に画面へ反映される。
+  const applyBillingSyncStateLocally = (companyId, { billingSyncedStoreCount, billingSyncError }) => {
+    const latestAppState = appStateRef.current;
+    const latestCompany = latestAppState.companies?.find((company) => company.id === companyId) || null;
+    if (!latestCompany) return;
+    const nextCompany = { ...latestCompany, billingSyncedStoreCount, billingSyncError: billingSyncError || "" };
+    const nextState = {
+      ...latestAppState,
+      companies: (latestAppState.companies || []).map((company) => (company.id === companyId ? nextCompany : company)),
+    };
+    persistTenantState(nextState);
+  };
+
   const handleResyncStoreBilling = async () => {
     if (billingResyncBusy || !currentCompany?.id) return;
     setBillingResyncBusy(true);
     setBillingResyncMessage("");
     try {
       const result = await syncStoreBillingQuantity({ companyId: currentCompany.id });
-      setBillingResyncMessage(result.ok ? "請求情報を最新の店舗数に同期しました。" : `同期に失敗しました: ${getSupabaseErrorMessage(result.error)}`);
+      if (result.ok) {
+        setBillingResyncMessage("請求情報を最新の店舗数に同期しました。");
+        applyBillingSyncStateLocally(currentCompany.id, { billingSyncedStoreCount: billableStoreCount, billingSyncError: "" });
+      } else {
+        const message = getSupabaseErrorMessage(result.error);
+        setBillingResyncMessage(`同期に失敗しました: ${message}`);
+        applyBillingSyncStateLocally(currentCompany.id, { billingSyncedStoreCount: currentCompany.billingSyncedStoreCount, billingSyncError: message });
+      }
     } finally {
       setBillingResyncBusy(false);
     }
@@ -5328,7 +5370,11 @@ function App() {
     if (isSupabaseConfigured && currentCompany?.id) {
       const syncResult = await syncStoreBillingQuantity({ companyId: currentCompany.id }).catch((error) => ({ ok: false, error }));
       if (!syncResult.ok) {
-        setNotice(`${store.name} の状態は変更されましたが、追加店舗料金の同期に失敗しました: ${getSupabaseErrorMessage(syncResult.error)}(「ご契約・お支払い」画面の「請求情報を再同期する」から再試行してください)`);
+        const message = getSupabaseErrorMessage(syncResult.error);
+        setNotice(`${store.name} の状態は変更されましたが、追加店舗料金の同期に失敗しました: ${message}(「ご契約・お支払い」画面の「請求情報を再同期する」から再試行してください)`);
+        applyBillingSyncStateLocally(currentCompany.id, { billingSyncedStoreCount: getLatestCompanyById(currentCompany.id)?.billingSyncedStoreCount ?? null, billingSyncError: message });
+      } else {
+        applyBillingSyncStateLocally(currentCompany.id, { billingSyncedStoreCount: (syncResult.addonQuantity ?? 0) + 1, billingSyncError: "" });
       }
     }
   };
@@ -8498,6 +8544,31 @@ function App() {
         ) : null}
         {currentCompany?.paymentStatus === "past_due" && normalizeRole(currentRole) === "company_admin" && portalError ? (
           <div className="notice-box error">{portalError}</div>
+        ) : null}
+
+        {/* 店舗追加・状態変更後のStripe請求同期の失敗(2026-09-18)。一時的なトースト
+            通知(setNotice、閉じたら消える)だけに頼らず、保存済みの状態
+            (billingSyncedStoreCount vs 現在の実店舗数)から毎回再判定する永続的な
+            バナー——同期が成功するまで消えず、再ログイン・画面更新後も残り続ける。
+            加盟店を閲覧中は表示しない(自社の請求状況ではないため)。 */}
+        {isBillingOutOfSync && !appState.isViewingFranchise ? (
+          <div className="notice-box error billing-sync-mismatch-banner">
+            {normalizeRole(currentRole) === "company_admin" ? (
+              <>
+                <span>
+                  店舗数({billableStoreCount}店舗)とStripeへ反映済みの請求数量({currentCompany.billingSyncedStoreCount}店舗)が一致していません。
+                  {currentCompany.billingSyncError ? `(前回のエラー: ${currentCompany.billingSyncError})` : ""}
+                </span>
+                <button className="secondary-button" type="button" disabled={billingResyncBusy} onClick={handleResyncStoreBilling}>
+                  {billingResyncBusy ? "同期中…" : "請求情報を再同期する"}
+                </button>
+              </>
+            ) : (
+              // store_manager/staffには請求金額の詳細を見せず、管理者への確認だけ促す(既存の
+              // 支払い失敗バナーと同じ方針)。
+              <span>店舗の請求情報の確認が必要です。契約状況を管理者へご確認ください。</span>
+            )}
+          </div>
         ) : null}
 
         {/* 運営専用の検証会社(テストサロン)を閲覧中であることを常時表示する(要件:

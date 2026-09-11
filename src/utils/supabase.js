@@ -853,7 +853,10 @@ const COMPANY_CONTRACT_SELECT_COLUMNS =
   // 2026-09-05、運営専用の検証会社(テストサロン)フラグ。会社名では判定しない。
   "is_test_company, " +
   // 2026-09-12、Stripe契約フロー実機検証用の使い捨て会社フラグ(is_test_companyとは別軸)。
-  "is_test_contract_run";
+  "is_test_contract_run, " +
+  // 2026-09-18、店舗追加・状態変更後のStripe請求同期(追加店舗quantity)が失敗した場合に、
+  // トースト通知が消えた後も気づけるようにするための永続的な状態(20260918000000参照)。
+  "billing_synced_store_count, billing_sync_error, billing_sync_error_at";
 
 export const loadTenantStateFromSupabase = async ({ authUserId, email, currentProfile = null }) => {
   const profile = currentProfile || (await ensureProfileForAuthUser({ authUserId, email }));
@@ -964,6 +967,16 @@ export const loadTenantStateFromSupabase = async ({ authUserId, email, currentPr
     isTestCompany: Boolean(company.is_test_company),
     // Stripe契約フロー実機検証用の使い捨て会社かどうか(2026-09-12)。
     isTestContractRun: Boolean(company.is_test_contract_run),
+    // 店舗追加・状態変更後のStripe請求同期が失敗した場合の永続的な警告表示用
+    // (2026-09-18、20260918000000参照)。billingSyncedStoreCountは未設定(null)の
+    // 可能性がある(まだ一度もCheckout/同期が走っていない無料利用中の会社等)——
+    // その場合は判定不能として扱う(呼び出し側でnullチェックする)。
+    billingSyncedStoreCount:
+      company.billing_synced_store_count === null || company.billing_synced_store_count === undefined
+        ? null
+        : Number(company.billing_synced_store_count),
+    billingSyncError: company.billing_sync_error || "",
+    billingSyncErrorAt: company.billing_sync_error_at || null,
     startedAt: company.created_at || new Date().toISOString(),
     lastUpdatedAt: company.updated_at || new Date().toISOString(),
     setup: { company: true, store: true, admin: true, settings: true, complete: true },

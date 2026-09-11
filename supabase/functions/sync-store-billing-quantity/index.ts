@@ -137,6 +137,10 @@ Deno.serve(async (req) => {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 
+  // catch節(失敗時のbilling_sync_error記録)からも参照できるよう、tryブロックの
+  // 外側で宣言する(let companyIdをtryの中で宣言すると、catch節のスコープからは
+  // 見えなくなってしまうため)。
+  let companyId = "";
   try {
     const { data: callerProfile } = await admin
       .from("profiles")
@@ -149,7 +153,6 @@ Deno.serve(async (req) => {
 
     // system_adminは任意の会社を指定できる。company_adminは常に自社固定
     // (クライアントから送られたcompanyIdは無視する——他社への操作を構造的に防ぐ)。
-    let companyId = "";
     if (callerProfile.role === "system_admin") {
       companyId = requestedCompanyId;
       if (!companyId) return json({ error: "companyId は必須です" }, 400);
@@ -238,6 +241,13 @@ Deno.serve(async (req) => {
         );
         logStage("addon_item_removed", { companyId });
       }
+      // 成功した実際の店舗数を保存する(要件: トースト等の一時表示だけに頼らず、保存済みの
+      // 状態から不一致を判定できるようにする)。失敗時の値は上書きしない(catch節参照)。
+      await admin.from("companies").update({
+        billing_synced_store_count: storeCount ?? 1,
+        billing_sync_error: null,
+        billing_sync_error_at: null,
+      }).eq("id", companyId);
       return json({ ok: true, addonQuantity: 0 });
     }
 
@@ -267,11 +277,34 @@ Deno.serve(async (req) => {
       );
     }
 
+    // 成功した実際の店舗数を保存する(上と同じ理由)。billing_synced_store_countは
+    // 「最後にStripeへ実際に反映した課金対象店舗数」——これと現在の実店舗数
+    // (billableStoreCount、フロント側で常にDBから即時計算)を比較するだけで、
+    // 画面を開いた瞬間の状態に関わらず不一致を検知できる(要件17と同じ「Stripeを正として
+    // 同期する」考え方を、今度はフロント表示側の判定にも適用する)。
+    const { error: updateSyncStateError } = await admin.from("companies").update({
+      billing_synced_store_count: storeCount ?? 1,
+      billing_sync_error: null,
+      billing_sync_error_at: null,
+    }).eq("id", companyId);
+    if (updateSyncStateError) throw updateSyncStateError;
+
     logStage("addon_quantity_synced", { companyId, addonQuantity, prorationBehavior });
     return json({ ok: true, addonQuantity });
   } catch (error) {
     const message = error instanceof Error ? error.message : "店舗数の同期に失敗しました";
     logStage("unhandled_error", { message });
+    // 失敗時はbilling_synced_store_countを更新しない——現在の実店舗数との不一致が
+    // そのまま残り、フロント側の永続的な警告表示(トーストではない)がずっと出続ける
+    // ようにする(要件: 同期が直るまで警告が消えない/再ログイン・画面更新後も残る)。
+    // companyIdが特定できている場合だけ記録する(認証・権限チェック前に失敗した場合は
+    // 対象会社が不明なため記録しない)。
+    if (typeof companyId === "string" && companyId) {
+      await admin.from("companies").update({
+        billing_sync_error: message.slice(0, 500),
+        billing_sync_error_at: new Date().toISOString(),
+      }).eq("id", companyId).then(() => {}, () => {});
+    }
     return json({ error: message }, 500);
   }
 });

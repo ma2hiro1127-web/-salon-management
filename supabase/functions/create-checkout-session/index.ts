@@ -329,6 +329,17 @@ Deno.serve(async (req) => {
       `checkout-${company.id}-${billingInterval}-${addonQuantity}`
     );
 
+    // Checkout Sessionのline itemsに設定した店舗数を「最後にStripeへ反映した課金対象
+    // 店舗数」の初期値として記録しておく(2026-09-18)。これにより、Checkout完了直後は
+    // まだ一度もsync-store-billing-quantityが呼ばれていなくても、フロント側の不一致
+    // 判定(billing_synced_store_count vs 現在の実店舗数)が「未設定=判定不能」ではなく
+    // 正しく「一致」から始まる。
+    const { error: syncBaselineError } = await admin
+      .from("companies")
+      .update({ billing_synced_store_count: addonQuantity + 1, billing_sync_error: null, billing_sync_error_at: null })
+      .eq("id", company.id);
+    if (syncBaselineError) throw syncBaselineError;
+
     logStage("checkout_session_created", { companyId: company.id, billingInterval, addonQuantity, isTestContractRun, hasTrial: Boolean(trialEndUnixSeconds) });
     return json({ ok: true, url: session.url });
   } catch (error) {
