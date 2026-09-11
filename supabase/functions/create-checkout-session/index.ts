@@ -11,6 +11,7 @@
 //     (Stripeはquantity=0のline itemを許可しないため)。
 //   - Price IDはすべて環境変数から読む。コードへのベタ書きは一切しない。
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isEligibleForFreeTrial } from "./logic.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -166,7 +167,9 @@ Deno.serve(async (req) => {
 
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, name, contract_status, stripe_customer_id, deleted_at, is_test_contract_run, contract_started_at")
+      .select(
+        "id, name, contract_status, stripe_customer_id, deleted_at, is_test_contract_run, contract_started_at, stripe_subscription_id"
+      )
       .eq("id", callerProfile.company_id)
       .maybeSingle();
     if (companyError) throw companyError;
@@ -258,17 +261,23 @@ Deno.serve(async (req) => {
       lineItems.push({ price: addonPriceId, quantity: addonQuantity });
     }
 
-    // 1か月無料トライアル(要件4)。「これまで一度も課金開始(contract_started_at)したことが
-    // 無い会社」だけに適用する——停止中(suspended)の会社がCustomer Portal解約後に
-    // 再度ここへ来た場合は既にcontract_started_atが入っているため対象外にする
-    // (「解約して再登録すればまた1か月無料」という悪用を構造的に防ぐ、要件24の
-    // 「絶対に防ぐ不具合」の精神に沿った防御)。トライアル期間は日数の固定値ではなく、
-    // 既存のcompute_trial_end_date DB関数(1か月・JST基準、self-signup/update-company-status
-    // と共有している唯一のルール)で計算した具体的な終了日時をtrial_endとして渡す
-    // ——Stripeのtrial_period_days(単純な日数)ではなく、アプリ全体で1箇所だけの
-    // 「トライアル期間」ルールと必ず一致させるため。
+    // 1か月無料トライアル(要件4)。以下の両方を満たす会社だけに適用する——
+    // 1. contract_started_atが無い(これまで一度も課金開始したことが無い)
+    // 2. stripe_subscription_idが無い(これまで一度もStripeで実サブスクリプションを
+    //    作ったことが無い——2026-09-11追加の防御。「trialingのまま一度も課金開始に
+    //    至らず解約された」会社は1.だけでは検知できず、再度Checkoutするとまた新しい
+    //    trial_endが渡ってしまう抜け道になっていたため、過去にサブスクリプションが
+    //    存在した痕跡(stripe_subscription_idは解約後もクリアされない)も合わせて見る)
+    // ——停止中(suspended)の会社がCustomer Portal解約後に再度ここへ来た場合は
+    // 既にどちらかが入っているため対象外にする(「解約して再登録すればまた1か月無料」
+    // という悪用を構造的に防ぐ、要件24の「絶対に防ぐ不具合」の精神に沿った防御)。
+    // トライアル期間は日数の固定値ではなく、既存のcompute_trial_end_date DB関数
+    // (1か月・JST基準、self-signup/update-company-statusと共有している唯一のルール)で
+    // 計算した具体的な終了日時をtrial_endとして渡す——Stripeのtrial_period_days
+    // (単純な日数)ではなく、アプリ全体で1箇所だけの「トライアル期間」ルールと
+    // 必ず一致させるため。
     let trialEndUnixSeconds: number | null = null;
-    if (!company.contract_started_at) {
+    if (isEligibleForFreeTrial({ contractStartedAt: company.contract_started_at, stripeSubscriptionId: company.stripe_subscription_id })) {
       const nowIso = new Date().toISOString();
       const { data: trialEndDate, error: trialEndError } = await admin.rpc("compute_trial_end_date", {
         start_at: nowIso,

@@ -34,6 +34,13 @@
 // 未知のstripe_customer_id(該当会社が見つからない)の場合はログのみ出して200を返す
 // (Stripe側の再送ループを防ぐ——エラーで返すとStripeが同じイベントを延々再送してしまう)。
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  type SubscriptionItem,
+  summarizeSubscriptionItems,
+  resolveNextBillingAtSeconds,
+  shouldApplyInvoicePeriodToBilling,
+  shouldSyncContractStatusToTrial,
+} from "./logic.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -83,47 +90,6 @@ async function verifyStripeSignature(rawBody: string, signatureHeader: string, s
 
   const expectedSignature = await hmacSha256Hex(secret, `${timestamp}.${rawBody}`);
   return v1Parts.some((p) => p.slice(3) === expectedSignature);
-}
-
-type SubscriptionItem = {
-  quantity?: number;
-  price?: { id?: string; unit_amount?: number; recurring?: { interval?: string } };
-  // Stripe APIバージョン2026-08-26以降、current_period_start/endはSubscription
-  // オブジェクト直下ではなく各Subscription Item側に付与される形に変わっている
-  // (複数アイテムがそれぞれ異なる請求周期を持てるようにするための変更と見られる)。
-  // 本アプリの構成では全アイテムが同じ周期のため、items[0]の値をそのまま採用する。
-  current_period_start?: number;
-  current_period_end?: number;
-};
-
-// サブスクリプションのitems配列(基本プラン+追加店舗の2アイテム構成を想定)から、
-// 表示用の合計金額・請求周期・基本プランのPrice ID・現在の請求期間をまとめて取り出す。
-function summarizeSubscriptionItems(items: SubscriptionItem[] | undefined) {
-  if (!items || items.length === 0) {
-    return { totalAmount: null, interval: null, basePriceId: null, currentPeriodStart: null, currentPeriodEnd: null };
-  }
-  let totalAmount = 0;
-  let interval: string | null = null;
-  let basePriceId: string | null = null;
-  let currentPeriodStart: number | null = null;
-  let currentPeriodEnd: number | null = null;
-  for (const item of items) {
-    const unitAmount = item.price?.unit_amount ?? 0;
-    const quantity = item.quantity ?? 1;
-    totalAmount += unitAmount * quantity;
-    if (!interval && item.price?.recurring?.interval) interval = item.price.recurring.interval;
-    // quantity=1のアイテムを「基本プラン」とみなす(追加店舗アイテムは通常quantityが
-    // 店舗数-1で1以外になりうるため、この単純な判定で十分実用的)。
-    if (!basePriceId && quantity === 1 && item.price?.id) basePriceId = item.price.id;
-    if (currentPeriodStart === null && typeof item.current_period_start === "number") {
-      currentPeriodStart = item.current_period_start;
-    }
-    if (currentPeriodEnd === null && typeof item.current_period_end === "number") {
-      currentPeriodEnd = item.current_period_end;
-    }
-  }
-  if (!basePriceId && items[0]?.price?.id) basePriceId = items[0].price.id;
-  return { totalAmount, interval, basePriceId, currentPeriodStart, currentPeriodEnd };
 }
 
 Deno.serve(async (req) => {
@@ -191,7 +157,7 @@ Deno.serve(async (req) => {
   try {
     const { data: company, error: companyError } = await admin
       .from("companies")
-      .select("id, contract_status, last_billing_event_at")
+      .select("id, contract_status, last_billing_event_at, contract_started_at")
       .eq("stripe_customer_id", stripeCustomerId || "__none__")
       .maybeSingle();
     if (companyError) throw companyError;
@@ -278,12 +244,25 @@ Deno.serve(async (req) => {
       }
     } else if (eventType === "invoice.paid") {
       patch.payment_status = null;
-      if (typeof object.period_end === "number") {
-        patch.next_billing_at = new Date(object.period_end * 1000).toISOString();
-      }
-      const amountPaid = object.amount_paid;
-      if (typeof amountPaid === "number") {
-        patch.current_price_amount = amountPaid;
+      // 2026-09-11調査で発見した不具合の恒久対応: トライアル開始時、Stripeは実際の請求を
+      // 伴わない$0の「初期インボイス」(billing_reason='subscription_create')を即座に
+      // invoice.paidとして送ってくることがある。このインボイスのperiod_end/amount_paidは
+      // 実際の請求サイクルを表さない(period_start=period_endのゼロ長期間になりうる)ため、
+      // これでnext_billing_at/current_price_amountを上書きすると、次回請求予定日が
+      // トライアル開始日時と同じ値になってしまう(実際に発生した不具合)。実際の請求サイクル
+      // (トライアル終了後の初回請求以降)はStripeがbilling_reason='subscription_cycle'で
+      // 送ってくるため、それ以外(subscription_create等)のインボイスではこの2列を
+      // 更新しない——次回請求日は customer.subscription.created/updated 側の
+      // current_period_end(トライアル中はtrial_end、下記参照)を正とする。
+      const billingReason = typeof object.billing_reason === "string" ? object.billing_reason : null;
+      if (shouldApplyInvoicePeriodToBilling(billingReason)) {
+        if (typeof object.period_end === "number") {
+          patch.next_billing_at = new Date(object.period_end * 1000).toISOString();
+        }
+        const amountPaid = object.amount_paid;
+        if (typeof amountPaid === "number") {
+          patch.current_price_amount = amountPaid;
+        }
       }
     } else if (eventType === "invoice.payment_failed") {
       // 要件: 1回の失敗だけではcontract_statusを変更しない。補助表示のみ更新する。
@@ -314,10 +293,21 @@ Deno.serve(async (req) => {
       if (resolvedPeriodStart !== null) {
         patch.current_period_start = new Date(resolvedPeriodStart * 1000).toISOString();
       }
-      if (resolvedPeriodEnd !== null) {
-        // next_billing_atをcurrent_period_endとしてそのまま流用する(要件どおり、
-        // current_period_end専用の新しい列は追加しない)。
-        patch.next_billing_at = new Date(resolvedPeriodEnd * 1000).toISOString();
+      // 次回請求予定日(2026-09-11調査で発見した不具合の恒久対応): トライアル中は
+      // current_period_end(=通常trial_endと一致する)を正として使うが、current_period_end
+      // が取得できない場合、またはcurrent_period_startと同一値(ゼロ長期間、実際に
+      // 発生が確認された不正な値)の場合は、trial_start/trial_endのうちtrial_endを
+      // 次回請求予定日として使う(要件: 取得できない場合はtrial_endを使用する)。
+      // トライアル中でなければ従来通りcurrent_period_endをそのままnext_billing_atとして
+      // 流用する(要件どおり、current_period_end専用の新しい列は追加しない)。
+      const resolvedNextBillingAtSeconds = resolveNextBillingAtSeconds({
+        subscriptionStatus,
+        periodStartSeconds: resolvedPeriodStart,
+        periodEndSeconds: resolvedPeriodEnd,
+        trialEndSeconds: typeof object.trial_end === "number" ? object.trial_end : null,
+      });
+      if (resolvedNextBillingAtSeconds !== null) {
+        patch.next_billing_at = new Date(resolvedNextBillingAtSeconds * 1000).toISOString();
       }
 
       // Stripeの新しめのAPIバージョン(2026-08-26以降で確認)では、Customer Portalから
@@ -362,14 +352,34 @@ Deno.serve(async (req) => {
           // 固定で'basic'とする。将来プランが複数になった場合はPrice IDから逆引きする形に
           // 拡張する)。
           patch.plan = "basic";
-        } else if (subscriptionStatus === "trialing" && (company.contract_status === "free" || company.contract_status === "suspended")) {
+        } else if (
+          shouldSyncContractStatusToTrial({
+            subscriptionStatus,
+            contractStatus: company.contract_status,
+            contractStartedAt: company.contract_started_at,
+          })
+        ) {
           // 1か月無料トライアル開始(2026-09、要件4)。Checkout完了時点ではまだ課金
           // されていないため、contract_statusはactiveではなく「trial」に揃える
           // (アプリ側のアクセス制御はsuspended以外を等しく許可するため、trialのままで
-          // 全機能が使える——要件どおり0円で全機能利用可能な状態になる)。既に
-          // contract_status='trial'(自己サインアップ由来のカード登録不要トライアル)の
-          // 会社がそのままCheckoutへ進んだ場合は、この分岐に来ないが実質的に同じ状態
-          // なので変更不要。
+          // 全機能が使える——要件どおり0円で全機能利用可能な状態になる)。
+          //
+          // 2026-09-11修正(恒久対応): 以前はこの分岐を「直前のcontract_statusがfree/
+          // suspendedの場合だけ」に限定していたが、これだとcontract_status='active'が
+          // 何らかの理由(system_admin側の手動設定等、実際の課金と無関係な過去のデータ)で
+          // 既に入っている会社では、Stripe側が本物のtrialingでもcontract_statusが
+          // 'active'のまま取り残され、DBの2つの状態列が矛盾する不具合があった(表示側は
+          // deriveContractDisplayStatusがsubscription_status/trial_ends_atを優先して
+          // 正しく表示していたが、保存状態そのものは矛盾したままだった)。
+          //
+          // 「解約・再登録での無料期間の再取得」を防ぐガードは、create-checkout-session側の
+          // trial_end付与判定(company.contract_started_at===nullの会社にしかtrial_endを
+          // 渡さない、かつstripe_subscription_idが既にある会社にも渡さない——後述)で
+          // Stripeにtrialingを一切返させない形で既に一元化されているため、ここでは
+          // 同じcontract_started_atだけを信頼する(1つの判定基準に統一、要件どおり
+          // 新規フィールドは追加しない)。contract_started_atが一度でも設定されていれば
+          // (=過去に実際の課金を開始したことがある会社であれば)、Stripeが万一trialingを
+          // 返してきてもcontract_statusを'trial'へは書き換えない(defense-in-depth)。
           patch.contract_status = "trial";
           patch.stopped_at = null;
         }
