@@ -5,9 +5,28 @@ import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   resolveNextBillingAtSeconds,
   shouldApplyInvoicePeriodToBilling,
+  shouldSyncContractStatusToActive,
   shouldSyncContractStatusToTrial,
   summarizeSubscriptionItems,
 } from "./logic.ts";
+
+// --- shouldSyncContractStatusToActive ---------------------------------------------
+
+Deno.test("無料期間終了後の決済成功(status=active)でtrialからactiveへ同期する", () => {
+  assertEquals(shouldSyncContractStatusToActive({ subscriptionStatus: "active", contractStatus: "trial" }), true);
+});
+
+Deno.test("停止中(suspended)会社が再契約して決済成功(status=active)したらactiveへ同期する", () => {
+  assertEquals(shouldSyncContractStatusToActive({ subscriptionStatus: "active", contractStatus: "suspended" }), true);
+});
+
+Deno.test("無料期間終了後の決済失敗(status=past_due)では契約中として扱われない(activeへ同期しない)", () => {
+  assertEquals(shouldSyncContractStatusToActive({ subscriptionStatus: "past_due", contractStatus: "trial" }), false);
+});
+
+Deno.test("トライアル中(status=trialing)ではactiveへ同期しない", () => {
+  assertEquals(shouldSyncContractStatusToActive({ subscriptionStatus: "trialing", contractStatus: "trial" }), false);
+});
 
 // --- resolveNextBillingAtSeconds -------------------------------------------------
 

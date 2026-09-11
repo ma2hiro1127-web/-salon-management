@@ -39,6 +39,7 @@ import {
   summarizeSubscriptionItems,
   resolveNextBillingAtSeconds,
   shouldApplyInvoicePeriodToBilling,
+  shouldSyncContractStatusToActive,
   shouldSyncContractStatusToTrial,
 } from "./logic.ts";
 
@@ -338,10 +339,7 @@ Deno.serve(async (req) => {
         // 当社側のcontract_statusもactiveへ同期する(要件: Checkout完了→契約中への移行、
         // および停止中会社の再契約——suspendedを含めないとTest 8「再契約」で実際に
         // 支払いが完了してもcontract_statusがsuspendedのまま取り残されてしまう)。
-        if (
-          subscriptionStatus === "active" &&
-          (company.contract_status === "trial" || company.contract_status === "free" || company.contract_status === "suspended")
-        ) {
+        if (shouldSyncContractStatusToActive({ subscriptionStatus, contractStatus: company.contract_status })) {
           patch.contract_status = "active";
           patch.contract_started_at = nowIso;
           patch.stopped_at = null;

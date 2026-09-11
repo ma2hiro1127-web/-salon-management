@@ -79,6 +79,24 @@ export function shouldApplyInvoicePeriodToBilling(billingReason: string | null):
   return billingReason !== "subscription_create";
 }
 
+// 無料期間終了後の初回決済成功(subscriptionStatus='active')を受けて、contract_statusを
+// 'active'へ同期して良いかどうか(既存ロジック、2026-09-11に純粋関数として切り出し・
+// 動作は変更していない)。trial/free/suspendedからの遷移だけを対象にする——
+// suspendedを含めるのは停止中会社の再契約(実際に支払いが完了した場合)に対応するため。
+// subscriptionStatusが'active'以外(trialing/past_due等)の場合は対象外(false)——
+// 「無料期間終了後の決済失敗では契約中として扱われない」ことをこの関数のレベルでも保証する
+// (past_due等はここでfalseになり、contract_statusは変更されない)。
+export function shouldSyncContractStatusToActive(params: {
+  subscriptionStatus: string | null;
+  contractStatus: string | null;
+}): boolean {
+  const { subscriptionStatus, contractStatus } = params;
+  return (
+    subscriptionStatus === "active" &&
+    (contractStatus === "trial" || contractStatus === "free" || contractStatus === "suspended")
+  );
+}
+
 // トライアル中(subscriptionStatus='trialing')のcustomer.subscription.*イベントを受けて、
 // contract_statusを'trial'へ同期して良いかどうか。「解約・再登録での無料期間の再取得防止」は
 // create-checkout-session側のtrial_end付与判定(isEligibleForFreeTrial、同じ
