@@ -1765,29 +1765,43 @@ export const refreshInviteState = async ({ profileId, inviteToken, inviteExpires
 // RLS and every other read path actually check. That made a role "change" pure UI theater: the
 // promoted user's next login would still see their old role, since ensureProfileForAuthUser
 // reads straight from profiles.role.
-// Covers the fields the previous edit flow silently dropped: it reused the invite-creation form
-// for edits too, but that form only ever wrote to local appState — name/email/active-status
-// changes never reached Supabase at all, so they reverted on the next hydrate. This is the
-// dedicated edit save path; role and store assignments still go through updateProfileRole /
-// updateProfileStoreAssignments (called alongside this one from the same edit-save handler).
-export const updateProfileDetails = async ({ profileId, name, email, isActive }) => {
+//
+// updateProfileRoleは他の昇格フロー(自己サインアップオーナーのcompany_admin昇格等)でも
+// 単独で使われるため残しているが、ユーザー編集画面の保存(氏名・権限・主要所属店舗・複数
+// 所属店舗)は2026-09、save_user_profile_and_stores RPC(1つのPostgresトランザクション、
+// supabase/migrations/20260919000000_multi_store_user_access.sql)へ統合した——以前は
+// updateProfileDetails(氏名/メール/有効状態)→updateProfileRole(権限)→
+// updateProfileStoreAssignments(所属店舗、delete→insertの2ステップ)という最大3回の
+// 独立したネットワーク呼び出しに分かれており、途中で失敗すると氏名だけ更新されて権限や
+// 所属店舗が更新されない、所属店舗がdeleteだけ成功してinsertが失敗し0件になる、といった
+// 中途半端な状態になり得た(要件: 保存処理を1つの整合した処理にする)。メールアドレス変更・
+// 有効/停止の切り替えは引き続きupdateUserEmail/setUserActiveState Edge Function経由のまま
+// (Supabase Auth側の更新を伴うため、単一のPostgresトランザクションに含めることが構造的に
+// できない——いずれも呼び出し先で既にprofiles側の対応する列も更新済み)。
+export const saveUserProfileAndStores = async ({ profileId, name, role, companyId, storeIds = [], primaryStoreId = "" }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  const validationError = validateRequiredKeys({ userId: profileId });
+  const validationError = validateRequiredKeys({ userId: profileId, companyId });
   if (validationError) {
-    const detail = logSupabaseError({ operation: "updateProfileDetails", table: "profiles", userId: profileId, error: new Error(validationError) });
+    const detail = logSupabaseError({ operation: "saveUserProfileAndStores", table: "profiles", userId: profileId, companyId, error: new Error(validationError) });
     return { ok: false, error: new Error(detail.message) };
   }
   try {
-    const { data, error } = await supabase
-      .from("profiles")
-      .update({ name, email: normalizeEmail(email), is_active: isActive !== false })
-      .eq("id", profileId)
-      .select()
-      .single();
+    const storeList = (storeIds || []).filter(Boolean);
+    const { error } = await supabase.rpc("save_user_profile_and_stores", {
+      p_profile_id: profileId,
+      p_name: name,
+      p_role: normalizeRole(role),
+      p_company_id: companyId,
+      p_store_ids: storeList,
+      p_primary_store_id: primaryStoreId || null,
+    });
     if (error) throw error;
-    return { ok: true, data };
+    return { ok: true };
   } catch (error) {
-    logSupabaseError({ operation: "updateProfileDetails", table: "profiles", userId: profileId, error });
+    logSupabaseError({ operation: "saveUserProfileAndStores", table: "user_stores", userId: profileId, companyId, error });
+    // RPC(RAISE EXCEPTION)からの日本語メッセージはerror.messageにそのまま入るため、
+    // ここでは他のupdate系関数と違って汎用文言へ差し替えない——原因(店舗0件・主要所属店舗が
+    // 一覧外等)がそのままUIへ伝わる方が要件(成功・失敗を明確に表示する)に合う。
     return { ok: false, error };
   }
 };
@@ -1805,37 +1819,6 @@ export const updateProfileRole = async ({ profileId, role }) => {
     return { ok: true, data };
   } catch (error) {
     logSupabaseError({ operation: "updateProfileRole", table: "profiles", userId: profileId, error });
-    return { ok: false, error };
-  }
-};
-
-// Replaces this profile's full store assignment set (delete-then-insert, since user_stores has
-// no natural single-row conflict target for "this user's whole assignment list").
-export const updateProfileStoreAssignments = async ({ profileId, companyId, storeIds = [], primaryStoreId = "" }) => {
-  if (!isSupabaseConfigured) return { ok: true, skipped: true };
-  const validationError = validateRequiredKeys({ userId: profileId, companyId });
-  if (validationError) {
-    const detail = logSupabaseError({ operation: "updateProfileStoreAssignments", table: "user_stores", userId: profileId, companyId, error: new Error(validationError) });
-    return { ok: false, error: new Error(detail.message) };
-  }
-  try {
-    const { error: deleteError } = await supabase.from("user_stores").delete().eq("user_id", profileId);
-    if (deleteError) throw deleteError;
-
-    const storeList = (storeIds || []).filter(Boolean);
-    if (!storeList.length) return { ok: true, data: [] };
-
-    const assignments = storeList.map((storeId, index) => ({
-      user_id: profileId,
-      company_id: companyId,
-      store_id: storeId,
-      is_primary: primaryStoreId ? storeId === primaryStoreId : index === 0,
-    }));
-    const { data, error: insertError } = await supabase.from("user_stores").insert(assignments).select();
-    if (insertError) throw insertError;
-    return { ok: true, data };
-  } catch (error) {
-    logSupabaseError({ operation: "updateProfileStoreAssignments", table: "user_stores", userId: profileId, companyId, error });
     return { ok: false, error };
   }
 };

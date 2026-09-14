@@ -192,7 +192,7 @@ import {
   signUpWithEmail,
   resolveRoleForEmail,
   updateProfileRole,
-  updateProfileStoreAssignments,
+  saveUserProfileAndStores,
   getInviteInfo,
   acceptInvite,
   isSelfSignupEnabled,
@@ -200,7 +200,6 @@ import {
   sendInviteEmail,
   generateInviteLink,
   deleteUserAccount,
-  updateProfileDetails,
   updateUserEmail,
   setUserActiveState,
   refreshInviteState,
@@ -4838,12 +4837,16 @@ function App() {
 
   const toggleEditUserStoreSelection = (storeId) => {
     setEditUserDraft((prev) => {
-      const nextStoreIds = prev.storeIds.includes(storeId) ? prev.storeIds.filter((id) => id !== storeId) : [...prev.storeIds, storeId];
-      return {
-        ...prev,
-        storeIds: nextStoreIds,
-        primaryStoreId: prev.primaryStoreId === storeId && !nextStoreIds.includes(prev.primaryStoreId) ? (nextStoreIds[0] || "") : prev.primaryStoreId,
-      };
+      const isSelected = prev.storeIds.includes(storeId);
+      // 主要所属店舗は、別の店舗を主要所属に設定するまで所属店舗一覧から解除できない
+      // (要件)。以前はここで自動的に別の店舗へ主要所属を付け替えていたが、それだと
+      // 「主要所属店舗のチェックを外したつもりが、知らないうちに別の店舗が主要になっていた」
+      // という誤操作に気づきにくいため、そもそも解除自体を無視する(何も起きない)ように
+      // 変更した——主要所属店舗を変えたい場合は、上の「主要所属店舗」セレクトで先に
+      // 別の店舗を選んでもらう(そちらは自動的に所属店舗一覧へ追加する、要件どおり)。
+      if (isSelected && prev.primaryStoreId === storeId) return prev;
+      const nextStoreIds = isSelected ? prev.storeIds.filter((id) => id !== storeId) : [...prev.storeIds, storeId];
+      return { ...prev, storeIds: nextStoreIds };
     });
   };
 
@@ -4854,6 +4857,10 @@ function App() {
   // profiles row so a reload always reflects what was actually saved, not a local-only copy.
   const handleSaveUserEdit = async () => {
     if (guardReadOnlyAccess()) return;
+    // 二重送信防止(要件): ボタンのdisabled={editUserSaving}に加えて、関数の入口でも
+    // 明示的にガードする(素早い連打・タッチの多重発火等でdisabled反映前にもう一度
+    // 呼ばれることがあり得るため、UIの無効化だけに頼らない)。
+    if (editUserSaving) return;
     const targetUser = (appState.users || []).find((user) => user.id === editUserTargetId);
     if (!targetUser) return;
     const normalizedEmail = editUserDraft.email.trim().toLowerCase();
@@ -4873,6 +4880,14 @@ function App() {
     const inviterStoreIds = normalizedCurrentRole === "store_manager" ? allowedStoreIds : currentCompanyStores.map((store) => store.id);
     const nextStoreIds = editUserDraft.storeIds.filter((storeId) => inviterStoreIds.includes(storeId));
     const nextPrimaryStoreId = nextStoreIds.includes(editUserDraft.primaryStoreId) ? editUserDraft.primaryStoreId : (nextStoreIds[0] || "");
+    // 所属店舗0件で保存できないようにする(要件、店舗管理者・一般スタッフのみ対象——
+    // system_admin/company_adminは所属店舗という概念自体を持たない)。RPC側
+    // (save_user_profile_and_stores)でも同じ条件を検証しているため、これは主に
+    // 即時のUIフィードバック用の二重チェック。
+    if ((nextRole === "store_manager" || nextRole === "staff") && nextStoreIds.length === 0) {
+      setEditUserError("店舗管理者・一般スタッフには、最低1店舗の所属店舗が必要です");
+      return;
+    }
 
     setEditUserSaving(true);
     setEditUserError("");
@@ -4883,10 +4898,10 @@ function App() {
       if (isSupabaseConfigured) {
         // メールアドレスが実際に変わる場合は、専用のupdate-user-email Edge Function(service-
         // role)を先に呼ぶ。登録済みユーザーはSupabase Auth側(auth.users.email)も同時に
-        // 書き換える必要があり、profilesへの直接更新(updateProfileDetails)だけではAuth側に
-        // 古いメールアドレスが残ってしまう(要件1: UI上だけの変更でAuth側に不整合を残さない)。
-        // 未登録(招待中)ユーザーの場合は、サーバー側で招待トークンも新しく発行し直され、
-        // 古いメールアドレス宛のリンクは無効化される。
+        // 書き換える必要があり、profiles側だけの更新ではAuth側に古いメールアドレスが残って
+        // しまう(要件1: UI上だけの変更でAuth側に不整合を残さない)。未登録(招待中)ユーザーの
+        // 場合は、サーバー側で招待トークンも新しく発行し直され、古いメールアドレス宛の
+        // リンクは無効化される。
         if (normalizedEmail !== targetUser.email) {
           const emailResult = await updateUserEmail({ profileId: targetUser.id, email: normalizedEmail });
           if (!emailResult?.ok) throw emailResult.error || new Error("メールアドレスの変更に失敗しました");
@@ -4898,19 +4913,24 @@ function App() {
           if (!activeStateResult?.ok) throw activeStateResult.error || new Error("状態の変更に失敗しました");
           confirmedIsActive = typeof activeStateResult?.data?.isActive === "boolean" ? activeStateResult.data.isActive : editUserDraft.isActive;
         }
-        const detailsResult = await updateProfileDetails({ profileId: targetUser.id, name: editUserDraft.name.trim(), email: normalizedEmail, isActive: confirmedIsActive });
-        if (!detailsResult?.ok && !detailsResult?.skipped) throw detailsResult.error || new Error("保存に失敗しました");
-        if (nextRole !== targetUser.role) {
-          const roleResult = await updateProfileRole({ profileId: targetUser.id, role: nextRole });
-          if (!roleResult?.ok && !roleResult?.skipped) throw roleResult.error || new Error("権限の更新に失敗しました");
-        }
-        const storesChanged = JSON.stringify([...nextStoreIds].sort()) !== JSON.stringify([...(targetUser.storeIds || [])].sort()) || nextPrimaryStoreId !== (targetUser.primaryStoreId || "");
-        if (storesChanged) {
-          const storesResult = await updateProfileStoreAssignments({ profileId: targetUser.id, companyId: targetUser.companyId, storeIds: nextStoreIds, primaryStoreId: nextPrimaryStoreId });
-          if (!storesResult?.ok && !storesResult?.skipped) throw storesResult.error || new Error("所属店舗の更新に失敗しました");
-        }
+        // 氏名・権限・主要所属店舗・複数所属店舗は、1つのPostgresトランザクションとして
+        // 実行するsave_user_profile_and_stores RPCへまとめる(要件: 保存処理を1つの整合した
+        // 処理にする——以前はupdateProfileDetails/updateProfileRole/
+        // updateProfileStoreAssignmentsの最大3回の独立した呼び出しに分かれており、途中で
+        // 失敗すると一部だけ更新される可能性があった)。メール・有効状態はSupabase Auth側の
+        // 更新を伴うため引き続き上の専用Edge Function経由のまま(構造的にこのRPCへは含め
+        // られない)。
+        const saveResult = await saveUserProfileAndStores({
+          profileId: targetUser.id,
+          name: editUserDraft.name.trim(),
+          role: nextRole,
+          companyId: targetUser.companyId,
+          storeIds: nextStoreIds,
+          primaryStoreId: nextPrimaryStoreId,
+        });
+        if (!saveResult?.ok && !saveResult?.skipped) throw saveResult.error || new Error("保存に失敗しました");
       }
-      // 状態上書き防止(ここまでに最大4件のSupabase呼び出しをawaitしているため、
+      // 状態上書き防止(ここまでに最大3件のSupabase呼び出しをawaitしているため、
       // appStateRef.currentから最新状態を読み直す)。
       const nextState = {
         ...appStateRef.current,
@@ -5524,12 +5544,12 @@ function App() {
 
   const toggleUserStoreSelection = (storeId) => {
     setUserForm((prev) => {
-      const nextStoreIds = prev.storeIds.includes(storeId) ? prev.storeIds.filter((currentId) => currentId !== storeId) : [...prev.storeIds, storeId];
-      return {
-        ...prev,
-        storeIds: nextStoreIds,
-        primaryStoreId: prev.primaryStoreId === storeId ? "" : nextStoreIds[0] || "",
-      };
+      const isSelected = prev.storeIds.includes(storeId);
+      // 主要所属店舗のチェックは解除できない(編集画面のtoggleEditUserStoreSelectionと
+      // 同じ理由・同じ挙動——招待時点で主要所属店舗を選んでいる場合に揃える)。
+      if (isSelected && prev.primaryStoreId && prev.primaryStoreId === storeId) return prev;
+      const nextStoreIds = isSelected ? prev.storeIds.filter((currentId) => currentId !== storeId) : [...prev.storeIds, storeId];
+      return { ...prev, storeIds: nextStoreIds };
     });
   };
 
@@ -6285,10 +6305,13 @@ function App() {
       }
       return;
     }
+    // 最後に選択した店舗の権限が外された場合は、主要所属店舗へ戻す(要件)。visibleStores
+    // (allowedStoreIdsで絞り込み済み)に主要所属店舗が含まれていればそれを優先し、無ければ
+    // (主要所属店舗自体も外れている等の非常時)従来どおりvisibleStores[0]へフォールバックする。
+    const preferredFallbackStore = visibleStores.find((store) => store.id === currentUserProfile?.primaryStoreId) || visibleStores[0];
     if (!selectedStore) {
-      const fallbackStore = visibleStores[0];
-      if (fallbackStore) {
-        setAppState((prev) => ({ ...prev, selectedStore: fallbackStore.name, selectedStoreId: fallbackStore.id }));
+      if (preferredFallbackStore) {
+        setAppState((prev) => ({ ...prev, selectedStore: preferredFallbackStore.name, selectedStoreId: preferredFallbackStore.id }));
       }
       return;
     }
@@ -6299,11 +6322,10 @@ function App() {
       }
       return;
     }
-    const fallbackStore = visibleStores[0];
-    if (fallbackStore) {
-      setAppState((prev) => ({ ...prev, selectedStore: fallbackStore.name, selectedStoreId: fallbackStore.id }));
+    if (preferredFallbackStore) {
+      setAppState((prev) => ({ ...prev, selectedStore: preferredFallbackStore.name, selectedStoreId: preferredFallbackStore.id }));
     }
-  }, [selectedStore, selectedStoreId, visibleStores, currentRole]);
+  }, [selectedStore, selectedStoreId, visibleStores, currentRole, currentUserProfile]);
 
   // 無効な保存状態の自動修復(要件1): 上のselectedStore/selectedStoreId自己修復と同じ理由・
   // 同じ収束のさせ方(id一致→無ければ現在アクセス可能な先頭の会社へフォールバック)で、
@@ -10770,19 +10792,40 @@ function App() {
                   <div className="inline-form">
                     <label className="field">
                       <span>主要所属店舗</span>
-                      <select value={userForm.primaryStoreId || ""} onChange={(event) => setUserForm((prev) => ({ ...prev, primaryStoreId: event.target.value, storeIds: event.target.value ? [event.target.value] : prev.storeIds }))}>
+                      <select
+                        value={userForm.primaryStoreId || ""}
+                        onChange={(event) => setUserForm((prev) => ({
+                          ...prev,
+                          primaryStoreId: event.target.value,
+                          // 主要所属店舗を変更したら、新しい主要所属店舗を所属店舗一覧へ自動追加する
+                          // (要件)。以前はここで一覧全体を[新しい店舗]だけへ置き換えており、既に
+                          // チェック済みの他の所属店舗が消えてしまっていた。
+                          storeIds: event.target.value && !prev.storeIds.includes(event.target.value) ? [...prev.storeIds, event.target.value] : prev.storeIds,
+                        }))}
+                      >
                         <option value="">未設定</option>
                         {inviteScopedStores.map((store) => <option key={store.id} value={store.id}>{store.name}</option>)}
                       </select>
                     </label>
                   </div>
-                  <div className="input-grid">
-                    {inviteScopedStores.map((store) => (
-                      <label key={store.id} className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                        <input type="checkbox" checked={userForm.storeIds.includes(store.id)} onChange={() => toggleUserStoreSelection(store.id)} />
-                        <span>{store.name}</span>
-                      </label>
-                    ))}
+                  <div className="store-select-list">
+                    {inviteScopedStores
+                      .filter((store) => store.status === "active" || userForm.storeIds.includes(store.id))
+                      .map((store) => {
+                        const isSelected = userForm.storeIds.includes(store.id);
+                        const isPrimary = isSelected && userForm.primaryStoreId === store.id;
+                        return (
+                          <label
+                            key={store.id}
+                            className={`store-select-row${isSelected ? " is-selected" : ""}${isPrimary ? " is-locked" : ""}`}
+                          >
+                            <input type="checkbox" checked={isSelected} onChange={() => toggleUserStoreSelection(store.id)} />
+                            <span className="store-select-name">{store.name}</span>
+                            {isPrimary ? <span className="store-select-badge">主要</span> : null}
+                            {store.status === "suspended" ? <span className="store-select-badge is-inactive">停止中</span> : null}
+                          </label>
+                        );
+                      })}
                   </div>
                 </div>
 
@@ -10934,14 +10977,33 @@ function App() {
                     <h3>所属店舗</h3>
                   </div>
                 </div>
-                <div className="input-grid">
-                  {inviteScopedStores.map((store) => (
-                    <label key={store.id} className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                      <input type="checkbox" checked={editUserDraft.storeIds.includes(store.id)} onChange={() => toggleEditUserStoreSelection(store.id)} />
-                      <span>{store.name}</span>
-                    </label>
-                  ))}
+                <div className="store-select-list">
+                  {inviteScopedStores
+                    // 停止中・削除済み店舗を新規選択肢に表示しない(要件)——ただし、既にこの
+                    // ユーザーの所属店舗になっている店舗は、後から停止された場合でも一覧から
+                    // 消さない(既存の店舗停止ルールに合わせる=見えなくなるのではなく停止中と
+                    // 分かる形で残す。archivedは既にinviteScopedStores自体に含まれない)。
+                    .filter((store) => store.status === "active" || editUserDraft.storeIds.includes(store.id))
+                    .map((store) => {
+                      const isSelected = editUserDraft.storeIds.includes(store.id);
+                      const isPrimary = isSelected && editUserDraft.primaryStoreId === store.id;
+                      return (
+                        <label
+                          key={store.id}
+                          className={`store-select-row${isSelected ? " is-selected" : ""}${isPrimary ? " is-locked" : ""}`}
+                          title={isPrimary ? "主要所属店舗は、別の店舗を主要所属に設定するまで解除できません" : undefined}
+                        >
+                          <input type="checkbox" checked={isSelected} onChange={() => toggleEditUserStoreSelection(store.id)} />
+                          <span className="store-select-name">{store.name}</span>
+                          {isPrimary ? <span className="store-select-badge">主要</span> : null}
+                          {store.status === "suspended" ? <span className="store-select-badge is-inactive">停止中</span> : null}
+                        </label>
+                      );
+                    })}
                 </div>
+                {(editUserDraft.role === "store_manager" || editUserDraft.role === "staff") && editUserDraft.storeIds.length === 0 ? (
+                  <p className="field-hint" style={{ color: "var(--danger)" }}>最低1店舗の所属店舗が必要です。</p>
+                ) : null}
               </div>
               <label className="field">
                 <span>有効/停止</span>
@@ -10952,7 +11014,14 @@ function App() {
               </label>
               <div className="row-actions" style={{ marginTop: 12 }}>
                 <button className="secondary-button" type="button" onClick={closeEditUserModal} disabled={editUserSaving}>キャンセル</button>
-                <button className="primary-button" type="button" onClick={handleSaveUserEdit} disabled={editUserSaving}>{editUserSaving ? "保存中..." : "保存する"}</button>
+                <button
+                  className="primary-button"
+                  type="button"
+                  onClick={handleSaveUserEdit}
+                  disabled={editUserSaving || ((editUserDraft.role === "store_manager" || editUserDraft.role === "staff") && editUserDraft.storeIds.length === 0)}
+                >
+                  {editUserSaving ? "保存中..." : "保存する"}
+                </button>
               </div>
             </div>
           </div>

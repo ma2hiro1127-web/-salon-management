@@ -12,6 +12,27 @@ test("store scoped roles only see assigned stores", () => {
   assert.deepEqual(getAllowedStoreIdsForRole({ role: "staff", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s2"] }), ["s2"]);
 });
 
+// 複数店舗ユーザー権限(2026-09): 店舗管理者・一般スタッフに2店舗以上を割り当てた場合、
+// 選択されたすべての所属店舗が閲覧・操作範囲になることを確認する(役割ごとの「できること」
+// 自体は変えない、複数店舗を見られるようにするだけ、という要件の核心部分)。
+test("multi-store users (store_manager/staff) can access every one of their assigned stores, and nothing else", () => {
+  assert.deepEqual(
+    getAllowedStoreIdsForRole({ role: "store_manager", companyStoreIds: ["s1", "s2", "s3"], currentUserStoreIds: ["s1", "s3"] }),
+    ["s1", "s3"]
+  );
+  assert.deepEqual(
+    getAllowedStoreIdsForRole({ role: "staff", companyStoreIds: ["s1", "s2", "s3"], currentUserStoreIds: ["s2", "s3"] }),
+    ["s2", "s3"]
+  );
+  // 権限のない店舗(companyStoreIdsに無い、または割り当てられていないstoreId)は、
+  // currentUserStoreIdsに紛れ込んでいても結果に含まれない(直接IDを指定しても取得できない、
+  // という要件のフロントエンド側ミラー——実際の強制はRLS側)。
+  assert.deepEqual(
+    getAllowedStoreIdsForRole({ role: "staff", companyStoreIds: ["s1", "s2"], currentUserStoreIds: ["s1", "s2", "s-not-in-company"] }),
+    ["s1", "s2"]
+  );
+});
+
 test("role normalization and page access stay consistent for owner/admin aliases", () => {
   assert.equal(normalizeRole("Owner"), "system_admin");
   assert.equal(normalizeRole("admin"), "company_admin");

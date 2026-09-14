@@ -313,6 +313,40 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .helper-text { color: var(--muted); margin-bottom: 12px; }
 .input-grid { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .input-grid.compact { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* 所属店舗の複数選択(ユーザー招待・編集): チェック状態が見た目で全く分からない不具合の
+   恒久対応(根本原因は上のグローバルな input { appearance: none; } により、素のチェック
+   ボックスがオン/オフ問わず完全に無地の見た目になっていたこと)。行全体をクリック可能にし、
+   選択中は背景色でも分かるようにする(要件: 見た目だけでなく実際に反応する状態にする、
+   選択中が明確に分かる表示、スマホでも押しやすいサイズ)。*/
+.store-select-list { display: flex; flex-direction: column; gap: 8px; }
+.store-select-row {
+  display: flex; align-items: center; gap: 12px;
+  min-height: 48px; padding: 10px 14px;
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--surface); cursor: pointer; user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.store-select-row:hover { border-color: var(--accent); }
+.store-select-row.is-selected { background: rgba(37, 99, 235, 0.08); border-color: var(--accent); }
+.store-select-row.is-locked { cursor: default; }
+.store-select-row input[type="checkbox"] {
+  appearance: none; -webkit-appearance: none;
+  width: 22px; height: 22px; min-width: 22px;
+  border: 2px solid var(--border); border-radius: 6px;
+  background: var(--surface-strong);
+  cursor: pointer; flex-shrink: 0; position: relative;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.store-select-row input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+.store-select-row input[type="checkbox"]:checked::after {
+  content: ""; position: absolute; left: 6px; top: 2px; width: 6px; height: 11px;
+  border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.store-select-row.is-locked input[type="checkbox"] { cursor: default; }
+.store-select-name { flex: 1; font-size: 0.92rem; }
+.store-select-badge { font-size: 0.72rem; color: var(--accent); font-weight: 600; white-space: nowrap; }
+.store-select-badge.is-inactive { color: var(--muted); }
 .field { width: 100%; }
 .field-hint { color: var(--muted); font-size: 0.76rem; line-height: 1.4; }
 .input-with-suffix { display: flex; align-items: center; gap: 8px; }
