@@ -29,10 +29,31 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/sw.js').then((registration) => {
       let reloadRequested = false;
+      // 2026-09-16修正(パスワード再設定リンクの実機検証で発見した重大な不具合):
+      // controllerchangeは「ユーザーがSwUpdateBannerの『更新する』を押してSKIP_WAITINGを
+      // 送った」時だけでなく、このタブがこれまでどのService Workerにも制御されていなかった
+      // 状態から、登録直後のService Workerがself.clients.claim()で初めてこのタブを制御下に
+      // 置いた瞬間(=初回インストール完了時)にも発火する——ブラウザ標準の挙動であり、
+      // sw.js側がskipWaitingを自動で呼んでいなくても起こる。以前のコメントの前提
+      // 「ユーザー操作時にだけ起こる」は誤りだった。
+      //
+      // 実害: パスワード再設定・招待メールのリンク(#access_token=…&type=recovery等、
+      // URLハッシュに一時的な状態を持つ)を初めて開いたタブ(=Service Workerが未登録の
+      // まっさらな状態)で、この初回claim由来のcontrollerchangeが無条件にwindow.location.
+      // reload()を呼んでいたため、アプリ側がハッシュを読んでrecoverモードへ遷移する前後の
+      // タイミングでページ全体が再読み込みされ、既に処理済みでURLから取り除かれていた
+      // ハッシュ(recovery状態の唯一の手がかり)が失われたまま「セッションはあるが
+      // recoveryモードではない」状態で起動し直し、通常ログイン成功と誤認してダッシュ
+      // ボードへ進んでしまっていた。
+      //
+      // 修正: 「ユーザーがSwUpdateBannerの更新ボタンを押してSKIP_WAITINGを送った」場合
+      // だけをreload対象にする(updateApplyRequestedフラグをapplyUpdate内でのみtrueにする)。
+      // 初回claim等、ユーザー操作を伴わないcontrollerchangeでは一切reloadしない——その場合、
+      // 今読み込み中のJSバンドル自体が既に最新(たった今ネットワークから取得したばかり)
+      // なので、reloadする理由がそもそも無い。
+      let updateApplyRequested = false;
       navigator.serviceWorker.addEventListener('controllerchange', () => {
-        // controllerchangeは「ユーザーがSwUpdateBannerの『更新する』を押してSKIP_WAITINGを
-        // 送った」時にだけ起こる(sw.js側がもうskipWaitingを自動では呼ばないため)。ここでの
-        // reloadは、その明示的な操作への応答であり、勝手なタイミングでの強制リロードではない。
+        if (!updateApplyRequested) return;
         if (reloadRequested) return;
         reloadRequested = true;
         window.location.reload();
@@ -47,6 +68,7 @@ if ('serviceWorker' in navigator) {
         window.dispatchEvent(new CustomEvent('salon-manager:sw-update-available', {
           detail: {
             applyUpdate: () => {
+              updateApplyRequested = true;
               registration.waiting?.postMessage({ type: 'SKIP_WAITING' });
             },
           },
