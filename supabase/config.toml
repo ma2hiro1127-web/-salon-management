@@ -153,6 +153,18 @@ max_indexes = 5
 # [storage.vector.buckets.documents-openai]
 
 [auth]
+# 2026-09-16確認: このファイルは`supabase init`直後の既定値のままで、本番・ステージング
+# どちらの実プロジェクトへも一度も`supabase config push`されていない(site_url等が
+# ローカル開発用のダミー値のまま)。本番の実際のAuth設定(site_url=https://salon-manager.net、
+# uri_allow_list、パスワード再設定メールの件名・本文等)はSupabase Management API経由で
+# 個別にPATCHして設定済み——このファイルとは非同期の状態。
+#
+# 【重要・事故防止】このファイルを直接`supabase config push`しないこと。この[auth]セクション
+# (特にsite_url/additional_redirect_urls)をそのままpushすると、本番の実際の設定
+# (site_url=https://salon-manager.net等)がこのダミー値で上書きされ、招待メール・
+# パスワード再設定メールのリンクが全滅する重大事故になる。設定変更が必要な場合は、まず
+# 本番の現在値をMangement API(GET /v1/projects/{ref}/config/auth)で取得し、このファイルを
+# 実態に合わせてから、変更したいフィールドだけをMangement APIのPATCHで個別に反映すること。
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
 # in emails.

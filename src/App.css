@@ -693,6 +693,16 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .auth-title-block p.auth-error-detail { margin-top: 8px; font-size: 0.82rem; }
 .auth-form { display: flex; flex-direction: column; gap: 12px; }
 .auth-form button { width: 100%; }
+/* パスワード再設定(新しいパスワード設定画面等)の表示・非表示切り替え。入力欄自体は
+   .field内のinputの標準スタイルのまま、右側に重ねてトグルボタンを置くだけにする。 */
+.password-field-wrapper { position: relative; }
+.password-field-wrapper input { padding-right: 64px; }
+.password-visibility-toggle {
+  position: absolute; right: 4px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; color: var(--accent); font-size: 0.8rem; font-weight: 600;
+  padding: 8px 10px; cursor: pointer; min-height: 36px;
+}
+.auth-form .text-button { width: auto; align-self: center; }
 .user-role-badge { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.78rem; font-weight: 700; }
 @media (max-width: 860px) {
   .status-overview-grid, .ai-focus-grid, .ai-analysis-grid { grid-template-columns: 1fr; }

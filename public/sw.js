@@ -873,7 +873,7 @@
 // (company_adminが自社のみセルフサービスで再開可能)を追加。companiesテーブルへの列追加
 // (すべてnullable)のみで既存データは無変更。Stripe Webhook受信の土台も追加(実際の
 // Stripe連携・支払い方法入力は未実装、次フェーズ)。
-const CACHE_NAME = 'salon-manager-cache-v150';
+const CACHE_NAME = 'salon-manager-cache-v151';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
@@ -915,6 +915,20 @@ self.addEventListener('fetch', (event) => {
   // 素の(Service Worker非経由の)fetchとして処理する。
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
+
+  // パスワード再設定・認証コールバック関連のURLはキャッシュへ書き込まない(2026-09追加、
+  // 要件: 古い画面や認証URLをキャッシュしない)。トークン自体はURLのハッシュ(#access_token=…)
+  // に入るため、そもそもfetchイベント(サーバーへ送られるリクエストURL)には現れない
+  // (ブラウザがハッシュをリクエストへ含めないため、Service Workerも参照できない設計)——
+  // その意味で本来キャッシュ経由でトークンが漏れることは無いが、将来的なPKCE化(?code=…が
+  // 実際にリクエストURLへ現れる形式)への保険も兼ねて、/reset-password自体と?code=を含む
+  // リクエストは常にネットワークから直接取得し、キャッシュへ一切書き込まない。
+  const isAuthSensitiveRequest = requestUrl.pathname === "/reset-password" || requestUrl.searchParams.has("code");
+  if (isAuthSensitiveRequest) {
+    event.respondWith(fetch(event.request, { cache: "no-store" }).catch(() => caches.match("/index.html")));
+    return;
+  }
+
   event.respondWith(
     // cache: 'no-store' でService Worker自身のfetchがブラウザHTTPキャッシュを経由しないように
     // する(index.html等は元々Cache-Control: max-age=0だが、念のための二重の安全策)。

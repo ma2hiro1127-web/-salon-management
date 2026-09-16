@@ -36,3 +36,31 @@ export const getLocalizedSupabaseErrorMessage = (error) => {
 
   return "ログインに失敗しました。しばらくしてからもう一度お試しください。";
 };
+
+// パスワード再設定(メール送信・新パスワード設定)専用のエラー文言。getLocalizedSupabase
+// ErrorMessageと分けている理由: そちらのフォールバック文言「ログインに失敗しました」は
+// このコンテキスト(送信/変更の失敗)には意味が合わないため——技術的なエラー文をそのまま
+// 出さない(要件)という方針は共通だが、フォールバック文言自体はこの画面専用にする。
+export const getPasswordResetErrorMessage = (error) => {
+  const message = String(error?.message || "").trim();
+
+  if (isAuthTimingErrorMessage(message)) {
+    return AUTH_SESSION_EXPIRED_MESSAGE;
+  }
+
+  // Supabaseのメール送信レート制限(「for security purposes, you can only request this after
+  // N seconds」「email rate limit exceeded」等)。文言はバージョン・設定によって変わり得るため
+  // 部分一致で広めに拾う。
+  if (/rate limit|too many requests|after \d+ seconds/i.test(message)) {
+    return "しばらく時間を空けてから、もう一度お試しください。";
+  }
+
+  if (message.includes("Password should be at least")) {
+    return "パスワードは最低8文字以上で設定してください。";
+  }
+
+  // それ以外(ネットワークエラー・想定外のSupabaseエラー等)は、原因を問わず同じ一般的な
+  // 文言にする——技術的な内容を利用者へそのまま出さない、かつメールアドレスの登録有無を
+  // 画面から判別できないようにするため(要件)。
+  return "しばらく時間を空けてから、もう一度お試しください。";
+};

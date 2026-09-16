@@ -212,7 +212,7 @@ import { logAdConversionEvent } from "./utils/adOpsSupabase.js";
 import AdOpsPage from "./components/adOps/AdOpsPage.jsx";
 import { loadLatestTenantSnapshot, upsertTenantSnapshot, buildTenantSnapshotRow } from "./utils/supabaseRemote.js";
 import { getBusinessTypeDefaultStoreName, getBusinessTypeLabel } from "./utils/businessProfile.js";
-import { getLocalizedSupabaseErrorMessage } from "./utils/authMessages.js";
+import { getLocalizedSupabaseErrorMessage, getPasswordResetErrorMessage } from "./utils/authMessages.js";
 import { buildInviteLink, createInviteToken, isInviteExpired, getUserStatusMeta, classifyEmailDuplicateForInvite } from "./utils/invitations.js";
 import { sortStoresForManagement } from "./utils/storeManagement.js";
 import {
@@ -1539,7 +1539,16 @@ function App() {
     // "login"へ巻き戻され、ownerSignupVisible(flag)がfalseの間はテストURLで開いても
     // 常にログイン画面へ戻ってしまう(要件12の直接の不具合)。
     const hasOwnerSignupIntent = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("owner-signup") === "1" && Boolean(new URLSearchParams(window.location.search).get("testKey"));
-    const fallbackAuthMode = () => (hasInviteIntent ? "signup" : hasOwnerSignupIntent ? "ownerSignup" : "login");
+    // パスワード再設定専用URL(要件3のredirectTo先)。有効なRecoveryセッションが取れなかった
+    // 場合(リンク切れ・期限切れ・使用済み・URLが不完全・ハッシュ無しでの直接アクセス等)は、
+    // セッション未確立の通常フローの行き先として"login"の代わりにこちらを使う——要件9
+    // 「無効・期限切れリンクの状態でupdateUserを実行しない」ための最初のゲート。
+    // 既にログイン中のセッションがこのパスを開いた場合は、この分岐(セッション無し前提の
+    // fallbackAuthMode)自体を通らない=通常のログイン継続フローに委ねる(要件7: 通常ログイン
+    // 中であることだけを理由にパスワード変更を許可しない、の裏返しとして、通常ログイン中の
+    // セッションはそのまま維持し、このパスにいるからといって強制的に割り込まない)。
+    const isResetPasswordPath = typeof window !== "undefined" && window.location.pathname === "/reset-password";
+    const fallbackAuthMode = () => (hasInviteIntent ? "signup" : hasOwnerSignupIntent ? "ownerSignup" : isResetPasswordPath ? "recoverInvalid" : "login");
     const initializeAuth = async () => {
       authLog("auth初期化開始");
       // 障害調査用(2026-09、決済完了後にログイン画面へ戻る不具合のトレース)。この時点
@@ -1610,6 +1619,17 @@ function App() {
           setCurrentUser(null);
           setCurrentRole("staff");
           setAuthMode("recover");
+          setAppState(initialAppStateValue);
+          setAuthLoading(false);
+          return;
+        }
+        if (isRecoveryCallback && !session?.user) {
+          // URLに再設定リンク特有のtype=recoveryは付いていたが、セッションを確立できなかった
+          // (リンクの有効期限切れ・既に使用済み等)。要件9: この状態でパスワード入力画面
+          // (authMode="recover")を一切表示せず、専用の案内画面(再送導線のみ)を出す。
+          setCurrentUser(null);
+          setCurrentRole("staff");
+          setAuthMode("recoverInvalid");
           setAppState(initialAppStateValue);
           setAuthLoading(false);
           return;
@@ -2909,12 +2929,27 @@ function App() {
     setAuthError("");
     setAuthSuccess("");
     try {
-      const redirectTo = typeof window !== "undefined" && window.location?.origin ? window.location.origin : undefined;
+      // redirectTo先はVITE_APP_URL(環境ごとにVercel/ローカルで設定する環境変数)を優先し、
+      // 未設定時のみ現在開いているoriginへフォールバックする(要件: 本番URLをコード内へ
+      // 直接固定しない。プレビュー環境等、事前に固定できないoriginはこのフォールバックで
+      // 自然にカバーされる)。パスは常に本番/開発それぞれのパスワード変更専用ページ
+      // (/reset-password、要件3)を指す。
+      const configuredAppUrl = String(import.meta.env.VITE_APP_URL || "").trim().replace(/\/+$/, "");
+      const originFallback = typeof window !== "undefined" && window.location?.origin ? window.location.origin : "";
+      const baseUrl = configuredAppUrl || originFallback;
+      const redirectTo = baseUrl ? `${baseUrl}/reset-password` : undefined;
       const { error } = await supabase.auth.resetPasswordForEmail(normalizeEmail(email), redirectTo ? { redirectTo } : undefined);
       if (error) throw error;
-      setAuthSuccess("パスワード再設定用のメールを送信しました。" );
+      // 要件4: メールアドレスの登録有無にかかわらず同一メッセージを表示する(Supabase自体、
+      // 未登録メールアドレスに対してもエラーを返さない仕様のため、このsetAuthSuccessは
+      // 実際に登録されているかどうかを一切区別しない)。
+      setAuthSuccess("入力したメールアドレス宛に、パスワード再設定のご案内を送信しました。メールが届かない場合は、迷惑メールフォルダや入力したメールアドレスをご確認ください。");
     } catch (error) {
-      setAuthError(getLocalizedSupabaseErrorMessage(error));
+      // 生のSupabaseエラー文をそのまま出さない専用の翻訳(getPasswordResetErrorMessage) —
+      // レート制限時は要件どおり「しばらく時間を空けて...」、それ以外の技術的エラーも
+      // 同じ一般的な文言にする(要件: メールアドレスの登録有無を画面から判別できないように
+      // する、という方針をエラー時にも一貫させる)。
+      setAuthError(getPasswordResetErrorMessage(error));
     } finally {
       setAuthLoading(false);
     }
@@ -2923,6 +2958,12 @@ function App() {
   // パスワード再設定リンク(type=recovery)を開いた直後に確立される一時的なセッションを使って、
   // 新しいパスワードを設定する。initializeAuthのisRecoveryCallback分岐からのみ遷移してくる
   // (authMode="recover")ので、その時点でSupabaseセッション自体は既に有効。
+  //
+  // 2026-09修正(要件8): 変更成功後、以前はそのままログイン完了扱いにしてダッシュボードへ
+  // 直接進んでいたが、「自動ログイン状態のままダッシュボードへ入れない」という要件に反する
+  // ため、Recovery用セッションを明示的にサインアウトしてからログイン画面へ戻すよう変更した。
+  // 会社・所属店舗・権限・契約状態・過去データは、そもそもここでは一切読み書きしないため
+  // (updateUserはSupabase Auth側のパスワードだけを変更する)、無条件に維持される。
   const handleSetNewPassword = async ({ password }) => {
     setAuthLoading(true);
     setAuthError("");
@@ -2931,43 +2972,21 @@ function App() {
       const { error: updateError } = await supabase.auth.updateUser({ password });
       if (updateError) throw updateError;
 
-      const { data: { session }, error: sessionError } = await getSupabaseSession();
-      if (sessionError) throw sessionError;
-      const authUser = session?.user;
-      if (!authUser) throw new Error("セッションを確認できませんでした。お手数ですが再度ログインしてください。");
-
-      const profile = await ensureProfileForAuthUser({ authUserId: authUser.id, email: authUser.email, role: resolveRoleForEmail(authUser.email) });
-      if (!profile) throw new Error("プロフィール情報を取得できませんでした");
-      const tenantState = await loadTenantStateFromSupabase({ authUserId: authUser.id, email: authUser.email, currentProfile: profile });
-      const localRecoveredState = normalizeAppState(readAppState());
-      const nextUser = buildAuthenticatedUser({ profile, authUser });
-      const nextRole = normalizeRole(profile?.role || "staff");
-      setCurrentUser(nextUser);
-      setCurrentRole(nextRole);
-      const recoverCompanyId = profile?.company_id || tenantState.currentCompanyId || localRecoveredState.currentCompanyId || "";
-      const { selectedStore: recoverSelectedStore, selectedStoreId: recoverSelectedStoreId } = resolvePreferredStoreSelection({
-        tenantState,
-        localRecoveredState,
-        currentCompanyId: recoverCompanyId,
-        role: nextRole,
-      });
-      setAppState({
-        ...tenantState,
-        currentCompanyId: recoverCompanyId,
-        currentUserId: nextUser.profileId,
-        currentAuthUserId: nextUser.authUserId,
-        selectedStore: recoverSelectedStore,
-        selectedStoreId: recoverSelectedStoreId,
-        selectedMonth: localRecoveredState.selectedMonth || tenantState.selectedMonth || new Date().toISOString().slice(0, 7),
-        isViewingFranchise: false,
-        homeCompanyIdBeforeFranchiseView: "",
-      });
-      window.localStorage.setItem("salon-user", JSON.stringify(nextUser));
-      window.localStorage.setItem("salon-role", nextRole);
-      setAuthMode("app");
-      setActivePage(resolveDefaultPage(nextRole));
+      // Recovery用の一時セッションをサインアウトする(要件: 自動ログイン状態のまま
+      // ダッシュボードへ入れない)。scope指定なし(既定"global")でよい——この操作自体が
+      // 「新しいパスワードで改めてログインし直してもらう」ための明示的なサインアウトのため、
+      // 他デバイスのセッションを残す理由が無い。失敗してもベストエフォート(ローカルの
+      // 認証状態は下でどのみちnullへ戻すため、画面上はログイン画面へ戻る)。
+      await signOutFromSupabase().catch(() => {});
+      setCurrentUser(null);
+      setCurrentRole("staff");
+      setAppState(initialAppStateValue);
+      window.localStorage.removeItem("salon-user");
+      window.localStorage.removeItem("salon-role");
+      setAuthMode("login");
+      setAuthSuccess("パスワードを変更しました。新しいパスワードでログインしてください。");
     } catch (error) {
-      setAuthError(getLocalizedSupabaseErrorMessage(error));
+      setAuthError(getPasswordResetErrorMessage(error));
     } finally {
       setAuthLoading(false);
     }
