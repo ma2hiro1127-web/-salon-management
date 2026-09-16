@@ -1590,6 +1590,18 @@ function App() {
         // 判定できない。
         const hashParamsBeforeCleanup = typeof window !== "undefined" ? new URLSearchParams(window.location.hash.replace(/^#/, "")) : new URLSearchParams();
         const isRecoveryCallback = hashParamsBeforeCleanup.get("type") === "recovery";
+        // リンクが無効・期限切れ・使用済みの場合、Supabaseの/auth/v1/verifyはtype=recoveryを
+        // 含まないエラー用ハッシュ(#error=access_denied&error_code=otp_expired&…)へ
+        // リダイレクトする(2026-09-16、実際にリンクを生成して検証し判明——当初はpathname
+        // (/reset-password)ベースでこのケースを検知する設計だったが、Supabase側のredirect_to
+        // が実際にはクエリで指定したパスを保持せずoriginのみへ正規化されることも合わせて
+        // 判明したため、pathnameに頼らずこのハッシュ自体で判定するよう変更した)。type情報が
+        // 失われるため単独では「招待リンクの失効」と区別できないが、このアプリでハッシュ型の
+        // Supabase純正メールリンクを使うのは招待とパスワード再設定の2つだけであり、招待は
+        // 別経路(?invite=トークン、hasInviteIntent)で判定できるため、それ以外はパスワード
+        // 再設定リンクの失効とみなしてよい。
+        const authLinkErrorCode = hashParamsBeforeCleanup.get("error_code") || hashParamsBeforeCleanup.get("error") || "";
+        const isExpiredOrInvalidRecoveryLink = Boolean(authLinkErrorCode) && !hasInviteIntent;
 
         const { data: { session }, error } = await getSupabaseSession();
         if (error) throw error;
@@ -1609,6 +1621,20 @@ function App() {
         // 一度だけ取り除く(要件: 古いhash形式のトークンが残留しないようにする)。
         if (typeof window !== "undefined" && window.location.hash) {
           window.history.replaceState(null, "", window.location.pathname + window.location.search);
+        }
+        if (isExpiredOrInvalidRecoveryLink) {
+          // 要件9: リンクの有効期限切れ・使用済み(#error=access_denied&error_code=
+          // otp_expired等)の場合、パスワード入力画面を一切表示せず、専用の案内画面
+          // (再送導線のみ)を出す。実際に生成したリンクをもう一度開いて検証済み——
+          // Supabase側はtype情報を保持しないエラー専用のハッシュへリダイレクトするため、
+          // pathnameではなくこのハッシュ自体で判定する(上のisExpiredOrInvalidRecoveryLink
+          // 定義のコメント参照)。
+          setCurrentUser(null);
+          setCurrentRole("staff");
+          setAuthMode("recoverInvalid");
+          setAppState(initialAppStateValue);
+          setAuthLoading(false);
+          return;
         }
         if (isRecoveryCallback && session?.user) {
           // パスワード再設定メールのリンクを開くと、招待と同様にSupabaseが一時的なセッションを
