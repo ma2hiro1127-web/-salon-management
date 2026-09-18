@@ -6,6 +6,22 @@
       "destination": "/lp.html"
     },
     {
+      "source": "/terms",
+      "destination": "/terms.html"
+    },
+    {
+      "source": "/privacy",
+      "destination": "/privacy.html"
+    },
+    {
+      "source": "/commercial-transactions",
+      "destination": "/commercial-transactions.html"
+    },
+    {
+      "source": "/contact",
+      "destination": "/contact.html"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

@@ -1,0 +1,111 @@
+/* サロンマネージャー 法務・お問い合わせページ 共通スタイル
+   lp.html と同じデザイントークン(色・余白・角丸)を使い、見た目を統一する。
+   これらのページはReact SPA(src/App.jsx以下)とは完全に独立した静的HTMLで、
+   ビルド・ESLint・型チェックの対象にはならない(publicはそのままdist/へコピーされる)。 */
+
+:root {
+  --bg: #f7fbff;
+  --surface: #ffffff;
+  --text: #16324f;
+  --muted: #5f7288;
+  --border: #dfeaf4;
+  --accent: #2f7df6;
+  --accent-dark: #1e5fd1;
+  --accent-soft: #eaf4ff;
+  --success: #2ea361;
+  --shadow: 0 16px 42px rgba(15, 23, 42, 0.06);
+  --radius: 16px;
+  --maxw: 760px;
+}
+
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
+  line-height: 1.8;
+  -webkit-font-smoothing: antialiased;
+  overflow-x: hidden;
+}
+img { max-width: 100%; display: block; }
+a { color: var(--accent); }
+.wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; }
+
+/* ---------- ヘッダー(ロゴ + サービスTOPへ戻る) ---------- */
+header.site-header {
+  position: sticky; top: 0; z-index: 50;
+  background: rgba(247, 251, 255, 0.9); backdrop-filter: saturate(180%) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+.header-inner {
+  max-width: var(--maxw); margin: 0 auto; padding: 14px 20px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 16px; text-decoration: none; color: var(--text); white-space: nowrap; }
+.brand img { width: 28px; height: 28px; border-radius: 7px; flex: none; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  font-weight: 700; font-size: 14px; border-radius: 999px; padding: 10px 20px;
+  text-decoration: none; border: 1px solid var(--border); background: #fff; color: var(--text);
+  cursor: pointer; white-space: nowrap; min-height: 44px;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 10px 24px rgba(47, 125, 246, 0.28); }
+.btn-primary:hover { background: var(--accent-dark); border-color: var(--accent-dark); color: #fff; }
+
+/* ---------- 本文 ---------- */
+main.legal-main { padding: 40px 0 64px; }
+.legal-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: 0.14em; color: var(--accent); margin: 0 0 10px; }
+.legal-title { font-size: clamp(24px, 5vw, 32px); font-weight: 800; letter-spacing: -0.01em; margin: 0 0 10px; }
+.legal-updated { font-size: 13px; color: var(--muted); margin: 0 0 32px; }
+.legal-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 32px 28px; margin-bottom: 24px;
+}
+.legal-card h2 { font-size: 18px; font-weight: 800; letter-spacing: -0.01em; margin: 0 0 12px; scroll-margin-top: 80px; }
+.legal-card h2 .num { color: var(--accent); margin-right: 6px; }
+.legal-card h3 { font-size: 15px; font-weight: 700; margin: 18px 0 8px; }
+.legal-card p { margin: 0 0 12px; color: var(--text); }
+.legal-card p:last-child { margin-bottom: 0; }
+.legal-card ul, .legal-card ol { margin: 0 0 12px; padding-left: 1.4em; }
+.legal-card li { margin-bottom: 6px; }
+.legal-card + .legal-card { margin-top: 0; }
+.legal-lead { color: var(--muted); font-size: 14.5px; margin: 0 0 28px; }
+
+/* 特定商取引法ページの定義リスト(用語/内容) */
+dl.legal-dl { margin: 0; }
+dl.legal-dl > div { display: grid; grid-template-columns: 200px 1fr; gap: 8px 20px; padding: 16px 0; border-top: 1px solid var(--border); }
+dl.legal-dl > div:first-child { border-top: none; padding-top: 0; }
+dl.legal-dl dt { font-weight: 700; color: var(--text); }
+dl.legal-dl dd { margin: 0; color: var(--text); white-space: pre-line; }
+
+/* お問い合わせページ */
+.contact-info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; margin: 20px 0; }
+.contact-info-item { background: var(--accent-soft); border-radius: 12px; padding: 14px 16px; }
+.contact-info-item span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.contact-info-item strong { font-size: 15px; color: var(--text); }
+.contact-email-box {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--accent-soft); border-radius: 12px; padding: 16px 20px; margin: 16px 0 24px;
+}
+.contact-email-box .email-text { font-weight: 700; font-size: 16px; color: var(--text); word-break: break-all; }
+.contact-actions { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0; }
+.copy-feedback { font-size: 13px; color: var(--success); font-weight: 700; min-height: 1.6em; }
+.contact-types { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; }
+.contact-types span { background: #fff; border: 1px solid var(--border); border-radius: 999px; padding: 6px 14px; font-size: 13px; color: var(--muted); }
+
+/* ---------- 全ページ共通フッター(LPと同じ構成・同じ並び順) ---------- */
+footer.site-footer { border-top: 1px solid var(--border); padding: 36px 0 28px; margin-top: 20px; }
+.footer-inner { max-width: var(--maxw); margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--muted); }
+.footer-links { display: flex; gap: 18px; flex-wrap: wrap; }
+.footer-links a { text-decoration: none; color: var(--muted); }
+.footer-links a:hover { color: var(--accent); }
+
+@media (max-width: 620px) {
+  .legal-card { padding: 22px 18px; }
+  dl.legal-dl > div { grid-template-columns: 1fr; gap: 4px; }
+  .footer-inner { flex-direction: column; align-items: flex-start; }
+}

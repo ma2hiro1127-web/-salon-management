@@ -1204,9 +1204,10 @@
   <div class="wrap footer-inner">
     <span>© <span id="footer-year"></span> サロンマネージャー</span>
     <nav class="footer-links">
-      <a href="#" id="footer-terms">利用規約</a>
-      <a href="#" id="footer-privacy">プライバシーポリシー</a>
-      <a href="#" id="footer-contact">お問い合わせ</a>
+      <a href="/terms">利用規約</a>
+      <a href="/privacy">プライバシーポリシー</a>
+      <a href="/commercial-transactions">特定商取引法に基づく表記</a>
+      <a href="/contact">お問い合わせ</a>
       <a href="#" id="footer-login">ログイン</a>
     </nav>
   </div>
@@ -1252,13 +1253,6 @@
       finalSave: "年額なら年間¥4,960お得",
       finalNote: "※年額12,800円を12ヶ月で換算。どちらのプランも1か月無料でお試しいただけます。",
       faqAnswer: "月額¥1,480(税込)と年額¥12,800(税込)の2プランからお選びいただけ、どちらも1か月無料でお試しいただけます(無料期間中のお支払いは発生しません)。2店舗目以降は1店舗につき月額¥480(税込)/年額¥4,800(税込)が加算されます。1店舗から利用でき、追加の専用機器は不要です。"
-    },
-
-    // フッターのリンク先(未設定URLはひとまず "#" のまま。用意でき次第書き換えてください)。
-    footerLinks: {
-      terms: "#",
-      privacy: "#",
-      contact: "#"
     }
   };
 
@@ -1297,12 +1291,6 @@
   if (finalPriceNoteEl) finalPriceNoteEl.textContent = CONFIG.price.finalNote;
   var faqPriceEl = document.getElementById("faq-price-answer");
   if (faqPriceEl) faqPriceEl.textContent = CONFIG.price.faqAnswer;
-
-  var footerMap = { "footer-terms": "terms", "footer-privacy": "privacy", "footer-contact": "contact" };
-  Object.keys(footerMap).forEach(function (id) {
-    var el = document.getElementById(id);
-    if (el) el.setAttribute("href", CONFIG.footerLinks[footerMap[id]]);
-  });
 
   document.getElementById("footer-year").textContent = new Date().getFullYear();
 

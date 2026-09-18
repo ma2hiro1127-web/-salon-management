@@ -256,10 +256,17 @@ export const validateRequiredKeys = (keys = {}) => {
 
 const normalizeEmail = (email) => String(email || "").trim().toLowerCase();
 
+// 2026-09-18削除: 運営者個人のメールアドレスをハードコードしたsystem_adminブートストラップ
+// 用フォールバックは、クライアントJSバンドルに平文でそのまま含まれてしまう(要件: 運営者の
+// 個人情報をソースコード・JSバンドルに一切掲載しない)ため撤去した。本番の運営者アカウントは
+// 既にprofiles.role='system_admin'がDBへ確実に保存済みであり(このハードコード値に一切
+// 依存しない)、撤去による本番アクセスへの影響は無い。新しい環境でsystem_adminを最初の
+// 1人だけブートストラップする必要がある場合は、VITE_ADMIN_EMAIL/VITE_SUPABASE_ADMIN_EMAIL
+// を一時的に設定する(ただしこれらも同じ理由でVITE_接頭辞=クライアントに公開される値のため、
+// 個人のメールアドレスではなく用途が終わったら削除する前提の一時値として扱うこと)。
 const getConfiguredAdminEmails = () => [
   getEnvValue("VITE_ADMIN_EMAIL"),
   getEnvValue("VITE_SUPABASE_ADMIN_EMAIL"),
-  "hirotomatsumoto+salonadmin@gmail.com",
 ].filter(Boolean);
 
 export const resolveRoleForEmail = (email, { forceAdmin = false } = {}) => {

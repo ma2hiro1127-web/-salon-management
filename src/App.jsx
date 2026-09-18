@@ -221,6 +221,7 @@ import {
   CONTRACT_DISPLAY_STATUS,
   isActiveLikeContractStatusKey,
   previewBillingStart,
+  previewTrialEndDate,
   formatUsageDuration,
   formatRemainingLabel,
   formatDateLabel,
@@ -815,6 +816,10 @@ function App() {
   // ボタンの多重クリック防止・エラー表示用。
   const [checkoutBusyInterval, setCheckoutBusyInterval] = useState(""); // "" | "month" | "year"
   const [checkoutError, setCheckoutError] = useState("");
+  // 特定商取引法対応(2026-09): Stripe Checkoutへ進む前に、利用規約・プライバシー
+  // ポリシーへの同意を明示的に得る。この画面を離れる(ページ遷移・再読み込み)たびに
+  // 未同意の状態へ戻ってよいため、あえてappStateやlocalStorageへ永続化しない。
+  const [agreedToLegalTerms, setAgreedToLegalTerms] = useState(false);
   const [portalBusy, setPortalBusy] = useState(false);
   const [portalError, setPortalError] = useState("");
   // 店舗追加・状態変更に伴うStripe請求同期(syncStoreBillingQuantity)が失敗した場合の
@@ -2640,9 +2645,6 @@ function App() {
       try {
         const { data, error } = await signInWithEmail(normalizedEmail, password);
         console.info("[supabase-login] signInWithPassword result", { email: normalizedEmail, data, error });
-        if (normalizedEmail === "hirotomatsumoto+salonadmin@gmail.com") {
-          console.info("[supabase-login] admin email login attempt", { email: normalizedEmail, passwordLength: String(password || "").length });
-        }
         if (error) {
           throw error;
         }
@@ -10763,42 +10765,64 @@ function App() {
                     (要件24「解約して再登録すればまた1か月無料」の防止と同じ仕組み)。
                     そのため文言も「無料で始める」ではなく「再契約する」にする。 */}
                 <p className="helper-text">
-                  現在ご契約が終了しています。再契約すると、これまでの店舗・スタッフ・売上・損益データはそのまま引き続きご利用いただけます。
+                  現在ご契約が終了しています。再契約すると、これまでの店舗・スタッフ・売上・損益データはそのまま引き続きご利用いただけます。過去に無料期間をご利用済みのため、再契約では無料期間は付与されず、決済完了後ただちに課金が開始されます。
+                </p>
+                <p className="helper-text">
+                  月額(税込): 基本料金¥1,480/月{addonStoreCount > 0 ? ` + 追加店舗¥480/月×${addonStoreCount}店舗` : ""} = ¥{previewMonthlyTotal.toLocaleString()}(以後1か月ごとに自動更新) / 年額(税込): 基本料金¥12,800/年{addonStoreCount > 0 ? ` + 追加店舗¥4,800/年×${addonStoreCount}店舗` : ""} = ¥{previewYearlyTotal.toLocaleString()}(12か月分を1回で、以後1年ごとに自動更新)。解約は契約後、この画面からStripeカスタマーポータルを開いていつでも行えます。
                 </p>
                 {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
                 <div className="button-row">
-                  <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
-                    {checkoutBusyInterval === "month" ? "処理中…" : "月払いで再契約する"}
+                  <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval) || !agreedToLegalTerms} onClick={() => handleStartCheckout("month")}>
+                    {checkoutBusyInterval === "month" ? "処理中…" : "内容に同意して月払いで再契約する"}
                   </button>
-                  <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
-                    {checkoutBusyInterval === "year" ? "処理中…" : "年払いで再契約する"}
+                  <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval) || !agreedToLegalTerms} onClick={() => handleStartCheckout("year")}>
+                    {checkoutBusyInterval === "year" ? "処理中…" : "内容に同意して年払いで再契約する"}
                   </button>
                 </div>
+                <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 }}>
+                  <input type="checkbox" checked={agreedToLegalTerms} onChange={(event) => setAgreedToLegalTerms(event.target.checked)} />
+                  <span>
+                    <a href="/terms" target="_blank" rel="noopener noreferrer">利用規約</a>および
+                    <a href="/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a>
+                    に同意します(上のボタンは申し込み内容を確定し、Stripeの決済ページへ進みます)。
+                  </span>
+                </label>
               </>
             ) : (
               <>
                 <p className="helper-text">
                   月払い・年払いを選んで契約を開始できます。契約は1か月無料でお試しいただけ、その間はカードへの請求は発生しません(お試し開始時にカード登録が必要です)。カード情報はStripeの決済ページで安全に入力され、サロンマネージャー側には保存されません。現在の契約店舗数は{billableStoreCount}店舗です。
                 </p>
+                <p className="helper-text">
+                  無料期間終了日の目安: {formatDateLabel(previewTrialEndDate())}(実際の終了日は契約完了後にこの画面へ表示されます)。無料期間終了後は自動的に更新され、選択したプランの料金が自動で請求されます。解約は契約後、この画面からStripeカスタマーポータルを開いていつでも行えます(次回更新日の前日までの手続きで、それ以降の請求を止められます)。
+                </p>
                 {checkoutError ? <div className="notice-box error">{checkoutError}</div> : null}
                 <div className="button-row">
                   <div>
                     <p className="helper-text" style={{ margin: "0 0 6px" }}>
-                      月額プラン: 基本料金¥1,480/月{addonStoreCount > 0 ? ` + 追加店舗¥480/月×${addonStoreCount}店舗` : ""} → 無料期間終了後は月額¥{previewMonthlyTotal.toLocaleString()}
+                      月額プラン(税込): 基本料金¥1,480/月{addonStoreCount > 0 ? ` + 追加店舗¥480/月×${addonStoreCount}店舗` : ""} → 本日のお支払い¥0、無料期間終了後の初回請求から月額¥{previewMonthlyTotal.toLocaleString()}(以後1か月ごとに自動更新)
                     </p>
-                    <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("month")}>
-                      {checkoutBusyInterval === "month" ? "処理中…" : "1か月無料で始める(月払い)"}
+                    <button className="primary-button" type="button" disabled={Boolean(checkoutBusyInterval) || !agreedToLegalTerms} onClick={() => handleStartCheckout("month")}>
+                      {checkoutBusyInterval === "month" ? "処理中…" : "内容に同意して1か月無料で申し込む(月払い)"}
                     </button>
                   </div>
                   <div>
                     <p className="helper-text" style={{ margin: "0 0 6px" }}>
-                      年額プラン: 基本料金¥12,800/年{addonStoreCount > 0 ? ` + 追加店舗¥4,800/年×${addonStoreCount}店舗` : ""} → 無料期間終了後は年額¥{previewYearlyTotal.toLocaleString()}(12か月分を1回でお支払い)
+                      年額プラン(税込): 基本料金¥12,800/年{addonStoreCount > 0 ? ` + 追加店舗¥4,800/年×${addonStoreCount}店舗` : ""} → 本日のお支払い¥0、無料期間終了後の初回請求から年額¥{previewYearlyTotal.toLocaleString()}(12か月分を1回で、以後1年ごとに自動更新)
                     </p>
-                    <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval)} onClick={() => handleStartCheckout("year")}>
-                      {checkoutBusyInterval === "year" ? "処理中…" : "1か月無料で始める(年払い)"}
+                    <button className="secondary-button" type="button" disabled={Boolean(checkoutBusyInterval) || !agreedToLegalTerms} onClick={() => handleStartCheckout("year")}>
+                      {checkoutBusyInterval === "year" ? "処理中…" : "内容に同意して1か月無料で申し込む(年払い)"}
                     </button>
                   </div>
                 </div>
+                <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 }}>
+                  <input type="checkbox" checked={agreedToLegalTerms} onChange={(event) => setAgreedToLegalTerms(event.target.checked)} />
+                  <span>
+                    <a href="/terms" target="_blank" rel="noopener noreferrer">利用規約</a>および
+                    <a href="/privacy" target="_blank" rel="noopener noreferrer">プライバシーポリシー</a>
+                    に同意します(上のボタンは申し込み内容を確定し、Stripeの決済ページへ進みます)。
+                  </span>
+                </label>
               </>
             )}
           </section>

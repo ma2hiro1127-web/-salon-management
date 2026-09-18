@@ -196,7 +196,7 @@ Deno.serve(async (req) => {
       // する時点でemailの一意性チェックにも引っかからない)が、Supabase Auth側に未確認の
       // ユーザーが残り続け、その後「同じメールアドレスへ別会社から再招待」した際に
       // send-invite-email側の同種のクリーンアップ処理に依存しきりになってしまう
-      // (今回kkfine.a@gmail.comで実際に確認された状態)。ここでも同じ理由・同じ方法で
+      // (実際にこの状態が発生したケースを確認済み)。ここでも同じ理由・同じ方法で
       // 先んじて片付けておく——メール文字列の部分一致ではなく、完全一致するものだけを対象に
       // する。
       const lookupResp = await fetch(`${supabaseUrl}/auth/v1/admin/users?email=${encodeURIComponent(target.email || "")}`, {
