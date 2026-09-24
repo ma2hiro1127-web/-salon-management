@@ -2301,6 +2301,23 @@ function App() {
     setUnclosedStoresPopover(null);
   }, [selectedMonth, isAllStoresView]);
   const customerTargetSummary = useMemo(() => getCustomerTargetSummary({ customers: summary.customers, targetCustomers: summary.customerTarget, businessDayCount: summary.businessDays, completedDays: summary.completedDays, remainingBusinessDays: summary.remainingBusinessDays, targetAverageCustomersPerDay: parseNumber(target.targetAverageCustomersPerDay) }), [summary.businessDays, summary.completedDays, summary.customerTarget, summary.customers, summary.remainingBusinessDays, target.targetAverageCustomersPerDay]);
+  // 客数KPIカードの新規・再来内訳(2026-09追加)。既存のsummary.newCustomers/repeatCustomers
+  // (daily_sales.new_customer_count/repeat_customer_count由来、対象月の日次合計)をそのまま
+  // 使い、新しい集計ロジックやDBカラムは追加しない。総客数はsummary.customersを正として扱い、
+  // 新規+再来との差異があっても書き換えない(既存仕様を壊さない)。0除算はガードしてNaN/
+  // Infinityを出さない。
+  const customerBreakdownSummary = useMemo(() => {
+    const totalCustomers = parseNumber(summary.customers);
+    const newCustomers = parseNumber(summary.newCustomers);
+    const repeatCustomers = parseNumber(summary.repeatCustomers);
+    return {
+      customers: totalCustomers,
+      newCustomers,
+      repeatCustomers,
+      newCustomerRate: totalCustomers > 0 ? (newCustomers / totalCustomers) * 100 : 0,
+      repeatCustomerRate: totalCustomers > 0 ? (repeatCustomers / totalCustomers) * 100 : 0,
+    };
+  }, [summary.customers, summary.newCustomers, summary.repeatCustomers]);
   // 損益表・費用入力を使っていない店舗でも使える独立指標。店舗単位の設定値(生産性計算人数)
   // を使うだけで、月間目標や費用データの有無とは無関係に成立する。
   const staffProductivitySummary = useMemo(() => getStaffProductivitySummary({
@@ -8801,6 +8818,36 @@ function App() {
                     primary
                   />
                 ) : null}
+                {/* 総客数・新規・再来の内訳カード(2026-09追加)。目標設定(客数目標)の有無とは
+                    無関係な「実績の内訳」表示のため、hasCustomerTargetではなく客数・新規・再来
+                    の入力項目が揃っているか(analysisFieldsEnabled、既存の判定をそのまま再利用)
+                    だけで出し分ける。新規・再来の集計自体はcustomerBreakdownSummary(summary.
+                    newCustomers/repeatCustomers由来、対象月の日次合計)をそのまま使い、新しい
+                    集計ロジックは追加していない。スマホ幅専用の2列ペア(metric-card-customer-
+                    rate/metric-card-average-spend)には加えず、常に全幅で表示する(内訳が3行
+                    あるため、半分幅に押し込むと窮屈になるのを避ける)。 */}
+                {isInitialDataReady && analysisFieldsEnabled.customers && analysisFieldsEnabled.newCustomers && analysisFieldsEnabled.repeatCustomers ? (
+                  <MetricCard
+                    label="客数"
+                    value={`${number(customerBreakdownSummary.customers)}名`}
+                    secondary
+                    className="metric-card-customer-summary"
+                    footer={(
+                      <div className="metric-card-customer-breakdown">
+                        <div className="metric-card-customer-breakdown-item">
+                          <span className="metric-card-customer-breakdown-label">新規</span>
+                          <strong>{`${number(customerBreakdownSummary.newCustomers)}名`}</strong>
+                          <small>{`${customerBreakdownSummary.newCustomerRate.toFixed(1)}%`}</small>
+                        </div>
+                        <div className="metric-card-customer-breakdown-item">
+                          <span className="metric-card-customer-breakdown-label">再来</span>
+                          <strong>{`${number(customerBreakdownSummary.repeatCustomers)}名`}</strong>
+                          <small>{`${customerBreakdownSummary.repeatCustomerRate.toFixed(1)}%`}</small>
+                        </div>
+                      </div>
+                    )}
+                  />
+                ) : null}
                 {/* スマホUI改善(要件4): 客数達成率・平均客単価はスマホ幅だけ横並び2列にする。
                     DOM順・親要素は一切変更せず(=既存のPCレイアウトを1pxも変えない)、
                     ≤900pxの時だけこの2枚にmetric-card-customer-rate/metric-card-average-spend
@@ -11562,7 +11609,7 @@ function App() {
 // (順調/やや遅れ/要注意)——toneが同じ情報を色でも表すが、色覚特性等に依存しないよう文言も
 // 併記する。色の使い方自体は既存のtone(good/warning/danger)の仕組みをそのまま使い、新しい
 // 判定ロジックは追加しない(呼び出し元がforecastStatusTone等、既存計算値から渡すだけ)。
-function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", statusLabel = "", emphasize = false, hero = false, primary = false, secondary = false, className = "", onClick = null }) {
+function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", statusLabel = "", emphasize = false, hero = false, primary = false, secondary = false, className = "", onClick = null, footer = null }) {
   return (
     <div
       className={`metric-card ${tone} ${emphasize ? "emphasize" : ""} ${hero ? "hero" : ""} ${primary ? "metric-card-primary" : ""} ${secondary ? "metric-card-secondary" : ""} ${className} ${onClick ? "clickable" : ""}`}
@@ -11578,6 +11625,7 @@ function MetricCard({ label, value, secondaryValue = "", hint = "", tone = "", s
       <strong>{value}</strong>
       {secondaryValue ? <strong className="metric-card-secondary-value">{secondaryValue}</strong> : null}
       {hint ? <small>{hint}</small> : null}
+      {footer ? <div className="metric-card-footer">{footer}</div> : null}
     </div>
   );
 }

@@ -644,6 +644,17 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
    消すため、他のKPIカードの横幅・高さ・並び順が変わらない(要件)。カードの罫線・背景・影は
    一切継承しない(空のカード枠自体を表示しない、という要件)。 */
 .metric-card-placeholder { visibility: hidden; }
+/* 客数KPIカードの新規・再来内訳(2026-09追加)。カード自体の背景・角丸・余白・フォント等は
+   一切変更せず、カード下部に薄い区切り線で仕切った横2分割の内訳だけを追加する。人数は
+   少し強調(strong)、構成比は補助情報として小さめ(small)にする——他のMetricCardは
+   footerを渡さない限りこの領域自体が描画されないため、他カードの見た目には影響しない。 */
+.metric-card-footer { margin-top: 2px; padding-top: 6px; border-top: 1px solid var(--border); }
+.metric-card-customer-breakdown { display: flex; gap: 8px; }
+.metric-card-customer-breakdown-item { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 1px; padding-left: 8px; border-left: 1px solid var(--border); }
+.metric-card-customer-breakdown-item:first-child { padding-left: 0; border-left: none; }
+.metric-card-customer-breakdown-label { color: var(--muted); font-size: 0.72rem; }
+.metric-card-customer-breakdown-item strong { font-size: 0.88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric-card-customer-breakdown-item small { color: var(--muted); font-size: 0.7rem; white-space: nowrap; }
 .kpi-hero-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-bottom: 14px; }
 .target-setup-hint { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .target-setup-hint .helper-text { margin: 0; }
@@ -1039,6 +1050,15 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .metric-card { padding: 9px 10px; gap: 4px; }
   .metric-card span { font-size: 0.74rem; }
   .metric-card strong { font-size: 0.95rem; }
+  /* 客数カードは平均客単価と横並び2列(半分幅)になるため、新規・再来内訳もその幅に収まる
+     よう一段小さくする(文字が潰れたり折り返さないようにするための調整、計算・項目自体は
+     変更しない)。 */
+  .metric-card-footer { margin-top: 1px; padding-top: 5px; }
+  .metric-card-customer-breakdown { gap: 6px; }
+  .metric-card-customer-breakdown-item { padding-left: 6px; }
+  .metric-card-customer-breakdown-label { font-size: 0.66rem; }
+  .metric-card-customer-breakdown-item strong { font-size: 0.8rem; }
+  .metric-card-customer-breakdown-item small { font-size: 0.64rem; }
   .kpi-hero-grid { gap: 8px; margin-bottom: 10px; }
   .today-result-card { padding: 10px; }
   .status-stack { align-items: stretch; width: 100%; }
