@@ -46,20 +46,10 @@ export default function CompanyDashboardView({ companySummary }) {
     <div className="stack">
       <section className="panel">
         <div className="panel-heading">
-          <div><p className="eyebrow">SUMMARY</p><h2>会社全体サマリー</h2></div>
+          <div><p className="eyebrow">SUMMARY</p><h2>経営サマリー</h2></div>
         </div>
         <div className="summary-grid">
           <SummaryCard label="総売上" value={formatMoneyOrDash(companySummary.totalSales)} diff={diffPercent(companySummary.totalSales, p.totalSales, p.hasPrevious)} emphasize />
-          <SummaryCard
-            label="粗利"
-            value={formatMoneyOrDash(companySummary.totalGrossProfit, companySummary.hasGrossProfitData)}
-            diff={diffPercent(companySummary.totalGrossProfit, p.totalGrossProfit, p.hasPrevious && companySummary.hasGrossProfitData && p.hasGrossProfitData)}
-          />
-          <SummaryCard
-            label="粗利率"
-            value={formatPercentOrDash(companySummary.grossMargin, companySummary.hasGrossProfitData)}
-            diff={diffPercent(companySummary.grossMargin, p.grossMargin, p.hasPrevious && companySummary.hasGrossProfitData && p.hasGrossProfitData)}
-          />
           <SummaryCard
             label="営業利益"
             value={formatMoneyOrDash(companySummary.totalOperatingProfit, !companySummary.isProvisionalProfit)}
@@ -72,16 +62,61 @@ export default function CompanyDashboardView({ companySummary }) {
             diff={diffPercent(companySummary.operatingMargin, p.operatingMargin, p.hasPrevious && !companySummary.isProvisionalProfit && !p.isProvisionalProfit)}
           />
           <SummaryCard
-            label="総人件費"
-            value={formatMoneyOrDash(companySummary.totalLaborCost, companySummary.hasLaborData)}
-            diff={diffPercent(companySummary.totalLaborCost, p.totalLaborCost, p.hasPrevious && companySummary.hasLaborData && p.hasLaborData)}
-          />
-          <SummaryCard
             label="人件費率"
             value={formatPercentOrDash(companySummary.laborRate, companySummary.hasLaborData)}
             diff={diffPercent(companySummary.laborRate, p.laborRate, p.hasPrevious && companySummary.hasLaborData && p.hasLaborData)}
           />
+          <SummaryCard
+            label="材料費率"
+            value={formatPercentOrDash(companySummary.purchaseCostRate, companySummary.hasPurchaseData)}
+            diff={diffPercent(companySummary.purchaseCostRate, p.purchaseCostRate, p.hasPrevious && companySummary.hasPurchaseData && p.hasPurchaseData)}
+          />
+          <SummaryCard
+            label="固定費率"
+            value={formatPercentOrDash(companySummary.fixedCostRate, companySummary.hasFixedCostData)}
+          />
+          <SummaryCard
+            label="スタッフ生産性"
+            value={formatMoneyOrDash(companySummary.staffProductivity.current, companySummary.staffProductivity.hasStaffCount)}
+            diff={diffPercent(companySummary.staffProductivity.current, p.staffProductivity.current, p.hasPrevious && p.staffProductivity.hasStaffCount)}
+          />
+          {companySummary.hasSalesTarget ? (
+            <SummaryCard label="売上目標達成率" value={formatPercentOrDash(companySummary.targetAchievement, true)} />
+          ) : null}
           <SummaryCard label="店舗数" value={`${companySummary.storeCount}店舗`} showDiff={false} />
+        </div>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <div><p className="eyebrow">COST</p><h2>コスト構成</h2></div>
+        </div>
+        <div className="table-wrap">
+          <table className="dashboard-cost-table">
+            <thead><tr><th>費用カテゴリ</th><th>金額</th><th>売上比率</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>人件費</td>
+                <td>{formatMoneyOrDash(companySummary.totalLaborCost, companySummary.hasLaborData)}</td>
+                <td>{formatPercentOrDash(companySummary.laborRate, companySummary.hasLaborData)}</td>
+              </tr>
+              <tr>
+                <td>発注費(材料原価)</td>
+                <td>{formatMoneyOrDash(companySummary.totalPurchaseCost, companySummary.hasPurchaseData)}</td>
+                <td>{formatPercentOrDash(companySummary.purchaseCostRate, companySummary.hasPurchaseData)}</td>
+              </tr>
+              <tr>
+                <td>固定費</td>
+                <td>{formatMoneyOrDash(companySummary.totalFixedCost, companySummary.hasFixedCostData)}</td>
+                <td>{formatPercentOrDash(companySummary.fixedCostRate, companySummary.hasFixedCostData)}</td>
+              </tr>
+              <tr>
+                <td>広告費</td>
+                <td>{formatMoneyOrDash(companySummary.totalAdCost, companySummary.hasAdData)}</td>
+                <td>{formatPercentOrDash(companySummary.adRate, companySummary.hasAdData)}</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 

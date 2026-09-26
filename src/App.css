@@ -1299,11 +1299,31 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .monthly-review-analysis-title { display: block; font-size: 0.92rem; margin-bottom: 2px; }
 .monthly-review-analysis-detail { margin: 0; font-size: 0.84rem; color: var(--muted); line-height: 1.4; }
 
+/* 要因分析(2026-09追加、要件5): 変化が大きかった項目カードの下部に「主な変化」として
+   関連KPIの実測値を並べる。既存の.monthly-review-metric-rowを縮小して再利用するだけで、
+   新しい配色・カード階層は増やさない。 */
+.monthly-review-analysis-related { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
+.monthly-review-analysis-related-label { margin: 0; font-size: 0.72rem; color: var(--muted); font-weight: 700; }
+.monthly-review-metric-row.compact { padding: 6px 10px; background: var(--surface); }
+.monthly-review-metric-row.compact .monthly-review-metric-label { font-size: 0.82rem; min-width: 90px; }
+
+/* 来月確認するポイント(要件7)。「変化が大きかった項目」と同じ落ち着いたトーン(警告色を
+   使わない)で、現状値・前月値だけを軽く添える簡易リストにする。 */
+.monthly-review-next-focus-list { display: flex; flex-direction: column; gap: 8px; }
+.monthly-review-next-focus-item {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-strong);
+}
+.monthly-review-next-focus-label { min-width: 110px; }
+.monthly-review-next-focus-current { font-weight: 700; }
+.monthly-review-next-focus-previous { font-size: 0.78rem; color: var(--muted); }
+
 @media (max-width: 640px) {
   .monthly-review-metric-row { flex-direction: column; align-items: flex-start; }
   .monthly-review-metric-values { width: 100%; justify-content: space-between; gap: 8px; }
   .monthly-review-metric-value-block { align-items: flex-start; min-width: 0; }
   .monthly-review-metric-diff { text-align: left; }
+  .monthly-review-next-focus-item { flex-direction: column; align-items: flex-start; gap: 4px; }
 }
 
 /* AI広告自動運用システム(V1、system_admin専用)。常設の注意書きバナー・広告一覧の

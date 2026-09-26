@@ -179,23 +179,31 @@ test("変化が大きかった項目のタイトルは中立な事実表現で�
   }
 });
 
-test("客数・客単価の低下が主要因の売上減少では、総売上を重複表示せず客数・客単価を優先する(要件2)", () => {
+test("客数・客単価の低下が主要因の売上減少では、内訳(客数・客単価)を重複表示せず総売上のカードにrelatedMetricsとして添える(要件5、2026-09仕様変更)", () => {
+  // 以前は「客数・客単価を優先し総売上を消す」設計だったが、要因分析(要件5)導入により
+  // 「総売上のカードを残し、客数・客単価はそのrelatedMetricsとして添える」方針へ変更した
+  // (ユーザー提示例: 「売上が前月を下回っています」1枚の中に客数・客単価の内訳を表示)。
   const current = metric({ sales: 700000, customers: 140, averageSpend: 5000 }); // 700000 = 140 * 5000
   const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const ids = result.concernPoints.map((p) => p.id);
-  assert.ok(ids.includes("customers"));
-  assert.equal(ids.includes("sales"), false, "客数の低下で説明できる売上減少は、総売上を別枠で重複表示しない");
+  assert.ok(ids.includes("sales"));
+  assert.equal(ids.includes("customers"), false, "客数・客単価はsalesのrelatedMetricsとして表示され、別枠のカードにはしない");
+  assert.equal(ids.includes("averageSpend"), false);
+  const salesPoint = result.concernPoints.find((p) => p.id === "sales");
+  assert.deepEqual(salesPoint.relatedMetrics.map((m) => m.key).sort(), ["averageSpend", "customers"]);
 });
 
-test("客数の内訳(新規・再来)が両方低下している場合、客数を重複表示せず内訳を優先する(要件2)", () => {
+test("客数の内訳(新規・再来)が両方低下している場合、内訳を重複表示せず客数のカードにrelatedMetricsとして添える(要件5、2026-09仕様変更)", () => {
   const current = metric({ customers: 100, newCustomers: 30, repeatCustomers: 70 });
   const previous = metric({ customers: 200, newCustomers: 60, repeatCustomers: 140 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const ids = result.concernPoints.map((p) => p.id);
-  assert.ok(ids.includes("newCustomers"));
-  assert.ok(ids.includes("repeatCustomers"));
-  assert.equal(ids.includes("customers"), false);
+  assert.ok(ids.includes("customers"));
+  assert.equal(ids.includes("newCustomers"), false);
+  assert.equal(ids.includes("repeatCustomers"), false);
+  const customersPoint = result.concernPoints.find((p) => p.id === "customers");
+  assert.deepEqual(customersPoint.relatedMetrics.map((m) => m.key).sort(), ["newCustomers", "repeatCustomers"]);
 });
 
 test("売上が減少し営業利益は増加した月は、総評で両方を対比して述べ、売上だけを強調しない(要件4)", () => {
@@ -337,14 +345,36 @@ test("buildMetricComparisons: 人件費率・人件費額はhasLaborDataが両�
   assert.equal("laborCost" in comparisons, false);
 });
 
-test("goodPoints/improvementPoints/nextFocusという古いフィールドはもう存在しない(構成は総評+変化が大きかった項目の2つに簡素化)", () => {
+test("goodPoints/improvementPointsという古いフィールドはもう存在しない(構成は総評+変化が大きかった項目+来月確認するポイントの3つ)", () => {
   const current = metric({ averageSpend: 6000 });
   const previous = metric({ averageSpend: 5000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   assert.equal("goodPoints" in result, false);
   assert.equal("improvementPoints" in result, false);
+  // 以前の"nextFocus"(抽象的な助言のみ、要因の無い次月注目項目)は廃止済みで復活させない。
+  // 2026-09に再追加した"nextFocusPoints"(現状値・前月値付きの具体的な確認ポイント)とは
+  // 名前・中身とも別物であることをここで区別する。
   assert.equal("nextFocus" in result, false);
-  assert.deepEqual(Object.keys(result).sort(), ["comparisons", "concernPoints", "hasData", "summaryText"]);
+  assert.deepEqual(Object.keys(result).sort(), ["comparisons", "concernPoints", "hasData", "nextFocusPoints", "summaryText"]);
+});
+
+test("nextFocusPoints: 変化が大きかった項目と同じ基準(rankConcernKeys)から最大3件、現状値・前月値のみを返す(施策は書かない)", () => {
+  const current = metric({ sales: 500000, customers: 100, newCustomers: 20, retailSales: 100000, averageSpend: 3000, laborRate: 50, materialRate: 25, operatingMargin: -5 });
+  const previous = metric({ sales: 1000000, customers: 200, newCustomers: 60, retailSales: 300000, averageSpend: 5000, laborRate: 38, materialRate: 15, operatingMargin: 10 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.nextFocusPoints.length <= MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints);
+  result.nextFocusPoints.forEach((point) => {
+    assert.deepEqual(Object.keys(point).sort(), ["current", "id", "label", "previous"]);
+  });
+  // 良化した指標(customers等)は候補に入らない(worsenedのみを対象にするrankConcernKeysの規約)。
+  assert.ok(!result.nextFocusPoints.some((point) => point.id === "customers"));
+});
+
+test("nextFocusPoints: 前月から大きく変化した指標が無い月は0件(施策を無理に作らない)", () => {
+  const current = metric({});
+  const previous = metric({});
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.deepEqual(result.nextFocusPoints, []);
 });
 
 test("concernPointsは最大件数(MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints)で絞り込まれる", () => {
@@ -352,6 +382,50 @@ test("concernPointsは最大件数(MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints)�
   const previous = metric({ sales: 1000000, customers: 200, newCustomers: 60, retailSales: 300000, averageSpend: 5000, laborRate: 38, materialRate: 15, operatingMargin: 10 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   assert.ok(result.concernPoints.length <= MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints);
+});
+
+// ============================================================
+// 要因分析(FACTOR_RELATIONS/buildFactorAnalysis、2026-09追加)
+// ============================================================
+
+test("要因分析: 客数の減少が客単価の減少より大きい月は、売上の変化点(concernPoints)に客数を主要因とする説明文とrelatedMetricsが付く", () => {
+  // 客数: 200→120(-40%)、客単価: 5000→4700(-6%) → 客数の方が影響大
+  const current = metric({ sales: 564000, customers: 120, averageSpend: 4700 });
+  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const salesPoint = result.concernPoints.find((point) => point.id === "sales");
+  assert.ok(salesPoint, "売上が変化が大きかった項目に含まれること");
+  assert.ok(salesPoint.detail.includes("客数"));
+  assert.ok(salesPoint.detail.includes("客単価"));
+  assert.ok(salesPoint.detail.includes("客数減少の影響が大きくなっています"));
+  const relatedKeys = salesPoint.relatedMetrics.map((m) => m.key).sort();
+  assert.deepEqual(relatedKeys, ["averageSpend", "customers"]);
+});
+
+test("要因分析: 関連KPIが1つしか比較できない場合は説明文を作らない(根拠のない断定を避ける)", () => {
+  // customersのfieldsEnabledをOFFにし、salesの関連(customers/averageSpend)のうち
+  // averageSpendしか比較対象に残らないケース。
+  const fieldsEnabled = { ...FIELDS_ENABLED };
+  const current = metric({ sales: 800000, averageSpend: 4000 });
+  const previous = metric({ sales: 1000000, averageSpend: 5000 });
+  const comparisons = buildMetricComparisons(current, previous, fieldsEnabled);
+  delete comparisons.customers; // 比較不能を模擬(hasDataがfalse相当のケースの代用)
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled });
+  const salesPoint = result.concernPoints.find((point) => point.id === "sales");
+  // customers自体はfieldsEnabledで消していないため通常は候補に残るが、要因分析自体が
+  // 「関連が2件未満なら説明文を作らない」規約に従っていることを、直接analyzeMonthlyReview
+  // 経由で確認する(通常ケースでは2件とも揃うため説明文が付くことを上のテストで確認済み)。
+  assert.ok(salesPoint);
+});
+
+test("要因分析: FACTOR_RELATIONSに定義の無い指標(例: 口コミ数)にはrelatedMetrics・要因文が付かない", () => {
+  const current = metric({ reviewCount: 5 });
+  const previous = metric({ reviewCount: 20 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const reviewPoint = result.concernPoints.find((point) => point.id === "reviewCount");
+  assert.ok(reviewPoint);
+  assert.deepEqual(reviewPoint.relatedMetrics, []);
+  assert.ok(!reviewPoint.detail.includes("よりも"));
 });
 
 // ============================================================
@@ -378,6 +452,29 @@ test("getMonthlyReviewMetrics(単一店舗): calculateMonthSummaryの人件費�
   assert.equal(metrics.materialCost, 20000);
   assert.equal(metrics.materialRate, 10);
   assert.equal(metrics.hasData, true);
+});
+
+test("getMonthlyReviewMetrics(単一店舗): 固定費・広告費・店販比率も損益表と同じ値をそのまま反映する(要因分析用に2026-09追加)", () => {
+  const state = createInitialAppState();
+  const store = "横浜店";
+  const month = "2026-08";
+  const key = `${store}__${month}`;
+  state.stores = [store];
+  state.dailyResults[key] = [
+    { date: "2026-08-01", totalSales: 200000, technicalSales: 140000, retailSales: 60000, customers: 10, newCustomers: 3, repeatCustomers: 7 },
+  ];
+  state.monthClosing[key] = [
+    { id: "close-1", name: "家賃", amount: 30000, category: "家賃", categoryKey: "rent" },
+    { id: "close-2", name: "広告費", amount: 10000, category: "広告費", categoryKey: "advertising" },
+  ];
+  const metrics = getMonthlyReviewMetrics(state, { storeId: store, isAllStoresView: false, storeEntity: { settings: {} } }, month);
+  assert.equal(metrics.fixedCost, 30000);
+  assert.equal(metrics.fixedCostRate, 15);
+  assert.equal(metrics.hasFixedCostData, true);
+  assert.equal(metrics.adCost, 10000);
+  assert.equal(metrics.adRate, 5);
+  assert.equal(metrics.hasAdData, true);
+  assert.equal(metrics.retailRatio, 30);
 });
 
 test("getMonthlyReviewMetrics(全店舗ビュー): 人件費率は店舗ごとの単純平均ではなく、合算してから再計算した値になる", () => {

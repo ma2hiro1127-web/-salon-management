@@ -149,7 +149,7 @@ export const getVisibleNavItems = (role) => {
     category: NAV_ITEM_CATEGORY[page] || "other",
     label: {
       dashboard: "売上",
-      monthlyDashboard: "月次ダッシュボード",
+      monthlyDashboard: "経営ダッシュボード",
       monthlyReview: "月次レビュー",
       daily: "日次入力",
       monthly: "管理画面",
