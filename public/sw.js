@@ -873,8 +873,8 @@
 // (company_adminが自社のみセルフサービスで再開可能)を追加。companiesテーブルへの列追加
 // (すべてnullable)のみで既存データは無変更。Stripe Webhook受信の土台も追加(実際の
 // Stripe連携・支払い方法入力は未実装、次フェーズ)。
-// v154: 売上KPIに客数(総客数・新規・再来内訳)カードを追加(App.jsx/App.css)。
-const CACHE_NAME = 'salon-manager-cache-v154';
+// v155: 売上/経営ダッシュボード/月次レビューの役割分離・月次レビュー要因分析追加。
+const CACHE_NAME = 'salon-manager-cache-v155';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
