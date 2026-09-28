@@ -11569,9 +11569,6 @@ function App() {
           <MonthlyReviewPage
             summary={monthlyReviewSummary}
             analysis={monthlyReviewAnalysisResult}
-            monthValue={selectedMonth}
-            isAllStoresView={isAllStoresView}
-            storeName={isAllStoresView ? "全店舗" : (selectedStoreEntity?.name || selectedStore)}
           />
         )}
         {activePage === "faq" && (

@@ -1267,29 +1267,10 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
   .modal-card { padding: 14px; max-width: 100%; }
 }
 
-/* 月次レビュー(利益管理ではない、店舗・会社全体で共有する数字サマリー+自由記述)。
-   既存の.panel/.value-pill/.helper-textをそのまま使い、この画面専用の新しいカード階層・
-   独自の色トークンは作らない — 幹部MT・店舗MT共有でそのまま画面を見せられるデザインという
-   要件を、既存の見慣れたパネルの並びの延長として実現するため。 */
-.monthly-review-context-strip { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
-
-.monthly-review-metric-list { display: flex; flex-direction: column; gap: 10px; }
-/* 「今月」「前月」「前月比」が一目で並ぶ1行(要件4)。狭い画面ではラベル→3つの値、を
-   縦に積む(横スクロールさせない、要件15)。 */
-.monthly-review-metric-row {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-strong);
-}
-.monthly-review-metric-label { font-weight: 700; min-width: 110px; }
-.monthly-review-metric-values { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-.monthly-review-metric-value-block { display: flex; flex-direction: column; align-items: flex-end; min-width: 84px; }
-.monthly-review-metric-value-tag { font-size: 0.7rem; color: var(--muted); }
-.monthly-review-metric-diff { min-width: 64px; text-align: right; font-weight: 700; color: var(--muted); }
-.monthly-review-metric-diff.positive { color: var(--success); }
-.monthly-review-metric-diff.negative { color: var(--danger); }
-
-/* 月次レビュー自動分析(2026-09追加、自由記述4項目を廃止して置き換え)。日次の
-   要確認ポイントカードと同じトーン方針(重要度が高いものだけ色を付ける)を踏襲する。 */
+/* 月次レビュー(利益管理ではない、店舗・会社全体で共有する数字サマリー)。既存の
+   .panel/.value-pill/.helper-textをそのまま使い、この画面専用の新しいカード階層・独自の
+   色トークンは作らない。店舗・対象月の選択とページタイトルは共通ヘッダー側にあるため、
+   この画面内では独自のヘッダーカードを持たない(2026-09改訂、重複表示の解消)。 */
 .monthly-review-summary-text { margin: 0; line-height: 1.7; color: var(--text); }
 .monthly-review-analysis-list { display: flex; flex-direction: column; gap: 10px; }
 .monthly-review-analysis-point { padding: 10px 12px; border-radius: 12px; background: rgba(100, 116, 139, 0.08); border-left: 3px solid var(--muted); }
@@ -1299,30 +1280,22 @@ th, td { padding: 10px 8px; border-bottom: 1px solid var(--border); text-align: 
 .monthly-review-analysis-title { display: block; font-size: 0.92rem; margin-bottom: 2px; }
 .monthly-review-analysis-detail { margin: 0; font-size: 0.84rem; color: var(--muted); line-height: 1.4; }
 
-/* 要因分析(2026-09追加、要件5): 変化が大きかった項目カードの下部に「主な変化」として
-   関連KPIの実測値を並べる。既存の.monthly-review-metric-rowを縮小して再利用するだけで、
-   新しい配色・カード階層は増やさない。 */
-.monthly-review-analysis-related { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 6px; }
-.monthly-review-analysis-related-label { margin: 0; font-size: 0.72rem; color: var(--muted); font-weight: 700; }
-.monthly-review-metric-row.compact { padding: 6px 10px; background: var(--surface); }
-.monthly-review-metric-row.compact .monthly-review-metric-label { font-size: 0.82rem; min-width: 90px; }
+/* 利益低下・改善の主な要因(2026-09追加、要件6)。「なぜそうなったか」を1指標1行の
+   箇条書きで示す簡素なリスト——新しい配色・カード階層は増やさない。 */
+.monthly-review-driver-list { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 6px; }
+.monthly-review-driver-item { font-size: 0.9rem; color: var(--text); line-height: 1.5; }
 
-/* 来月確認するポイント(要件7)。「変化が大きかった項目」と同じ落ち着いたトーン(警告色を
-   使わない)で、現状値・前月値だけを軽く添える簡易リストにする。 */
+/* 来月確認するポイント(2026-09改訂): 今月の数値の再掲示ではなく、「来月何を確認すべきか」
+   という視点だけを軽く添える簡易リストにする(警告色は使わない)。 */
 .monthly-review-next-focus-list { display: flex; flex-direction: column; gap: 8px; }
 .monthly-review-next-focus-item {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-strong);
 }
 .monthly-review-next-focus-label { min-width: 110px; }
-.monthly-review-next-focus-current { font-weight: 700; }
-.monthly-review-next-focus-previous { font-size: 0.78rem; color: var(--muted); }
+.monthly-review-next-focus-viewpoint { color: var(--muted); }
 
 @media (max-width: 640px) {
-  .monthly-review-metric-row { flex-direction: column; align-items: flex-start; }
-  .monthly-review-metric-values { width: 100%; justify-content: space-between; gap: 8px; }
-  .monthly-review-metric-value-block { align-items: flex-start; min-width: 0; }
-  .monthly-review-metric-diff { text-align: left; }
   .monthly-review-next-focus-item { flex-direction: column; align-items: flex-start; gap: 4px; }
 }
 
