@@ -873,8 +873,8 @@
 // (company_adminが自社のみセルフサービスで再開可能)を追加。companiesテーブルへの列追加
 // (すべてnullable)のみで既存データは無変更。Stripe Webhook受信の土台も追加(実際の
 // Stripe連携・支払い方法入力は未実装、次フェーズ)。
-// v156: 割合の変化量表記を「pt」から「%」へ統一(formatRateChange共通化)。
-const CACHE_NAME = 'salon-manager-cache-v156';
+// v157: 月次レビューの文章表現・数値表記ルールを全面統一(前月→今月の実数値表記)。
+const CACHE_NAME = 'salon-manager-cache-v157';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
