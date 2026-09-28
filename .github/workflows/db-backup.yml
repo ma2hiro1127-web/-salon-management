@@ -77,35 +77,15 @@ jobs:
           chmod +x scripts/backup/*.sh
           ./scripts/backup/run_backup.sh "$RUNNER_TEMP/dump"
 
-      # 2026-09-11追加(要件: GitHub Actions Artifactとしても保存する)。長期保存・世代管理は
-      # 引き続き下のbackup-repo(daily 7日/weekly 4週/monthly 3か月のローテーション)が主体だが、
-      # backup-repoへのpushが何らかの理由で失敗した場合でも、この時点までに取得済みのダンプが
-      # Artifactとして必ず残るようにする(2つの独立した保存先による冗長化)。接続情報等の
-      # 機密は一切含まれない(dump本体はDBの中身のみ、パスワード等はどこにも書き出していない)。
-      - name: Compress dump files for Artifact
-        run: |
-          set -euo pipefail
-          DATE_TAG="$(date -u +%Y-%m-%d)"
-          echo "DATE_TAG=$DATE_TAG" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/artifact"
-          for f in roles.sql schema.sql data.sql; do
-            gzip -9 -c "$RUNNER_TEMP/dump/$f" > "$RUNNER_TEMP/artifact/$f.gz"
-          done
-          ls -la "$RUNNER_TEMP/artifact"
-
-      - name: Upload backup as GitHub Actions Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          # ファイル名(Artifact名)に実行日時(UTC日付)を含める(要件)。同日に手動実行を
-          # 複数回行っても、run_idが異なるため名前が衝突することはない。
-          name: db-backup-${{ env.DATE_TAG }}-run${{ github.run_number }}
-          path: ${{ runner.temp }}/artifact/*.gz
-          # 保存期間を明示する(要件)。backup-repo側がdaily 7日/weekly 4週/monthly 3か月の
-          # 長期保存を担うため、Artifact側は「直近の障害対応にすぐ使える」ことを目的とした
-          # 35日(約5週間、backup-repoのweekly世代と同程度の期間)に設定する。
-          retention-days: 35
-          if-no-files-found: error
-
+      # 2026-09-11に「GitHub Actions Artifactへも保存する」冗長化を追加していたが、2026-09-28の
+      # 販売前バックアップ点検で、このリポジトリ(ma2hiro1127-web/-salon-management)自体が
+      # publicであることが判明した。publicリポジトリのActions Artifactは誰でも閲覧・
+      # ダウンロードできてしまうため、実データ(会社名・日次売上・profiles.email等の個人情報を
+      # 含む)をそのままArtifactとして置くと機密データの公開流出になる——dump本体に接続情報等の
+      # 機密が含まれないことは事実だが、業務データ自体が機密であることを見落としていた設計
+      # ミスだったため、Artifactへのアップロードは撤去した。長期保存・世代管理は元々
+      # このステップの主目的ではなく、常にプライベートなbackup-repo(daily 7日/weekly 4週/
+      # monthly 3か月)側が主体だったため、バックアップ能力自体はこの変更で低下しない。
       - name: Checkout private backup repository
         uses: actions/checkout@v4
         with:
@@ -117,6 +97,35 @@ jobs:
         run: |
           chmod +x scripts/backup/store_and_prune.sh
           ./scripts/backup/store_and_prune.sh "$RUNNER_TEMP/dump" backup-repo
+
+      # 2026-09-28追加(要件6: DBバックアップだけではSupabase Storage内のファイル実体は
+      # 復旧できないため)。現在使用中のsupport-attachmentsバケットのみを対象にする(バケットが
+      # 増えた場合は個別に追加すること)。SUPABASE_SERVICE_ROLE_KEYが未設定の間はこのステップが
+      # 失敗するが、continue-on-errorによりジョブ全体は失敗させず、次の警告ステップで
+      # 明示的にログへ知らせるだけにする——DBバックアップ(既に10日以上安定稼働中)がこの新機能
+      # の設定待ちで毎日失敗通知になるのを避けるための意図的な設計。Secret追加後は自動的に
+      # 成功するようになる(コード変更は不要)。
+      - name: Run storage backup (support-attachments)
+        id: storage_backup
+        continue-on-error: true
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_PROJECT_REF: mtjiauhliezbjjpqpvuj
+        run: |
+          chmod +x scripts/backup/backup_storage.sh
+          ./scripts/backup/backup_storage.sh "$RUNNER_TEMP/storage/support-attachments" support-attachments
+
+      - name: Store storage backup generation + prune old ones
+        if: steps.storage_backup.outcome == 'success'
+        run: |
+          chmod +x scripts/backup/store_and_prune_storage.sh
+          ./scripts/backup/store_and_prune_storage.sh "$RUNNER_TEMP/storage/support-attachments/files" backup-repo support-attachments
+
+      - name: Warn if storage backup failed
+        if: steps.storage_backup.outcome != 'success'
+        run: |
+          echo "::warning::Storageバックアップ(support-attachments)に失敗しました。SUPABASE_SERVICE_ROLE_KEY(GitHub Secrets)が未設定/不正の可能性があります。DBバックアップ自体はこの失敗と無関係に完了しています — docs/backup-restore.mdを参照してください。"
 
       - name: Commit and push
         working-directory: backup-repo
