@@ -1,25 +1,22 @@
-// 月次レビュー自動分析(2026-09追加、2026-09に5度改訂)。生成AI APIは一切使わず、既存の
+// 月次レビュー自動分析(2026-09追加、2026-09に6度改訂)。生成AI APIは一切使わず、既存の
 // 月次損益計算(calculateMonthSummary/calculateAllStoresMonthSummary/getCompanyDashboardSummary)
-// の戻り値を読むだけで、①総評 ②変化が大きかった項目 ③利益低下・改善の主な要因
+// の戻り値を読むだけで、①総評 ②変化が大きかった項目 ③利益に影響した主な要因
 // ④来月確認するポイント、の4ブロックをテンプレート+数値判定で自動生成する。
 //
-// 2026-09再改訂(5回目)の経緯・要件: 月次ダッシュボード(数字を見るページ)と月次レビュー
-// (1ヶ月を振り返り、何が起きたか・なぜそうなったか・来月何を見るかを確認するページ)の
-// 役割を明確に分けた。
-//   - 「変化が大きかった項目」の選定基準を、①売上の大きな変化 ②実額として増減した費用
-//     ③営業利益・営業利益率の変化 ④主要KPIの変化、という優先順位に変更した。人件費率・
-//     材料費率・固定費率のような「率」自体はもう単独の候補にしない——率が動いた原因が
-//     費用の実額増加(真の原因)である場合だけ、その費用(実額)を候補にする。金額は横ばい・
-//     減少なのに売上の減少に追いつかず相対的に率が動いただけの費用は、候補には出さず
-//     ③の「利益低下・改善の主な要因」でのみ言及する(要件7・8の核心: 「率が上がった=
-//     原因」と短絡させない)。
-//   - 営業利益と営業利益率は1枚のカードにまとめ(要件4)、人件費率・材料費率・固定費率を
-//     別々に列挙して重複表示する旧構成(要件5で指摘)を廃止した。
-//   - 「利益低下の主な要因」/「利益改善の主な要因」という新しいセクションを追加し(要件6)、
-//     「率が上がった」ではなく「なぜ率が上がったのか」を箇条書きで説明する。
-//   - 「来月確認するポイント」は今月の数値の再掲示をやめ、「来月何を確認すべきか」という
-//     視点(viewpoint)のテキストへ変更した(要件9)。
-//   - 総評は2〜3文に短縮し、「変化が大きかった項目」との内容重複を避けた(要件3)。
+// 2026-09最終改訂(6回目)の経緯・要件: 「1〜2分で①今月どうだったか②何が大きく変わったか
+// ③何が利益に影響したか④来月何を確認するべきか、が分かる経営判断用レビュー」を最終形とする。
+//   - 「変化が大きかった項目」の優先順位を①総売上②営業利益・営業利益率③材料・仕入原価の
+//     実額④人件費の実額⑤主要KPI⑥その他費用率、へ変更した(経営上意味のある「実額の変化」
+//     を「率の変化」より優先する)。カードの内容は「数字の変化を示すだけ」に純化し
+//     (原因の説明は一切含めない)、原因の説明は③のセクションに一本化した(重複表示の解消)。
+//   - ③のセクション名は営業利益の方向で自動的に変わる(悪化→「利益低下の主な要因」、
+//     改善→「利益改善の主な要因」、ほぼ横ばい→「営業利益に影響した主な要因」)。最大4件。
+//     売上が大きく変化した月は、データがある範囲で客数・客単価・新規/再来客のどれが
+//     主な要因かも補足する(良かった変化も悪かった変化も拾う)。
+//   - 「来月確認するポイント」は指標ごとに「来月何を見るか」という視点(viewpoint)を
+//     状況に応じて自動で変える(固定の文言を毎月出さない)。
+//   - 総評は2〜3文に短縮し、必要な場合のみ売上目標の達成率にも触れる(達成率だけで
+//     良し悪しを決めず、必ず営業利益と合わせて評価する)。
 //
 // 設計方針(変わらない部分):
 //   1. compareMonthlyMetric()で当月値・前月値・差分(当月-前月)・前月比%・改善/悪化判定を
@@ -71,7 +68,7 @@ const METRIC_DEFS = {
 // 費用の「率」とその根拠になる「金額」の対応表(2026-09改訂の中心)。率が動いた理由を
 // 判定する際、この対応表にある指標だけは「金額自体が動いたか(真の原因)」「金額は横ばい・
 // 減少なのに売上の増減に追いつかず相対的に率が動いただけか(結果)」を区別する
-// (classifyCostDriver/buildCostRateClause参照)。
+// (classifyCostDriver参照)。
 const RATE_TO_AMOUNT_KEY = {
   laborRate: "laborCost",
   materialRate: "materialCost",
@@ -79,9 +76,26 @@ const RATE_TO_AMOUNT_KEY = {
   adRate: "adCost",
 };
 
-// 「変化が大きかった項目」の候補になる主要KPI(④、優先度最下位)。総売上(①)・費用の実額
-// (②)・営業利益/営業利益率(③)より後に評価する。
+// 「変化が大きかった項目」の候補になる主要KPI(⑤、優先度は費用の実額より後)。
 const KPI_KEYS = ["customers", "newCustomers", "repeatCustomers", "averageSpend", "reviewCount", "technicalSales", "retailSales"];
+
+// 「来月確認するポイント」の視点(viewpoint)テンプレート(要件14・15)。今月の数値を
+// 再掲示するのではなく、指標ごとに「来月何を見るか」を状況に応じて自動で変える。
+const KPI_NEXT_FOCUS_VIEWPOINT = {
+  customers: { worsened: "客数が回復しているか", improved: "引き続き客数を維持できているか" },
+  newCustomers: { worsened: "新規客数が回復しているか", improved: "引き続き新規客数を維持できているか" },
+  repeatCustomers: { worsened: "再来客数が改善しているか", improved: "引き続き再来客数を維持できているか" },
+  averageSpend: { worsened: "客単価が回復しているか", improved: "引き続き客単価を維持できているか" },
+  reviewCount: { worsened: "口コミ数が回復しているか", improved: "引き続き口コミ数を維持できているか" },
+  technicalSales: { worsened: "技術売上が回復しているか", improved: "引き続き技術売上を維持できているか" },
+  retailSales: { worsened: "店販売上が回復しているか", improved: "引き続き店販売上を維持できているか" },
+};
+const COST_NEXT_FOCUS_VIEWPOINT = {
+  materialCost: { worsened: "実額と原価率の両方が適正化しているか", improved: "実額と原価率の改善が続いているか" },
+  laborCost: { worsened: "売上に対して人件費が適正化しているか", improved: "人件費の適正な水準が続いているか" },
+  fixedCost: { worsened: "売上に対して固定費の負担割合が適正化しているか", improved: "固定費の負担割合が適正な水準を維持できているか" },
+  adCost: { worsened: "売上に対して広告費が適正化しているか", improved: "広告費の適正な水準が続いているか" },
+};
 
 // 同じ変化から派生する項目を重複して並べない(要件: 総売上の内訳としての客数・客単価、
 // 客数の内訳としての新規・再来を、合計側が候補に挙がった時だけ吸収する)。
@@ -247,60 +261,21 @@ function classifyCostDriver(rateKey, comparisons) {
   return { type: "relative" };
 }
 
-// 固定費は人件費・材料費と違い、売上に応じて自然に増減する性質の費用ではない。そのため
-// 「費用側の増減幅が売上に追いついていない」という変動費向けの説明ではなく、「売上が減った
-// ことで、動かない固定費の負担割合が相対的に重くなった」という固定費特有の表現にする。
-function buildCostRateClause(rateKey, comparisons) {
-  const amountKey = RATE_TO_AMOUNT_KEY[rateKey];
-  if (!amountKey) return "";
-  const rate = comparisons[rateKey];
-  const sales = comparisons.sales;
-  const amount = comparisons[amountKey];
-  const classification = classifyCostDriver(rateKey, comparisons);
-  if (!classification) return "";
-
-  const rateLabel = METRIC_DEFS[rateKey].label;
-  const amountLabel = METRIC_DEFS[amountKey].label;
-  const isFixedCost = rateKey === "fixedCostRate";
-
-  if (rate.judgment === "worsened") {
-    if (classification.type === "genuine") {
-      if (isFixedCost) return `${amountLabel}の増加も営業利益低下に影響しています。`;
-      if (sales.diff < 0) {
-        return `売上が減少する中で${amountLabel}が増加しているため、${rateLabel}が上昇しています。`;
-      }
-      return `売上の増加より${amountLabel}の増加が大きいため、${rateLabel}が上昇しています。`;
-    }
-    if (isFixedCost) {
-      return `売上減少により、${amountLabel}の売上に対する負担割合が上昇しています。`;
-    }
-    return `売上の減少幅に対して${amountLabel}の減少幅が小さかったため、${rateLabel}が上昇しています。`;
-  }
-  // improved = 率(lowerIsBetter)が低下方向。
-  if (classification.type === "genuine") {
-    return `${amountLabel}は ${rangeText(METRIC_DEFS[amountKey], amount)} に減少しており、${rateLabel}の低下に貢献しています。`;
-  }
-  return "";
-}
-
-// 「変化が大きかった項目」「来月確認するポイント」共通の候補生成(優先順位: ①総売上の
-// 大きな変化 ②実額として動いた費用(真の原因のみ) ③営業利益・営業利益率の変化
-// ④客数・客単価等の主要KPI)。同じ変化から派生する重複表示は、合計側が候補に挙がった時だけ
-// 内訳を吸収して防ぐ(AGGREGATE_WITH_BREAKDOWN)。
+// 「変化が大きかった項目」「来月確認するポイント」共通の候補生成。優先順位(2026-09
+// 最終改訂): ①総売上の大きな変化 ②営業利益・営業利益率の変化 ③材料・仕入原価の実額変化
+// (真の原因のみ) ④人件費の実額変化(真の原因のみ) ⑤客数・客単価等の主要KPI ⑥その他の
+// 費用率の変化(固定費・広告費、真の原因のみ、最後の候補)。単純な「率の変化」よりも経営上
+// 意味のある「実額の変化」を優先するため、費用側は必ずclassifyCostDriverで金額自体が
+// 動いた("genuine")と判定されたものだけを候補にする——金額は横ばい・減少なのに売上の
+// 増減に追いつかず相対的に率が動いただけの費用は、候補には出さず「利益に影響した主な要因」
+// でのみ言及する。同じ変化から派生する重複表示は、合計側が候補に挙がった時だけ内訳を
+// 吸収して防ぐ(AGGREGATE_WITH_BREAKDOWN)。
 function buildConcernCandidateList(comparisons) {
   const candidates = [];
 
   const sales = comparisons.sales;
   if (sales && sales.judgment !== "no_comparison" && sales.judgment !== "unchanged") {
     candidates.push({ id: "sales", tier: 1, magnitude: factorMagnitude(sales) });
-  }
-
-  for (const rateKey of Object.keys(RATE_TO_AMOUNT_KEY)) {
-    const classification = classifyCostDriver(rateKey, comparisons);
-    if (classification?.type === "genuine") {
-      const amountKey = RATE_TO_AMOUNT_KEY[rateKey];
-      candidates.push({ id: rateKey, tier: 2, magnitude: factorMagnitude(comparisons[amountKey]) });
-    }
   }
 
   const profit = comparisons.operatingProfit;
@@ -310,15 +285,33 @@ function buildConcernCandidateList(comparisons) {
   if (profitValid || marginValid) {
     candidates.push({
       id: "operatingProfit",
-      tier: 3,
+      tier: 2,
       magnitude: Math.max(profitValid ? factorMagnitude(profit) : 0, marginValid ? factorMagnitude(margin) : 0),
     });
+  }
+
+  const materialClassification = classifyCostDriver("materialRate", comparisons);
+  if (materialClassification?.type === "genuine") {
+    candidates.push({ id: "materialRate", tier: 3, magnitude: factorMagnitude(comparisons.materialCost) });
+  }
+
+  const laborClassification = classifyCostDriver("laborRate", comparisons);
+  if (laborClassification?.type === "genuine") {
+    candidates.push({ id: "laborRate", tier: 4, magnitude: factorMagnitude(comparisons.laborCost) });
   }
 
   for (const key of KPI_KEYS) {
     const c = comparisons[key];
     if (!c || c.judgment === "no_comparison" || c.judgment === "unchanged") continue;
-    candidates.push({ id: key, tier: 4, magnitude: factorMagnitude(c) });
+    candidates.push({ id: key, tier: 5, magnitude: factorMagnitude(c) });
+  }
+
+  for (const rateKey of ["fixedCostRate", "adRate"]) {
+    const classification = classifyCostDriver(rateKey, comparisons);
+    if (classification?.type === "genuine") {
+      const amountKey = RATE_TO_AMOUNT_KEY[rateKey];
+      candidates.push({ id: rateKey, tier: 6, magnitude: factorMagnitude(comparisons[amountKey]) });
+    }
   }
 
   return candidates.sort((a, b) => (a.tier - b.tier) || (b.magnitude - a.magnitude));
@@ -339,11 +332,13 @@ function rankConcernIds(comparisons) {
   return result;
 }
 
-// 「変化が大きかった項目」1件分。タイトルは実際の変化の向きから動的に生成する(「悪化」
-// 「問題」等の評価語は使わない)。②実額として動いた費用は、費用側(金額)のラベルで
-// タイトルを作り、詳細では率の変化+根拠(buildCostRateClause)を添える。③営業利益は
-// 営業利益・営業利益率の両方を1枚のカードにまとめ、旧構成にあった人件費率・材料費率・
-// 固定費率の重複列挙をしない。
+// 「変化が大きかった項目」1件分。役割は「数字の変化を事実として示す」ことだけに限定し
+// (要件9)、原因の説明は一切含めない——原因は別セクション(利益に影響した主な要因)に
+// 一本化する。タイトルは実際の変化の向きから動的に生成する(「悪化」「問題」等の評価語は
+// 使わない)。材料・仕入原価/人件費/固定費/広告費は、実額(何が実際に動いたか)と率(結果)の
+// 両方を必ず示す(要件4・5・8: 金額と比率を別々に判定し、両方を確認できるようにする)。
+// ③営業利益は営業利益・営業利益率の両方を1枚のカードにまとめ、旧構成にあった人件費率・
+// 材料費率・固定費率の重複列挙をしない。
 function buildConcernPoint(id, comparisons) {
   if (id === "operatingProfit") {
     const profit = comparisons.operatingProfit;
@@ -364,7 +359,7 @@ function buildConcernPoint(id, comparisons) {
     const amountLabel = METRIC_DEFS[amountKey].label;
     const amountComparison = comparisons[amountKey];
     const verb = verbFor(METRIC_DEFS[amountKey], amountComparison.diff);
-    const detail = describeComparison(id, comparisons[id]) + buildCostRateClause(id, comparisons);
+    const detail = describeComparison(amountKey, amountComparison) + describeComparison(id, comparisons[id]);
     return { id, title: `${amountLabel}が${verb}しています`, detail };
   }
 
@@ -403,14 +398,15 @@ function buildNextFocusPoint(id, comparisons) {
   if (amountKey) {
     const amountLabel = METRIC_DEFS[amountKey].label;
     const rate = comparisons[id];
-    const viewpoint = rate.judgment === "worsened"
-      ? `${formatValue(rate.current, "percent")}から低下しているか`
-      : `${formatValue(rate.current, "percent")}を維持できているか`;
+    const template = COST_NEXT_FOCUS_VIEWPOINT[amountKey];
+    const viewpoint = rate.judgment === "worsened" ? template.worsened : template.improved;
     return { id, label: amountLabel, viewpoint };
   }
   const c = comparisons[id];
   const def = METRIC_DEFS[id];
-  const viewpoint = c.judgment === "worsened" ? "前月から回復しているか" : "引き続き前月を上回れているか";
+  const template = KPI_NEXT_FOCUS_VIEWPOINT[id];
+  const fallback = c.judgment === "worsened" ? "前月から回復しているか" : "引き続き前月を上回れているか";
+  const viewpoint = template ? (c.judgment === "worsened" ? template.worsened : template.improved) : fallback;
   return { id, label: def.label, viewpoint };
 }
 
@@ -431,13 +427,64 @@ function contributingCostFactors(comparisons, margin) {
     .sort((a, b) => factorMagnitude(b.comparison) - factorMagnitude(a.comparison));
 }
 
-// ③利益低下・改善の主な要因(2026-09追加、要件6)。「率が上がった」ではなく「なぜ率が
-// 上がったのか/利益に何が影響したのか」を1指標1行の箇条書きで述べる。売上の変化を必ず
-// 先頭に置き(優先順位①)、費用側は真の原因(genuine、「◯◯が増加/減少」)と相対的な結果
-// (relative、「◯◯は売上◯◯に対して◯◯幅が◯◯」)を区別して述べる(要件7・8)。
+// 売上が大きく変化した月は、可能な範囲で客数・客単価・新規/再来客のどれが主な要因かを
+// 1文で補足する(要件11・12: 「売上が減った」で終わらせず、良かった変化も悪かった変化も
+// 拾えるようにする)。データが無い/方向がはっきりしない指標については何も推測しない
+// (要件20)。新規/再来が逆方向に動いている場合の対比を最優先し、次に客数・客単価のうち
+// 売上と同じ方向へ動いた方(両方該当する場合は変化の大きい方)を1つだけ選ぶ。
+function buildSalesDriverBullet(comparisons) {
+  const sales = comparisons.sales;
+  if (!sales || sales.judgment === "no_comparison" || sales.judgment === "unchanged") return null;
+  const salesUp = sales.diff > 0;
+  const isValid = (c) => c && c.judgment !== "no_comparison";
+
+  const newC = comparisons.newCustomers;
+  const repeatC = comparisons.repeatCustomers;
+  if (isValid(newC) && isValid(repeatC) && newC.judgment !== repeatC.judgment) {
+    if (!salesUp && repeatC.judgment === "worsened") {
+      const newVerb = newC.judgment === "improved" ? "増加" : "減少";
+      return `新規客は${newVerb}していますが、再来客減少が売上低下に影響しています。`;
+    }
+    if (salesUp && repeatC.judgment === "improved") {
+      const newVerb = newC.judgment === "improved" ? "増加" : "減少";
+      return `新規客は${newVerb}していますが、再来客増加が売上成長に貢献しています。`;
+    }
+  }
+
+  const customers = comparisons.customers;
+  const spend = comparisons.averageSpend;
+  const customersMatch = isValid(customers) && customers.judgment === sales.judgment;
+  const spendMatch = isValid(spend) && spend.judgment === sales.judgment;
+  let winner = null;
+  if (customersMatch && spendMatch) {
+    winner = factorMagnitude(customers) >= factorMagnitude(spend) ? "customers" : "spend";
+  } else if (customersMatch) {
+    winner = "customers";
+  } else if (spendMatch) {
+    winner = "spend";
+  }
+  if (winner === "customers") return salesUp ? "客数増加が売上成長に貢献しています。" : "客数減少が売上低下に影響しています。";
+  if (winner === "spend") return salesUp ? "客単価上昇が売上成長に貢献しています。" : "客単価低下が売上減少に影響しています。";
+  return null;
+}
+
+// ⑥利益に影響した主な要因(2026-09最終改訂、要件10)。「率が上がった」ではなく「なぜ率が
+// 上がったのか/利益に何が実際に影響したのか」を1指標1行の箇条書きで述べる。売上の変化
+// (+可能ならその要因)を必ず先頭に置き、費用側は真の原因(genuine、「◯◯が増加/減少」)と
+// 相対的な結果(relative、「◯◯は売上◯◯に対して◯◯幅が◯◯」)を区別して述べる(要件7・8)。
+// タイトルは営業利益の方向で自動的に変える——悪化/改善のどちらでもない(ほぼ横ばい)場合は
+// 中立タイトルにする(要件10)。最大4件(要件10)。
 function buildProfitDriverSection(comparisons) {
   const margin = comparisons.operatingMargin;
-  if (!margin || margin.judgment === "no_comparison" || margin.judgment === "unchanged") return null;
+  const profit = comparisons.operatingProfit;
+  const marginValid = margin && margin.judgment !== "no_comparison";
+  const profitValid = profit && profit.judgment !== "no_comparison";
+  if (!marginValid && !profitValid) return null;
+
+  const primaryJudgment = marginValid ? margin.judgment : profit.judgment;
+  let title = "営業利益に影響した主な要因";
+  if (primaryJudgment === "worsened") title = "利益低下の主な要因";
+  else if (primaryJudgment === "improved") title = "利益改善の主な要因";
 
   const bullets = [];
   const sales = comparisons.sales;
@@ -447,27 +494,32 @@ function buildProfitDriverSection(comparisons) {
     bullets.push(pct ? `売上が前月比${pct}${verb}` : `売上が${verb}`);
   }
 
-  for (const { key, classification } of contributingCostFactors(comparisons, margin)) {
-    const amountKey = RATE_TO_AMOUNT_KEY[key];
-    const amountLabel = METRIC_DEFS[amountKey].label;
-    if (classification?.type === "genuine") {
-      const verb = margin.judgment === "worsened" ? "増加" : "減少";
-      bullets.push(`${amountLabel}が${verb}`);
-    } else if (classification?.type === "relative" && sales) {
-      const salesVerb = sales.diff < 0 ? "減少" : "増加";
-      const amountVerb = margin.judgment === "worsened"
-        ? (sales.diff < 0 ? "減少幅が小さい" : "増加幅が大きい")
-        : (sales.diff < 0 ? "減少幅が大きい" : "増加幅が小さい");
-      bullets.push(`${amountLabel}は売上${salesVerb}に対して${amountVerb}`);
-    } else {
-      const rateLabel = METRIC_DEFS[key].label;
-      const verb = verbFor(METRIC_DEFS[key], comparisons[key].diff);
-      bullets.push(`${rateLabel}が${verb}`);
+  const salesDriverBullet = buildSalesDriverBullet(comparisons);
+  if (salesDriverBullet) bullets.push(salesDriverBullet);
+
+  if (marginValid && margin.judgment !== "unchanged") {
+    for (const { key, classification } of contributingCostFactors(comparisons, margin)) {
+      const amountKey = RATE_TO_AMOUNT_KEY[key];
+      const amountLabel = METRIC_DEFS[amountKey].label;
+      if (classification?.type === "genuine") {
+        const verb = margin.judgment === "worsened" ? "増加" : "減少";
+        bullets.push(`${amountLabel}が${verb}`);
+      } else if (classification?.type === "relative" && sales) {
+        const salesVerb = sales.diff < 0 ? "減少" : "増加";
+        const amountVerb = margin.judgment === "worsened"
+          ? (sales.diff < 0 ? "減少幅が小さい" : "増加幅が大きい")
+          : (sales.diff < 0 ? "減少幅が大きい" : "増加幅が小さい");
+        bullets.push(`${amountLabel}は売上${salesVerb}に対して${amountVerb}`);
+      } else {
+        const rateLabel = METRIC_DEFS[key].label;
+        const verb = verbFor(METRIC_DEFS[key], comparisons[key].diff);
+        bullets.push(`${rateLabel}が${verb}`);
+      }
     }
   }
 
   if (bullets.length === 0) return null;
-  return { title: margin.judgment === "worsened" ? "利益低下の主な要因" : "利益改善の主な要因", bullets };
+  return { title, bullets: bullets.slice(0, 4) };
 }
 
 // ①総評(2026-09改訂、要件3・12): 2〜3文に短縮し、「変化が大きかった項目」「利益低下・
@@ -500,7 +552,29 @@ function buildSummaryText(comparisons, current) {
   }
 
   const secondSentence = buildSummaryCauseSentence(comparisons, comparisons.operatingMargin);
-  return secondSentence ? `${firstSentence}${secondSentence}` : firstSentence;
+  const thirdSentence = buildAchievementSentence(current, comparisons);
+  return `${firstSentence}${secondSentence}${thirdSentence}`;
+}
+
+// 総評3文目(補足、任意、要件13)。売上目標の達成率も判断材料に使うが、達成率だけで
+// 良し悪しを決めず必ず営業利益と合わせて評価する——目標達成でも営業利益が前月を下回って
+// いれば、その旨を明示する。大幅未達の場合はここでは何も述べない(数値そのものは「今月の
+// 結果」カードに既に出ており、未達幅は売上の増減として①文目に既に表れているため、総評を
+// 2〜3文以内に保つことを優先する)。
+function buildAchievementSentence(current, comparisons) {
+  if (!current?.hasSalesTarget || !Number.isFinite(current?.targetAchievement)) return "";
+  const achievement = current.targetAchievement;
+  const profit = comparisons.operatingProfit;
+  if (achievement >= 100) {
+    if (profit && profit.judgment === "worsened") {
+      return "売上目標は達成していますが、営業利益は前月を下回っています。";
+    }
+    return "売上目標を達成しました。";
+  }
+  if (achievement >= 90) {
+    return "売上目標に近い水準でした。";
+  }
+  return "";
 }
 
 // 総評2文目(要因)。費用側は真の原因(genuine、ラベルを「・」で連結して1つの句にまとめる)と

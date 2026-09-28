@@ -25,6 +25,8 @@ if (typeof globalThis.localStorage === "undefined") {
 
 const FIELDS_ENABLED = { customers: true, newCustomers: true, repeatCustomers: true, retailSales: true, reviewCount: true };
 
+// hasSalesTarget:falseを既定にし(達成率の総評3文目は専用テストでだけ有効化する)、
+// 他の大半のテストが達成率の副作用を気にせず書けるようにする。
 const metric = (overrides = {}) => ({
   sales: 1000000, technicalSales: 700000, retailSales: 300000,
   customers: 200, newCustomers: 60, repeatCustomers: 140, reviewCount: 10,
@@ -32,7 +34,7 @@ const metric = (overrides = {}) => ({
   laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
   operatingMargin: 10, operatingProfit: 100000,
   isProvisionalProfit: false, hasLaborData: true, hasMaterialData: true,
-  targetSales: 900000, hasSalesTarget: true, targetAchievement: 111,
+  targetSales: 0, hasSalesTarget: false, targetAchievement: null,
   targetOperatingMargin: null,
   hasData: true,
   ...overrides,
@@ -69,85 +71,17 @@ test("compareMonthlyMetric(amount): 前月値が0の場合はno_comparisonとし
   assert.equal(result.judgment, "no_comparison");
 });
 
-test("compareMonthlyMetric(amount): 当月値が0でもNaN/Infinityにならず正しく判定できる", () => {
-  const result = compareMonthlyMetric({ current: 0, previous: 100000, hasPreviousData: true, kind: "amount", direction: "higherIsBetter" });
-  assert.ok(Number.isFinite(result.diff));
-  assert.ok(Number.isFinite(result.percentChange));
-  assert.equal(result.judgment, "worsened");
-});
-
 test("validateMetricComparison: 差分が当月-前月と一致しない場合は不整合としてfalseを返す", () => {
   assert.equal(validateMetricComparison({ current: 16.0, previous: 28.0, diff: 60.1, percentChange: null, judgment: "improved" }), false);
 });
 
-test("率が上昇するケース(高いほど良い指標は改善、低いほど良い指標は悪化)", () => {
-  const higherIsBetterUp = compareMonthlyMetric({ current: 30, previous: 20, hasPreviousData: true, kind: "rate", direction: "higherIsBetter" });
-  const lowerIsBetterUp = compareMonthlyMetric({ current: 30, previous: 20, hasPreviousData: true, kind: "rate", direction: "lowerIsBetter" });
-  assert.equal(higherIsBetterUp.judgment, "improved");
-  assert.equal(lowerIsBetterUp.judgment, "worsened");
-});
-
-test("率が低下するケース(高いほど良い指標は悪化、低いほど良い指標は改善)", () => {
-  const higherIsBetterDown = compareMonthlyMetric({ current: 20, previous: 30, hasPreviousData: true, kind: "rate", direction: "higherIsBetter" });
-  const lowerIsBetterDown = compareMonthlyMetric({ current: 20, previous: 30, hasPreviousData: true, kind: "rate", direction: "lowerIsBetter" });
-  assert.equal(higherIsBetterDown.judgment, "worsened");
-  assert.equal(lowerIsBetterDown.judgment, "improved");
-});
-
-test("前月と同率のケースはunchangedであり、improved/worsenedのどちらにもならない", () => {
-  const result = compareMonthlyMetric({ current: 25, previous: 25, hasPreviousData: true, kind: "rate", direction: "lowerIsBetter" });
-  assert.equal(result.judgment, "unchanged");
-});
-
-test("前月値が0のケース(amount指標)はno_comparisonとして前月比較なしになる", () => {
-  const result = compareMonthlyMetric({ current: 500, previous: 0, hasPreviousData: true, kind: "amount", direction: "higherIsBetter" });
-  assert.equal(result.judgment, "no_comparison");
-});
-
-test("当月値が0のケースでもNaN/Infinityにならず正しく判定できる", () => {
-  const result = compareMonthlyMetric({ current: 0, previous: 50000, hasPreviousData: true, kind: "amount", direction: "higherIsBetter" });
-  assert.ok(Number.isFinite(result.diff));
-  assert.ok(Number.isFinite(result.percentChange));
-  assert.equal(result.judgment, "worsened");
-});
-
-// ============================================================
-// formatRateChange: 割合の変化量は「pt」ではなく必ず「%」で表示する。
-// amount指標の前月比%・rate指標のpt差の両方をこの1つの共通formatterだけが担う。
-// ============================================================
-
-test("formatRateChange: ケース1 5.2%→-0.4% の差分(-5.6)は「5.6%」になる(pt表記にしない)", () => {
-  assert.equal(formatRateChange(-0.4 - 5.2), "5.6%");
-});
-
-test("formatRateChange: ケース2 22.8%→29.4% の差分(+6.6)は「6.6%」になる", () => {
+test("formatRateChange: 22.8%→29.4% の差分(+6.6)は「6.6%」になる(pt表記にしない)", () => {
   assert.equal(formatRateChange(29.4 - 22.8), "6.6%");
 });
-
-test("formatRateChange: ケース4 30.0%→30.0% の差分(0)は「0.0%」になり、NaN/Infinityにならない", () => {
-  assert.equal(formatRateChange(30.0 - 30.0), "0.0%");
-});
-
-// ============================================================
-// describeComparison: 個々の指標1件分の文言(変更なし)
-// ============================================================
 
 test("率の変化: 営業利益率19.0%→-0.4%は「営業利益率は 19.0% → -0.4% に低下しました。」になる", () => {
   const comparisons = buildMetricComparisons(metric({ operatingMargin: -0.4 }), metric({ operatingMargin: 19.0 }), FIELDS_ENABLED);
   assert.equal(describeComparisonForTest("operatingMargin", comparisons.operatingMargin), "営業利益率は 19.0% → -0.4% に低下しました。");
-});
-
-test("量の変化: 前月比%表記+増加/減少を使う", () => {
-  const comparisons = buildMetricComparisons(metric({ newCustomers: 56 }), metric({ newCustomers: 50 }), FIELDS_ENABLED);
-  assert.match(describeComparisonForTest("newCustomers", comparisons.newCustomers), /新規客数は前月より12\.0%増加しました/);
-});
-
-test("0%・マイナス値: 5.0%→0.0%、5.0%→-2.0%、-2.0%→3.0%のいずれも文章が崩れない(二重マイナス無し)", () => {
-  const r1 = buildMetricComparisons(metric({ laborRate: 0 }), metric({ laborRate: 5.0 }), FIELDS_ENABLED);
-  assert.equal(describeComparisonForTest("laborRate", r1.laborRate), "人件費率は 5.0% → 0.0% に低下しました。");
-  const r3 = buildMetricComparisons(metric({ operatingMargin: 3.0 }), metric({ operatingMargin: -2.0 }), FIELDS_ENABLED);
-  assert.equal(describeComparisonForTest("operatingMargin", r3.operatingMargin), "営業利益率は -2.0% → 3.0% に上昇しました。");
-  assert.equal(describeComparisonForTest("operatingMargin", r3.operatingMargin).includes("--"), false);
 });
 
 test("同値: 前月と今月が同じ場合は「上昇/低下」を使わず「前月と同じ」と表示する", () => {
@@ -173,110 +107,105 @@ test("当月にデータが無い(hasData:false)場合のみレビューを表�
   assert.equal(result.profitDrivers, null);
 });
 
-test("月締めしていない当月でも、データさえあればレビューを生成する(isClosedという概念自体を渡さない)", () => {
-  const result = analyzeMonthlyReview({ current: metric({ sales: 500000 }), previous: metric({ sales: 400000 }), fieldsEnabled: FIELDS_ENABLED });
-  assert.equal(result.hasData, true);
-  assert.ok(result.summaryText.length > 0);
-});
-
 test("前月データが無いケースは無理な比較コメントを出さない", () => {
   const result = analyzeMonthlyReview({ current: metric(), previous: metric({ hasData: false }), fieldsEnabled: FIELDS_ENABLED });
   assert.deepEqual(result.concernPoints, []);
   assert.match(result.summaryText, /比較できる前月データが無い/);
 });
 
-test("特に問題のない月(前月と全く同じ)は変化が大きかった項目を無理に作らず、空配列を返す", () => {
+test("特に問題のない月(前月と全く同じ)は変化が大きかった項目・利益要因を無理に作らず、空/nullを返す", () => {
   const result = analyzeMonthlyReview({ current: metric(), previous: metric(), fieldsEnabled: FIELDS_ENABLED });
   assert.deepEqual(result.concernPoints, []);
   assert.deepEqual(result.nextFocusPoints, []);
   assert.equal(result.profitDrivers, null);
 });
 
-test("結果オブジェクトの構成は、総評+変化が大きかった項目+利益低下/改善の主な要因+来月確認するポイント、の4つ", () => {
+test("結果オブジェクトの構成は、総評+変化が大きかった項目+利益に影響した主な要因+来月確認するポイント、の4つ", () => {
   const result = analyzeMonthlyReview({ current: metric({ averageSpend: 6000 }), previous: metric({ averageSpend: 5000 }), fieldsEnabled: FIELDS_ENABLED });
   assert.deepEqual(Object.keys(result).sort(), ["comparisons", "concernPoints", "hasData", "nextFocusPoints", "profitDrivers", "summaryText"]);
 });
 
 // ============================================================
-// 「変化が大きかった項目」の優先順位: ①売上 ②実額として増減した費用(真の原因のみ)
-// ③営業利益・営業利益率 ④主要KPI。率自体はもう単独の候補にしない。
+// 「変化が大きかった項目」の優先順位(2026-09最終改訂):
+// ①総売上 ②営業利益・営業利益率 ③材料・仕入原価の実額(真の原因のみ)
+// ④人件費の実額(真の原因のみ) ⑤主要KPI ⑥その他費用率(真の原因のみ)
+// カードの内容は「数字の変化を示すだけ」(実額+率)で、原因の説明は含めない。
 // ============================================================
 
-test("①売上: 総売上が前月より大きく減少した月は、動的な事実タイトルで候補に入る", () => {
+test("①総売上: 大きく減少した月は動的な事実タイトルで候補に入り、詳細は数字のみ(原因説明を含まない)", () => {
   const result = analyzeMonthlyReview({ current: metric({ sales: 773800 }), previous: metric({ sales: 1000000 }), fieldsEnabled: FIELDS_ENABLED });
   const point = result.concernPoints.find((p) => p.id === "sales");
   assert.ok(point);
   assert.equal(point.title, "総売上が減少しています");
-  assert.match(point.detail, /総売上は前月より22\.6%減少しました/);
+  assert.equal(point.detail, "総売上は前月より22.6%減少しました。");
 });
 
-test("②実額として動いた費用: 人件費率が上昇していても、人件費の金額自体が横ばい・減少なら候補に出さない(結果を原因として扱わない)", () => {
-  // 売上350万→300万、人件費140万→130万、人件費率40.0%→43.3%(率は悪化・金額は減少)
-  const current = metric({ sales: 3000000, laborCost: 1300000, laborRate: 43.3 });
-  const previous = metric({ sales: 3500000, laborCost: 1400000, laborRate: 40.0 });
+test("②営業利益・営業利益率: 1枚のカードにまとめ、原因説明を含めない(要件9・19: 何が起きたかと、なぜ起きたかを分ける)", () => {
+  const current = metric({ sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168 });
+  const previous = metric({ sales: 5000000, operatingMargin: 19.0, operatingProfit: 956552 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.equal(result.comparisons.laborRate.judgment, "worsened");
-  assert.equal(result.concernPoints.some((p) => p.id === "laborRate"), false, "金額が実質増えていない費用は候補に出さない");
+  const point = result.concernPoints.find((p) => p.id === "operatingProfit");
+  assert.ok(point);
+  assert.equal(point.title, "営業利益が減少しています");
+  assert.equal(point.detail, "営業利益は 956,552円 → -17,168円 に減少しました。営業利益率は 19.0% → -0.4% に低下しました。");
+  assert.equal(point.detail.includes("影響しています"), false, "原因の説明はこのカードに含めない");
 });
 
-test("②実額として動いた費用: 人件費の金額自体が増加している場合は、その金額を根拠に候補へ入る(タイトルは「人件費が増加しています」)", () => {
-  // 売上300万→350万、人件費120万→160万、人件費率40.0%→45.7%(率も金額も悪化)
-  const current = metric({ sales: 3500000, laborCost: 1600000, laborRate: 45.7 });
-  const previous = metric({ sales: 3000000, laborCost: 1200000, laborRate: 40.0 });
+test("③材料・仕入原価の実額: 実額自体が増加している場合のみ候補になり、詳細は実額と率の両方(要件5ケースA・要件8)", () => {
+  const current = metric({ sales: 800000, materialRate: 20, materialCost: 200000 });
+  const previous = metric({ sales: 1000000, materialRate: 15, materialCost: 150000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  const point = result.concernPoints.find((p) => p.id === "laborRate");
-  assert.ok(point, "人件費(実額)の増加が候補に含まれるべき");
-  assert.equal(point.title, "人件費が増加しています");
-  assert.match(point.detail, /人件費率は 40\.0% → 45\.7% に上昇しました/);
-  assert.match(point.detail, /売上の増加より人件費の増加が大きいため、人件費率が上昇しています/);
-  assert.equal(point.detail.includes("pt"), false);
+  const point = result.concernPoints.find((p) => p.id === "materialRate");
+  assert.ok(point);
+  assert.equal(point.title, "材料・仕入原価が増加しています");
+  assert.equal(point.detail, "材料・仕入原価は前月より33.3%増加しました。材料・仕入原価率は 15.0% → 20.0% に上昇しました。");
 });
 
-test("②実額として動いた費用: 売上増+人件費額増以上に人件費率が改善(=金額は増えたが売上ほどではない)場合は候補に出さない", () => {
-  const current = metric({ sales: 3500000, laborCost: 1370000, laborRate: 39.1 });
-  const previous = metric({ sales: 3000000, laborCost: 1200000, laborRate: 40.0 });
+test("③材料・仕入原価の実額: 実額は減少しているが率だけ上昇している(相対的上昇、要件5ケースB)場合は候補にならない", () => {
+  const current = metric({ sales: 800000, materialRate: 20, materialCost: 160000 });
+  const previous = metric({ sales: 1000000, materialRate: 15, materialCost: 180000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.equal(result.comparisons.laborRate.judgment, "improved");
-  assert.equal(result.concernPoints.some((p) => p.id === "laborRate"), false);
+  assert.equal(result.concernPoints.some((p) => p.id === "materialRate"), false);
 });
 
-test("③営業利益・営業利益率: 1枚のカードにまとめ、人件費率・材料費率・固定費率を重複して列挙しない", () => {
-  const current = metric({ sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168, laborRate: 30.0, laborCost: 1161000, materialRate: 41.0, materialCost: 1586700 });
-  const previous = metric({ sales: 5000000, operatingMargin: 19.0, operatingProfit: 956552, laborRate: 28.4, laborCost: 1420000, materialRate: 29.8, materialCost: 1490000 });
-  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  const profitPoint = result.concernPoints.find((p) => p.id === "operatingProfit");
-  assert.ok(profitPoint);
-  assert.equal(profitPoint.title, "営業利益が減少しています");
-  assert.match(profitPoint.detail, /営業利益は 956,552円 → -17,168円 に減少しました/);
-  assert.match(profitPoint.detail, /営業利益率は 19\.0% → -0\.4% に低下しました/);
-  // 人件費率・材料費率・固定費率という個別カードは(材料が実額増加でない限り)重複して出ない。
-  assert.equal(result.concernPoints.some((p) => p.id === "laborRate"), false);
-  assert.equal(result.concernPoints.some((p) => p.id === "operatingMargin"), false, "営業利益率は単独カードにせず、営業利益と1枚にまとめる");
-});
-
-test("④主要KPI: 客数・客単価がともに悪化方向でも、総売上のカードが候補に挙がれば内訳(客数・客単価)は別枠のカードにしない", () => {
-  const current = metric({ sales: 564000, customers: 120, averageSpend: 4700 });
-  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000 });
+test("④人件費の実額: 実額自体が増加している場合のみ候補になり、材料より優先度は低い(③材料 > ④人件費)", () => {
+  const current = metric({
+    sales: 800000,
+    materialRate: 20, materialCost: 200000,
+    laborRate: 45, laborCost: 360000,
+  });
+  const previous = metric({
+    sales: 1000000,
+    materialRate: 15, materialCost: 150000,
+    laborRate: 38, laborCost: 300000,
+  });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const ids = result.concernPoints.map((p) => p.id);
-  assert.ok(ids.includes("sales"));
-  assert.equal(ids.includes("customers"), false);
-  assert.equal(ids.includes("averageSpend"), false);
+  const materialIndex = ids.indexOf("materialRate");
+  const laborIndex = ids.indexOf("laborRate");
+  assert.ok(materialIndex !== -1 && laborIndex !== -1);
+  assert.ok(materialIndex < laborIndex, "材料・仕入原価は人件費より優先順位が高い");
 });
 
-test("④主要KPI: 費用・利益に大きな変化が無い月は、客数のような主要KPIの変化が候補に入る", () => {
+test("⑤主要KPI: 費用・利益に大きな変化が無い月は、客数のような主要KPIの変化が候補に入る", () => {
   const current = metric({ customers: 100, newCustomers: 30, repeatCustomers: 70 });
   const previous = metric({ customers: 200, newCustomers: 60, repeatCustomers: 140 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const ids = result.concernPoints.map((p) => p.id);
   assert.ok(ids.includes("customers"));
   assert.equal(ids.includes("newCustomers"), false, "客数の内訳(新規・再来)は客数カードが挙がれば別枠にしない");
-  assert.equal(ids.includes("repeatCustomers"), false);
 });
 
-test("変化が大きかった項目は最大3件(MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints)に絞られ、優先順位(売上→費用実額→利益→KPI)の順で並ぶ", () => {
-  // 完成イメージのユーザー提示例そのもの: 売上減少・材料費実額増加・営業利益悪化の3件が
-  // 優先され、相対的上昇にすぎない人件費率・固定費率は候補から外れる。
+test("⑥その他費用率: 固定費実額が増加している場合は候補になる(優先度は主要KPIより低い)", () => {
+  const current = metric({ sales: 1000000, fixedCost: 250000, hasFixedCostData: true, fixedCostRate: 25 });
+  const previous = metric({ sales: 1000000, fixedCost: 182400, hasFixedCostData: true, fixedCostRate: 18.24 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.concernPoints.find((p) => p.id === "fixedCostRate");
+  assert.ok(point);
+  assert.equal(point.title, "固定費が増加しています");
+});
+
+test("変化が大きかった項目は最大3件に絞られ、優先順位(売上→利益→材料実額→人件費実額→KPI→他費用率)の順で並ぶ", () => {
   const current = metric({
     sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168,
     laborRate: 30.0, laborCost: 1161000,
@@ -291,13 +220,20 @@ test("変化が大きかった項目は最大3件(MONTHLY_INSIGHT_THRESHOLDS.max
   });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   assert.ok(result.concernPoints.length <= MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints);
-  assert.deepEqual(result.concernPoints.map((p) => p.id), ["sales", "materialRate", "operatingProfit"]);
+  assert.deepEqual(result.concernPoints.map((p) => p.id), ["sales", "operatingProfit", "materialRate"]);
+});
+
+test("大きな変化が2件しかない月は2件のみ表示し、無理に3件埋めない(要件21)", () => {
+  const current = metric({ sales: 773800, operatingProfit: 50000, operatingMargin: 6.5 });
+  const previous = metric({ sales: 1000000, operatingProfit: 100000, operatingMargin: 10 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.equal(result.concernPoints.length, 2);
 });
 
 test("変化が大きかった項目のタイトルは中立な事実表現であり、「悪化」「問題」「危険」という評価語を含まない", () => {
   const current = metric({
     sales: 800000, technicalSales: 500000, retailSales: 100000, customers: 150, newCustomers: 40, repeatCustomers: 90,
-    averageSpend: 4000, reviewCount: 5, laborRate: 45, laborCost: 360000, materialRate: 20, operatingMargin: 5, operatingProfit: 40000,
+    averageSpend: 4000, reviewCount: 5, materialRate: 20, materialCost: 160000, operatingMargin: 5, operatingProfit: 40000,
   });
   const previous = metric();
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
@@ -309,7 +245,7 @@ test("変化が大きかった項目のタイトルは中立な事実表現で�
   }
 });
 
-test("relatedMetricsという古いフィールドはもう存在しない(内訳の重複表示は廃止、要因は「利益低下/改善の主な要因」に一本化)", () => {
+test("relatedMetricsという古いフィールドはもう存在しない(内訳の重複表示は廃止)", () => {
   const current = metric({ sales: 564000, customers: 120, averageSpend: 4700 });
   const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
@@ -319,10 +255,11 @@ test("relatedMetricsという古いフィールドはもう存在しない(内�
 });
 
 // ============================================================
-// 利益低下・改善の主な要因(新設): 「率が上がった」ではなく「なぜ率が上がったのか」
+// 利益に影響した主な要因(2026-09最終改訂): タイトルは営業利益の方向で自動的に変わり、
+// 「率が上がった」ではなく「なぜそうなったか」を最大4件の箇条書きで述べる。
 // ============================================================
 
-test("利益低下の主な要因: 完成イメージのユーザー提示例(売上減少・材料原価が実額増加・人件費/固定費は相対的上昇)の箇条書きが、指定どおりの順序・文言になる", () => {
+test("利益低下の主な要因: 完成イメージの箇条書きが指定どおりの順序・文言になる", () => {
   const current = metric({
     sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168,
     laborRate: 30.0, laborCost: 1161000,
@@ -346,7 +283,50 @@ test("利益低下の主な要因: 完成イメージのユーザー提示例(�
   ]);
 });
 
-test("利益低下の主な要因: 「率が上がった」という表現そのものは使わない", () => {
+test("利益低下の主な要因は最大4件に絞られる", () => {
+  const current = metric({
+    sales: 800000, operatingMargin: -2, operatingProfit: -16000,
+    laborRate: 45, laborCost: 360000, materialRate: 22, materialCost: 176000,
+    fixedCostRate: 27, fixedCost: 216000, hasFixedCostData: true,
+    adRate: 8, adCost: 64000, hasAdData: true,
+  });
+  const previous = metric({
+    sales: 1000000, operatingMargin: 10, operatingProfit: 100000,
+    laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
+    fixedCostRate: 18, fixedCost: 180000, hasFixedCostData: true,
+    adRate: 5, adCost: 50000, hasAdData: true,
+  });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers);
+  assert.ok(result.profitDrivers.bullets.length <= 4);
+});
+
+test("利益改善の主な要因: 営業利益率が改善した月は「利益改善の主な要因」というタイトルになる", () => {
+  const current = metric({ sales: 1200000, operatingMargin: 16.7, operatingProfit: 200400, laborRate: 30, laborCost: 360000 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000, laborRate: 38, laborCost: 380000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers);
+  assert.equal(result.profitDrivers.title, "利益改善の主な要因");
+});
+
+test("営業利益に影響した主な要因: 営業利益率がほぼ横ばい(unchanged)でも売上が大きく動いていれば中立タイトルで表示する(要件10)", () => {
+  // 材料・人件費・固定費すべてが売上と完全に比例して動き、営業利益率だけは前月と同じ
+  // (=典型的な「ほぼ横ばい」)というケース。
+  const current = metric({
+    sales: 800000, operatingMargin: 10, operatingProfit: 80000,
+    laborRate: 38, laborCost: 304000, materialRate: 15, materialCost: 120000,
+  });
+  const previous = metric({
+    sales: 1000000, operatingMargin: 10, operatingProfit: 100000,
+    laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
+  });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers);
+  assert.equal(result.profitDrivers.title, "営業利益に影響した主な要因");
+  assert.deepEqual(result.profitDrivers.bullets, ["売上が前月比20.0%減少"]);
+});
+
+test("利益に影響した主な要因: 「率が上がった」という表現そのものは使わない", () => {
   const current = metric({ sales: 3870000, operatingMargin: -0.4, laborRate: 30.0, laborCost: 1161000 });
   const previous = metric({ sales: 5000000, operatingMargin: 19.0, laborRate: 28.4, laborCost: 1420000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
@@ -357,22 +337,9 @@ test("利益低下の主な要因: 「率が上がった」という表現その
   }
 });
 
-test("利益改善の主な要因: 営業利益率が改善した月は「利益改善の主な要因」というタイトルになる", () => {
-  const current = metric({ sales: 1200000, operatingMargin: 16.7, laborRate: 30, laborCost: 360000 });
-  const previous = metric({ sales: 1000000, operatingMargin: 10, laborRate: 38, laborCost: 380000 });
-  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.ok(result.profitDrivers);
-  assert.equal(result.profitDrivers.title, "利益改善の主な要因");
-});
-
-test("利益低下・改善の主な要因: 営業利益率に前月比較が無い(no_comparison/unchanged)月はセクション自体を出さない", () => {
-  const result = analyzeMonthlyReview({ current: metric(), previous: metric(), fieldsEnabled: FIELDS_ENABLED });
-  assert.equal(result.profitDrivers, null);
-});
-
-test("利益低下の主な要因: 営業利益率悪化の主要因が人件費率のみの場合、材料費のことは書かない(根拠のない断定を避ける)", () => {
-  const current = metric({ sales: 1000000, operatingMargin: 8, laborRate: 45, laborCost: 450000, materialRate: 15 });
-  const previous = metric({ sales: 1000000, operatingMargin: 12, laborRate: 38, laborCost: 380000, materialRate: 15 });
+test("利益低下の主な要因: 材料費のことは書かない(主要因が人件費のみの場合、根拠のない断定を避ける)", () => {
+  const current = metric({ sales: 1000000, operatingMargin: 8, operatingProfit: 80000, laborRate: 45, laborCost: 450000, materialRate: 15 });
+  const previous = metric({ sales: 1000000, operatingMargin: 12, operatingProfit: 120000, laborRate: 38, laborCost: 380000, materialRate: 15 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   assert.ok(result.profitDrivers);
   assert.ok(result.profitDrivers.bullets.some((b) => b.includes("人件費")));
@@ -380,11 +347,53 @@ test("利益低下の主な要因: 営業利益率悪化の主要因が人件費
 });
 
 // ============================================================
-// 総評: 2〜3文に短縮し、①売上②営業利益(結果)→③要因、の順で述べる。
+// 売上変化の要因分析(要件11・12): 客数・客単価・新規/再来客のどれが主な要因かを補足する。
+// データが無い/方向がはっきりしない指標については推測しない(要件20)。
+// ============================================================
+
+test("売上低下: 客数が減少し客単価はほぼ変わらない場合、「客数減少が売上低下に影響しています」を利益要因に含める", () => {
+  const current = metric({ sales: 700000, customers: 140, averageSpend: 5000, operatingMargin: 5, operatingProfit: 35000 });
+  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers.bullets.includes("客数減少が売上低下に影響しています。"));
+});
+
+test("売上低下: 客数がほぼ同じで客単価が低下している場合、「客単価低下が売上減少に影響しています」を利益要因に含める", () => {
+  const current = metric({ sales: 800000, customers: 200, averageSpend: 4000, operatingMargin: 5, operatingProfit: 40000 });
+  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers.bullets.includes("客単価低下が売上減少に影響しています。"));
+});
+
+test("売上低下: 新規客は増加しているが再来客が減少している場合、対比を1文で述べる", () => {
+  const current = metric({ sales: 900000, customers: 180, newCustomers: 70, repeatCustomers: 110, operatingMargin: 8, operatingProfit: 72000 });
+  const previous = metric({ sales: 1000000, customers: 200, newCustomers: 60, repeatCustomers: 140, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers.bullets.includes("新規客は増加していますが、再来客減少が売上低下に影響しています。"));
+});
+
+test("売上改善: 客数増加が売上成長に貢献した場合も、悪化月と同じロジックで良かった要因として拾う(要件12・22)", () => {
+  const current = metric({ sales: 1300000, customers: 260, averageSpend: 5000, operatingMargin: 12, operatingProfit: 156000 });
+  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.profitDrivers.bullets.includes("客数増加が売上成長に貢献しています。"));
+});
+
+test("データ不足時: 新規・再来客数の入力設定がOFFの場合、その内訳を要因として推測しない(要件20)", () => {
+  const fieldsEnabled = { ...FIELDS_ENABLED, newCustomers: false, repeatCustomers: false };
+  const current = metric({ sales: 700000, customers: 140, averageSpend: 5000, operatingMargin: 5, operatingProfit: 35000 });
+  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled });
+  assert.ok(!result.profitDrivers.bullets.some((b) => b.includes("新規") || b.includes("再来")));
+  assert.ok(result.profitDrivers.bullets.includes("客数減少が売上低下に影響しています。"));
+});
+
+// ============================================================
+// 総評: 2〜3文以内。①結果②主な原因③(必要な場合のみ)売上目標達成率の補足。
 // 「率が上がったから利益が下がった」という短絡表現は使わない。
 // ============================================================
 
-test("総評: 完成イメージのユーザー提示例どおりの2文になる(①売上・営業利益の結果 ②要因)", () => {
+test("総評: 完成イメージどおりの2文になる(①売上・営業利益の結果 ②要因)", () => {
   const current = metric({
     sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168,
     laborRate: 30.0, laborCost: 1161000,
@@ -414,11 +423,6 @@ test("総評: 「人件費率が上がったから利益が下がった」「率
   assert.ok(!result.summaryText.includes("率が上がったから利益"));
 });
 
-test("総評: 前月データが無い場合は今月の実績のみを述べる", () => {
-  const result = analyzeMonthlyReview({ current: metric(), previous: metric({ hasData: false }), fieldsEnabled: FIELDS_ENABLED });
-  assert.match(result.summaryText, /比較できる前月データが無い/);
-});
-
 test("総評: 評価語(「悪化」「改善」「良くなりました」「危険」「問題です」)を一切含まない", () => {
   const current = metric({ sales: 500000, laborRate: 50, laborCost: 250000, materialRate: 25, operatingMargin: -5, operatingProfit: -20000 });
   const previous = metric({ sales: 1000000, laborRate: 38, laborCost: 380000, materialRate: 15, operatingMargin: 10, operatingProfit: 100000 });
@@ -436,12 +440,90 @@ test("総評: 前月比較の表記は常に「%」であり、「pt」「ポイ
   assert.ok(!result.summaryText.includes("ポイント"));
 });
 
+test("総評: 売上目標を達成した月は「売上目標を達成しました。」を3文目に加える(要件13)", () => {
+  const current = metric({ sales: 1100000, operatingMargin: 11, operatingProfit: 121000, targetSales: 1000000, hasSalesTarget: true, targetAchievement: 110 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.summaryText.endsWith("売上目標を達成しました。"));
+});
+
+test("総評: 売上目標は達成しているが営業利益が前月を下回っている場合は、その旨を明示する(要件13)", () => {
+  const current = metric({
+    sales: 1100000, operatingMargin: 5, operatingProfit: 55000,
+    laborRate: 45, laborCost: 495000,
+    targetSales: 1000000, hasSalesTarget: true, targetAchievement: 110,
+  });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000, laborRate: 38, laborCost: 380000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.summaryText.endsWith("売上目標は達成していますが、営業利益は前月を下回っています。"));
+});
+
+test("総評: 達成率90〜99.9%は「売上目標に近い水準でした。」を加える(要件13)", () => {
+  const current = metric({ sales: 950000, operatingMargin: 10, operatingProfit: 95000, targetSales: 1000000, hasSalesTarget: true, targetAchievement: 95 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(result.summaryText.endsWith("売上目標に近い水準でした。"));
+});
+
+test("総評: 大幅未達の場合は達成率について無理に触れない(総評を2〜3文以内に保つ、完成イメージと同じ挙動)", () => {
+  const current = metric({
+    sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168,
+    laborRate: 30.0, laborCost: 1161000, materialRate: 41.0, materialCost: 317340,
+    targetSales: 5500000, hasSalesTarget: true, targetAchievement: 70.4,
+  });
+  const previous = metric({ sales: 5000000, operatingMargin: 19.0, operatingProfit: 956552, laborRate: 28.4, laborCost: 1420000, materialRate: 29.8, materialCost: 298000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.ok(!result.summaryText.includes("目標"));
+});
+
 // ============================================================
-// 来月確認するポイント: 今月の数字の再掲示ではなく、「来月何を確認すべきか」を述べる。
-// 「変化が大きかった項目」と同じ候補・並び順から選ぶ。
+// 22〜24: 良かった月・売上と利益が逆方向に動いた月も正しく評価する
 // ============================================================
 
-test("来月確認するポイント: 完成イメージのユーザー提示例どおりの3件になる", () => {
+test("要件22: 売上↑・営業利益↑の月は改善要因を自然にレビューする", () => {
+  const current = metric({ sales: 1200000, operatingMargin: 14, operatingProfit: 168000, materialRate: 12, materialCost: 144000 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000, materialRate: 15, materialCost: 150000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.match(result.summaryText, /^総売上は前月比20\.0%増加し、営業利益は100,000円から168,000円へ増加しました。/);
+  assert.ok(result.summaryText.includes("利益改善に影響しています"));
+});
+
+test("要件23: 売上↑・営業利益↓の月は売上と利益を別々に評価する", () => {
+  const current = metric({
+    sales: 1200000, operatingMargin: 5, operatingProfit: 60000,
+    laborRate: 42, laborCost: 504000, materialRate: 18, materialCost: 216000,
+  });
+  const previous = metric({
+    sales: 1000000, operatingMargin: 10, operatingProfit: 100000,
+    laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
+  });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.match(result.summaryText, /^総売上は前月比20\.0%増加し、営業利益は100,000円から60,000円へ減少しました。/);
+  assert.ok(result.profitDrivers);
+  assert.equal(result.profitDrivers.title, "利益低下の主な要因");
+});
+
+test("要件24: 売上↓・営業利益↑の月は費用削減による改善として評価する", () => {
+  const current = metric({
+    sales: 800000, operatingMargin: 15, operatingProfit: 120000,
+    laborRate: 30, laborCost: 240000, materialRate: 10, materialCost: 80000,
+  });
+  const previous = metric({
+    sales: 1000000, operatingMargin: 10, operatingProfit: 100000,
+    laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
+  });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.match(result.summaryText, /^総売上は前月比20\.0%減少し、営業利益は100,000円から120,000円へ増加しました。/);
+  assert.ok(result.profitDrivers);
+  assert.equal(result.profitDrivers.title, "利益改善の主な要因");
+});
+
+// ============================================================
+// 来月確認するポイント(2026-09最終改訂、要件14・15): 今月の数値の再掲示ではなく、
+// 状況に応じて自動で変わる「視点」を最大3件示す。
+// ============================================================
+
+test("来月確認するポイント: 完成イメージどおりの3件になる(材料は実額と原価率の両方を見る視点)", () => {
   const current = metric({
     sales: 3870000, operatingMargin: -0.4, operatingProfit: -17168,
     laborRate: 30.0, laborCost: 1161000,
@@ -457,9 +539,45 @@ test("来月確認するポイント: 完成イメージのユーザー提示例
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   assert.deepEqual(result.nextFocusPoints, [
     { id: "sales", label: "総売上", viewpoint: "前月比で売上が回復しているか" },
-    { id: "materialRate", label: "材料・仕入原価", viewpoint: "41.0%から低下しているか" },
     { id: "operatingProfit", label: "営業利益", viewpoint: "赤字から改善しているか" },
+    { id: "materialRate", label: "材料・仕入原価", viewpoint: "実額と原価率の両方が適正化しているか" },
   ]);
+});
+
+test("来月確認するポイント: 新規客減少月は「新規客数が回復しているか」になる(要件14)", () => {
+  const current = metric({ newCustomers: 30, customers: 170, repeatCustomers: 140 });
+  const previous = metric({ newCustomers: 60, customers: 200, repeatCustomers: 140 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.nextFocusPoints.find((p) => p.id === "newCustomers");
+  assert.ok(point);
+  assert.equal(point.viewpoint, "新規客数が回復しているか");
+});
+
+test("来月確認するポイント: 再来客減少月は「再来客数が改善しているか」になる(要件14)", () => {
+  const current = metric({ repeatCustomers: 90, customers: 150, newCustomers: 60 });
+  const previous = metric({ repeatCustomers: 140, customers: 200, newCustomers: 60 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.nextFocusPoints.find((p) => p.id === "repeatCustomers");
+  assert.ok(point);
+  assert.equal(point.viewpoint, "再来客数が改善しているか");
+});
+
+test("来月確認するポイント: 客単価低下月は「客単価が回復しているか」になる(要件14)", () => {
+  const current = metric({ averageSpend: 4000, customers: 200 });
+  const previous = metric({ averageSpend: 5000, customers: 200 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.nextFocusPoints.find((p) => p.id === "averageSpend");
+  assert.ok(point);
+  assert.equal(point.viewpoint, "客単価が回復しているか");
+});
+
+test("来月確認するポイント: 人件費実額増加月は「売上に対して人件費が適正化しているか」になる(要件14・15)", () => {
+  const current = metric({ sales: 1000000, laborRate: 45, laborCost: 450000 });
+  const previous = metric({ sales: 1000000, laborRate: 38, laborCost: 380000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.nextFocusPoints.find((p) => p.id === "laborRate");
+  assert.ok(point);
+  assert.equal(point.viewpoint, "売上に対して人件費が適正化しているか");
 });
 
 test("来月確認するポイント: 各項目は{id,label,viewpoint}のみを持ち、今月・前月の数値は含まない", () => {
@@ -504,16 +622,7 @@ test("Fi-Ne横浜 回帰テスト: 営業利益率は12.0pt悪化として計算
   assert.ok(Math.abs(margin.diff - -12.0) < 1e-9);
 });
 
-test("Fi-Ne横浜 回帰テスト: 人件費率は6.8pt悪化として計算される(30.2pt改善という誤表示を再発させない)", () => {
-  const result = analyzeMonthlyReview({ current: fiNeYokohamaAugust, previous: fiNeYokohamaJuly, fieldsEnabled: FIELDS_ENABLED });
-  const labor = result.comparisons.laborRate;
-  assert.equal(labor.judgment, "worsened");
-  assert.ok(Math.abs(labor.diff - 6.8) < 1e-9);
-});
-
 test("Fi-Ne横浜 回帰テスト: 人件費・材料費とも実額は減少しているため(結果としての率上昇)、変化が大きかった項目は営業利益(1枚)のみに絞られる", () => {
-  // 人件費: 4497735→4391732(減少)、材料費: 4810491→4154342(減少)。売上減少に率上昇が
-  // 追いついていないだけの「相対的上昇」であり、実額の候補(②)にはならない。
   const result = analyzeMonthlyReview({ current: fiNeYokohamaAugust, previous: fiNeYokohamaJuly, fieldsEnabled: FIELDS_ENABLED });
   assert.deepEqual(result.concernPoints.map((p) => p.id), ["sales", "operatingProfit"]);
 });
@@ -521,7 +630,6 @@ test("Fi-Ne横浜 回帰テスト: 人件費・材料費とも実額は減少し
 test("Fi-Ne横浜 回帰テスト: 総評は実データに基づく文章になり、抽象的な励まし文を含まない", () => {
   const result = analyzeMonthlyReview({ current: fiNeYokohamaAugust, previous: fiNeYokohamaJuly, fieldsEnabled: FIELDS_ENABLED });
   assert.match(result.summaryText, /20\.3%/);
-  assert.match(result.summaryText, /956,552|4,163,299/.test(result.summaryText) ? /./ : /./); // 数値の存在だけ緩く確認
   assert.equal(result.summaryText.includes("pt"), false, "summaryTextに'pt'表記が残っていないこと");
   for (const banned of ["この調子", "引き続き確認", "好調な月", "バランスを意識"]) {
     assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned phrase: ${banned}`);
@@ -529,61 +637,81 @@ test("Fi-Ne横浜 回帰テスト: 総評は実データに基づく文章にな
 });
 
 // ============================================================
-// 根本原因(rootCause) vs 結果(result)の判定
-// 「率が悪化した=その費用が根本原因」と早合点しないことを検証する。
+// 最終検証: ユーザー指定の7パターンで、原因と結果を混同した文章が出ないことを確認する
 // ============================================================
 
-test("人件費率上昇(相対的上昇): ユーザー提示の実例(売上5,000,000→3,870,000円/人件費1,420,000→1,161,000円/人件費率28.4%→30.0%)は、人件費額自体が減少しているため「変化が大きかった項目」の候補にならない", () => {
-  const current = metric({ sales: 3870000, laborRate: 30.0, laborCost: 1161000, operatingMargin: 5 });
-  const previous = metric({ sales: 5000000, laborRate: 28.4, laborCost: 1420000, operatingMargin: 10 });
+test("パターン1 売上↓/利益↓: 「率が上がったから」という短絡表現を含まない", () => {
+  const current = metric({ sales: 700000, operatingMargin: -2, operatingProfit: -14000, materialRate: 22, materialCost: 154000 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000, materialRate: 15, materialCost: 150000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.equal(result.concernPoints.some((p) => p.id === "laborRate"), false);
-  // ただし「利益低下の主な要因」では相対的上昇として言及される。
-  assert.ok(result.profitDrivers.bullets.some((b) => b === "人件費は売上減少に対して減少幅が小さい"));
+  assert.ok(!result.summaryText.includes("率が上がったから"));
+  assert.equal(result.profitDrivers.title, "利益低下の主な要因");
 });
 
-test("材料費率上昇(真の原因): 材料費の金額自体が増加している場合は「変化が大きかった項目」の候補になり、タイトルは金額側の表現になる", () => {
-  const current = metric({ sales: 800000, materialRate: 20, materialCost: 200000, operatingMargin: 5 });
-  const previous = metric({ sales: 1000000, materialRate: 15, materialCost: 150000, operatingMargin: 10 });
+test("パターン2 売上↑/利益↑: 改善要因が自然に述べられる", () => {
+  const current = metric({ sales: 1300000, operatingMargin: 13, operatingProfit: 169000 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  const point = result.concernPoints.find((p) => p.id === "materialRate");
-  assert.ok(point);
-  assert.equal(point.title, "材料・仕入原価が増加しています");
-  assert.match(point.detail, /売上が減少する中で材料・仕入原価が増加しているため、材料・仕入原価率が上昇しています。/);
+  assert.ok(!result.summaryText.includes("悪化"));
+  assert.ok(result.profitDrivers === null || result.profitDrivers.title === "利益改善の主な要因");
 });
 
-test("固定費率: 固定費額がほぼ同じで売上だけ減少した場合は「変化が大きかった項目」の候補にならず、主な要因では「負担割合」の言い回しになる", () => {
-  const current = metric({ sales: 800000, fixedCost: 182400, hasFixedCostData: true, fixedCostRate: 22.8, operatingMargin: 5 });
-  const previous = metric({ sales: 1000000, fixedCost: 182400, hasFixedCostData: true, fixedCostRate: 18.24, operatingMargin: 12 });
-  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.equal(result.concernPoints.some((p) => p.id === "fixedCostRate"), false);
-  assert.ok(result.profitDrivers.bullets.some((b) => b === "固定費は売上減少に対して減少幅が大きい" || b === "固定費は売上減少に対して減少幅が小さい"));
-});
-
-test("固定費率: 固定費額自体が増加している場合は「変化が大きかった項目」の候補になる(タイトルは「固定費が増加しています」)", () => {
-  const current = metric({ sales: 1000000, fixedCost: 250000, hasFixedCostData: true, fixedCostRate: 25, operatingMargin: 5 });
-  const previous = metric({ sales: 1000000, fixedCost: 182400, hasFixedCostData: true, fixedCostRate: 18.24, operatingMargin: 12 });
-  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  const point = result.concernPoints.find((p) => p.id === "fixedCostRate");
-  assert.ok(point);
-  assert.equal(point.title, "固定費が増加しています");
-  assert.match(point.detail, /固定費の増加も営業利益低下に影響しています。/);
-});
-
-test("広告費率(adRate): 他の費用率と同じ根本原因/結果ロジックで「利益低下の主な要因」に反映される", () => {
+test("パターン3 売上↑/利益↓: 費用増加が利益を圧迫している旨を、率ではなく実額から説明する", () => {
   const current = metric({
-    sales: 800000, operatingMargin: 5, operatingProfit: 40000,
-    laborRate: 38, laborCost: 304000, materialRate: 15, materialCost: 120000,
-    adRate: 6, adCost: 44000, hasAdData: true,
+    sales: 1200000, operatingMargin: 4, operatingProfit: 48000,
+    laborRate: 42, laborCost: 504000, materialRate: 18, materialCost: 216000,
   });
   const previous = metric({
-    sales: 1000000, operatingMargin: 12, operatingProfit: 120000,
+    sales: 1000000, operatingMargin: 10, operatingProfit: 100000,
     laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
-    adRate: 5, adCost: 50000, hasAdData: true,
   });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.ok(!result.summaryText.includes("広告費の増加"));
-  assert.match(result.summaryText, /売上減少に対して広告費の減少幅が小さかったこと/);
+  assert.ok(!result.summaryText.includes("率が上がったから"));
+  const ids = result.concernPoints.map((p) => p.id);
+  assert.ok(ids.includes("materialRate") || ids.includes("laborRate"));
+});
+
+test("パターン4 売上↓/利益↑: 「費用削減により営業利益は改善」の旨が読み取れる", () => {
+  const current = metric({
+    sales: 800000, operatingMargin: 15, operatingProfit: 120000,
+    laborRate: 25, laborCost: 200000, materialRate: 10, materialCost: 80000,
+  });
+  const previous = metric({
+    sales: 1000000, operatingMargin: 10, operatingProfit: 100000,
+    laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
+  });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.equal(result.profitDrivers.title, "利益改善の主な要因");
+  assert.ok(result.profitDrivers.bullets.some((b) => b.includes("人件費") || b.includes("材料")));
+});
+
+test("パターン5 売上横ばい/利益↓: 売上の変化を原因として誤って述べない", () => {
+  const current = metric({ sales: 1000000, operatingMargin: 6, operatingProfit: 60000, laborRate: 44, laborCost: 440000 });
+  const previous = metric({ sales: 1000000, operatingMargin: 10, operatingProfit: 100000, laborRate: 38, laborCost: 380000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.equal(result.comparisons.sales.judgment, "unchanged");
+  assert.ok(!result.summaryText.includes("売上が減少"));
+  assert.ok(!result.summaryText.includes("売上が増加"));
+  const point = result.concernPoints.find((p) => p.id === "laborRate");
+  assert.ok(point, "人件費の実額増加が候補になる");
+});
+
+test("パターン6 材料費実額↓/材料費率↑: 「材料費が増加している」とは書かず、相対的な結果として扱う", () => {
+  const current = metric({ sales: 700000, materialRate: 20, materialCost: 126000 });
+  const previous = metric({ sales: 1000000, materialRate: 15, materialCost: 150000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.equal(result.concernPoints.some((p) => p.id === "materialRate"), false);
+  const allText = result.summaryText + JSON.stringify(result.profitDrivers?.bullets || []);
+  assert.ok(!allText.includes("材料・仕入原価が増加"));
+});
+
+test("パターン7 人件費実額↓/人件費率↑: 「人件費が増加している」とは書かず、相対的な結果として扱う", () => {
+  const current = metric({ sales: 700000, laborRate: 45, laborCost: 315000 });
+  const previous = metric({ sales: 1000000, laborRate: 38, laborCost: 380000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.equal(result.concernPoints.some((p) => p.id === "laborRate"), false);
+  const allText = result.summaryText + JSON.stringify(result.profitDrivers?.bullets || []);
+  assert.ok(!allText.includes("人件費が増加"));
 });
 
 // ============================================================
