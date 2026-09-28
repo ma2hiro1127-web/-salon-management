@@ -188,32 +188,44 @@ export function buildMetricComparisons(current, previous, fieldsEnabled = {}) {
   return comparisons;
 }
 
-function describeComparison(key, comparison) {
-  const def = METRIC_DEFS[key];
-  const currentText = formatValue(comparison.current, def.format);
-  const previousText = formatValue(comparison.previous, def.format);
-  if (def.kind === "rate") {
-    // diff=0(変化なし)は「0.0%低下」のような矛盾した文言にしない(要件: テストケース4)。
-    // buildConcernPointsはjudgment==="worsened"の項目しか呼ばないため通常は到達しないが、
-    // この関数単体が将来別の文脈(unchangedも含む一覧等)から呼ばれても安全なようにする。
-    if (comparison.diff === 0) return `${def.label}は${currentText}で、前月から変化ありません。`;
-    const verb = comparison.diff > 0 ? "上昇" : "低下";
-    return `${def.label}が${previousText}から${currentText}へ${formatRateChange(comparison.diff)}${verb}しました。`;
-  }
-  if (comparison.diff === 0) return `${def.label}は${currentText}で、前月から変化ありません。`;
-  const verb = def.verb === "rise" ? (comparison.diff > 0 ? "上昇" : "低下") : (comparison.diff > 0 ? "増加" : "減少");
-  const percentText = comparison.percentChange !== null ? `${formatRateChange(comparison.percentChange)}` : null;
-  return percentText
-    ? `${def.label}が${previousText}から${currentText}へ${percentText}${verb}しました。`
-    : `${def.label}が${previousText}から${currentText}へ${verb}しました。`;
+// 変化の向きを表す動詞(2026-09全面改訂の中心ルール、要件9・10)。率・比率(kind:"rate")と
+// 客単価(verb:"rise"、単価という性質上、量ではなく率と同じ扱いにする既存の判断を維持)は
+// 「上昇/低下」、それ以外の量(売上・客数・件数等)は「増加/減少」。「悪化/改善」等の
+// 評価語は一切使わない(要件10)。
+function verbFor(def, diff) {
+  if (def.kind === "rate" || def.verb === "rise") return diff > 0 ? "上昇" : "低下";
+  return diff > 0 ? "増加" : "減少";
 }
 
-// 変化の向きを表す短い動詞(要因分析の文中で使う。describeComparisonと同じ判定基準)。
-function verbFor(key, comparison) {
+// 「前月値 → 今月値」の値推移テキスト(要件1・3・4)。差分(pt/%)ではなく実数値を並べ、
+// 必ず前月→今月の順にする。formatValueが符号をそのまま出すため「--0.4%」のような
+// 二重マイナスは発生しない(要件14)。
+function rangeText(def, comparison) {
+  return `${formatValue(comparison.previous, def.format)} → ${formatValue(comparison.current, def.format)}`;
+}
+
+// 指標1件分の変化を説明する1文(2026-09全面改訂、要件1・2・3・4・7・8・9・10・14・15)。
+//   - 同値(diff===0): 「{label}は前月と同じ{value}です。」(要件15、上昇/低下も増加/減少も使わない)
+//   - 率・比率(kind:"rate"、または客単価): 「{label}は {前月}% → {今月}% に{上昇/低下}しました。」
+//     (要件1・3・9。差分の「○pt」「○%上昇」は本文に出さない — 要件2・4)
+//   - それ以外の量: 「{label}は前月より{変化率}%{増加/減少}しました。」(要件8)。ただし営業利益の
+//     ように黒字⇔赤字を跨ぐ変化は前月比%が意味を持たない(例: +95万円→-1.7万円は「-101.8%」
+//     のような読み取りにくい数字になる)ため、この場合だけ率・比率と同じ「値→値」形式にする
+//     (要件4の例: 営業利益)。
+export function describeComparison(key, comparison) {
   const def = METRIC_DEFS[key];
-  if (def.kind === "rate") return comparison.diff > 0 ? "上昇" : "低下";
-  if (def.verb === "rise") return comparison.diff > 0 ? "上昇" : "低下";
-  return comparison.diff > 0 ? "増加" : "減少";
+  if (comparison.diff === 0) {
+    return `${def.label}は前月と同じ${formatValue(comparison.current, def.format)}です。`;
+  }
+  const verb = verbFor(def, comparison.diff);
+  if (def.kind === "rate") {
+    return `${def.label}は ${rangeText(def, comparison)} に${verb}しました。`;
+  }
+  const crossesZero = comparison.percentChange === null || (comparison.current >= 0) !== (comparison.previous >= 0);
+  if (crossesZero) {
+    return `${def.label}は ${rangeText(def, comparison)} に${verb}しました。`;
+  }
+  return `${def.label}は前月より${formatRateChange(comparison.percentChange)}${verb}しました。`;
 }
 
 // 比較可能な変化の大きさ(要件5: どの関連KPIの影響が大きいかを数値で判定する、推測しない)。
@@ -222,11 +234,16 @@ function factorMagnitude(comparison) {
   return comparison.percentChange !== null ? Math.abs(comparison.percentChange) : Math.abs(comparison.diff ?? 0);
 }
 
-// 親指標(例: 売上)が悪化/改善した時、FACTOR_RELATIONSで対応付けられた関連KPI(例: 客数・
-// 客単価)のうち、実際に比較可能なものだけを並べ、最も変化が大きいものを「主な影響」として
-// 1〜2文の説明文にする(要件5)。関連KPIが1つ以下しか比較できない場合は説明文を作らない
-// (根拠の無い断定を避ける)。ここは表示用の文言生成のみで、新しい計算は一切行わない
-// (buildMetricComparisonsで確定済みの値を読むだけ)。
+// 親指標(例: 営業利益率)が悪化/改善した時、FACTOR_RELATIONSで対応付けられた関連KPI
+// (例: 人件費率・材料費率)のうち、親と同じ方向(悪化なら悪化、改善なら改善)へ動いた
+// ものだけを「主な要因」として1文にまとめる(2026-09全面改訂、要件6・7・11)。
+//   - 「よりも」で1件だけを名指しする比較表現、「〜の変化は、主に〜による影響です」という
+//     回りくどい言い回しは廃止した(旧・禁止表現)。
+//   - 親と逆方向に動いた関連KPI(例: 材料費率は上昇したが人件費率は低下した場合の人件費率)は
+//     要因として挙げない——データから読み取れる範囲だけを述べる(要件11)。
+//   - 該当する関連KPIが無い場合は説明文を作らない(根拠の無い断定を避ける)。
+// ここは表示用の文言生成のみで、新しい計算は一切行わない(buildMetricComparisonsで
+// 確定済みの値を読むだけ)。
 function buildFactorAnalysis(parentKey, comparisons) {
   const parent = comparisons[parentKey];
   const relationKeys = FACTOR_RELATIONS[parentKey];
@@ -250,24 +267,25 @@ function buildFactorAnalysis(parentKey, comparisons) {
     judgment: comparison.judgment,
   }));
 
-  if (validRelations.length < 2) return { relatedMetrics, factorNote: "" };
+  // 親と同じ方向(judgmentが一致)へ動いた関連KPIだけを要因候補にする。変化が大きい順に
+  // 並べ、文中で先に挙げる(要件6の例: 材料費率の方が人件費率より大きく動いた場合、
+  // 材料費率を先に述べる)。
+  const contributing = validRelations
+    .filter(({ comparison }) => comparison.judgment === parent.judgment)
+    .sort((a, b) => factorMagnitude(b.comparison) - factorMagnitude(a.comparison));
+  if (contributing.length === 0) return { relatedMetrics, factorNote: "" };
 
-  const ranked = [...validRelations].sort((a, b) => factorMagnitude(b.comparison) - factorMagnitude(a.comparison));
-  const dominant = ranked[0];
-  const dominantLabel = METRIC_DEFS[dominant.key].label;
-  const dominantVerb = verbFor(dominant.key, dominant.comparison);
-  const parentLabel = METRIC_DEFS[parentKey].label;
-  const parentVerb = verbFor(parentKey, parent);
-
-  let factorNote;
-  if (ranked.length === 2) {
-    const other = ranked[1];
-    const otherLabel = METRIC_DEFS[other.key].label;
-    factorNote = `${parentLabel}${parentVerb}は${otherLabel}よりも、${dominantLabel}${dominantVerb}の影響が大きくなっています。`;
-  } else {
-    factorNote = `${parentLabel}の変化は、主に${dominantLabel}の${dominantVerb}による影響です。`;
+  // 動詞(上昇/低下/増加/減少)ごとにグルーピングし、「Aや Bの上昇」のように自然にまとめる。
+  const groups = new Map();
+  for (const { key, comparison } of contributing) {
+    const def = METRIC_DEFS[key];
+    const verb = verbFor(def, comparison.diff);
+    if (!groups.has(verb)) groups.set(verb, []);
+    groups.get(verb).push(def.label);
   }
-  return { relatedMetrics, factorNote };
+  const clause = [...groups.entries()].map(([verb, labels]) => `${labels.join("や")}の${verb}`).join("・");
+
+  return { relatedMetrics, factorNote: `主に、${clause}が影響しています。` };
 }
 
 // 人件費率が動いた時の根拠説明(要件5)。laborRateの改善/悪化は「人件費率(pt)」だけで
@@ -280,17 +298,18 @@ function laborRateBasisClause(comparisons) {
   const rate = comparisons.laborRate;
   const sales = comparisons.sales;
   const laborAmount = comparisons.laborCost;
-  if (!rate || rate.judgment === "no_comparison") return "";
+  if (!rate || rate.judgment === "no_comparison" || rate.judgment === "unchanged") return "";
   if (!sales || sales.judgment === "no_comparison" || sales.percentChange === null) return "";
   if (!laborAmount || laborAmount.judgment === "no_comparison" || laborAmount.percentChange === null) return "";
   if (rate.judgment === "worsened") {
     return sales.diff >= 0
-      ? "売上増加率より人件費増加率が大きくなっています。"
-      : "人件費は減少していますが、売上の減少ほど下がっていません。";
+      ? "売上の増加より人件費の増加が大きいため、人件費率が上昇しています。"
+      : "売上の減少に対して人件費の減少幅が小さかったため、人件費率が上昇しています。";
   }
-  if (rate.judgment === "improved" && laborAmount.diff > 0) {
-    // 要件5の例1: 人件費額は増えているが、売上増加に対して人件費率は改善しているケース。
-    return `人件費額は${formatValue(laborAmount.previous, "yen")}から${formatValue(laborAmount.current, "yen")}へ増加していますが、売上増加に対して人件費率は${formatRateChange(rate.diff)}改善しており、問題ありません。`;
+  // improved = 人件費率(lowerIsBetter)が低下方向。金額自体は増えているのに率は下がっている
+  // (=売上の伸びが人件費の伸びより大きい)ケースだけ、誤解されやすいため補足する。
+  if (laborAmount.diff > 0) {
+    return `人件費は ${rangeText(METRIC_DEFS.laborCost, laborAmount)} に増加していますが、売上の増加が大きいため人件費率は低下しています。`;
   }
   return "";
 }
@@ -310,56 +329,37 @@ function profitDriverReason(comparisons) {
     if (materialState === "worsened") return "材料・仕入原価率の上昇";
     return "";
   }
-  if (laborState === "improved" && materialState === "improved") return "人件費率・材料費率の改善";
-  if (laborState === "improved") return "人件費率の改善";
-  if (materialState === "improved") return "材料・仕入原価率の改善";
+  // improved = 率(lowerIsBetter)が下がった方向。「改善」という評価語は使わず、
+  // 事実としての向き(低下)だけを述べる(要件10)。
+  if (laborState === "improved" && materialState === "improved") return "人件費率・材料費率の低下";
+  if (laborState === "improved") return "人件費率の低下";
+  if (materialState === "improved") return "材料・仕入原価率の低下";
   return "";
 }
 
-// ①総評。実データ→差分→経営上の意味、の順で2〜4文にまとめる。抽象論・励まし文は
-// 一切含めない。前月データが無い場合は当月の実績だけを事実として述べる。売上だけで
-// 良し悪しを判断せず(要件4)、売上と営業利益が逆方向に動いた場合は「売上は減少しました
-// が、〜により営業利益は増加しました」のように1文で対比して述べる——売上の増減だけを
-// 強調して不必要にネガティブな印象を与えないようにする。
+// ①総評(2026-09全面改訂、要件5・12・17)。①売上等の主要KPI変化 ②営業利益の変化
+// ③営業利益率の変化 ④主な要因、の順で**別々の短い文**に分ける——1文に複数のKPIを
+// 詰め込まない(要件17、スマホでも読みやすい長さを優先)。各文はdescribeComparison
+// (「変化が大きかった項目」と同じ共通関数)をそのまま使うため、率は「値→値」、量は
+// 「前月より○%」という表記ルールが総評でも自動的に統一される。要因(④)は短い名詞句
+// (例:「人件費率・材料費率の上昇」)だけに留め、詳細な根拠説明は「変化が大きかった
+// 項目」側に譲ることで、総評と内容が丸ごと重複しないようにする(要件12)。
+// 前月データが無い場合は当月の実績だけを事実として述べる。抽象論・励まし文は一切含めない。
 function buildSummaryText(comparisons, current) {
   const sales = comparisons.sales;
   if (!sales || sales.judgment === "no_comparison") {
     return `今月の総売上は${formatValue(current.sales, "yen")}でした。比較できる前月データが無いため、今月の実績のみを表示しています。`;
   }
-  const salesGood = sales.diff >= 0;
-  const salesVerb = salesGood ? "増加" : "減少";
-  const salesClause = `売上は前月比${formatRateChange(sales.percentChange)}${salesVerb}しました`;
 
-  const sentences = [];
+  const sentences = [describeComparison("sales", sales)];
+
   const profit = comparisons.operatingProfit;
   const margin = comparisons.operatingMargin;
   if (profit && margin && profit.judgment !== "no_comparison" && margin.judgment !== "no_comparison") {
-    if (profit.diff === 0 && margin.diff === 0) {
-      sentences.push(`${salesClause}。営業利益は${formatValue(profit.current, "yen")}、営業利益率は${margin.current.toFixed(1)}%で、前月から変化ありませんでした。`);
-    } else {
-      const profitGood = profit.diff > 0 ? true : profit.diff < 0 ? false : null;
-      const profitVerb = profit.diff > 0 ? "増加" : "減少";
-      const marginVerb = margin.diff > 0 ? "改善" : "低下";
-      const reason = profitDriverReason(comparisons);
-      const reasonClause = reason ? `${reason}により、` : "";
-      const profitSentence = `${reasonClause}営業利益は${formatValue(profit.previous, "yen")}から${formatValue(profit.current, "yen")}へ${profitVerb}し、営業利益率も${margin.previous.toFixed(1)}%から${margin.current.toFixed(1)}%へ${formatRateChange(margin.diff)}${marginVerb}しました。`;
-      if (profitGood !== null && profitGood !== salesGood) {
-        // 売上と営業利益が逆方向 → 「〜が、」で1文につなげ、売上だけの評価に見えないようにする。
-        sentences.push(`${salesClause}が、${profitSentence}`);
-      } else {
-        sentences.push(`${salesClause}。`);
-        sentences.push(profitSentence);
-      }
-    }
-  } else {
-    sentences.push(`${salesClause}。`);
-  }
-
-  // 要件5の例1(人件費額は増えているが人件費率は改善しているケース)だけ、金額と率が
-  // 逆方向に見えて誤解されやすいため補足する。悪化時の詳細な根拠説明は②側で個別に述べる。
-  if (comparisons.laborRate?.judgment === "improved") {
-    const laborClause = laborRateBasisClause(comparisons);
-    if (laborClause) sentences.push(laborClause);
+    sentences.push(describeComparison("operatingProfit", profit));
+    sentences.push(describeComparison("operatingMargin", margin));
+    const reason = profitDriverReason(comparisons);
+    if (reason) sentences.push(`主に、${reason}が影響しています。`);
   }
 
   return sentences.join("");
@@ -408,22 +408,26 @@ function rankConcernKeys(comparisons) {
   return result;
 }
 
+// ②変化が大きかった項目、1件分の文章構造(2026-09全面改訂、要件6): タイトル→数値の変化
+// (describeComparison、「前月値 → 今月値」形式)→要因、の順で1〜2文にまとめる。要因は
+// まずFACTOR_RELATIONSベースの汎用的な要因分析(buildFactorAnalysis)を試し、対象外の
+// 指標(laborRate/materialRateはFACTOR_RELATIONSの親ではないため対象外)は専用の根拠
+// 説明(laborRateBasisClause等)にフォールバックする。
 function buildConcernPoints(comparisons, thresholds) {
   return rankConcernKeys(comparisons)
     .slice(0, thresholds.maxConcernPoints)
     .map((key) => {
       const c = comparisons[key];
       let detail = describeComparison(key, c);
-      if (key === "laborRate") {
+      const { relatedMetrics, factorNote } = buildFactorAnalysis(key, comparisons);
+      if (factorNote) {
+        detail += factorNote;
+      } else if (key === "laborRate") {
         const basis = laborRateBasisClause(comparisons);
         if (basis) detail += basis;
       } else if (key === "materialRate" && comparisons.operatingMargin?.judgment === "worsened") {
-        detail += "原価負担の上昇も営業利益率低下の一因です。";
+        detail += "原価負担が大きくなり、営業利益を押し下げています。";
       }
-      // 要因分析(要件5): 関連KPIの実測値+どちらの影響が大きいかの説明文を1つ付ける。
-      // 関連が定義されていない指標(FACTOR_RELATIONSに無い)は付かない。
-      const { relatedMetrics, factorNote } = buildFactorAnalysis(key, comparisons);
-      if (factorNote) detail += factorNote;
       return { id: key, title: METRIC_DEFS[key].concernTitle, detail, relatedMetrics };
     });
 }

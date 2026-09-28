@@ -9,6 +9,7 @@ import {
   validateMetricComparison,
   buildMetricComparisons,
   formatRateChange,
+  describeComparison as describeComparisonForTest,
   MONTHLY_INSIGHT_THRESHOLDS,
 } from "./monthlyReviewAnalysis.js";
 
@@ -93,15 +94,18 @@ test("要件5 例1: 売上増+人件費額増+人件費率改善 → 悪化と�
   assert.equal(result.concernPoints.some((p) => p.id === "laborCost"), false, "人件費の金額そのものは要確認ポイントに出してはいけない");
 });
 
-test("要件5 例1: 総評に「人件費額は増加しているが人件費率は改善しており問題ない」旨が含まれる", () => {
+test("要件5 例1: 総評に「人件費は増加しているが売上の増加が大きいため人件費率は低下している」旨が含まれる(2026-09表現統一、'改善'/'問題ありません'は使わない)", () => {
   const current = metric({ sales: 3500000, laborCost: 1370000, laborRate: 39.1 });
   const previous = metric({ sales: 3000000, laborCost: 1200000, laborRate: 40.0 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.match(result.summaryText, /人件費額は1,200,000円から1,370,000円へ増加していますが/);
-  assert.match(result.summaryText, /問題ありません/);
+  // 総評ではlaborRateBasisClauseを呼ばなくなった(要件12: 詳細な根拠説明は
+  // 「変化が大きかった項目」側だけに出し、総評と重複させない)ため、総評自体は短い。
+  for (const banned of ["改善", "問題ありません", "pt", "ポイント"]) {
+    assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned phrase: ${banned}`);
+  }
 });
 
-test("要件5 例2: 売上増+人件費増以上に人件費率が悪化 → 要確認ポイントに出る", () => {
+test("要件5 例2: 売上増+人件費増以上に人件費率が悪化 → 要確認ポイントに出て、'前月値% → 今月値%'形式で表示される", () => {
   // 売上300万→350万、人件費120万→160万、人件費率40.0%→45.7%
   const current = metric({ sales: 3500000, laborCost: 1600000, laborRate: 45.7 });
   const previous = metric({ sales: 3000000, laborCost: 1200000, laborRate: 40.0 });
@@ -109,10 +113,12 @@ test("要件5 例2: 売上増+人件費増以上に人件費率が悪化 → 要
   assert.equal(result.comparisons.laborRate.judgment, "worsened");
   const point = result.concernPoints.find((p) => p.id === "laborRate");
   assert.ok(point, "人件費率悪化が要確認ポイントに含まれるべき");
-  assert.match(point.detail, /売上増加率より人件費増加率が大きくなっています/);
+  assert.match(point.detail, /人件費率は 40\.0% → 45\.7% に上昇しました/);
+  assert.match(point.detail, /売上の増加より人件費の増加が大きいため、人件費率が上昇しています/);
+  assert.equal(point.detail.includes("pt"), false);
 });
 
-test("要件5 例3: 売上減+人件費額は減っているが人件費率は悪化 → 悪化として正しく判定される", () => {
+test("要件5 例3: 売上減+人件費額は減っているが人件費率は悪化 → 悪化として正しく判定され、旧禁止表現('下がっていません')を使わない", () => {
   // 売上350万→300万、人件費140万→130万、人件費率40.0%→43.3%
   const current = metric({ sales: 3000000, laborCost: 1300000, laborRate: 43.3 });
   const previous = metric({ sales: 3500000, laborCost: 1400000, laborRate: 40.0 });
@@ -121,7 +127,9 @@ test("要件5 例3: 売上減+人件費額は減っているが人件費率は�
   assert.equal(result.comparisons.laborRate.judgment, "worsened", "金額が減っていても人件費率で見れば悪化");
   const point = result.concernPoints.find((p) => p.id === "laborRate");
   assert.ok(point);
-  assert.match(point.detail, /人件費は減少していますが、売上の減少ほど下がっていません/);
+  assert.match(point.detail, /人件費率は 40\.0% → 43\.3% に上昇しました/);
+  assert.match(point.detail, /売上の減少に対して人件費の減少幅が小さかったため、人件費率が上昇しています/);
+  assert.equal(point.detail.includes("下がっていません"), false, "旧・禁止表現(要件7)が残っていないこと");
 });
 
 // ============================================================
@@ -159,8 +167,9 @@ test("Fi-Ne横浜 回帰テスト: 変化が大きかった項目は営業利益
 test("Fi-Ne横浜 回帰テスト: 総評は実データに基づく文章になり、抽象的な励まし文を含まない", () => {
   const result = analyzeMonthlyReview({ current: fiNeYokohamaAugust, previous: fiNeYokohamaJuly, fieldsEnabled: FIELDS_ENABLED });
   assert.match(result.summaryText, /20\.3%/);
-  // 割合の変化量は「pt」ではなく必ず「%」で表示する(2026-09統一、formatRateChange)。
-  assert.match(result.summaryText, /28\.0%から16\.0%へ12\.0%低下/);
+  // 率の変化は2026-09統一ルールで「前月値% → 今月値%」形式にする(差分の「pt」「%上昇/低下」は
+  // 本文に出さない、要件1・2・4)。
+  assert.match(result.summaryText, /営業利益率は 28\.0% → 16\.0% に低下しました/);
   assert.equal(result.summaryText.includes("pt"), false, "summaryTextに'pt'表記が残っていないこと");
   for (const banned of ["この調子", "引き続き確認", "好調な月", "バランスを意識"]) {
     assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned phrase: ${banned}`);
@@ -209,13 +218,17 @@ test("客数の内訳(新規・再来)が両方低下している場合、内訳
   assert.deepEqual(customersPoint.relatedMetrics.map((m) => m.key).sort(), ["newCustomers", "repeatCustomers"]);
 });
 
-test("売上が減少し営業利益は増加した月は、総評で両方を対比して述べ、売上だけを強調しない(要件4)", () => {
+test("売上が減少し営業利益は増加した月は、総評で①売上②営業利益③営業利益率④要因を別々の文で述べる(要件5・17、2026-09表現統一)", () => {
   const current = metric({ sales: 900000, operatingProfit: 150000, operatingMargin: 16.7, laborRate: 30 });
   const previous = metric({ sales: 1000000, operatingProfit: 100000, operatingMargin: 10, laborRate: 38 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.match(result.summaryText, /売上は前月比10\.0%減少しましたが/);
-  assert.match(result.summaryText, /人件費率の改善により/);
-  assert.match(result.summaryText, /営業利益は100,000円から150,000円へ増加/);
+  assert.match(result.summaryText, /総売上は前月より10\.0%減少しました/);
+  assert.match(result.summaryText, /営業利益は前月より50\.0%増加しました/);
+  assert.match(result.summaryText, /営業利益率は 10\.0% → 16\.7% に上昇しました/);
+  assert.match(result.summaryText, /主に、人件費率の低下が影響しています/);
+  for (const banned of ["改善", "pt", "ポイント"]) {
+    assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned phrase: ${banned}`);
+  }
 });
 
 // ============================================================
@@ -306,7 +319,7 @@ test("営業利益率悪化の主要因が人件費率のみの場合、その�
   const current = metric({ operatingMargin: 8, laborRate: 45, materialRate: 15 });
   const previous = metric({ operatingMargin: 12, laborRate: 38, materialRate: 15 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
-  assert.match(result.summaryText, /人件費率の上昇により/);
+  assert.match(result.summaryText, /主に、人件費率の上昇が影響しています/);
   assert.equal(result.summaryText.includes("材料"), false);
 });
 
@@ -328,13 +341,14 @@ test("特に問題のない月は変化が大きかった項目を無理に作�
   assert.deepEqual(result.concernPoints, []);
 });
 
-test("変化が大きかった項目は具体的な数字(前月→今月、変化量)を必ず含み、変化量は「pt」ではなく「%」で表示する(2026-09統一)", () => {
+test("変化が大きかった項目は具体的な数字(前月値% → 今月値%)を必ず含み、差分の「pt」「○%上昇」は本文に出さない(2026-09統一、要件1・2・4)", () => {
   const current = metric({ laborRate: 45.6 });
   const previous = metric({ laborRate: 40.2 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const point = result.concernPoints.find((p) => p.id === "laborRate");
-  assert.match(point.detail, /40\.2%から45\.6%へ5\.4%上昇/);
+  assert.match(point.detail, /人件費率は 40\.2% → 45\.6% に上昇しました/);
   assert.equal(point.detail.includes("pt"), false);
+  assert.equal(point.detail.includes("5.4%上昇"), false, "差分(5.4%)を単独で本文に出さないこと(要件4)");
 });
 
 // ============================================================
@@ -366,15 +380,15 @@ test("formatRateChange: ケース6 3.0%→-2.0% の差分(-5.0)は「5.0%」に�
   assert.equal(formatRateChange(-2.0 - 3.0), "5.0%");
 });
 
-test("describeComparison経由(変化が大きかった項目のdetail)は常に「%」で表示され、「pt」「ポイント」「percentage point」を一切含まない(要件: rate指標の全ケース)", () => {
+test("describeComparison経由(変化が大きかった項目のdetail)は「前月値% → 今月値%」形式で表示され、「pt」「ポイント」「percentage point」「差分の%」を一切含まない(要件1・2・4)", () => {
   // 営業利益率(higherIsBetter)が5.2%→-0.4%へ悪化するケース(ユーザー提示のケース1相当)。
   const current = metric({ operatingMargin: -0.4 });
   const previous = metric({ operatingMargin: 5.2 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const point = result.concernPoints.find((p) => p.id === "operatingMargin");
   assert.ok(point);
-  assert.match(point.detail, /5\.2%から-0\.4%へ5\.6%低下しました/);
-  for (const banned of ["pt", "ポイント", "percentage point"]) {
+  assert.match(point.detail, /営業利益率は 5\.2% → -0\.4% に低下しました/);
+  for (const banned of ["pt", "ポイント", "percentage point", "5.6%"]) {
     assert.equal(point.detail.includes(banned), false, `detail contains banned unit: ${banned}`);
     assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned unit: ${banned}`);
   }
@@ -391,6 +405,100 @@ test("固定費率(22.8%→29.4%、+6.6pt相当)の変化も「6.6%上昇」と�
   const fixedCostRateMetric = point.relatedMetrics.find((m) => m.key === "fixedCostRate");
   assert.ok(fixedCostRateMetric);
   assert.equal(fixedCostRateMetric.judgment, "worsened");
+});
+
+// ============================================================
+// 2026-09全面改訂: 月次レビュー文章表現・数値表記ルールの統一(ユーザー提示の具体例)
+// ============================================================
+
+test("率の変化(要件1): 営業利益率19.0%→-0.4%は「営業利益率は 19.0% → -0.4% に低下しました。」になる", () => {
+  const current = metric({ operatingMargin: -0.4 });
+  const previous = metric({ operatingMargin: 19.0 });
+  const comparisons = buildMetricComparisons(current, previous, FIELDS_ENABLED);
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.concernPoints.find((p) => p.id === "operatingMargin");
+  assert.equal(point.detail.startsWith("営業利益率は 19.0% → -0.4% に低下しました。"), true, point.detail);
+  void comparisons;
+});
+
+test("率の変化(要件1): 材料・仕入原価率29.8%→41.0%は「材料・仕入原価率は 29.8% → 41.0% に上昇しました。」になる", () => {
+  const current = metric({ materialRate: 41.0, operatingMargin: 5 });
+  const previous = metric({ materialRate: 29.8, operatingMargin: 15 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.concernPoints.find((p) => p.id === "materialRate");
+  assert.ok(point);
+  assert.equal(point.detail.startsWith("材料・仕入原価率は 29.8% → 41.0% に上昇しました。"), true, point.detail);
+});
+
+test("率の変化(要件1): 人件費率28.4%→30.0%は「人件費率は 28.4% → 30.0% に上昇しました。」になる", () => {
+  const current = metric({ laborRate: 30.0 });
+  const previous = metric({ laborRate: 28.4 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.concernPoints.find((p) => p.id === "laborRate");
+  assert.equal(point.detail.startsWith("人件費率は 28.4% → 30.0% に上昇しました。"), true, point.detail);
+});
+
+test("量の変化(要件8): 売上・新規客数・再来客数は前月比%表記+増加/減少を使う", () => {
+  const current = metric({ sales: 773800, newCustomers: 56, repeatCustomers: 74 });
+  const previous = metric({ sales: 1000000, newCustomers: 50, repeatCustomers: 80.9 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.match(result.summaryText, /総売上は前月より22\.6%減少しました/);
+  const comparisons = buildMetricComparisons(current, previous, FIELDS_ENABLED);
+  // newCustomers: 50→56 = +12.0%
+  assert.match(describeComparisonForTest("newCustomers", comparisons.newCustomers), /新規客数は前月より12\.0%増加しました/);
+});
+
+test("桁数(要件16): 小数点第1位までに丸められる(29.84→29.8%、29.86→29.9%)", () => {
+  const a = buildMetricComparisons(metric({ laborRate: 29.84 }), metric({ laborRate: 20 }), FIELDS_ENABLED);
+  assert.match(describeComparisonForTest("laborRate", a.laborRate), /29\.8%/);
+  const b = buildMetricComparisons(metric({ laborRate: 29.86 }), metric({ laborRate: 20 }), FIELDS_ENABLED);
+  assert.match(describeComparisonForTest("laborRate", b.laborRate), /29\.9%/);
+});
+
+test("0%・マイナス値(要件14): 5.0%→0.0%、5.0%→-2.0%、-2.0%→3.0%のいずれも文章が崩れない(二重マイナス無し)", () => {
+  const r1 = buildMetricComparisons(metric({ laborRate: 0 }), metric({ laborRate: 5.0 }), FIELDS_ENABLED);
+  assert.equal(describeComparisonForTest("laborRate", r1.laborRate), "人件費率は 5.0% → 0.0% に低下しました。");
+  const r2 = buildMetricComparisons(metric({ laborRate: -2.0 }), metric({ laborRate: 5.0 }), FIELDS_ENABLED);
+  assert.equal(describeComparisonForTest("laborRate", r2.laborRate), "人件費率は 5.0% → -2.0% に低下しました。");
+  const r3 = buildMetricComparisons(metric({ operatingMargin: 3.0 }), metric({ operatingMargin: -2.0 }), FIELDS_ENABLED);
+  assert.equal(describeComparisonForTest("operatingMargin", r3.operatingMargin), "営業利益率は -2.0% → 3.0% に上昇しました。");
+  for (const text of [
+    describeComparisonForTest("laborRate", r1.laborRate),
+    describeComparisonForTest("laborRate", r2.laborRate),
+    describeComparisonForTest("operatingMargin", r3.operatingMargin),
+  ]) {
+    assert.equal(text.includes("--"), false, `不正な二重マイナスが無いこと: ${text}`);
+  }
+});
+
+test("同値(要件15): 前月と今月が同じ場合は「上昇/低下」を使わず「前月と同じ」と表示し、変化が大きかった項目には選出されない", () => {
+  const current = metric({ laborRate: 30.0 });
+  const previous = metric({ laborRate: 30.0 });
+  const comparisons = buildMetricComparisons(current, previous, FIELDS_ENABLED);
+  assert.equal(comparisons.laborRate.judgment, "unchanged");
+  assert.equal(describeComparisonForTest("laborRate", comparisons.laborRate), "人件費率は前月と同じ30.0%です。");
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  assert.equal(result.concernPoints.some((p) => p.id === "laborRate"), false);
+});
+
+test("評価語(要件10): 「悪化」「改善」「良くなりました」「危険」「問題です」を一切含まない(総評・変化が大きかった項目とも)", () => {
+  const current = metric({ sales: 500000, laborRate: 50, materialRate: 25, operatingMargin: -5, operatingProfit: -20000 });
+  const previous = metric({ sales: 1000000, laborRate: 38, materialRate: 15, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const allText = result.summaryText + result.concernPoints.map((p) => p.title + p.detail).join("");
+  for (const banned of ["悪化", "改善", "良くなりました", "悪くなりました", "危険です", "問題です"]) {
+    assert.equal(allText.includes(banned), false, `banned phrase found: ${banned}`);
+  }
+});
+
+test("旧・禁止表現(要件7)が一切残っていない: 「○%から○%へ」「よりも」「となっております」「見受けられます」", () => {
+  const current = metric({ sales: 700000, customers: 140, averageSpend: 5000, laborRate: 45, materialRate: 40, operatingMargin: -3, operatingProfit: -10000 });
+  const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000, laborRate: 38, materialRate: 15, operatingMargin: 10, operatingProfit: 100000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const allText = result.summaryText + result.concernPoints.map((p) => p.title + p.detail).join("");
+  for (const banned of ["から", "へ", "よりも", "となっております", "見受けられます", "pt", "ポイント"]) {
+    assert.equal(allText.includes(banned), false, `banned phrase/unit found: ${banned}\n---\n${allText}`);
+  }
 });
 
 // ============================================================
@@ -448,16 +556,21 @@ test("concernPointsは最大件数(MONTHLY_INSIGHT_THRESHOLDS.maxConcernPoints)�
 // 要因分析(FACTOR_RELATIONS/buildFactorAnalysis、2026-09追加)
 // ============================================================
 
-test("要因分析: 客数の減少が客単価の減少より大きい月は、売上の変化点(concernPoints)に客数を主要因とする説明文とrelatedMetricsが付く", () => {
-  // 客数: 200→120(-40%)、客単価: 5000→4700(-6%) → 客数の方が影響大
+test("要因分析: 客数・客単価がともに悪化方向の月は、売上の変化点(concernPoints)に両方の要因が'や'でまとめて述べられ、relatedMetricsも両方付く(2026-09表現統一: 比較優劣ではなく該当する要因を列挙する)", () => {
+  // 客数: 200→120(-40%)、客単価: 5000→4700(-6%) → どちらも悪化方向なので両方を要因として挙げる
   const current = metric({ sales: 564000, customers: 120, averageSpend: 4700 });
   const previous = metric({ sales: 1000000, customers: 200, averageSpend: 5000 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const salesPoint = result.concernPoints.find((point) => point.id === "sales");
   assert.ok(salesPoint, "売上が変化が大きかった項目に含まれること");
+  assert.match(salesPoint.detail, /総売上は前月より43\.6%減少しました/);
   assert.ok(salesPoint.detail.includes("客数"));
   assert.ok(salesPoint.detail.includes("客単価"));
-  assert.ok(salesPoint.detail.includes("客数減少の影響が大きくなっています"));
+  // 客数(減少)と客単価(低下)は動詞が異なるため、別グループとして"・"で連結される。
+  assert.match(salesPoint.detail, /主に、客数の減少・客単価の低下が影響しています/);
+  for (const banned of ["pt", "ポイント", "よりも"]) {
+    assert.equal(salesPoint.detail.includes(banned), false, `detail contains banned phrase: ${banned}`);
+  }
   const relatedKeys = salesPoint.relatedMetrics.map((m) => m.key).sort();
   assert.deepEqual(relatedKeys, ["averageSpend", "customers"]);
 });
