@@ -877,7 +877,9 @@
 // v158: 月次レビューの費用率上昇判定を根本原因/結果で分離(率上昇=根本原因と短絡させない)。
 // v159: 月次レビューを「結果→原因→来月確認」の流れに再構成(重複表示の削除、
 // 利益低下・改善の主な要因セクションの新設、来月確認するポイントの視点化)。
-const CACHE_NAME = 'salon-manager-cache-v159';
+// v160: 月次レビューの表示情報・判定ロジック・文章生成を最終調整(実額優先の
+// 優先順位、利益要因タイトルの3パターン化、売上変化要因の分析、達成率の活用)。
+const CACHE_NAME = 'salon-manager-cache-v160';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
