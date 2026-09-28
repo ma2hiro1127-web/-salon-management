@@ -75,7 +75,7 @@ GitHub → Settings → Developer settings → Personal access tokens → Fine-g
 | Secret | `SUPABASE_DB_URL` | Supabaseダッシュボード → Project Settings → Database → Connection string → **URI**タブに表示される接続文字列。`[YOUR-PASSWORD]`部分を実際のDBパスワードへ置き換える(**Session pooler**の接続文字列を推奨 — port 5432、`pgbouncer`非対応の完全なSQL機能が必要なため、Transaction poolerは不可)。 |
 | Secret | `BACKUP_REPO_TOKEN` | 1-2で発行したトークン |
 | Variable | `BACKUP_REPO` | `<あなたのGitHubユーザー名>/salon-management-backups`(1-1で作ったリポジトリ名) |
-| Secret | `SUPABASE_SERVICE_ROLE_KEY`(2026-09-28追加、**現在未設定 — Storageバックアップに必須**) | Supabaseダッシュボード → Project Settings → API → **service_role**キー(secret)。Supabase Storageのファイル本体をダウンロードするためだけに使う(`storage.objects`一覧の取得自体は`SUPABASE_DB_URL`で行うためこのキーは不要)。**非常に強い権限(RLSを無視する)を持つキーのため、このSecret以外の場所に絶対に貼り付けないこと。** 未設定の間はStorageバックアップの該当ステップだけが失敗し、`::warning::`ログが出るが、DBバックアップ自体はこの失敗と無関係に成功し続ける(ジョブ全体は失敗にならない設計)。 |
+| Secret | `SUPABASE_SERVICE_ROLE_KEY`(2026-09-28追加、**設定済み・稼働確認済み**) | Supabaseダッシュボード → Project Settings → API → **service_role**キー(secret)。Supabase Storageのファイル本体をダウンロードするためだけに使う(`storage.objects`一覧の取得自体は`SUPABASE_DB_URL`で行うためこのキーは不要)。**非常に強い権限(RLSを無視する)を持つキーのため、このSecret以外の場所に絶対に貼り付けないこと。** 未設定/削除された場合はStorageバックアップの該当ステップだけが失敗し、`::warning::`ログが出るが、DBバックアップ自体はこの失敗と無関係に成功し続ける(ジョブ全体は失敗にならない設計)。**初回設定時の実体験**: リポジトリを`ma2hiro1127-web/salon-management`(ハイフン無し、別リポジトリ)と取り違えて登録してしまい、`gh secret list`(正しいリポジトリ側)に反映されず原因調査した実例がある——「9-2. 更新先のGitHubリポジトリ」の注意点は必ず確認すること。 |
 
 **これら4つはコード中に一切書き込まない。** `SUPABASE_DB_URL`にはDBパスワードそのものが、
 `SUPABASE_SERVICE_ROLE_KEY`にはRLSを無視できる強力な権限が含まれるため、特に慎重に扱うこと
@@ -230,7 +230,7 @@ gunzip -k daily/2026-08-19/roles.sql.gz
 | 対象 | このバックアップに含まれる? | 実際の保存場所・対処 |
 |---|---|---|
 | `public`スキーマのテーブル定義・データ・RLSポリシー・DB関数・Trigger・Enum・View | ✅ 含まれる | `schema.sql`(定義一式、RLSポリシー・関数・Trigger・Enum・Viewも`public`スキーマに属するものはすべて`pg_dump --schema public`の対象)、`data.sql`(実データ) |
-| Supabase Storageのファイル本体(`support-attachments`) | ✅ 含まれる(2026-09-28〜) | `storage/support-attachments/`配下に日次でtar.gz保存(「6. Storageバックアップ」参照)。**`SUPABASE_SERVICE_ROLE_KEY`未設定の間は含まれない**(該当ステップだけ失敗し警告ログが出る) |
+| Supabase Storageのファイル本体(`support-attachments`) | ✅ 含まれる(2026-09-28〜、稼働確認済み) | `storage/support-attachments/`配下に日次でtar.gz保存(「6. Storageバックアップ」参照)。`SUPABASE_SERVICE_ROLE_KEY`が万一削除/失効した場合は該当ステップだけ失敗し警告ログが出るが、DBバックアップには影響しない |
 | Supabase Auth(`auth.users`、パスワードハッシュ、セッション) | ❌ 含まれない | 意図的に対象外(理由は次章「5. Authとの整合性」)。同一プロジェクトへの`public`復元では実害なし。プロジェクト自体を作り直す場合はAuthユーザーの復元手段が無く、招待メールの再送が必要 |
 | Edge Functionsのコード | ✅(このリポジトリ自体がバックアップ) | `supabase/functions/`配下としてこのGitリポジトリにすべてコミットされている。DBバックアップとは別に、**リポジトリ自体の復旧(GitHub上に存在する限り消えない、ローカルcloneでも可)がEdge Functionsのバックアップを兼ねる** |
 | Supabase Secrets(環境変数の値) | ❌ 含まれない(意図的) | 値自体をバックアップへ含めることは禁止事項(漏洩リスク)。**名前の一覧**は「7. Secretsの再設定」を参照。値は各サービス(Stripeダッシュボード等)の管理画面、またはパスワードマネージャー等、このリポジトリの外で別途安全に管理すること |
@@ -301,11 +301,17 @@ Supabase Storageへ戻す場合は、Supabase Dashboard → Storage → `support
 DB復元とStorage復元は両方セットで行うこと**(片方だけ復元すると、DBのレコードは存在するのに
 ファイル実体が無い/その逆、という不整合が起きる)。
 
-### 現在の状態(2026-09-28時点)
+### 現在の状態(2026-09-28に稼働確認済み)
 
-`SUPABASE_SERVICE_ROLE_KEY`がGitHub Secretsに**未設定**のため、この機能はまだ稼働していない。
-設定手順は「1-3. サロンマネージャー本体のリポジトリへ Secrets / Variables を設定」を参照。
-設定後、次回の自動実行(または手動実行)から自動的に有効になる(コード変更は不要)。
+`SUPABASE_SERVICE_ROLE_KEY`をGitHub Secretsへ設定済みで、`workflow_dispatch`による実行
+(run ID 36380594459)で実際に動作を確認済み:
+- `support-attachments`バケットの実ファイル8件(計約548KB)をすべて正常にダウンロード
+- `BACKUP_REPO`の`storage/support-attachments/daily/2026-09-28.tar.gz`として保存
+- ダウンロードしたバックアップを展開し、8ファイル全てのMD5チェックサムが本番バケットの
+  `storage.objects.metadata->>'eTag'`と完全一致することを確認(復元可能性の検証済み)
+- ワークフローログでSecret値が`***`にマスクされ、一切平文で出力されないことを確認
+
+以降は毎日の自動実行に組み込まれ、追加の手動操作は不要。
 
 ---
 
