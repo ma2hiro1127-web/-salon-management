@@ -72,15 +72,27 @@ const METRIC_DEFS = {
   materialRate: { kind: "rate", direction: "lowerIsBetter", label: "材料・仕入原価率", format: "percent", concernTitle: "材料・仕入原価率が上昇しています" },
   laborCost: { kind: "amount", direction: "higherIsBetter", label: "人件費", format: "yen", excludeFromConcernList: true },
   materialCost: { kind: "amount", direction: "higherIsBetter", label: "材料・仕入原価", format: "yen", excludeFromConcernList: true },
-  // 2026-09追加(要因分析用)。この4指標は「変化が大きかった項目」に単独では出さず
-  // (excludeFromConcernList、固定費・広告費は売上連動ではないため金額増減だけで良し悪しを
-  // 語らない/店販比率は既に店販売上そのものが候補になるため二重に出さない)、他の指標の
-  // 要因分析(FACTOR_RELATIONS)の「関連KPI」としてのみ使う。
+  // 2026-09追加(要因分析用)。広告費・広告費率は「変化が大きかった項目」に単独では出さず
+  // (excludeFromConcernList)、他の指標の要因分析(FACTOR_RELATIONS)の「関連KPI」としてのみ
+  // 使う。固定費率は2026-09再改訂で人件費率・材料費率と同格(構造指標、CONCERN_TIER=1)に
+  // 昇格し、単独でも「変化が大きかった項目」に出せるようにした。
   fixedCost: { kind: "amount", direction: "higherIsBetter", label: "固定費", format: "yen", excludeFromConcernList: true },
-  fixedCostRate: { kind: "rate", direction: "lowerIsBetter", label: "固定費率", format: "percent", excludeFromConcernList: true },
+  fixedCostRate: { kind: "rate", direction: "lowerIsBetter", label: "固定費率", format: "percent", concernTitle: "固定費率が上昇しています" },
   adCost: { kind: "amount", direction: "higherIsBetter", label: "広告費", format: "yen", excludeFromConcernList: true },
   adRate: { kind: "rate", direction: "lowerIsBetter", label: "広告費率", format: "percent", excludeFromConcernList: true },
   retailRatio: { kind: "rate", direction: "higherIsBetter", label: "店販比率", format: "percent", excludeFromConcernList: true },
+};
+
+// 費用の「率」とその根拠になる「金額」の対応表(2026-09再改訂の中心)。率が動いた理由を
+// 判定する際、この対応表にある指標だけは「金額自体が増えたか(真の原因)」「金額は横ばい・
+// 減少なのに売上の減少に追いつかず相対的に率が動いただけか(結果)」を区別する
+// (buildCostRateClause/buildFactorAnalysis参照)。ここに無い関連KPI(客数・客単価等)は
+// 従来通り、動いた向きだけでグルーピングする。
+const RATE_TO_AMOUNT_KEY = {
+  laborRate: "laborCost",
+  materialRate: "materialCost",
+  fixedCostRate: "fixedCost",
+  adRate: "adCost",
 };
 
 // 要因分析(2026-09追加、要件5)。親指標が悪化/改善した時に、どの関連KPIの変化が最も
@@ -91,16 +103,17 @@ const FACTOR_RELATIONS = {
   sales: ["customers", "averageSpend"],
   customers: ["newCustomers", "repeatCustomers"],
   operatingProfit: ["sales", "laborRate", "materialRate", "fixedCost", "adCost"],
-  operatingMargin: ["laborRate", "materialRate", "fixedCostRate"],
+  operatingMargin: ["laborRate", "materialRate", "fixedCostRate", "adRate"],
   averageSpend: ["technicalSales", "retailSales", "customers"],
   retailSales: ["retailRatio", "customers"],
 };
 
-// 変化が大きい項目を最大3件に絞る際の優先順位(要件2)。営業利益率・人件費率・材料費率の
-// ような「構造指標」は、総売上・営業利益のような「結果指標」より優先して選ぶ——利益率が
-// 動いた原因(人件費率・材料費率)の方が、単なる結果の羅列より情報量が大きいため。
+// 変化が大きい項目を最大3件に絞る際の優先順位(要件2)。営業利益率・人件費率・材料費率・
+// 固定費率のような「構造指標」は、総売上・営業利益のような「結果指標」より優先して選ぶ
+// ——利益率が動いた原因(人件費率・材料費率・固定費率)の方が、単なる結果の羅列より
+// 情報量が大きいため。
 const CONCERN_TIER = {
-  operatingMargin: 1, laborRate: 1, materialRate: 1,
+  operatingMargin: 1, laborRate: 1, materialRate: 1, fixedCostRate: 1,
   sales: 2, operatingProfit: 2, technicalSales: 2, retailSales: 2,
   customers: 3, newCustomers: 3, repeatCustomers: 3, averageSpend: 3, reviewCount: 3,
 };
@@ -275,65 +288,117 @@ function buildFactorAnalysis(parentKey, comparisons) {
     .sort((a, b) => factorMagnitude(b.comparison) - factorMagnitude(a.comparison));
   if (contributing.length === 0) return { relatedMetrics, factorNote: "" };
 
-  // 動詞(上昇/低下/増加/減少)ごとにグルーピングし、「Aや Bの上昇」のように自然にまとめる。
-  const groups = new Map();
+  // 2026-09再改訂の中心ルール: 「率が動いた」という事実だけを根本原因として扱わない。
+  // RATE_TO_AMOUNT_KEYに対応表がある指標(人件費率・材料費率・固定費率・広告費率)は、
+  // 対応する金額自体が増えているか(真の原因)、金額は横ばい・減少なのに売上の増減に
+  // 追いつかず相対的に率が動いただけか(結果)を分けて文言を作る。対応表に無い関連KPI
+  // (客数・客単価等)は従来通り、動いた向きだけでグルーピングする。
+  // 真の増加/相対的上昇の区別が意味を持つのはparentが悪化した時だけ(要件の核心は
+  // 「悪化の原因を早合点しない」ことであり、改善時に同じ区別を強いる必要はない)。
+  // 売上が実質的に変化していない(unchanged)場合も、「売上の増減に対して」という
+  // 説明は事実に反するため、通常のグルーピングにフォールバックする。
+  const sales = comparisons.sales;
+  const canClassifyBySales =
+    parent.judgment === "worsened" && sales && sales.judgment !== "no_comparison" && sales.judgment !== "unchanged";
+
+  const genuineAmountLabels = [];
+  const relativeAmountLabels = [];
+  const plainGroups = new Map();
   for (const { key, comparison } of contributing) {
+    const amountKey = RATE_TO_AMOUNT_KEY[key];
+    const amountComparison = amountKey ? comparisons[amountKey] : null;
+    if (canClassifyBySales && amountKey && amountComparison && amountComparison.judgment !== "no_comparison") {
+      const amountLabel = METRIC_DEFS[amountKey].label;
+      if (amountComparison.diff > 0) {
+        genuineAmountLabels.push(amountLabel);
+      } else {
+        relativeAmountLabels.push(amountLabel);
+      }
+      continue;
+    }
     const def = METRIC_DEFS[key];
     const verb = verbFor(def, comparison.diff);
-    if (!groups.has(verb)) groups.set(verb, []);
-    groups.get(verb).push(def.label);
+    if (!plainGroups.has(verb)) plainGroups.set(verb, []);
+    plainGroups.get(verb).push(def.label);
   }
-  const clause = [...groups.entries()].map(([verb, labels]) => `${labels.join("や")}の${verb}`).join("・");
 
-  return { relatedMetrics, factorNote: `主に、${clause}が影響しています。` };
+  const clauses = [];
+  if (relativeAmountLabels.length > 0) {
+    // 根本原因は費用側ではなく売上側の変化——費用額は追いついていないだけ、という
+    // 結果であることを明示する(要件: 率上昇=根本原因、と短絡させない)。向き(増加/
+    // 減少)はparentの改善/悪化ではなく、売上そのものの実際の増減符号で決める。
+    const salesVerb = sales.diff < 0 ? "減少" : "増加";
+    const amountVerb = sales.diff < 0 ? "減少幅が小さかった" : "増加幅が大きかった";
+    clauses.push(`売上の${salesVerb}幅に対して${relativeAmountLabels.join("や")}の${amountVerb}こと`);
+  }
+  if (genuineAmountLabels.length > 0) {
+    clauses.push(`${genuineAmountLabels.join("や")}の増加`);
+  }
+  if (plainGroups.size > 0) {
+    const plainClause = [...plainGroups.entries()].map(([verb, labels]) => `${labels.join("や")}の${verb}`).join("・");
+    clauses.push(plainClause);
+  }
+  if (clauses.length === 0) return { relatedMetrics, factorNote: "" };
+
+  return { relatedMetrics, factorNote: `主に、${clauses.join("、")}が影響しています。` };
 }
 
-// 人件費率が動いた時の根拠説明(要件5)。laborRateの改善/悪化は「人件費率(pt)」だけで
-// 判定済み(金額の増減は一切判定に使っていない)。ここでは、その判定が正しいことを
-// 「人件費の伸び率 vs 売上の伸び率」という、数字から直接言える比較で裏付ける——
-// 人件費率 = 人件費 ÷ 売上 なので、人件費率が悪化した時は必ず人件費の伸び率 > 売上の
-// 伸び率になっている(逆に改善した時は必ずその逆になっている)。これは推測ではなく
-// 算数的に確定した関係であり、根拠のない文章にはならない。
-function laborRateBasisClause(comparisons) {
-  const rate = comparisons.laborRate;
+// 費用率(人件費率・材料費率・固定費率・広告費率)が動いた時の根拠説明を1つの共通関数に
+// 統一する(2026-09再改訂の中心)。「率が上昇した」という事実だけでは根本原因を語らず、
+// 必ず ①売上の増減 ②費用額自体の増減 ③(結果としての)費用率の変化 の順で判定する:
+//   - 費用額自体が増えている(diff>0) → 費用側の増加自体が要因(真の原因として明言する)
+//   - 費用額は横ばい・減少なのに率が上がっている → 売上の減少に費用の減少が追いついて
+//     いないだけ(根本原因は売上の減少、率上昇はその結果)
+// 人件費率 = 人件費 ÷ 売上 という関係から、上記の分岐は推測ではなく算数的に確定した事実
+// だけを述べる。laborRate/materialRate/fixedCostRate/adRateのどれでも同じロジックで動く
+// ため、今後この対応表(RATE_TO_AMOUNT_KEY)に指標を追加するだけで同じルールが適用される。
+function buildCostRateClause(rateKey, comparisons) {
+  const amountKey = RATE_TO_AMOUNT_KEY[rateKey];
+  if (!amountKey) return "";
+  const rate = comparisons[rateKey];
   const sales = comparisons.sales;
-  const laborAmount = comparisons.laborCost;
+  const amount = comparisons[amountKey];
   if (!rate || rate.judgment === "no_comparison" || rate.judgment === "unchanged") return "";
-  if (!sales || sales.judgment === "no_comparison" || sales.percentChange === null) return "";
-  if (!laborAmount || laborAmount.judgment === "no_comparison" || laborAmount.percentChange === null) return "";
-  if (rate.judgment === "worsened") {
-    return sales.diff >= 0
-      ? "売上の増加より人件費の増加が大きいため、人件費率が上昇しています。"
-      : "売上の減少に対して人件費の減少幅が小さかったため、人件費率が上昇しています。";
-  }
-  // improved = 人件費率(lowerIsBetter)が低下方向。金額自体は増えているのに率は下がっている
-  // (=売上の伸びが人件費の伸びより大きい)ケースだけ、誤解されやすいため補足する。
-  if (laborAmount.diff > 0) {
-    return `人件費は ${rangeText(METRIC_DEFS.laborCost, laborAmount)} に増加していますが、売上の増加が大きいため人件費率は低下しています。`;
-  }
-  return "";
-}
+  if (!sales || sales.judgment === "no_comparison") return "";
+  if (!amount || amount.judgment === "no_comparison") return "";
 
-// 営業利益率が動いた主要因(要件6)。人件費率・材料費率という、実際に確定済みの比較結果
-// からだけ言えることを述べる——生産性等、データの無い原因は書かない。「〜により、」と
-// 文中に埋め込める名詞句として返す(総評で「〜により営業利益は増加しました」のように
-// 使うため)。特定できない場合は空文字を返す。
-function profitDriverReason(comparisons) {
-  const margin = comparisons.operatingMargin;
-  if (!margin || margin.judgment === "no_comparison" || margin.judgment === "unchanged") return "";
-  const laborState = comparisons.laborRate?.judgment;
-  const materialState = comparisons.materialRate?.judgment;
-  if (margin.judgment === "worsened") {
-    if (laborState === "worsened" && materialState === "worsened") return "人件費率・材料費率の上昇";
-    if (laborState === "worsened") return "人件費率の上昇";
-    if (materialState === "worsened") return "材料・仕入原価率の上昇";
-    return "";
+  const rateLabel = METRIC_DEFS[rateKey].label;
+  const amountLabel = METRIC_DEFS[amountKey].label;
+  // 固定費は人件費・材料費と違い、売上に応じて自然に増減する性質の費用ではない
+  // (要件: 固定費率について)。そのため「費用側の減少幅が売上に追いついていない」という
+  // 変動費向けの説明ではなく、「売上が減ったことで、動かない固定費の負担割合が
+  // 相対的に重くなった」という固定費特有の表現にする。
+  const isFixedCost = rateKey === "fixedCostRate";
+
+  if (rate.judgment === "worsened") {
+    if (amount.diff > 0) {
+      // 費用額自体が増えている → 真の原因(要件: 費用側を原因として扱ってよいケース)。
+      if (isFixedCost) {
+        return `${amountLabel}の増加も営業利益低下に影響しています。`;
+      }
+      if (sales.diff < 0) {
+        // 売上が減っているのに費用額まで増えている、というより強いケースも同じ枝で扱う
+        // (要件: 売上減少率以上に費用額が増加している場合)。
+        return `売上が減少する中で${amountLabel}が増加しているため、${rateLabel}が上昇しています。`;
+      }
+      return `売上の増加より${amountLabel}の増加が大きいため、${rateLabel}が上昇しています。`;
+    }
+    // 費用額は横ばい・減少なのに率が上昇 → 売上の変化に費用の減少が追いついていないだけ
+    // (根本原因は売上の減少、率上昇は結果)。ただし売上が実質的に変化していない
+    // (unchanged)場合、この組み合わせは算数的に矛盾する(rate=amount/salesである以上、
+    // 売上不変・費用額が非増加なら率は悪化し得ない)ため、事実と異なる説明を作らないよう
+    // 何も述べない。
+    if (sales.judgment === "unchanged") return "";
+    if (isFixedCost) {
+      return `売上減少により、${amountLabel}の売上に対する負担割合が上昇しています。`;
+    }
+    return `売上の減少幅に対して${amountLabel}の減少幅が小さかったため、${rateLabel}が上昇しています。`;
   }
-  // improved = 率(lowerIsBetter)が下がった方向。「改善」という評価語は使わず、
-  // 事実としての向き(低下)だけを述べる(要件10)。
-  if (laborState === "improved" && materialState === "improved") return "人件費率・材料費率の低下";
-  if (laborState === "improved") return "人件費率の低下";
-  if (materialState === "improved") return "材料・仕入原価率の低下";
+  // improved = 率(lowerIsBetter)が低下方向。金額自体は増えているのに率は下がっている
+  // (=売上の伸びが費用の伸びより大きい)ケースだけ、誤解されやすいため補足する。
+  if (amount.diff > 0) {
+    return `${amountLabel}は ${rangeText(METRIC_DEFS[amountKey], amount)} に増加していますが、売上の増加が大きいため${rateLabel}は低下しています。`;
+  }
   return "";
 }
 
@@ -358,8 +423,11 @@ function buildSummaryText(comparisons, current) {
   if (profit && margin && profit.judgment !== "no_comparison" && margin.judgment !== "no_comparison") {
     sentences.push(describeComparison("operatingProfit", profit));
     sentences.push(describeComparison("operatingMargin", margin));
-    const reason = profitDriverReason(comparisons);
-    if (reason) sentences.push(`主に、${reason}が影響しています。`);
+    // 要因(④)は「変化が大きかった項目」と同じbuildFactorAnalysisを再利用する(要件:
+    // 同じ判定ロジックを重複実装しない)。率が動いた事実だけでなく、費用額自体の増減で
+    // 真の原因/結果を区別した文がそのまま使われる。
+    const { factorNote } = buildFactorAnalysis("operatingMargin", comparisons);
+    if (factorNote) sentences.push(factorNote);
   }
 
   return sentences.join("");
@@ -411,22 +479,25 @@ function rankConcernKeys(comparisons) {
 // ②変化が大きかった項目、1件分の文章構造(2026-09全面改訂、要件6): タイトル→数値の変化
 // (describeComparison、「前月値 → 今月値」形式)→要因、の順で1〜2文にまとめる。要因は
 // まずFACTOR_RELATIONSベースの汎用的な要因分析(buildFactorAnalysis)を試し、対象外の
-// 指標(laborRate/materialRateはFACTOR_RELATIONSの親ではないため対象外)は専用の根拠
-// 説明(laborRateBasisClause等)にフォールバックする。
+// 指標(laborRate/materialRate/fixedCostRateはFACTOR_RELATIONSの親ではないため対象外)は
+// buildCostRateClause(費用額自体の増減で根本原因/結果を区別する)にフォールバックする。
 function buildConcernPoints(comparisons, thresholds) {
   return rankConcernKeys(comparisons)
     .slice(0, thresholds.maxConcernPoints)
     .map((key) => {
       const c = comparisons[key];
       let detail = describeComparison(key, c);
+      // 要因の説明は2段構えにする: ①この指標自身がFACTOR_RELATIONSの親であれば
+      // (例: 営業利益率→人件費率・材料費率・固定費率)buildFactorAnalysisの結果を使う。
+      // ②親では無いが費用率自身(人件費率・材料費率・固定費率・広告費率)であれば、
+      // buildCostRateClauseで「費用額自体の増減」に基づく根本原因/結果の説明を付ける
+      // (要件: 率が動いた事実だけで根本原因と断定しない)。
       const { relatedMetrics, factorNote } = buildFactorAnalysis(key, comparisons);
       if (factorNote) {
         detail += factorNote;
-      } else if (key === "laborRate") {
-        const basis = laborRateBasisClause(comparisons);
-        if (basis) detail += basis;
-      } else if (key === "materialRate" && comparisons.operatingMargin?.judgment === "worsened") {
-        detail += "原価負担が大きくなり、営業利益を押し下げています。";
+      } else {
+        const costClause = buildCostRateClause(key, comparisons);
+        if (costClause) detail += costClause;
       }
       return { id: key, title: METRIC_DEFS[key].concernTitle, detail, relatedMetrics };
     });

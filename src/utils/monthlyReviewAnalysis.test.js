@@ -128,7 +128,7 @@ test("要件5 例3: 売上減+人件費額は減っているが人件費率は�
   const point = result.concernPoints.find((p) => p.id === "laborRate");
   assert.ok(point);
   assert.match(point.detail, /人件費率は 40\.0% → 43\.3% に上昇しました/);
-  assert.match(point.detail, /売上の減少に対して人件費の減少幅が小さかったため、人件費率が上昇しています/);
+  assert.match(point.detail, /売上の減少幅に対して人件費の減少幅が小さかったため、人件費率が上昇しています/);
   assert.equal(point.detail.includes("下がっていません"), false, "旧・禁止表現(要件7)が残っていないこと");
 });
 
@@ -599,6 +599,110 @@ test("要因分析: FACTOR_RELATIONSに定義の無い指標(例: 口コミ数)�
   assert.ok(reviewPoint);
   assert.deepEqual(reviewPoint.relatedMetrics, []);
   assert.ok(!reviewPoint.detail.includes("よりも"));
+});
+
+// ============================================================
+// 根本原因(rootCause) vs 結果(result)の判定(2026-09再改訂)
+// 「率が悪化した=その費用が根本原因」と早合点しないことを検証する。
+// ============================================================
+
+test("人件費率上昇(相対的上昇): ユーザー提示の実例(売上5,000,000→3,870,000円/人件費1,420,000→1,161,000円/人件費率28.4%→30.0%)で、人件費額自体は減少しているため「人件費が増えたこと」を原因としない", () => {
+  const current = metric({ sales: 3870000, laborRate: 30.0, laborCost: 1161000, operatingMargin: 5 });
+  const previous = metric({ sales: 5000000, laborRate: 28.4, laborCost: 1420000, operatingMargin: 10 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const laborPoint = result.concernPoints.find((point) => point.id === "laborRate");
+  assert.ok(laborPoint, "人件費率が変化が大きかった項目に含まれること");
+  // 人件費額自体は減っている(結果としての相対的上昇)ため「増加」という言葉を使わない。
+  assert.ok(!laborPoint.detail.includes("人件費が増加"));
+  assert.ok(!laborPoint.detail.includes("人件費の増加"));
+  assert.match(laborPoint.detail, /売上の減少幅に対して人件費の減少幅が小さかったため、人件費率が上昇しています。/);
+});
+
+test("材料費率上昇(相対的上昇): 材料費額自体は減少しているが売上の減少幅より小さいため、材料費が増えたとは書かない", () => {
+  const current = metric({ sales: 800000, materialRate: 20, materialCost: 160000, operatingMargin: 5 });
+  const previous = metric({ sales: 1000000, materialRate: 15, materialCost: 180000, operatingMargin: 10 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const materialPoint = result.concernPoints.find((point) => point.id === "materialRate");
+  assert.ok(materialPoint);
+  assert.ok(!materialPoint.detail.includes("材料・仕入原価の増加"));
+  assert.match(materialPoint.detail, /売上の減少幅に対して材料・仕入原価の減少幅が小さかったため、材料・仕入原価率が上昇しています。/);
+});
+
+test("人件費率上昇(真の原因): 売上が横ばいなのに人件費額自体が増加している場合は「人件費の増加」を原因として明言してよい", () => {
+  const current = metric({ sales: 1000000, laborRate: 45, laborCost: 450000, operatingMargin: 5 });
+  const previous = metric({ sales: 1000000, laborRate: 38, laborCost: 380000, operatingMargin: 12 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const laborPoint = result.concernPoints.find((point) => point.id === "laborRate");
+  assert.ok(laborPoint);
+  assert.match(laborPoint.detail, /人件費の増加が大きいため、人件費率が上昇しています。/);
+  assert.ok(!laborPoint.detail.includes("減少幅が小さかった"));
+});
+
+test("固定費率: 固定費額がほぼ同じで売上だけ減少した場合は「負担割合が上昇」と表現し、固定費が増えたとは書かない(fixedCostRateは単独カードとして表示される)", () => {
+  const current = metric({
+    sales: 800000, fixedCost: 182400, hasFixedCostData: true,
+    fixedCostRate: 22.8,
+    operatingMargin: 5,
+  });
+  const previous = metric({ sales: 1000000, fixedCost: 182400, hasFixedCostData: true, fixedCostRate: 18.24, operatingMargin: 12 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const fixedPoint = result.concernPoints.find((point) => point.id === "fixedCostRate");
+  assert.ok(fixedPoint, "固定費率が単独のカードとして変化が大きかった項目に含まれること");
+  assert.equal(fixedPoint.title, "固定費率が上昇しています");
+  assert.match(fixedPoint.detail, /売上減少により、固定費の売上に対する負担割合が上昇しています。/);
+  assert.ok(!fixedPoint.detail.includes("固定費の増加"));
+});
+
+test("固定費率: 固定費額自体が増加している場合は「固定費の増加も影響している」旨を書く", () => {
+  const current = metric({ sales: 1000000, fixedCost: 250000, hasFixedCostData: true, fixedCostRate: 25, operatingMargin: 5 });
+  const previous = metric({ sales: 1000000, fixedCost: 182400, hasFixedCostData: true, fixedCostRate: 18.24, operatingMargin: 12 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const fixedPoint = result.concernPoints.find((point) => point.id === "fixedCostRate");
+  assert.ok(fixedPoint);
+  assert.match(fixedPoint.detail, /固定費の増加も営業利益低下に影響しています。/);
+});
+
+test("総評(buildSummaryText): 売上減少→費用の減少幅が売上の減少幅より小さい→費用率上昇→営業利益率低下、の順で説明し、「率が上がったから利益が下がった」という単純な表現にしない", () => {
+  const current = metric({ sales: 774000, laborRate: 30.0, laborCost: 232200, materialRate: 41.0, materialCost: 317340, operatingMargin: -0.4, operatingProfit: -3096 });
+  const previous = metric({ sales: 1000000, laborRate: 28.4, laborCost: 284000, materialRate: 29.8, materialCost: 298000, operatingMargin: 19.0, operatingProfit: 190000 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  // ①売上の増減が最初に述べられる
+  assert.match(result.summaryText, /総売上は前月より22\.6%減少しました。/);
+  // ②③費用側は「率が上がったから」という短絡表現ではなく、減少幅の差という形で述べる
+  assert.ok(!result.summaryText.includes("人件費率が上がったから"));
+  assert.ok(!result.summaryText.includes("率が上がったから利益"));
+  // ④最終的に営業利益率の変化へつながる
+  assert.match(result.summaryText, /営業利益率は 19\.0% → -0\.4% に低下しました。/);
+});
+
+test("広告費率(adRate): FACTOR_RELATIONS.operatingMarginの一員として、他の費用率と同じ根本原因/結果ロジックで総評の要因分析に反映される", () => {
+  const current = metric({
+    sales: 800000, operatingMargin: 5, operatingProfit: 40000,
+    laborRate: 38, laborCost: 304000, materialRate: 15, materialCost: 120000,
+    adRate: 6, adCost: 44000, hasAdData: true,
+  });
+  const previous = metric({
+    sales: 1000000, operatingMargin: 12, operatingProfit: 120000,
+    laborRate: 38, laborCost: 380000, materialRate: 15, materialCost: 150000,
+    adRate: 5, adCost: 50000, hasAdData: true,
+  });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  // 広告費額自体は減少している(50000→44000)が、売上の減少幅ほどではないため相対的に
+  // 広告費率が上昇している「結果」であり、「広告費が増えた」とは書かない。
+  assert.ok(!result.summaryText.includes("広告費の増加"));
+  assert.ok(result.summaryText.includes("広告費"));
+  assert.match(result.summaryText, /売上の減少幅に対して広告費の減少幅が小さかったこと/);
+});
+
+test("前月比較の表記は常に「%」であり、「pt」「ポイント」は根本原因/結果いずれの文言にも一切出ない", () => {
+  const current = metric({ sales: 3870000, laborRate: 30.0, laborCost: 1161000, operatingMargin: 5 });
+  const previous = metric({ sales: 5000000, laborRate: 28.4, laborCost: 1420000, operatingMargin: 10 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const laborPoint = result.concernPoints.find((point) => point.id === "laborRate");
+  for (const text of [result.summaryText, laborPoint.detail]) {
+    assert.ok(!text.includes("pt"), text);
+    assert.ok(!text.includes("ポイント"), text);
+  }
 });
 
 // ============================================================
