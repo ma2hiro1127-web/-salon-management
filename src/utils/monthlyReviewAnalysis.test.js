@@ -8,6 +8,7 @@ import {
   compareMonthlyMetric,
   validateMetricComparison,
   buildMetricComparisons,
+  formatRateChange,
   MONTHLY_INSIGHT_THRESHOLDS,
 } from "./monthlyReviewAnalysis.js";
 
@@ -158,7 +159,9 @@ test("Fi-Ne横浜 回帰テスト: 変化が大きかった項目は営業利益
 test("Fi-Ne横浜 回帰テスト: 総評は実データに基づく文章になり、抽象的な励まし文を含まない", () => {
   const result = analyzeMonthlyReview({ current: fiNeYokohamaAugust, previous: fiNeYokohamaJuly, fieldsEnabled: FIELDS_ENABLED });
   assert.match(result.summaryText, /20\.3%/);
-  assert.match(result.summaryText, /28\.0%から16\.0%へ12\.0pt/);
+  // 割合の変化量は「pt」ではなく必ず「%」で表示する(2026-09統一、formatRateChange)。
+  assert.match(result.summaryText, /28\.0%から16\.0%へ12\.0%低下/);
+  assert.equal(result.summaryText.includes("pt"), false, "summaryTextに'pt'表記が残っていないこと");
   for (const banned of ["この調子", "引き続き確認", "好調な月", "バランスを意識"]) {
     assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned phrase: ${banned}`);
   }
@@ -325,12 +328,69 @@ test("特に問題のない月は変化が大きかった項目を無理に作�
   assert.deepEqual(result.concernPoints, []);
 });
 
-test("変化が大きかった項目は具体的な数字(前月→今月、pt差)を必ず含む", () => {
+test("変化が大きかった項目は具体的な数字(前月→今月、変化量)を必ず含み、変化量は「pt」ではなく「%」で表示する(2026-09統一)", () => {
   const current = metric({ laborRate: 45.6 });
   const previous = metric({ laborRate: 40.2 });
   const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
   const point = result.concernPoints.find((p) => p.id === "laborRate");
-  assert.match(point.detail, /40\.2%から45\.6%へ5\.4pt上昇/);
+  assert.match(point.detail, /40\.2%から45\.6%へ5\.4%上昇/);
+  assert.equal(point.detail.includes("pt"), false);
+});
+
+// ============================================================
+// formatRateChange: 割合の変化量は「pt」ではなく必ず「%」で表示する(2026-09統一)。
+// amount指標の前月比%・rate指標のpt差の両方をこの1つの共通formatterだけが担う。
+// ============================================================
+
+test("formatRateChange: ケース1 5.2%→-0.4% の差分(-5.6)は「5.6%」になる(pt表記にしない)", () => {
+  assert.equal(formatRateChange(-0.4 - 5.2), "5.6%");
+});
+
+test("formatRateChange: ケース2 22.8%→29.4% の差分(+6.6)は「6.6%」になる", () => {
+  assert.equal(formatRateChange(29.4 - 22.8), "6.6%");
+});
+
+test("formatRateChange: ケース3 42.0%→41.0% の差分(-1.0)は「1.0%」になる", () => {
+  assert.equal(formatRateChange(41.0 - 42.0), "1.0%");
+});
+
+test("formatRateChange: ケース4 30.0%→30.0% の差分(0)は「0.0%」になり、NaN/Infinityにならない", () => {
+  assert.equal(formatRateChange(30.0 - 30.0), "0.0%");
+});
+
+test("formatRateChange: ケース5 -2.0%→3.0% の差分(+5.0)は「5.0%」になる", () => {
+  assert.equal(formatRateChange(3.0 - -2.0), "5.0%");
+});
+
+test("formatRateChange: ケース6 3.0%→-2.0% の差分(-5.0)は「5.0%」になる(符号は呼び出し側の上昇/低下判定が別途担う)", () => {
+  assert.equal(formatRateChange(-2.0 - 3.0), "5.0%");
+});
+
+test("describeComparison経由(変化が大きかった項目のdetail)は常に「%」で表示され、「pt」「ポイント」「percentage point」を一切含まない(要件: rate指標の全ケース)", () => {
+  // 営業利益率(higherIsBetter)が5.2%→-0.4%へ悪化するケース(ユーザー提示のケース1相当)。
+  const current = metric({ operatingMargin: -0.4 });
+  const previous = metric({ operatingMargin: 5.2 });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.concernPoints.find((p) => p.id === "operatingMargin");
+  assert.ok(point);
+  assert.match(point.detail, /5\.2%から-0\.4%へ5\.6%低下しました/);
+  for (const banned of ["pt", "ポイント", "percentage point"]) {
+    assert.equal(point.detail.includes(banned), false, `detail contains banned unit: ${banned}`);
+    assert.equal(result.summaryText.includes(banned), false, `summaryText contains banned unit: ${banned}`);
+  }
+});
+
+test("固定費率(22.8%→29.4%、+6.6pt相当)の変化も「6.6%上昇」と表示され、「pt」を含まない(ユーザー提示ケース2)", () => {
+  // fixedCostRateはexcludeFromConcernListのため、要因分析のrelatedMetrics経由で確認する
+  // (operatingMarginの関連KPIとして表示される)。
+  const current = metric({ operatingMargin: 4.0, fixedCostRate: 29.4, hasFixedCostData: true });
+  const previous = metric({ operatingMargin: 10.0, fixedCostRate: 22.8, hasFixedCostData: true });
+  const result = analyzeMonthlyReview({ current, previous, fieldsEnabled: FIELDS_ENABLED });
+  const point = result.concernPoints.find((p) => p.id === "operatingMargin");
+  assert.ok(point);
+  const fixedCostRateMetric = point.relatedMetrics.find((m) => m.key === "fixedCostRate");
+  assert.ok(fixedCostRateMetric);
+  assert.equal(fixedCostRateMetric.judgment, "worsened");
 });
 
 // ============================================================

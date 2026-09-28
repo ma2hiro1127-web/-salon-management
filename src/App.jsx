@@ -8785,7 +8785,7 @@ function App() {
                     // 一本化し、このカードは「今どこまで来ているか(達成率)」と「営業進捗比の
                     // 差」の2つだけを見せる役割にする(同じ意味の注意表示を重複させない)。
                     hint={isInitialDataReady && scheduleAdjustedGapPt !== null
-                      ? <span className={scheduleAdjustedGapPt >= 0 ? "text-success" : "text-danger"}>{`営業進捗比 ${scheduleAdjustedGapPt >= 0 ? "+" : ""}${scheduleAdjustedGapPt.toFixed(1)}pt`}</span>
+                      ? <span className={scheduleAdjustedGapPt >= 0 ? "text-success" : "text-danger"}>{`営業進捗比 ${scheduleAdjustedGapPt >= 0 ? "+" : ""}${scheduleAdjustedGapPt.toFixed(1)}%`}</span>
                       : null}
                     emphasize
                     hero

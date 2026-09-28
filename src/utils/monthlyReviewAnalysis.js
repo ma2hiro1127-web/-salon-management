@@ -112,8 +112,11 @@ const formatValue = (value, format) => {
   if (format === "percent") return `${parseNumber(value).toFixed(1)}%`;
   return String(value);
 };
-const pct1 = (value) => `${Math.abs(parseNumber(value)).toFixed(1)}%`;
-const pt1 = (value) => `${Math.abs(parseNumber(value)).toFixed(1)}pt`;
+// ユーザー向け画面では割合の変化量を必ず「%」で表示する(pt/ポイント/percentage pointは
+// 一切使わない、2026-09統一)。amount指標の前月比%(例: 売上+12.3%)もrate指標のpt差
+// (例: 営業利益率5.6pt低下→5.6%低下と表示)も、この1つの共通formatterだけを経由させる
+// ——内部の計算(差分=当月-前月)自体は変更していない、表示の単位表記だけを揃えている。
+export const formatRateChange = (value) => `${Math.abs(parseNumber(value)).toFixed(1)}%`;
 
 // ここが唯一の「計算」箇所(要件: AIに計算自体をさせない/共通関数に集約する)。
 // kind:"rate" → 差分は必ず「当月率 - 前月率」(pt)。前月値が0でも計算できる(除算しない)ため
@@ -190,11 +193,16 @@ function describeComparison(key, comparison) {
   const currentText = formatValue(comparison.current, def.format);
   const previousText = formatValue(comparison.previous, def.format);
   if (def.kind === "rate") {
+    // diff=0(変化なし)は「0.0%低下」のような矛盾した文言にしない(要件: テストケース4)。
+    // buildConcernPointsはjudgment==="worsened"の項目しか呼ばないため通常は到達しないが、
+    // この関数単体が将来別の文脈(unchangedも含む一覧等)から呼ばれても安全なようにする。
+    if (comparison.diff === 0) return `${def.label}は${currentText}で、前月から変化ありません。`;
     const verb = comparison.diff > 0 ? "上昇" : "低下";
-    return `${def.label}が${previousText}から${currentText}へ${pt1(comparison.diff)}${verb}しました。`;
+    return `${def.label}が${previousText}から${currentText}へ${formatRateChange(comparison.diff)}${verb}しました。`;
   }
+  if (comparison.diff === 0) return `${def.label}は${currentText}で、前月から変化ありません。`;
   const verb = def.verb === "rise" ? (comparison.diff > 0 ? "上昇" : "低下") : (comparison.diff > 0 ? "増加" : "減少");
-  const percentText = comparison.percentChange !== null ? `${pct1(comparison.percentChange)}` : null;
+  const percentText = comparison.percentChange !== null ? `${formatRateChange(comparison.percentChange)}` : null;
   return percentText
     ? `${def.label}が${previousText}から${currentText}へ${percentText}${verb}しました。`
     : `${def.label}が${previousText}から${currentText}へ${verb}しました。`;
@@ -282,7 +290,7 @@ function laborRateBasisClause(comparisons) {
   }
   if (rate.judgment === "improved" && laborAmount.diff > 0) {
     // 要件5の例1: 人件費額は増えているが、売上増加に対して人件費率は改善しているケース。
-    return `人件費額は${formatValue(laborAmount.previous, "yen")}から${formatValue(laborAmount.current, "yen")}へ増加していますが、売上増加に対して人件費率は${pt1(rate.diff)}改善しており、問題ありません。`;
+    return `人件費額は${formatValue(laborAmount.previous, "yen")}から${formatValue(laborAmount.current, "yen")}へ増加していますが、売上増加に対して人件費率は${formatRateChange(rate.diff)}改善しており、問題ありません。`;
   }
   return "";
 }
@@ -320,7 +328,7 @@ function buildSummaryText(comparisons, current) {
   }
   const salesGood = sales.diff >= 0;
   const salesVerb = salesGood ? "増加" : "減少";
-  const salesClause = `売上は前月比${pct1(sales.percentChange)}${salesVerb}しました`;
+  const salesClause = `売上は前月比${formatRateChange(sales.percentChange)}${salesVerb}しました`;
 
   const sentences = [];
   const profit = comparisons.operatingProfit;
@@ -334,7 +342,7 @@ function buildSummaryText(comparisons, current) {
       const marginVerb = margin.diff > 0 ? "改善" : "低下";
       const reason = profitDriverReason(comparisons);
       const reasonClause = reason ? `${reason}により、` : "";
-      const profitSentence = `${reasonClause}営業利益は${formatValue(profit.previous, "yen")}から${formatValue(profit.current, "yen")}へ${profitVerb}し、営業利益率も${margin.previous.toFixed(1)}%から${margin.current.toFixed(1)}%へ${pt1(margin.diff)}${marginVerb}しました。`;
+      const profitSentence = `${reasonClause}営業利益は${formatValue(profit.previous, "yen")}から${formatValue(profit.current, "yen")}へ${profitVerb}し、営業利益率も${margin.previous.toFixed(1)}%から${margin.current.toFixed(1)}%へ${formatRateChange(margin.diff)}${marginVerb}しました。`;
       if (profitGood !== null && profitGood !== salesGood) {
         // 売上と営業利益が逆方向 → 「〜が、」で1文につなげ、売上だけの評価に見えないようにする。
         sentences.push(`${salesClause}が、${profitSentence}`);
