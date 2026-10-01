@@ -2085,9 +2085,20 @@ export const createDailyBatchEntry = async ({ companyId, storeId, userId, entry 
     return { ok: false, error: new Error(detail.message) };
   }
   try {
+    // 二重送信防止(DB側の恒久対策、池袋店2026-08の3重登録不具合の再発防止)。単純な
+    // insert()だと、フロント側のガード(runWithSaveGuard/batchFormBusy)をすり抜けて
+    // 同じ店舗・同じ期間への保存リクエストが複数回届いた場合(保存完了後の再押下、
+    // 通信再送、複数タブ・複数端末からの操作等)、その都度新しい行が作られてしまう。
+    // daily_batch_entries_store_period_unique(store_id, start_date, end_date の一意制約、
+    // migration: 20261002000000)にonConflictを合わせたupsertにすることで、同じ期間への
+    // 保存は何度実行されても常に同じ1行への更新に収束し、重複行がDB側で作られることが
+    // 無くなる(created_at/created_byは同migrationのトリガーにより更新時も保持される)。
     const { data, error } = await supabase
       .from("daily_batch_entries")
-      .insert({ ...buildDailyBatchEntryRow({ companyId, storeId, entry }), created_by: userId, updated_by: userId })
+      .upsert(
+        { ...buildDailyBatchEntryRow({ companyId, storeId, entry }), created_by: userId, updated_by: userId },
+        { onConflict: "store_id,start_date,end_date" }
+      )
       .select()
       .single();
     if (error) throw error;
