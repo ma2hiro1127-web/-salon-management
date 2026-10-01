@@ -881,7 +881,9 @@
 // 優先順位、利益要因タイトルの3パターン化、売上変化要因の分析、達成率の活用)。
 // v161: 営業日設定なしの月でbusinessDaySettingsの残留値が消えない不具合を修正
 // (hydrate時のプルーン漏れ、横浜店2026-09「30/28日」不具合の根本修正)。
-const CACHE_NAME = 'salon-manager-cache-v161';
+// v162: まとめて入力(daily_batch_entries)をupsert化し、DBの一意制約と合わせて
+// 二重・三重登録を恒久的に防止(池袋店2026-08の3重登録不具合の修正)。
+const CACHE_NAME = 'salon-manager-cache-v162';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
