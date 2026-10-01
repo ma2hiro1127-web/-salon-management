@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions, calculateSalesPaceGap } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions, calculateSalesPaceGap, buildTargetStateFromRows } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -2067,6 +2067,69 @@ test("pruneStaleKeys drops any expected key Supabase no longer has a row for, le
   const freshMap = { "本店__2026-08": { targetSales: 100000 } }; // 本店__2026-07's target was deleted from Supabase
   const pruned = pruneStaleKeys(merged, expectedKeys, freshMap);
   assert.deepEqual(Object.keys(pruned).sort(), ["フィーネ横浜__2026-08", "本店__2026-08"]);
+});
+
+test("再発防止テスト(横浜店2026-09「30/28日」不具合): businessDaySettingsはtargetsと同じmonthly_targets行から作られる兄弟マップであり、同じwindowedExpectedKeys/同じoverlayでプルーンしなければ、Supabaseに行が存在しない(=店休日未設定)月でもローカル残留値が消えず古いholidayCountが使われ続ける", () => {
+  // 横浜店2026-09はSupabaseにmonthly_targets行が存在しない(=営業日設定を一切していない)。
+  // 本店2026-09だけが実在する行を持つ。freshRows(buildTargetStateFromRows)にはこの2行分しか
+  // 無いが、ローカルのappState(前回セッションの残留、原因は問わない)には両方のキーに
+  // holidayCount:2が残っている、という状態を再現する。
+  const freshRows = [
+    { store_id: "本店id", target_month: "2026-09", target_sales: 1000000, business_day_mode: "", business_day_count: 0, holiday_count: 2 },
+  ];
+  const { targets: freshTargets, businessDaySettings: freshBusinessDaySettings } = buildTargetStateFromRows(freshRows);
+
+  const staleLocalTargets = { "本店id__2026-09": { targetSales: 1000000 }, "横浜店id__2026-09": { targetSales: 5000000 } };
+  const staleLocalBusinessDaySettings = { "本店id__2026-09": { holidayCount: 2 }, "横浜店id__2026-09": { holidayCount: 2 } };
+
+  // 今回の取得対象(windowedExpectedKeys)には両店舗とも含まれている(=2026-09は
+  // 取得ウィンドウ内)という前提で検証する。
+  const expectedKeys = new Set(["本店id__2026-09", "横浜店id__2026-09"]);
+
+  const prunedTargets = pruneStaleKeys(staleLocalTargets, expectedKeys, freshTargets);
+  const prunedBusinessDaySettings = pruneStaleKeys(staleLocalBusinessDaySettings, expectedKeys, freshBusinessDaySettings);
+
+  // 本店(実在する行がある)は両マップとも残る。
+  assert.ok("本店id__2026-09" in prunedTargets);
+  assert.ok("本店id__2026-09" in prunedBusinessDaySettings);
+  // 横浜店(Supabaseに行が無い)は、targetsと全く同じ基準でbusinessDaySettingsからも
+  // 消えなければならない——ここがApp.jsxのhydrateマージで漏れていた箇所の再現。
+  assert.equal("横浜店id__2026-09" in prunedTargets, false);
+  assert.equal("横浜店id__2026-09" in prunedBusinessDaySettings, false, "businessDaySettingsもtargetsと同じくプルーンされ、古いholidayCountが残らないこと");
+
+  // プルーン後、getBusinessDaySummaryは「未設定」として対象月の暦日数(30日)を返す。
+  const state = { businessDaySettings: prunedBusinessDaySettings, dailyResults: {}, dayClosingStates: {}, storeHolidays: {}, dailyBatchEntries: {} };
+  const summary = getBusinessDaySummary(state, "横浜店id", "2026-09");
+  assert.equal(summary.businessDayCount, 30, "2026年9月は暦日30日なので、未設定なら30日になるべき");
+});
+
+test("営業日設定: 店休日を明示的に2日設定した月は28日、設定を解除すると再び30日に戻る(3パターン確認)", () => {
+  const baseState = { dailyResults: {}, dayClosingStates: {}, storeHolidays: {}, dailyBatchEntries: {} };
+
+  // パターン1: 営業日設定なし → 30/30日
+  const noSettingState = { ...baseState, businessDaySettings: {} };
+  assert.equal(getBusinessDaySummary(noSettingState, "横浜店id", "2026-09").businessDayCount, 30);
+
+  // パターン2: 店休日を2日設定 → 28日
+  const withHolidayState = { ...baseState, businessDaySettings: { "横浜店id__2026-09": { holidayCount: 2 } } };
+  assert.equal(getBusinessDaySummary(withHolidayState, "横浜店id", "2026-09").businessDayCount, 28);
+
+  // パターン3: 設定を解除(holidayCountを無くす)→ 再び30日
+  const clearedState = { ...baseState, businessDaySettings: { "横浜店id__2026-09": {} } };
+  assert.equal(getBusinessDaySummary(clearedState, "横浜店id", "2026-09").businessDayCount, 30);
+
+  // 他の月は暦日数どおりに自動計算される(2026年10月=31日、2027年2月=28日)。
+  assert.equal(getBusinessDaySummary(noSettingState, "横浜店id", "2026-10").businessDayCount, 31);
+  assert.equal(getBusinessDaySummary(noSettingState, "横浜店id", "2027-02").businessDayCount, 28);
+});
+
+test("まとめて入力(daily_batch_entries)の保存は、営業日設定(businessDaySettings)やmonthly_targetsに一切書き込まない(要件6の確認)", () => {
+  const rows = [{ id: "batch-1", store_id: "横浜店id", start_date: "2026-09-01", end_date: "2026-09-10", total_sales: 500000 }];
+  const { dailyBatchEntries } = buildBatchEntryStateFromRows(rows);
+  assert.ok(dailyBatchEntries);
+  // buildBatchEntryStateFromRowsの戻り値にbusinessDaySettings/targets相当のキーが
+  // 混入していないこと(まとめて入力の取り込み処理がこれらを一切扱わないことの確認)。
+  assert.deepEqual(Object.keys(buildBatchEntryStateFromRows(rows)).sort(), ["dailyBatchEntries"]);
 });
 
 test("pruneDeletedItemsFromItemArrayMap: 削除した費用項目(fixed_costs)は、同じキーに他の項目が残っていても正しく取り除かれる(費用削除不具合の修正 — pruneStaleKeysはキー単位でしか判定できず、これができなかった)", () => {
@@ -5062,6 +5125,9 @@ test("calculateSalesPaceGap: 対象月の売上入力が1件も無い場合はnu
 test("calculateSalesPaceGap: 0円で明示的に入力した日はhasEntries=trueとして扱われ、未入力とは区別される(要件2)", () => {
   // 経過2営業日(lastEntryDate=2日目)・目標100万円 → 目安10万円。実績0円(明示的な0円入力)
   // → 不足10万円として通常どおり判定される(nullにはならない=「未入力」とは別扱い)。
+  // todayIsoを明示しないとwall-clock依存になり、実行日がこの対象月(2026-09)を過ぎると
+  // 「過去月」判定(elapsedBusinessDays=businessDayCount全体)に切り替わってテストが壊れる
+  // ため、他のcalculateSalesPaceGapテストと同じく対象月内の日付を明示的に固定する。
   const result = calculateSalesPaceGap({
     businessDaySummary: { businessDayCount: 20, holidayDates: [] },
     monthValue: "2026-09",
@@ -5069,6 +5135,7 @@ test("calculateSalesPaceGap: 0円で明示的に入力した日はhasEntries=tru
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-02",
+    todayIso: "2026-09-10",
   });
   assert.notEqual(result, null);
   assert.equal(result.status, "behind");
@@ -5085,6 +5152,7 @@ test("calculateSalesPaceGap: 最後に入力した営業日までの目安より
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-10",
+    todayIso: "2026-09-10",
   });
   assert.equal(result.status, "behind");
   assert.equal(result.roundedManYen, 34);
@@ -5099,6 +5167,7 @@ test("calculateSalesPaceGap: 目安を上回っている場合、正しい超過
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-10",
+    todayIso: "2026-09-10",
   });
   assert.equal(result.status, "ahead");
   assert.equal(result.roundedManYen, 12);
@@ -5113,6 +5182,7 @@ test("calculateSalesPaceGap: 差額が1万円未満(プラス・マイナス問�
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-10",
+    todayIso: "2026-09-10",
   });
   assert.equal(behindButTiny.status, "onPace");
 
@@ -5123,6 +5193,7 @@ test("calculateSalesPaceGap: 差額が1万円未満(プラス・マイナス問�
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-10",
+    todayIso: "2026-09-10",
   });
   assert.equal(aheadButTiny.status, "onPace");
 
@@ -5134,6 +5205,7 @@ test("calculateSalesPaceGap: 差額が1万円未満(プラス・マイナス問�
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-10",
+    todayIso: "2026-09-10",
   });
   assert.equal(exactlyTenThousand.status, "behind");
   assert.equal(exactlyTenThousand.roundedManYen, 1);
@@ -5149,6 +5221,7 @@ test("calculateSalesPaceGap: 店休日は経過営業日数に含めない", () 
     monthlyTargetSales: 1000000,
     hasEntries: true,
     lastEntryDate: "2026-09-10",
+    todayIso: "2026-09-10",
   });
   assert.equal(result.elapsedBusinessDays, 8);
   assert.equal(result.status, "onPace");

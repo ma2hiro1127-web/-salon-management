@@ -3532,6 +3532,22 @@ function App() {
           cashBreakdownResults: prunedCashBreakdownResults,
           dailyBatchEntries: prunedDailyBatchEntries,
           targets: pruneStaleKeys(merged.targets, windowedExpectedKeys, targetStateOverlay.targets),
+          // 不具合修正(横浜店2026-09で「営業日設定をしていないのに30/28日と表示される」):
+          // businessDaySettingsはtargetsと全く同じmonthly_targetsの行から
+          // buildTargetStateFromRowsが同時に組み立てる兄弟マップなのに、このプルーン漏れ
+          // だけがここに無かった。mergeShallowMapは「ローカルにだけあるキー」を絶対に
+          // 消さない(呼び出し元のコメント参照)ため、何らかの理由で一度でもローカルの
+          // appStateにbusinessDaySettings[storeId__month]が入ってしまうと(例: 保存処理の
+          // 途中の競合状態、あるいはSupabase側で該当行が無い/holiday_countが削除された後)、
+          // その月のmonthly_targets行が実際には存在しない(=店休日未設定)状態が続いていても
+          // 再ログイン・再読み込みのたびに古い値がそのまま復活し続けていた——
+          // getBusinessDaySummaryの計算式自体は常に正しく「未設定なら対象月の暦日数」を
+          // 返していたが、そもそも渡される設定値がこの消し忘れにより「未設定」になって
+          // いなかった。targetsと同じwindowedExpectedKeys/同じtargetStateOverlayから
+          // プルーンすることで、Supabase側に行が存在しない(≒営業日設定をしていない)月の
+          // ローカル残留値を正しく消す——他店舗・他月の正規の設定はtargetStateOverlay側に
+          // 行として存在する限りfreshMapに残るため一切消えない。
+          businessDaySettings: pruneStaleKeys(merged.businessDaySettings, windowedExpectedKeys, targetStateOverlay.businessDaySettings),
           allStoresTargets: pruneStaleKeys(merged.allStoresTargets, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresTargets),
           allStoresBusinessDaySettings: pruneStaleKeys(merged.allStoresBusinessDaySettings, companyMonthExpectedKeys, allStoresTargetStateOverlay.allStoresBusinessDaySettings),
           storeHolidays: pruneStaleKeys(merged.storeHolidays, windowedExpectedKeys, storeHolidaysOverlay.storeHolidays),
