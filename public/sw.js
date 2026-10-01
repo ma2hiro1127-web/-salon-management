@@ -879,7 +879,9 @@
 // 利益低下・改善の主な要因セクションの新設、来月確認するポイントの視点化)。
 // v160: 月次レビューの表示情報・判定ロジック・文章生成を最終調整(実額優先の
 // 優先順位、利益要因タイトルの3パターン化、売上変化要因の分析、達成率の活用)。
-const CACHE_NAME = 'salon-manager-cache-v160';
+// v161: 営業日設定なしの月でbusinessDaySettingsの残留値が消えない不具合を修正
+// (hydrate時のプルーン漏れ、横浜店2026-09「30/28日」不具合の根本修正)。
+const CACHE_NAME = 'salon-manager-cache-v161';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
