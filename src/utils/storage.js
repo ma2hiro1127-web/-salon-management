@@ -1170,6 +1170,7 @@ export const buildPersistenceComparableState = (state = {}) => ({
   costMonthlyAmounts: undefined,
   storeInventoryBalances: undefined,
   storeMonthlyCostOverrides: undefined,
+  storeStaffCountHistory: undefined,
   variableCosts: undefined,
   monthClosing: undefined,
   monthClosingStatus: undefined,
@@ -1206,6 +1207,7 @@ export const mergeRemoteAppState = (localState = {}, remoteState = {}) => ({
   costMonthlyAmounts: mergeShallowMap(localState.costMonthlyAmounts, remoteState.costMonthlyAmounts),
   storeInventoryBalances: mergeShallowMap(localState.storeInventoryBalances, remoteState.storeInventoryBalances),
   storeMonthlyCostOverrides: mergeShallowMap(localState.storeMonthlyCostOverrides, remoteState.storeMonthlyCostOverrides),
+  storeStaffCountHistory: mergeShallowMap(localState.storeStaffCountHistory, remoteState.storeStaffCountHistory),
   cashBreakdownResults: mergeShallowMap(localState.cashBreakdownResults, remoteState.cashBreakdownResults),
   variableCosts: mergeItemArrayMap(localState.variableCosts, remoteState.variableCosts),
   monthClosing: mergeItemArrayMap(localState.monthClosing, remoteState.monthClosing),
@@ -1634,6 +1636,7 @@ export const normalizeAppState = (value) => {
     costMonthlyAmounts: normalizeObjectMap(source.costMonthlyAmounts),
     storeInventoryBalances: normalizeObjectMap(source.storeInventoryBalances),
     storeMonthlyCostOverrides: normalizeObjectMap(source.storeMonthlyCostOverrides),
+    storeStaffCountHistory: normalizeObjectMap(source.storeStaffCountHistory),
     variableCosts: normalizeObjectMap(source.variableCosts),
     monthClosing: normalizeObjectMap(source.monthClosing),
     monthClosingStatus: normalizeObjectMap(source.monthClosingStatus),
@@ -1944,6 +1947,50 @@ export const getMostRecentReflectedCostAmount = (state, costItemId, monthValue) 
     }
   });
   return latestAmount;
+};
+
+// store_staff_count_history(在籍スタッフ数・生産性計算人数の対象月ごとの履歴)の行を
+// `${storeId}__${effectiveMonth}` キーのマップへ変換する。cost_monthly_amounts/
+// buildCostMonthlyAmountsStateFromRowsと全く同じ形(id+値+updatedAtだけを持つ軽量な行)。
+export const buildStoreStaffCountHistoryStateFromRows = (rows = []) => {
+  const storeStaffCountHistory = {};
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    if (!row.store_id || !row.effective_month) return;
+    const key = `${row.store_id}__${row.effective_month}`;
+    storeStaffCountHistory[key] = {
+      id: row.id,
+      staffCount: row.staff_count,
+      productivityStaffCount: row.productivity_staff_count,
+      updatedAt: row.updated_at || "",
+    };
+  });
+  return { storeStaffCountHistory };
+};
+
+// 対象月で有効な在籍スタッフ数・生産性計算人数を返す(要件: スタッフ人数変更時の過去
+// データ保持)。getMostRecentReflectedCostAmount(継続費用の金額引き継ぎ)と同じ考え方——
+// 対象月に完全一致する履歴行が無ければ、対象月以前(対象月を含む)で最も新しい履歴行の
+// 値を使う。「その月から有効」という設定が、より新しい上書きが現れるまでずっと先の月へ
+// 持ち越される(=過去月を変更しても、それより後の月には影響しない。逆に過去月を今から
+// 修正すれば、その月以降だけが新しい値になる)。履歴が1件も無い店舗(新規作成直後で一度も
+// 保存していない)はstaffCount/productivityStaffCountとも0を返す(=未設定、要件5の
+// 「未入力の場合は在籍スタッフ数で計算」と同じ0相当の挙動)。
+export const getEffectiveStaffCounts = (state, storeId, monthValue) => {
+  let latestMonth = null;
+  let latestRow = null;
+  Object.entries(state.storeStaffCountHistory || {}).forEach(([key, row]) => {
+    const [rowStoreId, rowMonth] = key.split("__");
+    if (rowStoreId !== storeId || !rowMonth || rowMonth > monthValue) return;
+    if (!latestMonth || rowMonth > latestMonth) {
+      latestMonth = rowMonth;
+      latestRow = row;
+    }
+  });
+  return {
+    staffCount: parseNumber(latestRow?.staffCount),
+    productivityStaffCount: parseNumber(latestRow?.productivityStaffCount),
+    effectiveMonth: latestMonth,
+  };
 };
 
 // 対象月末時点の在庫金額(store_inventory_balances)。未入力の月はundefined。
@@ -2772,16 +2819,21 @@ export const getStoreDashboardRows = (state, company, monthValue) => {
     const costOptions = buildStoreCostOptions(store);
     const summary = calculateMonthSummary(state, store.id, monthValue, costOptions);
     const previousSummary = calculateMonthSummary(state, store.id, previousMonthValue, costOptions);
+    // スタッフ人数変更時の過去データ保持(要件): 現在のstore.staffCount/productivityStaffCount
+    // (現在値)ではなく、その対象月・前月それぞれで有効だった履歴値を使う——月を変更しても
+    // 過去月の1人あたり売上が動かないようにするため、当月と前月で別々に解決する。
+    const effectiveStaffCounts = getEffectiveStaffCounts(state, store.id, monthValue);
+    const previousEffectiveStaffCounts = getEffectiveStaffCounts(state, store.id, previousMonthValue);
     const productivity = getStaffProductivitySummary({
       sales: summary.sales, forecast: summary.displayForecast,
-      staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
+      staffCount: effectiveStaffCounts.staffCount, productivityStaffCount: effectiveStaffCounts.productivityStaffCount,
     });
     const previousProductivity = getStaffProductivitySummary({
       sales: previousSummary.sales, forecast: previousSummary.displayForecast,
-      staffCount: store.staffCount, productivityStaffCount: store.productivityStaffCount,
+      staffCount: previousEffectiveStaffCounts.staffCount, productivityStaffCount: previousEffectiveStaffCounts.productivityStaffCount,
     });
-    const effectiveStaffCount = parseNumber(store.productivityStaffCount) > 0
-      ? parseNumber(store.productivityStaffCount) : parseNumber(store.staffCount);
+    const effectiveStaffCount = effectiveStaffCounts.productivityStaffCount > 0
+      ? effectiveStaffCounts.productivityStaffCount : effectiveStaffCounts.staffCount;
     const isClosed = Boolean(state.monthClosingStatus?.[buildMonthKey(store.id, monthValue)]?.closed);
     // 実日次入力が無くても、まとめて入力だけでその月の実績がある場合は「前月データあり」と
     // 判定する(getMonthClosingChecklistの「売上」判定と同じ基準に統一。不具合修正:
@@ -3028,13 +3080,17 @@ export const getMonthlyReviewSummary = (state, { storeId, isAllStoresView, compa
   // getMonthClosingChecklistと共通の基準(entries || batchEntries)に揃えてある。
   const hasPrevious = previous.entries.length > 0 || previous.batchEntries.length > 0;
   const showReviewCountTarget = Boolean(storeEntity?.settings?.monthlyTargetFields?.fields?.targetReviewCount);
+  // スタッフ人数変更時の過去データ保持(要件): getStoreDashboardRowsと同じく、現在値では
+  // なく当月・前月それぞれで有効だった履歴値を使う。
+  const effectiveStaffCounts = getEffectiveStaffCounts(state, storeId, monthValue);
+  const previousEffectiveStaffCounts = getEffectiveStaffCounts(state, storeId, previousMonthValue);
   const productivity = getStaffProductivitySummary({
     sales: current.sales, forecast: current.displayForecast,
-    staffCount: storeEntity?.staffCount, productivityStaffCount: storeEntity?.productivityStaffCount,
+    staffCount: effectiveStaffCounts.staffCount, productivityStaffCount: effectiveStaffCounts.productivityStaffCount,
   });
   const previousProductivity = getStaffProductivitySummary({
     sales: previous.sales, forecast: previous.displayForecast,
-    staffCount: storeEntity?.staffCount, productivityStaffCount: storeEntity?.productivityStaffCount,
+    staffCount: previousEffectiveStaffCounts.staffCount, productivityStaffCount: previousEffectiveStaffCounts.productivityStaffCount,
   });
   const targetSales = parseNumber(current.target?.targetSales);
 

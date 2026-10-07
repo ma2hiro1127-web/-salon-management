@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions, calculateSalesPaceGap, buildTargetStateFromRows } from "./storage.js";
+import { buildCompanySettingsFromRow, buildDailyEntryPayload, buildDailyStateFromRows, buildFixedCostsStateFromRows, buildCostMonthlyAmountsStateFromRows, buildMonthClosingStateFromRows, buildMonthlyClosingItemsStateFromRows, buildStoreProfilesByStoreId, buildVariableCostsStateFromRows, calculateMonthSummary, calculateAllStoresMonthSummary, createInitialAppState, dailySalesRowToEntry, formatMonthLabel, getBusinessDaySummary, getAllStoresBusinessDaySummary, getUnclosedStoresForDate, getStoreStatusAsOfDate, buildCompanyMonthKey, buildMonthKey, getCustomerTargetSummary, getStaffProductivitySummary, getFixedCostsForStoreMonth, getCostMonthlyAmount, getMostRecentReflectedCostAmount, isCostItemReflectedForMonth, collapseLimitedCostItemsForDisplay, getVariableCostsForStoreMonth, getSalesStatusComment, mergeRemoteAppState, canonicalStringifyForComparison, buildPersistenceComparableState, normalizeAppState, migrateNameKeyedMapsToStoreId, pruneStaleKeys, pruneDeletedItemsFromItemArrayMap, readAppState, writeAppState, buildStoreHolidaysStateFromRows, buildAllStoresHolidaysStateFromRows, getStoreHolidayDates, getAllStoresHolidayDates, isHolidayDate, sumByCategoryKey, getMonthClosingChecklist, needsMonthReconfirmation, getStoreDashboardRows, getCompanyDashboardSummary, diffPercent, formatMoneyOrDash, formatPercentOrDash, formatDiffOrDash, sanitizeNumericInputValue, getMonthlyCashBreakdownRows, summarizeMonthlyCashBreakdown, parseNullableNumber, dailyBatchEntryRowToEntry, buildBatchEntryStateFromRows, getBatchEntriesForStoreMonth, buildDailyBatchEntryPayload, detectBatchEntryFieldOverlap, getBusinessDayDatesInRange, getBatchAllocatedEntries, getBatchAllocatedDatesSet, getMonthlyReviewSummary, resolvePreferredStoreSelection, resolveCurrentCompany, normalizeStoreNameForDuplicateCheck, getStoreMonthSalesTotal, resolveHydrateDispatch, resolveDailyEntryEditState, formatDailyDateLabel, runWithSaveGuard, calculateLaborCost, calculatePurchaseCost, calculateActualCostRate, getStoreMonthlyCostOverride, buildStoreMonthlyCostOverridesStateFromRows, buildStoreCostOptions, calculateSalesPaceGap, buildTargetStateFromRows, buildStoreStaffCountHistoryStateFromRows, getEffectiveStaffCounts } from "./storage.js";
 
 if (typeof globalThis.localStorage === "undefined") {
   globalThis.localStorage = {
@@ -913,6 +913,92 @@ test("getMostRecentReflectedCostAmount: 未反映月の入力欄プレフィル�
   assert.equal(getMostRecentReflectedCostAmount(state, "item-1", "2026-07"), undefined);
   // 一度も反映されたことが無い項目はundefined。
   assert.equal(getMostRecentReflectedCostAmount(state, "item-nonexistent", "2026-09"), undefined);
+});
+
+// ============================================================
+// スタッフ人数変更時の過去データ保持(store_staff_count_history/getEffectiveStaffCounts)
+// ============================================================
+
+test("getEffectiveStaffCounts: 履歴が1件も無い店舗は在籍・生産性ともに0を返す(未設定)", () => {
+  const state = createInitialAppState();
+  const result = getEffectiveStaffCounts(state, "store-x", "2026-09");
+  assert.deepEqual(result, { staffCount: 0, productivityStaffCount: 0, effectiveMonth: null });
+});
+
+test("getEffectiveStaffCounts: 履歴が1件だけの場合、それより前後どの月でも同じ値を返す(その月から先ずっと有効)", () => {
+  const state = createInitialAppState();
+  state.storeStaffCountHistory["store-x__2026-01"] = { staffCount: 7, productivityStaffCount: 6.5 };
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-01"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-01" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-07"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-01" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2027-12"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-01" });
+  // 履歴の開始月より前は「まだ何も設定されていなかった」ので未設定扱い。
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2025-12"), { staffCount: 0, productivityStaffCount: 0, effectiveMonth: null });
+});
+
+test("getEffectiveStaffCounts: ユーザー提示の実例(2026年7月=7人/6.5人→2026年10月に6人/5.5人へ変更)で、9月以前と10月以降が正しく分かれる", () => {
+  const state = createInitialAppState();
+  state.storeStaffCountHistory["store-x__2026-07"] = { staffCount: 7, productivityStaffCount: 6.5 };
+  state.storeStaffCountHistory["store-x__2026-10"] = { staffCount: 6, productivityStaffCount: 5.5 };
+
+  // 2026年9月以前 → 7人/6.5人のまま
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-07"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-07" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-08"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-07" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-09"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-07" });
+  // 2026年10月以降 → 6人/5.5人
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-10"), { staffCount: 6, productivityStaffCount: 5.5, effectiveMonth: "2026-10" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-11"), { staffCount: 6, productivityStaffCount: 5.5, effectiveMonth: "2026-10" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2027-01"), { staffCount: 6, productivityStaffCount: 5.5, effectiveMonth: "2026-10" });
+});
+
+test("getEffectiveStaffCounts: 「11月になってから10月分を修正」シナリオ(過去月への遡及訂正は、その月以降だけに適用され、それより前には影響しない)", () => {
+  const state = createInitialAppState();
+  // 7月から7人/6.5人だった、という前提。
+  state.storeStaffCountHistory["store-x__2026-07"] = { staffCount: 7, productivityStaffCount: 6.5 };
+  // 11月になってから「10月から6人だった」と気付き、対象月を2026-10にして保存。
+  state.storeStaffCountHistory["store-x__2026-10"] = { staffCount: 6, productivityStaffCount: 5.5 };
+
+  // 9月以前は影響を受けない。
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-09"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-07" });
+  // 10月以降(11月も含む)は新しい人数が適用される。
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-10"), { staffCount: 6, productivityStaffCount: 5.5, effectiveMonth: "2026-10" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-11"), { staffCount: 6, productivityStaffCount: 5.5, effectiveMonth: "2026-10" });
+});
+
+test("getEffectiveStaffCounts: 複数店舗の履歴が混在していても、対象店舗のものだけを参照する(他店舗の履歴を誤って拾わない)", () => {
+  const state = createInitialAppState();
+  state.storeStaffCountHistory["store-x__2026-01"] = { staffCount: 7, productivityStaffCount: 6.5 };
+  state.storeStaffCountHistory["store-y__2026-01"] = { staffCount: 3, productivityStaffCount: 0 };
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-x", "2026-08"), { staffCount: 7, productivityStaffCount: 6.5, effectiveMonth: "2026-01" });
+  assert.deepEqual(getEffectiveStaffCounts(state, "store-y", "2026-08"), { staffCount: 3, productivityStaffCount: 0, effectiveMonth: "2026-01" });
+});
+
+test("buildStoreStaffCountHistoryStateFromRows: Supabaseの行をstoreId__effectiveMonthキーのマップへ変換する", () => {
+  const rows = [
+    { id: "row-1", store_id: "store-x", effective_month: "2026-07", staff_count: 7, productivity_staff_count: 6.5, updated_at: "2026-07-01T00:00:00Z" },
+    { id: "row-2", store_id: "store-x", effective_month: "2026-10", staff_count: 6, productivity_staff_count: 5.5, updated_at: "2026-10-01T00:00:00Z" },
+  ];
+  const { storeStaffCountHistory } = buildStoreStaffCountHistoryStateFromRows(rows);
+  assert.deepEqual(Object.keys(storeStaffCountHistory).sort(), ["store-x__2026-07", "store-x__2026-10"]);
+  assert.equal(storeStaffCountHistory["store-x__2026-07"].staffCount, 7);
+  assert.equal(storeStaffCountHistory["store-x__2026-07"].productivityStaffCount, 6.5);
+  assert.equal(storeStaffCountHistory["store-x__2026-10"].staffCount, 6);
+});
+
+test("getStoreDashboardRows: スタッフ人数が月の途中で変更されても、変更前の月の1人あたり売上は変わらない(要件: 過去月の数値保持)", () => {
+  const state = buildDashboardTestState();
+  // store-aは2026-01から7人/6.5人、2026-08から6人/5.5人に変更されたという履歴にする
+  // (buildDashboardTestStateの既定である2026-01=5人/0人を上書き)。
+  state.storeStaffCountHistory["store-a__2026-01"] = { staffCount: 7, productivityStaffCount: 6.5 };
+  state.storeStaffCountHistory["store-a__2026-08"] = { staffCount: 6, productivityStaffCount: 5.5 };
+
+  const rowsAugust = getStoreDashboardRows(state, dashboardTestCompany, "2026-08");
+  const storeAAugust = rowsAugust.find((row) => row.storeId === "store-a");
+  // 8月(当月)は新しい人数(生産性計算人数5.5人)を使う。
+  assert.equal(storeAAugust.effectiveStaffCount, 5.5);
+  assert.ok(Math.abs(storeAAugust.productivity.current - (500000 / 5.5)) < 0.01);
+  // 7月(前月)は8月より前なので、まだ古い人数(生産性計算人数6.5人)のまま——8月に人数を
+  // 変更しても、7月の1人あたり売上は変わらない。
+  assert.ok(Math.abs(storeAAugust.previous.productivity.current - (400000 / 6.5)) < 0.01);
 });
 
 test("consumptionTaxReserveAmount/profitAfterConsumptionTaxReserve: 常に計算されるが、OFFなら引当率未設定=0円のまま", () => {
@@ -2530,6 +2616,11 @@ const buildDashboardTestState = () => {
   state.monthClosingStatus[currentKeyA] = { closed: true, lockedAt: "2026-09-01T00:00:00.000Z", note: "月締め済み" };
   // store-bは未締め(monthClosingStatusにキー自体が無い = デフォルトfalse)。
 
+  // スタッフ人数は対象月ごとの履歴(store_staff_count_history)から取る——store-aは
+  // 2026-01から在籍5人(productivityStaffCount未入力)が有効、2026-07・2026-08どちらの
+  // テストもこの1件を引き継ぐ。store-bは履歴が無い(=未設定、effectiveStaffCount:0)。
+  state.storeStaffCountHistory["store-a__2026-01"] = { staffCount: 5, productivityStaffCount: 0 };
+
   return state;
 };
 
@@ -3963,7 +4054,10 @@ test("getMonthlyReviewSummary(単一店舗): スタッフ数・生産性計算�
   assert.equal(noStaff.hasStaffProductivity, false);
   assert.equal(noStaff.productivity, null);
 
-  const withStaff = getMonthlyReviewSummary(state, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store, staffCount: 5 } }, month);
+  // スタッフ人数は対象月ごとの履歴(store_staff_count_history)から取る——storeEntity.staffCount
+  // ではなく、state.storeStaffCountHistoryに履歴を1件追加して検証する。
+  const stateWithStaff = { ...state, storeStaffCountHistory: { ...state.storeStaffCountHistory, [`${store}__2026-01`]: { staffCount: 5, productivityStaffCount: 0 } } };
+  const withStaff = getMonthlyReviewSummary(stateWithStaff, { storeId: store, isAllStoresView: false, storeEntity: { id: store, name: store } }, month);
   assert.equal(withStaff.hasStaffProductivity, true);
   assert.equal(withStaff.productivity.current, 60000);
 });

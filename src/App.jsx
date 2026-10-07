@@ -66,6 +66,8 @@ import {
   collapseLimitedCostItemsForDisplay,
   getStoreMonthlyCostOverride,
   buildCostMonthlyAmountsStateFromRows,
+  buildStoreStaffCountHistoryStateFromRows,
+  getEffectiveStaffCounts,
   getInventoryBalance,
   getPreviousMonthInventoryBalance,
   buildStoreInventoryBalancesStateFromRows,
@@ -146,6 +148,8 @@ import {
   upsertStoreInputSettings,
   loadStoreMonthlyCostOverridesForCompany,
   upsertStoreMonthlyCostOverride,
+  loadStoreStaffCountHistoryForCompany,
+  upsertStoreStaffCountHistory,
   createUserProfileRecord,
   checkExistingProfilesByEmail,
   upsertDailySalesEntry,
@@ -1855,6 +1859,12 @@ function App() {
   // 再生成されるため)ため、依存配列にオブジェクトそのものを使うと、無関係な自動保存の
   // たびに入力中のスタッフ数等が上書きされてしまう。selectedStoreEntity?.id という値だけを
   // 見ることでこれを避ける。
+  // スタッフ人数変更時の過去データ保持(要件): 在籍スタッフ数・生産性計算人数だけは
+  // selectedStoreEntityの現在値ではなく、画面右上の対象月(selectedMonth)で有効だった
+  // 履歴値を表示する——過去月に切り替えれば、その月に適用されていた人数がそのまま入力欄に
+  // 出る(要件「過去月の表示」)。appStateRef経由で最新値を読む(依存配列にappStateを
+  // 入れると、無関係な自動保存のたびに入力中の値が上書きされてしまうため、店舗/月の
+  // 切り替え時「だけ」再計算する既存方針をそのまま踏襲)。
   const selectedStoreIdForBasicSettings = selectedStoreEntity?.id || "";
   useEffect(() => {
     if (!selectedStoreEntity) {
@@ -1862,15 +1872,16 @@ function App() {
       return;
     }
     setStoreEditId(selectedStoreEntity.id);
+    const effectiveStaffCounts = getEffectiveStaffCounts(appStateRef.current, selectedStoreEntity.id, selectedMonth);
     setStoreForm({
       ...createStoreFormDefaults(),
       name: selectedStoreEntity.name || "",
-      staffCount: selectedStoreEntity.staffCount ? String(selectedStoreEntity.staffCount) : "",
-      productivityStaffCount: selectedStoreEntity.productivityStaffCount ? String(selectedStoreEntity.productivityStaffCount) : "",
+      staffCount: effectiveStaffCounts.staffCount ? String(effectiveStaffCounts.staffCount) : "",
+      productivityStaffCount: effectiveStaffCounts.productivityStaffCount ? String(effectiveStaffCounts.productivityStaffCount) : "",
     });
     setStoreFormStatus({ status: "idle", message: "" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStoreIdForBasicSettings]);
+  }, [selectedStoreIdForBasicSettings, selectedMonth]);
 
   // 費用入力フォームが新規追加(未編集)状態のとき、開始月を対象月に追従させる。編集中
   // (fixedForm.idがある)場合はその項目自体の開始月を上書きしないよう手を出さない。
@@ -3202,6 +3213,7 @@ function App() {
         storeProfilesResult,
         storeInputSettingsResult,
         storeMonthlyCostOverridesResult,
+        storeStaffCountHistoryResult,
       ] = await Promise.all([
         // daily_sales is the authoritative source for daily sales figures + day-closing state
         // (see upsertDailySalesEntry/updateDailySalesClosingState) — not the tenant_snapshots
@@ -3278,6 +3290,10 @@ function App() {
         // cost_monthly_amountsと同じ理由(過去月の確定状態を正しく復元する必要がある)で
         // 3か月窓には絞らず会社の全件を取得する。
         timeHydrateQuery("storeMonthlyCostOverrides", loadStoreMonthlyCostOverridesForCompany({ companyId })),
+        // store_staff_count_history(在籍スタッフ数・生産性計算人数の対象月ごとの履歴)。
+        // cost_monthly_amountsと同じ理由(対象月以前の最新行を遡って参照する可能性がある)で
+        // 3か月窓には絞らず会社の全件を取得する。
+        timeHydrateQuery("storeStaffCountHistory", loadStoreStaffCountHistoryForCompany({ companyId })),
       ]);
       console.info("[hydrate-query] total (Promise.all batch)", { durationMs: Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - hydrateBatchStartedAt) });
 
@@ -3328,6 +3344,9 @@ function App() {
 
       if (!storeMonthlyCostOverridesResult.ok) throw storeMonthlyCostOverridesResult.error || new Error("人件費・仕入の確定額データの取得に失敗しました");
       const storeMonthlyCostOverridesOverlay = buildStoreMonthlyCostOverridesStateFromRows(storeMonthlyCostOverridesResult.data);
+
+      if (!storeStaffCountHistoryResult.ok) throw storeStaffCountHistoryResult.error || new Error("スタッフ人数の履歴データの取得に失敗しました");
+      const storeStaffCountHistoryOverlay = buildStoreStaffCountHistoryStateFromRows(storeStaffCountHistoryResult.data);
 
       const companySettingsOverlay = buildCompanySettingsFromRow(companySettingsResult.data);
       const storeProfilesByStoreId = buildStoreProfilesByStoreId(storeProfilesResult.data);
@@ -3444,6 +3463,7 @@ function App() {
           costMonthlyAmounts: costMonthlyAmountsOverlay.costMonthlyAmounts,
           storeInventoryBalances: storeInventoryBalancesOverlay.storeInventoryBalances,
           storeMonthlyCostOverrides: storeMonthlyCostOverridesOverlay.storeMonthlyCostOverrides,
+          storeStaffCountHistory: storeStaffCountHistoryOverlay.storeStaffCountHistory,
           cashBreakdownResults: cashBreakdownState.cashBreakdownResults,
           variableCosts: variableCostsOverlay.variableCosts,
           monthClosing: monthlyClosingItemsOverlay.monthClosing,
@@ -3562,6 +3582,11 @@ function App() {
           // windowedExpectedKeys already uses, so it can be reused directly (unlike costMonthlyAmounts).
           storeInventoryBalances: pruneStaleKeys(merged.storeInventoryBalances, windowedExpectedKeys, storeInventoryBalancesOverlay.storeInventoryBalances),
           storeMonthlyCostOverrides: pruneStaleKeys(merged.storeMonthlyCostOverrides, storeMonthlyCostOverridesExpectedKeysFor(merged.storeMonthlyCostOverrides), storeMonthlyCostOverridesOverlay.storeMonthlyCostOverrides),
+          // storeStaffCountHistoryもstoreMonthlyCostOverridesと全く同じ理由でプルーンする
+          // (横浜店2026-09「30/28日」不具合と同じ構造のバグを再発させないための必須処理 ——
+          // ある店舗の履歴行が後から削除/修正された場合、ローカルキャッシュだけに残った
+          // 古い行がSupabase側の最新状態と無関係に残り続けてしまう)。
+          storeStaffCountHistory: pruneStaleKeys(merged.storeStaffCountHistory, storeMonthlyCostOverridesExpectedKeysFor(merged.storeStaffCountHistory), storeStaffCountHistoryOverlay.storeStaffCountHistory),
           variableCosts: pruneStaleKeys(merged.variableCosts, windowedExpectedKeys, variableCostsOverlay.variableCosts),
           monthClosing: pruneStaleKeys(merged.monthClosing, windowedExpectedKeys, monthlyClosingItemsOverlay.monthClosing),
         };
@@ -4030,6 +4055,34 @@ function App() {
         if (!window.confirm(message)) return;
       }
     }
+
+    // スタッフ人数変更時の過去データ保持(要件): 既存店舗の編集時だけ、在籍スタッフ数・
+    // 生産性計算人数が「選択中の対象月で現在有効な値」から変わっていれば保存前に確認する
+    // (新規店舗作成は比較対象となる履歴が無いため確認不要、最初の1件として保存するだけ)。
+    // 対象月(selectedMonth)を適用開始月として履歴に保存する——「変更して保存」を押した
+    // 場合のみ、その月以降にだけ新しい値を反映し、それより前の月には一切影響させない。
+    let staffCountEffectiveMonth = null;
+    let nextHistoryStaffCount = null;
+    let nextHistoryProductivityStaffCount = null;
+    if (existingStore) {
+      const currentEffectiveStaffCounts = getEffectiveStaffCounts(appStateRef.current, existingStore.id, selectedMonth);
+      const formStaffCount = storeForm.staffCount.trim() !== "" ? parseNumber(storeForm.staffCount) : currentEffectiveStaffCounts.staffCount;
+      const formProductivityStaffCount = storeForm.productivityStaffCount.trim() !== "" ? parseNumber(storeForm.productivityStaffCount) : currentEffectiveStaffCounts.productivityStaffCount;
+      const staffCountChanged = formStaffCount !== currentEffectiveStaffCounts.staffCount || formProductivityStaffCount !== currentEffectiveStaffCounts.productivityStaffCount;
+      if (staffCountChanged) {
+        const monthClosed = Boolean(appStateRef.current.monthClosingStatus?.[buildMonthKey(existingStore.id, selectedMonth)]?.closed);
+        const previousMonthLabel = formatMonthLabel(getMonthOffset(selectedMonth, -1));
+        let confirmMessage = `スタッフ人数を変更します\n\n${formatMonthLabel(selectedMonth)}から以下の人数を適用します。\n\n在籍スタッフ数\n${currentEffectiveStaffCounts.staffCount}人 → ${formStaffCount}人\n\n生産性計算人数\n${currentEffectiveStaffCounts.productivityStaffCount}人 → ${formProductivityStaffCount}人\n\n※${previousMonthLabel}以前の実績には影響しません。`;
+        if (monthClosed) {
+          confirmMessage += `\n\nこの月は確定済みです。\nスタッフ人数を変更すると、1人あたり売上などの確定済み指標も再計算されます。`;
+        }
+        if (!window.confirm(confirmMessage)) return;
+        staffCountEffectiveMonth = selectedMonth;
+        nextHistoryStaffCount = formStaffCount;
+        nextHistoryProductivityStaffCount = formProductivityStaffCount;
+      }
+    }
+
     if (savingStoreRef.current) return;
     savingStoreRef.current = true;
 
@@ -4061,6 +4114,51 @@ function App() {
       if (!storeId) {
         throw new Error("店舗IDを取得できませんでした");
       }
+
+      // スタッフ人数変更時の過去データ保持(要件): 確認ダイアログで「変更して保存」された
+      // 場合のみ、対象月を適用開始月として履歴に1行保存する。これが唯一の書き込み先 ——
+      // store_profiles(店舗テーブル)1件だけで過去月まで上書きする実装にはしない。
+      let latestStaffCountHistory = appStateRef.current.storeStaffCountHistory || {};
+      if (staffCountEffectiveMonth && isSupabaseConfigured) {
+        const historyResult = await upsertStoreStaffCountHistory({
+          companyId, storeId, userId: appState.currentUserId,
+          effectiveMonth: staffCountEffectiveMonth,
+          staffCount: nextHistoryStaffCount,
+          productivityStaffCount: nextHistoryProductivityStaffCount,
+        });
+        if (!historyResult.ok) {
+          throw historyResult.error || new Error("スタッフ人数の履歴保存に失敗しました");
+        }
+        latestStaffCountHistory = {
+          ...latestStaffCountHistory,
+          [`${storeId}__${staffCountEffectiveMonth}`]: { staffCount: nextHistoryStaffCount, productivityStaffCount: nextHistoryProductivityStaffCount },
+        };
+      } else if (!existingStore && isSupabaseConfigured && (storeForm.staffCount.trim() !== "" || storeForm.productivityStaffCount.trim() !== "")) {
+        // 新規店舗作成時に在籍スタッフ数が入力されていれば、比較対象となる履歴が無いため
+        // 確認ダイアログ無しで最初の1件として保存する。
+        const initialEffectiveMonth = selectedMonth;
+        const initialStaffCount = parseNumber(storeForm.staffCount);
+        const initialProductivityStaffCount = parseNumber(storeForm.productivityStaffCount);
+        const historyResult = await upsertStoreStaffCountHistory({
+          companyId, storeId, userId: appState.currentUserId,
+          effectiveMonth: initialEffectiveMonth,
+          staffCount: initialStaffCount,
+          productivityStaffCount: initialProductivityStaffCount,
+        });
+        if (historyResult.ok) {
+          latestStaffCountHistory = {
+            ...latestStaffCountHistory,
+            [`${storeId}__${initialEffectiveMonth}`]: { staffCount: initialStaffCount, productivityStaffCount: initialProductivityStaffCount },
+          };
+        }
+      }
+      // store_profiles.staff_count/productivity_staff_countは「今日時点で有効な値」の
+      // スナップショットとして同期する(店舗管理一覧のような、月のコンテキストを持たない
+      // 画面がこれまで通り参照できるようにするための後方互換)。1人あたり月間売上などの
+      // 実際の計算には一切使わない——必ずgetEffectiveStaffCounts経由の履歴値を使う。
+      const todaysRealMonth = new Date().toISOString().slice(0, 7);
+      const syncedStaffCounts = getEffectiveStaffCounts({ storeStaffCountHistory: latestStaffCountHistory }, storeId, todaysRealMonth);
+
       // The store management screen only ever collects 店舗名 now (see the STORE PROFILE →
       // simple STORE section above) — storeForm no longer has real values for any of these
       // other fields. Sourcing them from existingStore instead of storeForm means renaming a
@@ -4090,14 +4188,13 @@ function App() {
         urls: existingStore?.urls || [],
         status: existingStore?.status || "active",
         isActive: existingStore?.isActive !== false,
-        // 店舗名と同じく、このフォームで実際に編集できる項目なので existingStore ではなく
-        // storeForm から取るのが基本(他のプロフィール項目のように「画面に無いので既存値を
-        // 維持」ではない)。ただし新規作成では未入力=0が正しい一方、既存店舗の編集時に
-        // フォームが空欄(何らかの理由でstoreForm.staffCountが未設定)だと、意図せず既存の
-        // 在籍スタッフ数が0へ上書きされてしまう — 編集時は空欄を「変更なし」として扱い、
-        // existingStoreの現在値を保持する(新規作成時はexistingStoreが無いので従来通り0)。
-        staffCount: storeForm.staffCount.trim() !== "" ? parseNumber(storeForm.staffCount) : (existingStore?.staffCount || 0),
-        productivityStaffCount: storeForm.productivityStaffCount.trim() !== "" ? parseNumber(storeForm.productivityStaffCount) : (existingStore?.productivityStaffCount || 0),
+        // スタッフ人数変更時の過去データ保持(要件): store_profiles(=store.staffCount/
+        // productivityStaffCount、このオブジェクトのこの2項目)はもう「現在値の唯一の
+        // 保存先」ではなく、上で計算した「今日時点で有効な履歴値」をそのまま同期するだけの
+        // スナップショットにする——選択中の対象月(過去月のこともある)のstoreForm値を
+        // 直接ここへ入れると、過去月の入力がそのまま「現在値」として上書きされてしまうため。
+        staffCount: syncedStaffCounts.staffCount,
+        productivityStaffCount: syncedStaffCounts.productivityStaffCount,
         settings: { ...createStoreSettingsDefaults(), ...(existingStore?.settings || {}), ...(storeSettingsForm || {}) },
       };
       if (isSupabaseConfigured) {
@@ -4138,6 +4235,10 @@ function App() {
             selectedStoreId: nextStore.id,
           },
         },
+        // スタッフ人数の履歴(上で保存した分を含む)をローカル状態へ反映する——次回の
+        // hydrateを待たず、保存直後から対象月ごとの1人あたり売上等に即時反映されるように
+        // するため。
+        storeStaffCountHistory: { ...(latestAppState.storeStaffCountHistory || {}), ...latestStaffCountHistory },
       };
       persistTenantState(nextState);
       // 「店舗を切り替えただけ」なのか「新しい店舗を作成した」のかが紛らわしくならない
@@ -9638,6 +9739,7 @@ function App() {
                           <label className="field">
                             <span>在籍スタッフ数</span>
                             <NumericInput value={storeForm.staffCount} onChange={storeFieldChangeHandlers.staffCount} placeholder="例: 6" />
+                            <small className="field-hint">{formatMonthLabel(selectedMonth)}時点の人数を表示・編集しています。変更は{formatMonthLabel(selectedMonth)}以降に適用され、それより前の月には影響しません。</small>
                           </label>
                           <label className="field">
                             <span>生産性計算人数（任意）</span>

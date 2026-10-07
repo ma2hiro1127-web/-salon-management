@@ -464,6 +464,37 @@ export const loadStoreMonthlyCostOverridesForCompany = async ({ companyId }) => 
 // 該当引数へ明示的にnullを渡す呼び出し——行の削除ではなく、該当列をnullへ戻すUPDATE/INSERTに
 // なる(要件11: 押すたびに最新の実売上×設定率で再計算されるようにするため、値そのものを
 // 消して自動推定側へフォールバックさせる)。
+// 在籍スタッフ数・生産性計算人数の対象月ごとの履歴(store_staff_count_history)。
+// 保存はこの1行だけが対象の「その月から有効な値」を表す——同じstore_id+effective_monthへ
+// 再保存した場合はこの行をUPDATEするだけで、古い履歴行を別の行として増やさない
+// (daily_batch_entriesと同じonConflict方式)。created_at/created_byはDBトリガー
+// (set_store_staff_count_history_updated_at)が更新時も保持するため、ここでは一切触れない。
+export const upsertStoreStaffCountHistory = async ({ companyId, storeId, userId, effectiveMonth, staffCount, productivityStaffCount }) => {
+  if (!isSupabaseConfigured) return { ok: true, skipped: true };
+  const validationError = validateRequiredKeys({ companyId, storeId, userId, effectiveMonth });
+  if (validationError) {
+    const detail = logSupabaseError({ operation: "upsertStoreStaffCountHistory", table: "store_staff_count_history", userId, companyId, storeId, error: new Error(validationError) });
+    return { ok: false, error: new Error(detail.message) };
+  }
+  const payload = {
+    company_id: companyId,
+    store_id: storeId,
+    effective_month: effectiveMonth,
+    staff_count: Number(staffCount) || 0,
+    productivity_staff_count: Number(productivityStaffCount) || 0,
+    created_by: userId,
+    updated_by: userId,
+  };
+  try {
+    const { data, error } = await supabase.from("store_staff_count_history").upsert(payload, { onConflict: "store_id,effective_month" }).select().single();
+    if (error) throw error;
+    return { ok: true, data };
+  } catch (error) {
+    logSupabaseError({ operation: "upsertStoreStaffCountHistory", table: "store_staff_count_history", userId, companyId, storeId, error });
+    return { ok: false, error };
+  }
+};
+
 export const upsertStoreMonthlyCostOverride = async ({ companyId, storeId, targetMonth, laborCostOverride, purchaseCostOverride }) => {
   if (!isSupabaseConfigured) return { ok: true, skipped: true };
   const validationError = validateRequiredKeys({ companyId, storeId, targetMonth });
@@ -2680,6 +2711,24 @@ export const loadCostMonthlyAmountsForCompany = async ({ companyId }) => {
     return { ok: true, data: data || [] };
   } catch (error) {
     logSupabaseError({ operation: "loadCostMonthlyAmountsForCompany", table: "cost_monthly_amounts", companyId, error });
+    return { ok: false, error, data: [] };
+  }
+};
+
+// store_staff_count_history(在籍スタッフ数・生産性計算人数)。対象月に完全一致する行が
+// 無ければそれ以前で最も新しい行を引き継ぐ(getEffectiveStaffCounts参照)ため、
+// cost_monthly_amountsと同じ理由で3か月窓には絞らず会社の全件を取得する。
+export const loadStoreStaffCountHistoryForCompany = async ({ companyId }) => {
+  if (!isSupabaseConfigured || !companyId) return { ok: true, skipped: true, data: [] };
+  try {
+    const { data, error } = await supabase
+      .from("store_staff_count_history")
+      .select("*")
+      .eq("company_id", companyId);
+    if (error) throw error;
+    return { ok: true, data: data || [] };
+  } catch (error) {
+    logSupabaseError({ operation: "loadStoreStaffCountHistoryForCompany", table: "store_staff_count_history", companyId, error });
     return { ok: false, error, data: [] };
   }
 };

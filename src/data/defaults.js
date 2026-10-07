@@ -232,6 +232,10 @@ export const createInitialAppState = () => {
     // store_monthly_cost_overrides — 人件費・仕入(材料・発注費)の「その月だけの手動確定額」。
     // `${storeId}__${targetMonth}`でキー化する(costMonthlyAmountsと同じ会社全体・無制限取得)。
     storeMonthlyCostOverrides: {},
+    // store_staff_count_history — 在籍スタッフ数・生産性計算人数の対象月ごとの履歴。
+    // `${storeId}__${effectiveMonth}`でキー化する(costMonthlyAmountsと同じ会社全体・
+    // 無制限取得、対象月以前で最も新しい行を引き継ぐためgetEffectiveStaffCounts参照)。
+    storeStaffCountHistory: {},
     variableCosts: {},
     monthClosing: {},
     monthClosingStatus: {},
