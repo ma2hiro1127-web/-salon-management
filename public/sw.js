@@ -883,7 +883,9 @@
 // (hydrate時のプルーン漏れ、横浜店2026-09「30/28日」不具合の根本修正)。
 // v162: まとめて入力(daily_batch_entries)をupsert化し、DBの一意制約と合わせて
 // 二重・三重登録を恒久的に防止(池袋店2026-08の3重登録不具合の修正)。
-const CACHE_NAME = 'salon-manager-cache-v162';
+// v163: スタッフ人数・生産性計算人数を対象月ごとの履歴として保持(現在の人数を
+// 変更しても過去月の1人あたり月間売上が再計算されないようにする)。
+const CACHE_NAME = 'salon-manager-cache-v163';
 const APP_SHELL = [
   '/', '/index.html', '/manifest.webmanifest', '/favicon.svg', '/mask-icon.svg',
   '/apple-touch-icon.png', '/icon-192.png', '/icon-512.png', '/icon-maskable-192.png', '/icon-maskable-512.png',
